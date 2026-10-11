@@ -27,6 +27,9 @@
 #                      build; default = the Dockerfile's full RDNA set
 #   --targets "full light server"   image targets to build
 #   --push             push the built tags to the registry
+#   --prune            after a successful --push, remove the locally built
+#                      images and dangling build layers (the base images and
+#                      the ccache store are kept)
 #   --prepare-only     prepare + verify the source tree, then exit
 #   --force            recreate --src if it is not the release tree
 #   --no-cache         pass --no-cache to the container engine
@@ -54,11 +57,12 @@ ROCM_LINES="7.14.1 10.1"
 ARCH=""
 TARGETS="full light server"
 PUSH=0
+PRUNE=0
 PREPARE_ONLY=0
 FORCE=0
 NO_CACHE=""
 
-usage() { sed -n '2,44p' "$0"; }
+usage() { sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -70,6 +74,7 @@ while [ $# -gt 0 ]; do
         --arch)         ARCH="$2"; shift 2 ;;
         --targets)      TARGETS="$2"; shift 2 ;;
         --push)         PUSH=1; shift ;;
+        --prune)        PRUNE=1; shift ;;
         --prepare-only) PREPARE_ONLY=1; shift ;;
         --force)        FORCE=1; shift ;;
         --no-cache)     NO_CACHE="--no-cache"; shift ;;
@@ -77,6 +82,10 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [ "$PRUNE" -eq 1 ] && [ "$PUSH" -ne 1 ]; then
+    die "--prune requires --push (refusing to delete images that were not published)"
+fi
 
 command -v jq >/dev/null || die "jq is required"
 [ -f "$MANIFEST" ] || die "$MANIFEST not found"
@@ -239,3 +248,17 @@ for v in $ROCM_LINES; do
         for tag in $(tags_for "$t" "$v"); do echo "    $tag"; done
     done
 done
+
+# Optional local cleanup: drop the images we just built and any dangling build
+# layers, but keep the (expensive) base images and the ccache store so the next
+# build does not re-pull or recompile from cold.
+if [ "$PRUNE" -eq 1 ]; then
+    echo
+    echo "==> pruning locally built images for $IMAGE (base images + ccache store kept)"
+    imgs="$("$ENGINE" images --format '{{.Repository}}:{{.Tag}}' | grep -F "$IMAGE:" || true)"
+    if [ -n "$imgs" ]; then
+        # shellcheck disable=SC2086
+        "$ENGINE" rmi -f $imgs
+    fi
+    "$ENGINE" image prune -f
+fi

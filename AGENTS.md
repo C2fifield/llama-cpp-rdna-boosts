@@ -375,6 +375,18 @@ same build args the CI matrix used, applies the same registry tags (`rocm-<v>`,
 pushes to `ghcr.io/stew675/llama-cpp-rdna-boosts`.  `docker-ghcr.yml` remains only as a manual
 `workflow_dispatch` fallback.
 
+**ccache is on.**  `.devops/rdna-rocm.Dockerfile` installs the upstream static ccache **4.12.3** (the
+version the host validates, not Ubuntu's older package), sets `CCACHE_DIR=/root/.ccache` and adds
+`-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache` (mirroring `~/bin/build-llama-rocm-714`), with
+`/root/.ccache` as a build cache-mount — never an image layer, so the published images are unchanged.
+Measured single-arch: cold compile 10m01s → cache-warm rebuild 1m28s (835/836 direct hits).  A release
+whose sources mostly match the previous one recompiles only the delta.
+
+**Prune only the built images, never the base images.**  `--push --prune` publishes and then removes the
+locally built `ghcr.io/...` images and dangling build layers, keeping the ROCm base images and the ccache
+store so the next build neither re-pulls ~20 GB per line nor recompiles from cold.  Do **not** use
+`podman system prune -a` for this (it takes the base images and ccache with it).
+
 **Only ROCm 7.14.1 and 10.1 are built by default.**  7.2 (`-complete`) is much slower and is manual-only.
 
 ## What NOT to do

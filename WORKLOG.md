@@ -1,5 +1,36 @@
 # WORKLOG - dated delivery records
 
+## 261011.013 (containers) -- r48 images built+pushed locally; ccache added to the image build
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Follow-up to
+`261011.008`/`261011.009`: the first full local release-container build, plus the compiler cache the
+host build has used since `260918.007`.
+
+**r48 images.**  `scripts/build-containers.sh --rocm "7.14.1 10.1" --push` built and pushed all **15
+tags** from the canonical r48 tree: `server-/light-/full-rocm-<7.14.1|10.1>` (plus the immutable
+`-a55e952b8` variants), `rocm-7.14.1`, `rocm-10.1`, and `latest` (now 10.1).  GHCR carries the
+7.14.1/10.1 lines; the old `rocm-7.14`/`rocm-10.0` images are stale and are not rebuilt.
+
+**Measured (16 cores; `gfx1100;gfx1150;gfx1151;gfx1200;gfx1201`; pre-ccache).**  Per-target wall times:
+`7.14.1/full` **34m33s**, `10.1/full` **31m17s**; `light`/`server` reuse the shared `build` stage in
+4-12 s each.  Total wall for both lines including pushes: **~72 min** (the tag-push CI matrix needed
+~5 h and repeatedly hit its 6 h timeout).
+
+**ccache in the image build.**  `.devops/rdna-rocm.Dockerfile` now installs the upstream static ccache
+**4.12.3** (the host-validated version, not Ubuntu's older package), sets `CCACHE_DIR=/root/.ccache` +
+`CCACHE_MAXSIZE=20G`, adds `-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache` mirroring
+`~/bin/build-llama-rocm-714`, and mounts `/root/.ccache` as a build cache-mount (never an image layer,
+so the published images are unchanged).  Measured single-arch (`gfx1201`, `light`): cold compile
+**10m01s** -> `--no-cache` rebuild replayed from cache in **1m28s**, 835/836 direct hits.  The cache
+persists across builds; `podman system prune` clears it.  A release whose sources mostly match the
+previous one therefore recompiles only the delta.
+
+**Cleanup policy.**  `scripts/build-containers.sh --push --prune` removes the locally built images and
+dangling build layers after a successful push, **keeping the ROCm base images and the ccache store**
+(do not re-pull the ~20 GB base images every release).  A bare `podman system prune -a` is the wrong
+tool here.
+
+
 ## 261011.012 (docs, TODO prune) -- close TODO #6, #8 and #31, drop #12; #46/#27 checked and left pending
 
 **No delivery change.**  TODO.md prune per the maintainer:

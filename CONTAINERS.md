@@ -238,3 +238,26 @@ gh auth token | podman login ghcr.io -u stew675 --password-stdin
 tarball + `apply-all.sh`).  `--arch LIST` trims `AMDGPU_TARGETS` for a fast
 smoke build — the published image uses the Dockerfile's full RDNA set
 (`gfx1100;gfx1150;gfx1151;gfx1200;gfx1201`).
+
+### ccache
+
+`.devops/rdna-rocm.Dockerfile` installs the upstream static ccache **4.12.3**
+(the version the maintainer's host validates, not Ubuntu's older package) and
+compiles with `-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache`, mirroring
+`~/bin/build-llama-rocm-714`.  The cache lives in a `/root/.ccache` build
+cache-mount, so it is never an image layer and does not change the published
+images.  Measured single-arch (`gfx1201`, `light`): a cold compile is ~10 min;
+a `--no-cache` rebuild replays from ccache in **~1m28s** (835/836 direct hits).
+A release whose sources mostly match the previous one therefore recompiles only
+the delta.  `podman system prune` clears the cache.
+
+### Cleanup
+
+After a successful push, pass `--prune` to remove the locally built
+`ghcr.io/...` images and dangling build layers while **keeping the ROCm base
+images and the ccache store** — re-pulling the ~20 GB base images on every
+release is the waste a bare `podman system prune -a` causes:
+
+```bash
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune
+```

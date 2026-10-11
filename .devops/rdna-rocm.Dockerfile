@@ -60,6 +60,17 @@ ARG ROCM_DOCKER_ARCH='gfx1100;gfx1150;gfx1151;gfx1200;gfx1201'
 # Set ROCm architectures (also consumed by the ROCm device library toolchain).
 ENV AMDGPU_TARGETS=${ROCM_DOCKER_ARCH}
 
+# ccache is the sanctioned build-speed answer (WORKLOG 260918.007): 4.12.3
+# caches the ROCm clang HIP *device* objects, so a rebuild of unchanged sources
+# replays the compiler's own objects (bit-identical).  A static upstream binary
+# is installed so the container runs the same version the maintainer's host
+# validates, rather than Ubuntu's older ccache.  The cache lives in a build
+# cache-mount (see the cmake RUN below), never in an image layer, so it neither
+# enlarges nor changes the published images; `podman system prune` clears it and
+# CCACHE_MAXSIZE bounds it.
+ARG CCACHE_VERSION=4.12.3
+ENV CCACHE_DIR=/root/.ccache CCACHE_MAXSIZE=20G
+
 RUN apt-get update \
     && apt-get install -y \
     build-essential \
@@ -67,7 +78,14 @@ RUN apt-get update \
     git \
     libssl-dev \
     curl \
-    libgomp1
+    libgomp1 \
+    xz-utils \
+    && curl -fsSL -o /tmp/ccache.tar.xz \
+        "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" \
+    && tar -xJf /tmp/ccache.tar.xz -C /tmp \
+    && install -m 0755 "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64/ccache" /usr/local/bin/ccache \
+    && rm -rf /tmp/ccache.tar.xz "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64" \
+    && ccache --version | head -1
 
 WORKDIR /app
 
@@ -75,9 +93,14 @@ COPY . .
 
 COPY --from=web /app/tools/ui/dist tools/ui/dist
 
-# GGML_HIP_RCCL turns block 12's hybrid all-reduce on for non-RDNA4 pairs and
-# needs librccl from the base image (find_package(rccl REQUIRED)).
-RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+# Build.  GGML_HIP_RCCL turns block 12's hybrid all-reduce on for non-RDNA4
+# pairs and needs librccl from the base image (find_package(rccl REQUIRED)).
+# The CMAKE_*_COMPILER_LAUNCHER flags mirror ~/bin/build-llama-rocm-714; the
+# /root/.ccache cache-mount keeps ccache's store across builds, so a failed or
+# partial build (or a later release whose sources mostly match) does not pay the
+# full recompile again.
+RUN --mount=type=cache,target=/root/.ccache,sharing=locked \
+    HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
     cmake -S . -B build \
         -DGGML_HIP=ON \
         -DGGML_HIP_RCCL=ON \
@@ -85,7 +108,11 @@ RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
         -DGGML_NATIVE=OFF \
         -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
         -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF \
-    && cmake --build build --config Release -j$(nproc)
+        -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    && cmake --build build --config Release -j$(nproc) \
+    && ccache -s
 
 RUN mkdir -p /app/lib \
     && find build -name "*.so*" -exec cp -P {} /app/lib \;
