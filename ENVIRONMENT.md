@@ -34,7 +34,7 @@ The only ones worth knowing by heart:
 |---|---|---|
 | `GGML_COMPUTE_BUFFER_MARGIN_PCT` | `10` (HIP only) | `0` disables the compute-buffer slack — the fastest way to reproduce the old TODO #42 abort |
 | `MOE_EXPERT_CACHE_MIB` | unset = auto | `0` disables the MoE expert cache entirely (CPU expert path) |
-| `GGML_CUDA_SLAB` | **on** | `0` disables the movable-boundary slab allocator (back to per-allocation `cudaMalloc`; reintroduces the TODO #42 server abort).  Since **r37** the slab is additionally **armed only for models with host-resident experts** (`-ncmoe`/`-cmoe` > 0); a dense model never creates one |
+| `GGML_CUDA_SLAB` | **on** | `0` disables the movable-boundary slab allocator (back to per-allocation `cudaMalloc`; reintroduces the TODO #42 server abort).  Since **r37** the slab is additionally **armed only for models with host-resident experts** (`-ncmoe`/`-cmoe` > 0); a dense model never creates one.  Since **r47** the arm is independent of `--fit` (issue #136): if the cache is enabled the slab is armed |
 | `GGML_CUDA_SLAB_HEADROOM_MIB` | `4096` | VRAM left outside the slab after it reclaims the unused reserve. **Raising it buys steady-state margin at the cost of arena**; `2048` aborts the 16k path inside hipBLASLt |
 | `GGML_CUDA_ALLREDUCE` | `hybrid` | force `internal` \| `nccl` \| `ce` for multi-GPU A/B |
 | `LLAMA_DROP_COMPUTE_BUFFERS` | **on for every tool** | `0` keeps the wide-prefill layout (smaller arena). Under the slab a later wide prefill reclaims it via a boundary move, so a server may drop too |
@@ -128,9 +128,19 @@ tensor address).  It replaces the per-allocation VMM pool (`GGML_CUDA_COMPUTE_VM
 "chunk the compute buffer so the arena can yield" plan: nothing is ever unmapped, so the ROCm sub-range
 `hipMemUnmap` limitation stops mattering.
 
+**r47 (issue #136):** the slab is **armed whenever the MoE expert cache is enabled, independent of
+`--fit`**.  `moe_cache_preflight` runs an idempotent env parse before its cache gate, so `--fit off` (no
+fit probe load, and therefore no backend init before the preflight) no longer leaves `g_slab_armed` false
+with the cache on a raw `cudaMalloc` arena.  `GGML_CUDA_SLAB=0` is the only up-front opt-out; if the slab
+is armed but cannot be **created** (no VMM, bad chunk geometry, or too little free VRAM for the reserve)
+the run logs the reason and **streams** the experts from the host, and a one-time WARN in the
+cache-enable path makes the (now bug-only) "cache on, slab not armed" state loud.  The fail-soft arena
+yield now guards on the global `ggml_cuda_slab_enabled()` (not the failing device's slab) and the
+stand-down is device-scoped.
+
 | variable | default | class | notes |
 |---|---|---|---|
-| `GGML_CUDA_SLAB` | **on** | kill-switch | `0` disables the slab.  The plain `cudaMalloc` path returns, together with the pre-slab failure mode (a later wide prefill aborting — the TODO #42 crash). |
+| `GGML_CUDA_SLAB` | **on** | kill-switch | `0` disables the slab.  The plain `cudaMalloc` path returns, together with the pre-slab failure mode (a later wide prefill aborting — the TODO #42 crash).  Since **r47** the slab is armed independent of `--fit`; a slab that is armed but cannot be created logs the reason and the cache streams from the host (issue #136). |
 | `GGML_CUDA_SLAB_CHUNK_MIB` | `64` | tuning | the boundary-move granularity (must be a power of two).  Arena *allocations* use the finer VMM granularity (2 MiB), so this does not waste arena. |
 | `GGML_CUDA_SLAB_RESERVE_MIB` | `max(8192, 25 % of the device)` | tuning | left OUTSIDE the slab for the weights / KV / draft / workspaces.  This is a **hard** constraint: ROCm will not unmap a sub-range of the slab's single mapping, so a value too small ENDS THE RUN (measured: 4096 -> a failed hipBLASLt workspace, exit 134). |
 | `GGML_CUDA_SLAB_MIN_ARENA_MIB` | `2048` | tuning | hard cache floor: the slab is created only if it fits `estimated work buffer + this`.  Otherwise it declines, logs an error and the cache STREAMS from the host (`MOE_EXPERT_CACHE_MIB=0` semantics). |
@@ -231,6 +241,7 @@ See `AGENTS.md`.
 | variable | default | class | notes |
 |---|---|---|---|
 | `GGML_CUDA_ALLREDUCE` | `hybrid` on Linux | tuning | `hybrid` (NCCL for large, internal for small) \| `internal` \| `nccl` \| `ce` (SDMA copy-engine, 2 GPU).  Unrecognised values warn and fall through to the platform default.  `nccl` is **not** bit-identical under `-sm tensor` (the internal AR BF16-round-trips), so use it as a smoke comparison only. |
+| `GGML_CUDA_AR_CE_SCRATCH_MIB` | `0` = unlimited (r47, block 12) | **opt-in tuning** | budget for the copy-engine (`GGML_CUDA_ALLREDUCE=ce`) all-reduce scratch: each of the three per-rank staging buffers is `n_rank * ceil(ne/n_rank) * 2 B`.  Above it, CE returns `false` **before** any collective phase and the dispatcher falls back to the internal pipeline for that call; the fallback is sticky after the first failed grow, so an allocation failure also degrades cleanly instead of aborting.  `0` keeps the pre-r47 unbounded behaviour. |
 | `GGML_CUDA_P2P` | off | tuning | enables peer access.  Note VMM allocations need explicit `cuMemSetAccess` for P2P (see `FOLLOWUP-compute-arena-chunking.md`). |
 | `GGML_CUDA_AR_SMALL_BLOCKS` | `4` (r46, block 12) | kill-switch / tuning | block count for a **small** internal all-reduce (decode/verify, `<= GGML_CUDA_AR_SMALL_BYTES`).  Each block signals and polls its own arrival slot, so fewer blocks shorten the call.  `GGML_CUDA_AR_SMALL_BLOCKS=8` restores the pre-r45 launch; the fused stage and larger messages always keep 8. |
 | `GGML_CUDA_AR_SMALL_BYTES` | `65536` (r46, block 12) | tuning | the small-message threshold in bytes for the knob above. |

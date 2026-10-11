@@ -3,7 +3,34 @@
 16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
 (re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
 
-> **Current release `v16-a55e952b8-r46` (2026-10-15) -- block 16 is FOLDED BACK into the 0000-0015 set, and issue #133's band-WMMA GQA cap lands in block 15:**
+> **Current release `v16-a55e952b8-r47` (2026-10-16) -- the `--fit off` slab blackout (issue #136) and the CE fail-soft:**
+> canonical tip `6daf815693704a214246bea7b60523ddff00a171`, net tree
+> `0099dd85130db65cbfbcfd738abfc57566bffe6f`; strict **16/16** `git am` (`validate-set.sh` green).  No new
+> block; block 15 is re-cut on top of blocks 06/12.
+> **Block 06 (items A/B/D/F):** `moe_cache_preflight` now runs an idempotent `ensure_env()` before its
+> `!g_enabled` gate, so the env parse no longer depends on `ggml_backend_cuda_init()` ordering.  With
+> `--fit off` (no fit probe load) the preflight previously returned early, `g_slab_armed` stayed false and
+> the expert cache auto-enabled on a **raw `cudaMalloc` arena** (the pre-slab crash mode).  The slab is now
+> always armed when the cache is enabled; `GGML_CUDA_SLAB=0` is the only up-front opt-out; a genuine
+> slab-creation failure logs the reason and **streams** (`moe_cache_disable_streaming`, or `GGML_ABORT` if
+> it were ever too late), never a silent raw arena; and a one-time WARN in `alloc_all_locked` makes
+> "cache on, slab not armed" loud.  The fail-soft arena yield now guards on `ggml_cuda_slab_enabled()`
+> (the global predicate that chose the arena backing) rather than the failing device's slab, and
+> `moe_cache_shrink_step(device)` is device-scoped.
+> **Block 12 (items C/E):** the copy-engine all-reduce scratch grows through `ggml_cuda_device_malloc`
+> (the shared OOM choke point), retires a partial attempt to `ce_old` and returns `false` so the
+> dispatcher falls back to the internal pipeline, with an optional `GGML_CUDA_AR_CE_SCRATCH_MIB` budget
+> (default 0 = unlimited); CE stays opt-in.  Issue #135's gfx11 compile guard is unchanged (already in
+> r46) and re-verified for gfx1100/gfx1150/gfx1151/gfx1200/gfx1201.
+> **Validation (gfx1201):** the 4-way flag matrix shows `SLAB_INIT` on both devices in all four rows;
+> the MTP reservation line reads `aux=4.00 GiB reserve=8.00 GiB`; coherence identical; the four-axis MTP
+> gate (`-sm tensor`, 27B Q8_0, `-n 3000`) acceptance and generated text byte-identical to the r46 base,
+> as is the host-expert MoE + slab MTP row (`-sm tensor -ncmoe 40`, 35B-A3B, acc 0.64122); prefill-logit
+> mean KLD 0.000707 / same-top-p 98.755 %; the #136 field repro (arena resident, then a 68 216-token
+> prefill, `-ub 6144 -c 204800`, q8_0 KV, MTP n3, `GGML_CUDA_ALLREDUCE=ce`) completes with no OOM/abort;
+> the forced CE fallback (`GGML_CUDA_AR_CE_SCRATCH_MIB=1`) degrades to `internal` coherently.
+
+> **Previous release `v16-a55e952b8-r46` (2026-10-15) -- block 16 is FOLDED BACK into the 0000-0015 set, and issue #133's band-WMMA GQA cap lands in block 15:**
 > the six contributor campaigns that r45 had promoted into a new block 16 are distributed thematically
 > instead of carried as a 17th block, and the #133 fix rides in block 15.  Canonical tip
 > `2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree

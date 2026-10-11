@@ -1,5 +1,71 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-16 (r47) -- fix the `--fit off` slab blackout (issue #136) and make the CE all-reduce fail-soft; close #135
+
+**Release `v16-a55e952b8-r47`** (base `a55e952b8`, canonical block-15 tip
+`6daf815693704a214246bea7b60523ddff00a171`, net tree
+`0099dd85130db65cbfbcfd738abfc57566bffe6f`); **16 blocks** (00-15); `scripts/validate-set.sh` green
+(strict 16/16 `git am`, reconstructed tree == `release.json`).  No new block; the fixes fold into the
+owner blocks and block 15 is re-cut on top of blocks 06/12.  The predecessor r46 tree (`a6ca8905`) is
+the reference for every A/B below.
+
+**Root cause (issue #136, proven with gdb in the campaign and reproduced here).**  A host-expert MoE run
+(`-ncmoe`/`-cmoe` > 0) with `--fit off` never armed the movable-boundary slab: `moe_cache_preflight()`
+opened with `if (!g_enabled) return false;`, and `g_enabled`/`g_auto` are set only by `parse_env()`, which
+ran only from `moe_cache_init()` (backend init).  `--fit off` skips the fit probe load, so the driver
+preflight (`common/common.cpp` -> `llama_model_moe_cache_preflight`, before `llama_init_from_model`) saw
+`g_enabled == 0`, returned early, and left `g_slab_armed` false.  The cache then auto-enabled during
+`llama_init_from_model` and ran its arena on a raw `cudaMalloc` outside the slab -- the pre-slab crash
+mode.  Repro on the r46 build: `--fit off` logged no `SLAB_INIT` yet `MoE expert cache (auto): arena
+18662 MiB`; without `--fit off` both `SLAB_INIT` lines appeared.
+
+**Block 06 (items A/B/D/F).**  (A) A new `ensure_env()` (guarded by a function-local static) parses the
+environment once, called from the top of `moe_cache_preflight()` and from `moe_cache_init()`; the slab is
+now armed whenever the cache is enabled, independent of `--fit`.  `g_init_done` keeps its device-
+bookkeeping meaning rather than being reused for the env guard.  (B) `ggml_cuda_slab_configured()` (the
+env kill-switch, ignoring `g_slab_armed`) backs a one-time WARN in `alloc_all_locked()` when the cache is
+enabled, tables exist, and the slab is not armed.  (D) `ggml_cuda_device_malloc()` now guards the
+fail-soft arena yield on `ggml_cuda_slab_enabled()` -- the predicate that chose the arena backing --
+instead of the failing device's `ggml_cuda_slab_active()`, so a device whose slab failed to initialise
+cannot churn the cache; `moe_cache_shrink_step(int device)` is device-scoped and no longer disables the
+whole cache when the failing device has nothing to free.  (F) A slab that is armed but cannot be
+**created** (no VMM, bad chunk geometry, `cudaMemGetInfo` failure, or too little free VRAM for the
+reserve) now records a decline reason, refuses to retry, logs one ERROR naming the cause and the
+workarounds, and disables the cache to STREAM from the host; if it were ever detected after
+`moe_cache_is_sized()` it `GGML_ABORT`s instead of running inconsistently.  A raw arena is never built
+silently.
+
+**Block 12 (items C/E).**  (C) The copy-engine (`GGML_CUDA_ALLREDUCE=ce`) all-reduce scratch no longer
+grows with bare `CUDA_CHECK(cudaMalloc)` (the only device allocation outside the fail-soft choke point,
+and the site of the #136 abort: `hipMalloc(&comm_ctx->ce_tmp2[i], need)`).  All three per-rank buffers
+now allocate through `ggml_cuda_device_malloc`; a partial attempt is retired to `ce_old` (freed at
+teardown, never mid-run) and `return false` lets the dispatcher fall back to the internal pipeline.  The
+fallback is sticky after the first failed grow.  New opt-in budget `GGML_CUDA_AR_CE_SCRATCH_MIB`
+(default 0 = unlimited) refuses an oversized scratch before allocating.  CE stays opt-in.  (E) No code
+change: issue #135's gfx11 `s_wait_storecnt` guard already landed in r46; re-verified by compiling
+`allreduce-hip.cu` for gfx1100/gfx1150/gfx1151/gfx1200/gfx1201 (all clean), and the maintainer also
+built r46 on gfx1100 (`ssh fingon`) without error.
+
+**Validation (gfx1201).**  The 4-way flag matrix (none / `--fit off` / `--load-mode none` / both) shows
+`SLAB_INIT dev=0` and `dev=1` in **all four rows** (previously absent on `--fit off`).  With an MTP draft
+the line reads `aux=4.00 GiB reserve=8.00 GiB`.  Coherence (same-seed `llama-cli`, `-sm tensor`) is
+identical to the r46 base.  The MTP rule-0 gate (`-sm tensor`, 27B Q8_0, `-n 3000`, four axes) has
+identical acceptance and byte-identical generated text vs r46; the host-expert MoE + slab MTP row
+(`-sm tensor -ncmoe 40`, 35B-A3B Q4_K_M) has identical acceptance (0.64122) and identical output.
+Prefill-logit gate: mean KLD **0.000707**, same-top-p **98.755 %** (PASS).  CE vs hybrid/internal output
+byte-identical; a forced fallback (`GGML_CUDA_AR_CE_SCRATCH_MIB=1`) logs one WARN and degrades to
+`internal` coherently.  The #136 field repro (arena resident after decode, then a **68 216-token**
+prefill, `-sm tensor -ncmoe 48 --fit off -ub 6144 -c 204800`, q8_0 KV, MTP n3, `GGML_CUDA_ALLREDUCE=ce`)
+completes with `SLAB_INIT` on both devices, 530.9 t/s prompt, and 0 OOM / 0 aborts / 0 stand-downs / 0
+`////`.  A forced slab decline (`GGML_CUDA_SLAB_RESERVE_MIB=40000`) errors and streams cleanly; the
+`GGML_CUDA_SLAB=0` plain path is unchanged.
+
+**Docs.**  `ENVIRONMENT.md` gains `GGML_CUDA_AR_CE_SCRATCH_MIB` and the r47 slab invariant; the
+current-state headers of `README.md`, `patches/README.md`, `MANIFESTS.md` and `BASELINE.md` move to r47;
+`release.json` is regenerated.  The campaign moves from `wip/slab-arming-and-ce-failsafe/` to
+`archive/work/slab-arming-and-ce-failsafe/` (promoted), and `wip/CAMPAIGNS.md` drops it.  Issues #136
+and #135 are closed.
+
 ## 2026-10-15 (r46) -- block 16 folded back into 0000-0015; the RDNA4 band-WMMA GQA cap (issue #133, block 15)
 
 **Release `v16-a55e952b8-r46`** (base `a55e952b8`, canonical block-15 tip

@@ -5,7 +5,12 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r46`** (canonical block-15 tip `2e19a9d3`, net tree
+**`a55e952b8`**, released as **`v16-a55e952b8-r47`** (canonical block-15 tip `6daf81569`, net tree
+`0099dd85130db65cbfbcfd738abfc57566bffe6f`): the `--fit off` slab blackout (**issue #136**) is fixed
+(block 06: the host-expert preflight parses its env before the cache gate, so the slab is always armed
+when the cache is enabled; a slab-creation failure errors and streams), the copy-engine all-reduce
+scratch is fail-soft with an optional `GGML_CUDA_AR_CE_SCRATCH_MIB` budget (block 12), and block 15 is
+re-cut on top.  Before it, **`v16-a55e952b8-r46`** (canonical block-15 tip `2e19a9d3`, net tree
 `a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`): the r45 **block 16 is folded back into the 0000-0015
 set** (host-side/system work into block 06, small-message all-reduce into block 12, and the
 decode/latency remainder plus issue #133 into block 15).  Before it,

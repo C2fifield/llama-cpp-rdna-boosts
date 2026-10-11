@@ -1,10 +1,11 @@
 # `slab-arming-and-ce-failsafe` — the `--fit off` slab blackout, the CE hard-abort, the fail-soft yield, and the issue #135 close
 
-**Status: OPEN, seeded 2026-10-11 for a cold session.**  Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
-This is a **delivery correctness** campaign: item A is a crash-class silent regression that disables the
-movable-boundary slab.  Report findings before any delivery change and before any release, and wait for a
-decision.
+**Status: PROMOTED / RESOLVED (r47, 2026-10-16).**  All items were folded into
+`v16-a55e952b8-r47` (canonical block-15 tip `6daf81569`, net tree `0099dd85`); `validate-set.sh` green.
+See [`RESOLUTION.md`](RESOLUTION.md) for the per-item outcome and the validation record.  The text below
+is the campaign as seeded (2026-10-11) for a cold session, kept as the historical plan and evidence; the
+original "nothing here may be applied" caveat was satisfied by the maintainer's go-ahead, recorded in that
+resolution and in `WORKLOG.md`.
 
 > **Cold start.**  Read this file in full, then `AGENTS.md` ("Report findings before shipping",
 > "Pushing policy", "Default-on policy", "WIP and promotion rules"), then issues
