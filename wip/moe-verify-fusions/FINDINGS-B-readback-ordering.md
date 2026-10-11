@@ -150,3 +150,36 @@ decode pays nothing. `GGML_READBACK_SYNC=0` is the A/B kill-switch.
   pin test also means it is not simply the co-resident sequence extending `n_kv`.
 - In-process probe (`test-multiseq-same`, unified, up to 512 tokens) is bit-exact; the server needs
   the real scale/timing. Root cause not yet pinned; C remains open and is unified-KV-specific.
+
+---
+
+## C hypothesis matrix (same session) — expert refcounts and layer/tensor split are NOT it
+
+All arms: GSQ + MTP, `GGML_FORCE_SEQ_UBATCH=1` (one sequence per ubatch), `-np 2`, unified KV
+unless noted, `tools/multiseq.sh`/`msq_np2`; a green arm means A_solo == A_conc1 == A_conc2 == A_conc3.
+
+| arm | result |
+|---|---|
+| `-sm tensor`, unified | **red** (baseline) |
+| `-sm layer`, unified | **red** (A_conc1/2/3 differ; A_solo differs) |
+| `-sm tensor`, `--no-kv-unified` | **green** |
+| `MOE_EXPERT_CACHE_MIB=0`, unified | **red** (identical shape to baseline) |
+| `GGML_CPU_MOE_OFFLOAD_THREADS=1`, unified | **red** |
+| `LLAMA_KV_N_PAD_MIN=65536`, unified | red, **byte-identical** to baseline |
+| `GGML_CUDA_DISABLE_MMVQ_DENSE_BAND=1`, unified | red, **byte-identical** to baseline |
+| `LLAMA_KQ_MASK_DERIVED=0`, unified | red, **byte-identical** to baseline |
+| `NPB=256` (B does not finish early; no `seq_rm` during A) | **red** |
+
+So: not the expert cache/refcounts, not the CPU host-expert reduction order, not the layer-vs-tensor
+split, not `seq_rm`-of-B, not the derived kq mask, not the mmvq band, not `n_kv` padding. Both split
+modes behave the same; the only axis that matters is **unified vs non-unified KV**.
+
+In-process (`test-multiseq-same`): with `n_seq_max=2` and the *same* unified stream, a companion
+seq1 fill of 0 / 512 / 4096 tokens leaves seq0's last-token logits **byte-identical** at tok=512
+and at tok=4096, in unified and non-unified. So the single-shot probe cannot see C, even with a
+companion occupying the unified stream — consistent with the original handover. C needs the
+server's incremental, multi-step concurrent execution; the root cause is still unpinned (it is a
+rounding-level, unified-KV-specific state/order dependence, not a gross corruption).
+
+`readback-sync-fix.patch` changes none of the C arms (as expected — C has one output-bearing
+ubatch with `force=1`).
