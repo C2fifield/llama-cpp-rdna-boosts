@@ -33,7 +33,7 @@ open:
    chunked GDN prefill writes only the newest snapshot, so restoring snapshot `rollback` reads an
    unwritten plane. Nobody has yet demonstrated a bit-level consequence for that specific ordering.
 
-The maintainer's current position (2026-10-13): the warning is a benign timing/scheduling artefact and
+The maintainer's current position (2026-10-11): the warning is a benign timing/scheduling artefact and
 not a delivery correctness fix. This campaign is where a future session proves or refutes that.
 
 ## 1. The code
@@ -69,7 +69,7 @@ The guard is a **warn-once diagnostic**; it does not change the restore.
 present in the last ubatch are updated; the rest keep the count from the last batch they ran in), and
 guard on the rolling-back sequence's own value. The diagnostic message prints the per-sequence count.
 
-## 2. What was measured (2026-10-13, r43, `/home/stew675/kv-offset-r43`)
+## 2. What was measured (2026-10-11, r43, `/home/stew675/kv-offset-r43`)
 
 **Dense Qwen3.8-27B Q5_K** (the reporter's class), `-np 2`, `--kv-unified`, `-c 180224 -b 6144 -ub 512`,
 q8_0 KV, `--spec-type draft-mtp --spec-draft-n-max 3`, A about 24k chars / B about 40k chars, solo plus
@@ -145,7 +145,7 @@ repro above is a reproducer, not a gate.
 
 ## 6. Pointers
 
-- Issue #131 (closed 2026-10-13 as not reproducible on the current tree; reopen if the reporter shows a
+- Issue #131 (closed 2026-10-11 as not reproducible on the current tree; reopen if the reporter shows a
   real case). Issue #134 / TODO #52 for the separate unified-KV cell-offset residual.
 - `archive/work/moe-verify-fusions/FINDINGS-single-seq-rollback.md` (§7 already separates this from
   #50/#51/#52) and `HANDOVER-single-seq-rollback.md` §6.

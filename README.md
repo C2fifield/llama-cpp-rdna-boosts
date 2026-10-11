@@ -32,7 +32,7 @@ bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts
 - **Running a model bigger than your VRAM on one card** (`-ncmoe` + the MoE expert cache, with the
   measured config tables and the measurement method): [`COMMUNITY-CONFIG.md`](COMMUNITY-CONFIG.md)
 - What changed recently: [`WORKLOG.md`](WORKLOG.md)
-- Current status and validation: [Current state](#current-state)
+- Current status and validation: [`release.json`](release.json) (source of truth) and [`MANIFESTS.md`](MANIFESTS.md)
 
 > **The `mmb`/QSA/indexer campaign is folded into the delivery (2026-09-25, release `r8`).**  The 16
 > delivery patches now absorb the 28 `archive/work/mmb-general/` patches (the tree at that fold was
@@ -89,7 +89,7 @@ genuine exception is **block 12** — its internal all-reduce is RDNA4-only
 `patches/README.md` for the gate and env knobs).  Block 13's fused
 MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 2026-09-05, gfx1100 validated 2026-09-05 — see
-[Current state](#current-state)).
+[`WORKLOG.md`](WORKLOG.md)).
 
 ## Layout
 
@@ -380,7 +380,7 @@ defects were in play:
   of the prefill K-cache write landed on opposite sides of an f16 rounding boundary.  r25's
   `#pragma clang fp contract(off)` in `rope.cu` makes every instantiation round identically, verified at
   the logits level on Linux (`W=1` hash `60e77916673db071` with the fusion on and off).  See
-  [Current state](#current-state) for the r25 record.
+  [`WORKLOG.md`](WORKLOG.md) for the r25 record.
 
 * **The residual per-start flip is hipBLASLt solution selection in ROCm, not ggml** — and it reproduces
   on a stock upstream build with none of these patches.  The F32 `mul_mat` for `ssm_alpha`/`ssm_beta`

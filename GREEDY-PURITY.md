@@ -1439,7 +1439,7 @@ pin the request schedule (sequential, or a fixed arrival order) and compare that
 `test-backend-ops` for the op-level guarantees.  The archived investigation is
 `archive/work/unified-cache-decode/`.
 
-**Refined 2026-10-13 (issue #134 / TODO #52 part C).**  The cause is narrower than "continuous
+**Refined 2026-10-11 (issue #134 / TODO #52 part C).**  The cause is narrower than "continuous
 batching": it is **unified KV** specifically.  `--no-kv-unified` with the same concurrent schedule is
 fully reproducible, because each sequence then owns a contiguous region starting at cell 0, so the
 flash-attention reduction grid is anchored per sequence.  Under `--kv-unified` a sequence's logits

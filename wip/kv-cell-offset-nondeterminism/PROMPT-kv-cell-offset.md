@@ -1,6 +1,6 @@
 # Cold-start prompt — unified-KV cell-offset non-determinism (TODO #52 part C)
 
-> **PARKED 2026-10-13.** The campaign is parked, not active: the residue is upstream-inherent and a
+> **PARKED 2026-10-11.** The campaign is parked, not active: the residue is upstream-inherent and a
 > proper fix is an upstream unified-KV redesign, so it is documented as a gotcha instead. Do **not**
 > resume this prompt unless the maintainer explicitly reopens it. See the disposition block in
 > [`README.md`](README.md) and [`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md).

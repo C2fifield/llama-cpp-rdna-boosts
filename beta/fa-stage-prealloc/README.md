@@ -1,6 +1,6 @@
 # `fa-stage-prealloc` — BETA (issue #138): FA prefill staging arena preallocation
 
-> **STATUS (2026-10-17): BETA — not part of the delivery set.**  The patch applies on top of the
+> **STATUS (2026-10-11): BETA — not part of the delivery set.**  The patch applies on top of the
 > current `v16-a55e952b8-r48` delivery tree and is handed to the issue reporter (@DanoPTT) for a
 > Windows re-test.  It is not folded into any block yet.  The code it changes lives in **block 15**
 > (`fattn_stage_try_get` in `ggml/src/ggml-cuda/common.cuh`); a promotion target is deliberately left

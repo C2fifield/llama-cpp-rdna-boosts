@@ -1,21 +1,21 @@
 # `kv-cell-offset-nondeterminism` — the unified-KV cell-offset / attention-tile alignment non-determinism (TODO #52 part C)
 
-**Status: PARKED (2026-10-13, after `v16-a55e952b8-r43`; mechanism refined 2026-10-13 — see
+**Status: PARKED (2026-10-11, after `v16-a55e952b8-r43`; mechanism refined 2026-10-11 — see
 [`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md)).** Not part of the delivery; nothing here
 may be applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in
 `AGENTS.md`). This is the working home for the residual that survived the r42 (part A) and r43 (part B)
 fixes to issue #134 / TODO #52.
 
-> **2026-10-13 disposition — PARKED, not archived.** The pragmatic call is to stop here: a proper fix
+> **2026-10-11 disposition — PARKED, not archived.** The pragmatic call is to stop here: a proper fix
 > means per-sequence contiguous, tile-aligned KV regions (or per-region anchored reductions) in the
 > unified attention cache, i.e. a fundamental change to upstream's design, and there are more pressing
 > items. The finding is documented as a gotcha instead: **`-np > 1` + `--kv-unified` is not run-to-run
 > deterministic — use `--no-kv-unified` when strict reproducibility is required.** It reproduces on
 > unmodified upstream `a55e952b8`, so it is upstream-inherent rather than a delivery defect. Issue #134
-> is closed as upstream-inherent (comment 2026-10-13); reopen this campaign only if @DanoPTT (or the
+> is closed as upstream-inherent (comment 2026-10-11); reopen this campaign only if @DanoPTT (or the
 > maintainer) decides it is worth the upstream redesign.
 
-> **2026-10-13 refinement:** the dependence is on the sequence's whole physical **cell set**, not just its
+> **2026-10-11 refinement:** the dependence is on the sequence's whole physical **cell set**, not just its
 > start offset. A fixed allocation alignment fixes the one-shot prefill probe but **not** the decode/
 > server case (the head-reset reuse fragments a growing sequence). The required quantum is the per-launch
 > FA reduction/split period, which is model- and shape-dependent (4B GQA4 takes the generic paths; GSQ
@@ -198,7 +198,7 @@ reproducer, not a gate yet).
 - `archive/work/moe-verify-fusions/` — the closed predecessor campaign (A, B, the fused-verify work).
   `FINDINGS-B-readback-ordering.md` holds the offset sweep and the condition matrix;
   `HANDOVER-multiseq-bc.md` is the original B/C handover.
-- `WORKLOG.md` 2026-10-12 (r42) and (r43); `TODO.md` #52.
+- `WORKLOG.md` 2026-10-10 (r42) and 2026-10-11 (r43); `TODO.md` #52.
 - Issue #134 (`https://github.com/stew675/llama-cpp-rdna-boosts/issues/134`) and the upstream report it
   came from; #124 for the original field symptom.
 - `benchmarks/mtp-adaptive-methodology.md` (rule 5), `benchmarks/prefill-logit-methodology.md`.

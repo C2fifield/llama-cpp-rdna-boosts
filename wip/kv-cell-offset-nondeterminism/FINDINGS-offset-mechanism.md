@@ -1,6 +1,6 @@
 # FINDINGS — the unified-KV cell-offset non-determinism is a *cell-set* (not start-offset) dependence; a fixed alignment is not the fix
 
-**Date:** 2026-10-13 (follow-up to the campaign README; WIP, NOT for delivery).
+**Date:** 2026-10-11 (follow-up to the campaign README; WIP, NOT for delivery).
 **Status:** mechanism refined and model-dependence pinned. A fixed allocation alignment is **not**
 sufficient. Root cause: the FA reduction grouping is a function of the sequence's whole physical
 *cell set* relative to the kernel's reduction/split grid; the unified allocator lets that set depend on

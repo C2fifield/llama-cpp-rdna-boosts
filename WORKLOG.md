@@ -1,5 +1,27 @@
 # WORKLOG - dated delivery records
 
+## 261011.011 (docs, staleness pass) -- correct the stale top-level docs: the `--host-experts mmap` policy, the README `#current-state` anchors, and the 2026-10-12..17 date drift
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Doc-only fixes
+for claims contradicted by the current r48 delivery:
+
+- **`AGENTS.md` host-experts bullet.**  It still described `--host-experts mmap` /
+  `LLAMA_MMAP_HOST_EXPERTS=0` as first-class pageable-master options.  Both were **removed in r33**
+  (issue #116); `--host-experts` now selects `pinned` (default) or `pool` (r35, the bounded pinned
+  `MOE_HOST_POOL_MIB` tier), and `mmap` logs "unsupported".  The bullet now says so.
+- **`README.md` broken anchors.**  `bb59387` ("Clean up README") removed the `## Current state`
+  section but left three `[Current state](#current-state)` links (lines 35/92/383).  They now point at
+  `release.json`/`MANIFESTS.md` and `WORKLOG.md`.  A top-level link/anchor check is clean.
+- **Date drift normalized.**  The `2026-10-12`..`2026-10-17` labels that WORKLOG 261011.008 reconciled
+  for the WORKLOG headers were still present in `TODO.md`, `patches/README.md`, `GREEDY-PURITY.md`,
+  `wip/CAMPAIGNS.md`, `wip/kv-cell-offset-nondeterminism/`, `wip/rs-rollback-boundary/` and
+  `beta/fa-stage-prealloc/` (all recent work is real-dated 2026-10-11).  Corrected to **r41/r42 ->
+  2026-10-10**, **r43-r48 and the non-release events -> 2026-10-11**, and the `WORKLOG.md`
+  2026-10-17/2026-10-12 references to the `261011.006 (r48)` / `2026-10-10 (r41)` headers.  The r1-r11
+  drift flagged in 261011.008 is untouched (non-future dates; separate audit).
+
+Docs only; `scripts/validate-set.sh` is unaffected.
+
 ## 261011.010 (docs, wip audit) -- audit the `wip/` campaigns against r48; archive the delivered/superseded three and re-scope the partials
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  A cold audit of

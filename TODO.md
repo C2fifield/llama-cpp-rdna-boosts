@@ -6,13 +6,13 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r48`, 2026-10-17):** the delivery is the **16-patch set** against
+**Current state (release `v16-a55e952b8-r48`, 2026-10-11):** the delivery is the **16-patch set** against
 fork point **`a55e952b8`**, canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
 **`3b9f403544169544f312bd24e4de31a554bf189d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
 reproduces the tree).  r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
 GPU page fault): the Meta device now reports `host_buffer`/`events` and proxies its event iface, so the
 loader's pinned async-upload pipeline engages and the pageable `read_buf` SDMA path is gone; adapted from
-upstream PR #22466 and folded into **block 06** (see `WORKLOG.md` 2026-10-17, r48).  Before it, r46
+upstream PR #22466 and folded into **block 06** (see `WORKLOG.md` 261011.006 (r48)).  Before it, r46
 **folds the r45 block 16 back into the 0000-0015 set** (host-side/system work
 into block 06, the small-message all-reduce into block 12, and the decode/latency remainder into block
 15) and lands **issue #133** in block 15: the RDNA4 decode/verify band-WMMA predicate now folds GQA
@@ -119,17 +119,17 @@ devices), the draft/target device placement, and whether the per-op graph captur
 
 ### 52. Multi-sequence MTP is non-deterministic: a rollback reads a recurrent snapshot the last batch did not write — CORRECTNESS
 
-**PARTIALLY RESOLVED, DELIVERED in `v16-a55e952b8-r42` (2026-10-12).** Part 1 is fixed in **block 02**:
+**PARTIALLY RESOLVED, DELIVERED in `v16-a55e952b8-r42` (2026-10-10).** Part 1 is fixed in **block 02**:
 `ggml_cuda_op_gated_delta_net_impl` took the whole-batch chunked kernel for `n_seqs > 1 && K == 1`
 unconditionally while the solo path took the sequential kernel, so a sequence's GDN result depended on its
 co-resident sequences; the multi-sequence branch now shares the single-sequence `n_tokens >
-GDN_CHUNKED_MIN_TOKENS` gate. **Part B (the held multi-token batching change) is DELIVERED in `v16-a55e952b8-r43` (2026-10-12, block 06).**
+GDN_CHUNKED_MIN_TOKENS` gate. **Part B (the held multi-token batching change) is DELIVERED in `v16-a55e952b8-r43` (2026-10-11, block 06).**
 It was correct; it only appeared to break `llama-perplexity` at `n_seq >= 4` because of a **logits-readback
 ordering hazard** (the pinned async D2H copy was not ordered against the next ubatch's compute). The readback
 is now completed before the next ubatch runs; PPL `8.5100`, the probe bit-identical, prefill-logit
 `0.000707 / 98.755 %`. **The remaining component C** -- the `--kv-unified` server non-determinism (a
 sequence's attention result depends on the physical offset of its KV cells modulo the FA reduction tile, and
-it is upstream-inherent) -- is **PARKED (2026-10-13) in `wip/kv-cell-offset-nondeterminism/`** (handover +
+it is upstream-inherent) -- is **PARKED (2026-10-11) in `wip/kv-cell-offset-nondeterminism/`** (handover +
 cold-start prompt; refined findings in `FINDINGS-offset-mechanism.md`): the dependence is on the sequence's
 whole physical *cell set*, a fixed alignment is insufficient, and a proper fix needs per-sequence
 contiguous tile-aligned regions (an upstream redesign). Documented as a gotcha (README / `GREEDY-PURITY.md`
@@ -142,7 +142,7 @@ ordering is **OPEN and being resumed** in `wip/rs-rollback-boundary/` (seeded, n
 `wip/CAMPAIGNS.md`). The predecessor record is
 `archive/work/moe-verify-fusions/`. The text below is the original finding.
 
-**Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-12 while investigating the single-sequence
+**Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-10 while investigating the single-sequence
 divergence — see [`HANDOVER-single-seq-rollback.md`](archive/work/moe-verify-fusions/HANDOVER-single-seq-rollback.md)).
 
 **Symptom.**  `llama-server -np 2 --kv-unified --spec-type draft-mtp`, two concurrent greedy requests (A
@@ -178,7 +178,7 @@ prefill when a rollback can follow it, or (c) pin the rollback into the batch's 
 with a matrix (2-seq × prefill-in-flight × `GGML_CUDA_GDN_CHUNKED`) and re-check the reporter's PR #124
 scenario before that PR is ever merged.
 
-**Re-check done 2026-10-14 (r45).**  PR #124 was **merged in block 16** on the maintainer's decision.  The
+**Re-check done 2026-10-11 (r45).**  PR #124 was **merged in block 16** on the maintainer's decision.  The
 reporter's concurrent-sequence variation is the unified-KV/attention-offset non-determinism above (issue
 #134) — reproduced on this tree with the skip absent — so it is not the skip.  Documented as the
 `-np > 1 --kv-unified` gotcha (`--no-kv-unified` is deterministic); the skip itself is bit-identical in
@@ -186,14 +186,14 @@ the single-request and 2-GPU MTP gates (`archive/work/gdn-state-gather-skip/RESO
 
 ### 53. 35B-A3B (`qwen35moe`) is not bit-pure under `-sm tensor` + `-ncmoe` (MTP and plain forward) — CORRECTNESS
 
-**RESOLVED (2026-10-12), DELIVERED in `v16-a55e952b8-r41`.**  The cause was **not** the internal
+**RESOLVED (2026-10-10), DELIVERED in `v16-a55e952b8-r41`.**  The cause was **not** the internal
 host-staged all-reduce (the AR is bit-exact: `out == local0 + local1` on every call) but block 12's
 **lazy `ncclCommInitAll`** (r34): the mid-run init perturbs the layout/state and flips a near-tie in the
 upstream split compute, so the AR *input* differs (`b2ee…` lazy vs `86cb…` eager/RCCL) while the output is
 identical.  Making the hybrid init **eager** again makes it bit-identical to pure RCCL and restores the
 product path: 35B-A3B `-ncmoe 99` + auto cache `none == n1 == n3 == n7` (short) and `none == n3` (long),
 `-sm layer` pure, qwen4exp pure; perf is neutral (auto-cache long field MTP n3 172.1 t/s, plain 83.5).
-Full record: `WORKLOG.md` 2026-10-12 (r41); `patches/README.md` block 12.  The cache-off / `-ncmoe 0`
+Full record: `WORKLOG.md` 2026-10-10 (r41); `patches/README.md` block 12.  The cache-off / `-ncmoe 0`
 (upstream-shaped) paths are pure too, but are not the product.  The text below is the original finding.
 
 **Working home: `archive/work/moe-verify-fusions/`** (opened 2026-10-10; handover:
