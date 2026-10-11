@@ -126,8 +126,11 @@ cold-start prompt; refined findings in `FINDINGS-offset-mechanism.md`): the depe
 whole physical *cell set*, a fixed alignment is insufficient, and a proper fix needs per-sequence
 contiguous tile-aligned regions (an upstream redesign). Documented as a gotcha (README / `GREEDY-PURITY.md`
 §38); issue #134 closed as upstream-inherent. Reopen the campaign if the maintainer or @DanoPTT decides it
-is worth the redesign. It is a separate root from the recurrent rollback (the `seq_rm` boundary warning is a false
-positive: the probe is bit-exact at the production verify width). The predecessor record is
+is worth the redesign. It is a separate root from the recurrent rollback. The `seq_rm` boundary warning
+(Issue #131) is a false positive in the cross-sequence case: the probe is bit-exact at the production
+verify width, and **r44 block 02** now tracks the last-batch shape **per sequence** so the diagnostic
+reports the right sequence. The deeper "large prefill as the last prepared batch before a rollback"
+ordering is parked in `wip/rs-rollback-boundary/`. The predecessor record is
 `archive/work/moe-verify-fusions/`. The text below is the original finding.
 
 **Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-12 while investigating the single-sequence

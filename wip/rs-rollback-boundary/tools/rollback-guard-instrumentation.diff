@@ -1,0 +1,92 @@
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 10aa8b2ab..ea35270d2 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -36,6 +36,7 @@ llama_memory_recurrent::llama_memory_recurrent(
+     this->n_rs_seq   = n_rs_seq;
+     this->n_rs_batch = n_rs_batch > 0 ? n_rs_batch : n_rs_seq + 1;
+     rs_idx.assign(n_seq_max, 0);
++    last_ubatch_nseq_tokens_by_seq.assign(n_seq_max, 0);
+ 
+     cells.clear();
+     cells.resize(mem_size);
+@@ -209,6 +210,16 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                 const llama_pos rollback = cell.pos - (p0 - 1);
+                 // pending rollback is single-use
+                 const bool pending = rs_idx[seq_id] != 0;
++                if (getenv("LLAMA_RS_ROLLBACK_DEBUG")) {
++                    const uint32_t last_seq_nseq = ((size_t) seq_id < last_ubatch_nseq_tokens_by_seq.size())
++                            ? last_ubatch_nseq_tokens_by_seq[seq_id] : 0;
++                    fprintf(stderr, "RSROLL seq=%d rollback=%d pending=%d last_ubatch_nseq_tokens=%u last_seq_nseq=%u last_pos=%d n_rs_seq=%u n_rs_batch=%u\n",
++                            (int) seq_id, (int) rollback, (int) pending, last_ubatch_nseq_tokens,
++                            last_seq_nseq, (int) last_ubatch_pos_last, n_rs_seq, n_rs_batch);
++                }
++                // WIP (issue #131): guard against the sequence's *own* last batch, not the global one.
++                const uint32_t last_seq_nseq = ((size_t) seq_id < last_ubatch_nseq_tokens_by_seq.size())
++                        ? last_ubatch_nseq_tokens_by_seq[seq_id] : 0;
+                 if (!pending && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
+                     // Guard: the snapshot path assumes a rollback only removes tokens the last
+                     // batch decoded, i.e. that only batches at or below n_rs_batch -- speculative
+@@ -217,7 +228,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                     // GDN_CHUNKED_MIN_TOKENS) writes only the newest snapshot for it, so restoring
+                     // snapshot `rollback` would read an unwritten slot.  Warn once rather than
+                     // corrupt silently.
+-                    if (!warned_rollback_boundary && last_ubatch_nseq_tokens > n_rs_batch) {
++                    if (!warned_rollback_boundary && last_seq_nseq > n_rs_batch) {
+                         warned_rollback_boundary = true;
+                         LLAMA_LOG_WARN("%s: rollback crossed a batch boundary: seq %d rollback=%d but "
+                                 "the last batch decoded %u tokens (last pos %d, n_rs_seq=%u, n_rs_batch=%u). The "
+@@ -226,7 +237,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                                 "threshold it wrote no usable snapshot and the restored state is "
+                                 "wrong -- set GGML_CUDA_GDN_CHUNKED=0 for the sequential kernel. "
+                                 "Please report this at github.com/stew675/llama-cpp-rdna-boosts/issues\n",
+-                                __func__, (int) seq_id, (int) rollback, last_ubatch_nseq_tokens,
++                                __func__, (int) seq_id, (int) rollback, last_seq_nseq,
+                                 (int) last_ubatch_pos_last, n_rs_seq, n_rs_batch);
+                     }
+                     set_rs_idx(seq_id, (uint32_t) rollback);
+@@ -537,6 +548,29 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
+         const llama_ubatch & ub = ubatches.back();
+         last_ubatch_nseq_tokens = ub.n_seq_tokens;
+         last_ubatch_pos_last    = ub.n_tokens > 0 ? ub.pos[ub.n_tokens - 1] : -1;
++        // WIP (issue #131): per-sequence last-batch token count.  Only the sequences present in
++        // the last ubatch are updated; the others keep the count from the last batch they ran in.
++        for (uint32_t s = 0; s < ub.n_seqs_unq; ++s) {
++            const llama_seq_id sid = ub.seq_id_unq[s];
++            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                last_ubatch_nseq_tokens_by_seq[sid] = 0;
++            }
++        }
++        for (uint32_t i = 0; i < ub.n_tokens; ++i) {
++            const llama_seq_id sid = ub.seq_id[i][0];
++            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                last_ubatch_nseq_tokens_by_seq[sid]++;
++            }
++        }
++        if (getenv("LLAMA_RS_ROLLBACK_DEBUG")) {
++            std::string sids;
++            for (uint32_t s = 0; s < ub.n_seqs_unq; ++s) {
++                sids += " ";
++                sids += std::to_string((int) ub.seq_id_unq[s]);
++            }
++            fprintf(stderr, "RSPREP n_ub=%zu last: n_seq_tokens=%u n_seqs=%u n_tokens=%u n_seqs_unq=%u seq_ids=%s\n",
++                    ubatches.size(), ub.n_seq_tokens, ub.n_seqs, ub.n_tokens, ub.n_seqs_unq, sids.c_str());
++        }
+     }
+ 
+     return success;
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index e7e3a7a32..07fa86349 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -86,6 +86,10 @@ public:
+     // rolled back into never decodes more than n_rs_batch tokens.  See the guard there.
+     uint32_t  last_ubatch_nseq_tokens = 0;
+     llama_pos last_ubatch_pos_last    = -1;
++    // WIP (issue #131): the last-batch size per sequence.  The global value above compares a
++    // sequence's rollback against whichever sequence's ubatch ran last; a rollback may only
++    // read the snapshot planes its *own* last batch wrote, so the guard must use this.
++    std::vector<uint32_t> last_ubatch_nseq_tokens_by_seq;
+     bool      warned_rollback_boundary = false;
+ 
+     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);

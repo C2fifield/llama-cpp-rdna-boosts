@@ -119,7 +119,7 @@ cmake --build build -j
 | `0012` | **Hybrid HIP all-reduce** — internal AR for the small-tensor decode path, per-size hybrid dispatch vs RCCL, on by default on every HIP arch (non-RDNA4 opt-out `GGML_CUDA_AR_ALLOW_NON_RDNA4=0`) with a first-call NCCL-to-internal failover. Includes the opt-in copy-engine (SDMA) mode. |
 | `0013` | **Fused MoE gate+up+GLU MMQ + mmvq short-K item-split** — the MoE prefill fusion and the decode/verify band fixes. |
 | `0014` | **qwen4exp / Qwen3.8-Flash-Next support** — QSA sparse FA, fused indexer top-k, HC_MIX/HC_COMBINE, managed lazy reader, MTP draft head, per-arch decode policy. |
-| `0015` | **Attention-memory wins** — derived kq mask, native q8_0/q4_0/bf16 K/V in FA, QSA score/bias/visibility reductions, keys-only indexer cache (~3.4 GiB/GPU + ~1.2 GiB host on qwen4exp). |
+| `0015` | **Attention-memory wins** — derived kq mask, native q8_0/q4_0/bf16 K/V in FA, QSA score/bias/visibility reductions, keys-only indexer cache (~3.4 GiB/GPU + ~1.2 GiB host on qwen4exp). Also carries the folded-in r44 fixes: the Windows host-pool portability fix (issue #130) and a device-iface `-Wmissing-field-initializers` cleanup. |
 
 ## The rules we hold ourselves to
 

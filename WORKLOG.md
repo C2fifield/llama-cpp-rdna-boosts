@@ -1,5 +1,45 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-13 (r44) -- Windows host-pool portability (issue #130, block 15) + per-sequence rollback guard (issue #131, block 02)
+
+**Release `v16-a55e952b8-r44`** (base `a55e952b8`, canonical block-15 tip
+`4b2874db93409c622502d73f371d2e6709914b96`, net tree `fb348f69badfab0bb2a284c97eaed84117ea57d9`);
+**16 blocks**; `scripts/validate-set.sh` green (strict 16/16 `git am`, reconstructed tree == `release.json`).
+No new block: the guard folds into **block 02** and the portability fix + warning cleanup fold into
+**block 15**.  `patches/` was regenerated from a canonical fork rebuilt at the base
+(`scripts/apply-all.sh`) -- do not hand-edit.
+
+**#131 (rollback-boundary diagnostic, block 02).** `llama_memory_recurrent`'s `seq_rm: rollback crossed a
+batch boundary` guard compared a sequence's rollback against whichever sequence's ubatch was prepared
+**last** (a single global `last_ubatch_nseq_tokens`/`last_ubatch_pos_last`), while the rollback state is
+per sequence.  It now tracks the last-batch token count and position **per sequence** (only the sequences
+present in the last ubatch are updated; a fully removed sequence is reset) and guards on the rolling-back
+sequence's own value; the warning message reports that sequence's own count/pos.  Not a numerics change.
+The report itself is **not reproducible** on the reporter's model class on the current tree: dense
+Qwen3.8-27B Q5_K, `-np 2 --kv-unified -c 180224 -b 6144 -ub 512`, `--spec-type draft-mtp`, 106 partial
+rollbacks and 0 warnings (`--no-kv-unified` likewise).  Issue #131 is closed as not reproducible, with a
+reopen offered on evidence.  The remaining "large prefill as the last prepared batch before a rollback"
+ordering is parked in the new campaign `wip/rs-rollback-boundary/`.
+
+**#130 (Windows portability, block 15).** The bounded host pool (`moe-expert-cache.cu`) used POSIX file
+I/O (`open`/`fstat`/`pread`/`posix_memalign`/`O_DIRECT`/`st_blksize`) with only the **headers** guarded, so
+the Windows HIP build did not compile, and `src/llama-model-loader.cpp` forward-declared
+`moe_cache_set_host_pool`/`moe_cache_set_host_source` as ggml-cuda symbols, so `llama.dll` did not link
+(a Windows DLL, and a `GGML_BACKEND_DL` build, only export `GGML_API`).  The file calls now go through
+four helpers (`pool_open_file`/`pool_fd_align`/`pool_pread`/`pool_aligned_alloc`) plus a `pool_ssize_t`
+typedef; on Windows `pool_open_file` returns -1, the pool marks itself failed, and a miss is served from
+the pinned master.  The two entry points now go through the device API
+(`ggml_backend_dev_moe_cache_set_host_pool`/`_set_host_source`), so libllama no longer references a
+ggml-cuda symbol.  The POSIX path is unchanged.  Reported by @DanoPTT (#130).
+
+**Warning cleanup (block 15).** A clean build is now warning-free: the CPU, RPC and meta device-iface
+initializers set every appended callback explicitly (the pre-existing `slab_narrow2_floor` misses and the
+new host-pool fields).  Before this, a fresh build emitted three `-Wmissing-field-initializers` warnings.
+
+**Validation (gfx1201).** Coherence `1c5d32ac537d` (Qwen3.5-4B-Q8_0, seed 42) unchanged; prefill-logit
+mean KLD **0.000707 / same-top-p 98.755 %** (PASS, identical to base); `scripts/validate-set.sh` green
+(16/16 strict `git am`, tree `fb348f69...`); a clean build emits **0 warnings**; the host-pool path
+smoke-tested (`35B-A3B Q4_K_M`, `--host-experts pool -ncmoe 40`: runs, logs `host_experts_mode=POOL`).
 ## 2026-10-12 (r43) -- block 06: the multi-ubatch logits readback is ordered (TODO #52 part B)
 
 **Release `v16-a55e952b8-r43`** (base `a55e952b8`, canonical block-15 tip

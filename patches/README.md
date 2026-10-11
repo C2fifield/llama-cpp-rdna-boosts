@@ -3,7 +3,26 @@
 16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
 (re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
 
-> **Current release `v16-a55e952b8-r43` (2026-10-12) -- the multi-ubatch logits readback is ordered (block 06):**
+> **Current release `v16-a55e952b8-r44` (2026-10-13) -- Windows host-pool portability (issue #130) folded into block 15, the per-sequence rollback guard (issue #131) folded into block 02, plus a warning cleanup:**
+> no new block: **block 02** takes the rollback-guard fix and **block 15** takes the portability fix and a
+> `-Wmissing-field-initializers` cleanup, so the set stays 16 blocks.
+> **#131 (block 02):** `llama_memory_recurrent`'s rollback-boundary guard compared a sequence's rollback
+> against whichever sequence was prepared last (the global `last_ubatch_nseq_tokens`); it now tracks the
+> last-batch token count and position **per sequence** and guards on the sequence's own value.  Not a
+> numerics change.
+> **#130 (block 15):** the bounded host pool's POSIX file I/O (`open`/`fstat`/`pread`/`posix_memalign`/
+> `O_DIRECT`/`st_blksize`) is now behind four helpers (`pool_open_file`/`pool_fd_align`/`pool_pread`/
+> `pool_aligned_alloc`) plus a `pool_ssize_t` typedef, so the Windows HIP build compiles; there
+> `pool_open_file` returns -1, the pool marks itself failed, and a miss is served from the pinned master.
+> `moe_cache_set_host_pool`/`moe_cache_set_host_source` now go through the device API
+> (`ggml_backend_dev_moe_cache_set_host_pool`/`_set_host_source`) instead of a forward declaration in
+> libllama, so a Windows DLL and a `GGML_BACKEND_DL` build link.
+> **Warning cleanup (block 15):** the CPU, RPC and meta device-iface initializers now set every appended
+> callback explicitly (the pre-existing `slab_narrow2_floor` misses and the new host-pool fields), so a
+> clean build is warning-free.  Canonical block-15 tip `4b2874db9`, net tree
+> `fb348f69badfab0bb2a284c97eaed84117ea57d9`.
+
+> **Previous release `v16-a55e952b8-r43` (2026-10-12) -- the multi-ubatch logits readback is ordered (block 06):**
 > folds the job-B fix from the #52 follow-ups (`archive/work/moe-verify-fusions/`).  `llama_context::decode`
 > copied each ubatch's logits device->host **asynchronously** into the pinned output buffer while the next
 > ubatch's graph reused the same device tensor; on ROCm the pinned async D2H copy is not ordered against the

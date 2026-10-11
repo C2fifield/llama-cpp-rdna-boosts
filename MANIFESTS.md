@@ -5,7 +5,11 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r41`** (canonical block-15 tip `a89ffa273`, net tree
+**`a55e952b8`**, released as **`v16-a55e952b8-r44`** (canonical block-15 tip `4b2874db9`, net tree
+`fb348f69badfab0bb2a284c97eaed84117ea57d9`): the Windows host-pool portability fix (issue #130) and a
+`-Wmissing-field-initializers` cleanup fold into **block 15**, and the per-sequence recurrent rollback
+guard (issue #131) folds into **block 02** -- no new block.  Before it,
+**`v16-a55e952b8-r41`** (canonical block-15 tip `a89ffa273`, net tree
 `46c4ce7a6a00aa6c6931c5a89faf847dde19fd34`): **block 12's hybrid NCCL init is eager again** — the r34
 lazy mid-run `ncclCommInitAll` perturbed the `-sm tensor -ncmoe` split compute and broke MTP purity under
 the expert cache; eager init is bit-identical to pure RCCL and restores it (TODO #53).  Before it,
