@@ -1,5 +1,45 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-12 (r43) -- block 06: the multi-ubatch logits readback is ordered (TODO #52 part B)
+
+**Release `v16-a55e952b8-r43`** (base `a55e952b8`, canonical block-15 tip
+`0399ba3fe4f338c0e3a63ce927f398ad0271b05a`, net tree `73d1d92578eda70179b4fca62d9d4d61ead9fe4f`);
+16 blocks; `scripts/validate-set.sh` green (strict 16/16 `git am`, reconstructed tree == `release.json`).
+Amends **block 06** (`src/llama-context.cpp`) only; `patches/` was regenerated from a canonical fork
+rebuilt at the base (`scripts/apply-all.sh`) -- **do not hand-edit**.
+
+**The bug (job B of the #52 follow-ups; the held batching change).** The held multi-token batching change
+(`archive/work/moe-verify-fusions/held-B-multi-seq-ubatch.patch`, one sequence per ubatch) is **correct**
+-- the recurrent-state probe is bit-identical solo vs co-batch for K=1/4/16/32. It appeared to break
+`llama-perplexity` at `n_seq >= 4` (PPL 8.51 -> 2097) only because of a **logits-readback ordering
+hazard**: `llama_context::decode` issued each ubatch's device->host logits copy **asynchronously** into
+the pinned output buffer while the *next* ubatch's graph reused the same device tensor. On ROCm the
+pinned async D2H copy is not ordered against the following compute, so an earlier ubatch's host rows
+received a later ubatch's data (measured: host rows `[seq0, seq2, seq3, seq3]` instead of
+`[seq0, seq1, seq2, seq3]`; `out_ids`/`output_ids` were correct -- it is the copy, not the mapping).
+Forcing the output buffer pageable (`GGML_NO_PINNED_OUTPUT`) also fixes it, which isolates the pinned
+async copy as the trigger.
+
+**The fix.** After the per-ubatch readbacks, synchronize the backends that own the tensors just read --
+but only when another ubatch follows (`if (!mctx->next()) break;` before the sync), so a single-ubatch
+decode pays nothing. `GGML_READBACK_SYNC=0` is the A/B kill-switch. Because the next ubatch overwrites
+the same device tensor, the serialization is semantically required on a correct stream; it recovers
+ordering, it is not new work.
+
+**Validation (gfx1201).** With the fix: perplexity `8.5100` (was 2097.75; B off 8.5100);
+`test-recurrent-state-multiseq`/`test-multiseq-same` bit-identical solo vs co-batch; coherence
+`1c5d32ac537d`; prefill-logit KLD **0.000707 / same-top-p 98.755 %** (PASS, identical to base);
+`llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` batched TG unchanged (the only cost is ~2 % PP on the
+multi-sequence all-output prefill path); `scripts/validate-set.sh` green.
+
+**Not in this release (TODO #52 part C).** The residual server non-determinism under `--kv-unified` is a
+separate, upstream-inherent defect, now root-caused: a sequence's **attention result depends on the
+physical offset of its KV cells** in the unified stream, modulo the FA reduction tile (quantum 64).
+`--no-kv-unified` is green; it reproduces on stock upstream, on two model files, with all experts on GPU,
+with layer and tensor split, and with the expert cache off. New campaign:
+`wip/kv-cell-offset-nondeterminism/` (handover + cold-start prompt). The closed predecessor campaign
+(parts A/B and the fused-verify work) is `archive/work/moe-verify-fusions/`.
+
 ## 2026-10-12 (r42) -- block 02: the multi-sequence GDN kernel choice is shape-consistent (TODO #52, part 1)
 
 **Release `v16-a55e952b8-r42`** (base `a55e952b8`, canonical block-15 tip

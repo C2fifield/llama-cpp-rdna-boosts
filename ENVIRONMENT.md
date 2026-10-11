@@ -207,6 +207,7 @@ an environment variable).  Plain `--spec-type draft-mtp` does not use it.
 | `LLAMA_DROP_EXTRA_RESERVE_MIB` | `0` | tuning | when the drop fires, VRAM held out of the arena per device for a later compute growth.  Default `0` — the compute-buffer margin covers the small post-drop growth and the arena's layer-uniform re-size absorbs fragmentation, so a reserve only costs arena. |
 | `LLAMA_LAZY_BUF_MB` / `LLAMA_LAZY_IO_THREADS` / `LLAMA_LAZY_READER_STATS` | unset | tuning / diagnostic | lazy-mode buffer size, reader thread count, reader statistics. |
 | `LLAMA_KV_N_PAD_MIN` | `256` | tuning (**opt-in**) | raises the n_kv padding floor (r25).  n_kv is padded to this many cells, so a larger value keeps the per-device tensor-split graphs constant for longer (the PR measured `1024` as the useful value, `4096` gave nothing more).  Default unchanged. |
+| `GGML_READBACK_SYNC` | **on** | kill-switch (block 06, r43) | completes the per-ubatch device->host logits/embd readbacks before the next ubatch's graph reuses the same device output tensor.  Required because ROCm's pinned async D2H copy is not ordered against the following compute, which otherwise lets an earlier ubatch's host rows receive a later ubatch's data (multi-ubatch per-token outputs: perplexity / KLD).  `0` restores the unordered readback for A/B.  A single-ubatch decode is unaffected either way. |
 
 ---
 

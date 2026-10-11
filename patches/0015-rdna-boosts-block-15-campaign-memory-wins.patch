@@ -1,4 +1,4 @@
-From a3c13e9ca76717d8dd9b6020fca2b35bcd2c46b6 Mon Sep 17 00:00:00 2001
+From 0399ba3fe4f338c0e3a63ce927f398ad0271b05a Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Thu, 10 Sep 2026 16:34:03 +0000
 Subject: [PATCH 15/15] rdna-boosts: block 15: campaign memory wins
@@ -17122,7 +17122,7 @@ index 86e820edd..0f5a8ffd6 100644
          int32_t main_gpu;
  
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 93057fdfd..270e7aa88 100644
+index 92a74e14d..f63420020 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -17587,7 +17587,7 @@ index 93057fdfd..270e7aa88 100644
      ret = GGML_STATUS_SUCCESS;
  
      return res;
-@@ -2507,8 +2764,125 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+@@ -2543,8 +2800,125 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
      return n_outputs_max;
  }
  
@@ -17713,7 +17713,7 @@ index 93057fdfd..270e7aa88 100644
      for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
          if (!cparams.embeddings_layer_inp[il]) {
              continue;
-@@ -2754,7 +3128,8 @@ static void ubatch_prepare_reserve(
+@@ -2790,7 +3164,8 @@ static void ubatch_prepare_reserve(
  }
  
  ggml_cgraph * llama_context::graph_reserve(
@@ -17723,7 +17723,7 @@ index 93057fdfd..270e7aa88 100644
      LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
      GGML_ASSERT(n_outputs >= 1);
  
-@@ -2786,7 +3161,22 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2822,7 +3197,22 @@ ggml_cgraph * llama_context::graph_reserve(
  
      auto * res = gf_res_reserve.get();
  
@@ -17747,7 +17747,7 @@ index 93057fdfd..270e7aa88 100644
  
      res->reset();
  
-@@ -2802,10 +3192,32 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2838,10 +3228,32 @@ ggml_cgraph * llama_context::graph_reserve(
          } else {
              ggml_backend_sched_split_graph(sched.get(), gf);
          }
@@ -17784,7 +17784,7 @@ index 93057fdfd..270e7aa88 100644
      }
  
      return gf;
-@@ -3714,6 +4126,52 @@ void llama_context::perf_reset() {
+@@ -3750,6 +4162,52 @@ void llama_context::perf_reset() {
      n_reused    = 0;
  }
  
@@ -17837,7 +17837,7 @@ index 93057fdfd..270e7aa88 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3724,17 +4182,32 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3760,17 +4218,32 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -17872,7 +17872,7 @@ index 93057fdfd..270e7aa88 100644
          }
      }
      return ret;
-@@ -4356,6 +4829,22 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+@@ -4392,6 +4865,22 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
      return ctx->get_embeddings_nextn_ith(i);
  }
  

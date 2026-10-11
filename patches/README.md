@@ -3,6 +3,20 @@
 16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
 (re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
 
+> **Current release `v16-a55e952b8-r43` (2026-10-12) -- the multi-ubatch logits readback is ordered (block 06):**
+> folds the job-B fix from the #52 follow-ups (`archive/work/moe-verify-fusions/`).  `llama_context::decode`
+> copied each ubatch's logits device->host **asynchronously** into the pinned output buffer while the next
+> ubatch's graph reused the same device tensor; on ROCm the pinned async D2H copy is not ordered against the
+> following compute, so an earlier ubatch's host rows received a later ubatch's data.  The readback now
+> completes before the next ubatch runs -- and only when one follows, so a single-ubatch decode is untouched
+> (`GGML_READBACK_SYNC=0` is the kill-switch).  This is what made the held multi-token batching change
+> "break" `llama-perplexity` (PPL 8.51 -> 2097): with the fix it is **8.5100**, the probe is bit-identical
+> solo vs co-batch, and prefill-logit is **0.000707 / 98.755 %** (unchanged from base).  Batched TG is
+> unchanged; the only cost is ~2 % PP on the multi-sequence all-output prefill path.  The residual
+> `--kv-unified` server non-determinism (TODO #52 part C: a sequence's attention result depends on the
+> physical offset of its KV cells modulo the FA reduction tile; upstream-inherent) is a new campaign:
+> `wip/kv-cell-offset-nondeterminism/`.
+
 > **Current release `v16-a55e952b8-r39` (2026-10-10) -- the op-offload H2D staging ring moves INSIDE the movable-boundary slab (block 06 + block 15):**
 > promotes `archive/work/slab-ring-region/` (TODO #49).  The ring is no longer a raw `cudaMalloc` competing with the
 > post-slab consumers for the slab headroom: it is a **work-region sub-region** in the
@@ -1251,6 +1265,32 @@ The 2026-09-17 re-base resolved three blocks:
 
 The amendment history below is newest first.  Per-block content lives in the block notes
 (`## Block NN notes`); the dated `## YYYY-MM-DD …` sections are the amendment records.
+
+## 2026-10-12 block-06 amendment (r43): the multi-ubatch logits readback is ordered (TODO #52 part B)
+
+**Placement: block 06** (`src/llama-context.cpp`, the ubatch loop in `llama_context::decode`).
+
+`decode` extracts each ubatch's logits with `ggml_backend_tensor_get_async` into the persistent pinned
+output buffer (`output_reserve` picks `ggml_backend_dev_host_buffer_type`), while the **next** ubatch's
+graph reuses the same device output tensor.  On ROCm the pinned async D2H copy is not ordered against the
+following compute, so the copy for ubatch *i* can read the tensor after ubatch *i+1* overwrote it: the
+host rows for earlier ubatches then hold later ubatches' data.  Measured with the held multi-token
+batching change (`n_seq=4` perplexity, four single-sequence ubatches, all output-bearing): host rows
+`[seq0, seq2, seq3, seq3]` instead of `[seq0, seq1, seq2, seq3]`; `out_ids`/`output_ids` were correct, so
+it is the copy, not the mapping.  Forcing the output buffer pageable also fixes it, isolating the pinned
+async copy.
+
+The loop now calls `ggml_backend_synchronize` on the backends of the tensors it just read (`t_logits`,
+`t_embd`, `t_h_nextn`, and the backend-sampling tensors), **only when another ubatch follows**
+(`if (!mctx->next()) { break; }` before the sync), so a single-ubatch decode pays nothing.  Because the
+next ubatch overwrites the same device tensor, this serialization is semantically required on a correct
+stream -- it recovers ordering rather than adding work.  `GGML_READBACK_SYNC=0` is the A/B kill-switch
+(default on).
+
+This is the defect that made the held batching change "break" `llama-perplexity` (PPL 8.51 -> 2097);
+with the fix the PPL is `8.5100` and the probe is bit-identical solo vs co-batch.  The residual
+`--kv-unified` server non-determinism is a separate, upstream-inherent defect (TODO #52 part C; see
+`wip/kv-cell-offset-nondeterminism/`), not this one.
 
 ## 2026-10-08 block-06 amendment (r32): the post-prefill re-reserve uses the current ubatch's sequence count (issue #48)
 
