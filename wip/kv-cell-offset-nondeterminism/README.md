@@ -1,9 +1,18 @@
 # `kv-cell-offset-nondeterminism` — the unified-KV cell-offset / attention-tile alignment non-determinism (TODO #52 part C)
 
-**Status: OPEN (seeded 2026-10-12, after `v16-a55e952b8-r43`).** Not part of the delivery; nothing here
+**Status: OPEN (seeded 2026-10-12, after `v16-a55e952b8-r43`; mechanism refined 2026-10-13 — see
+[`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md)).** Not part of the delivery; nothing here
 may be applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in
 `AGENTS.md`). This is the working home for the residual that survived the r42 (part A) and r43 (part B)
 fixes to issue #134 / TODO #52.
+
+> **2026-10-13 refinement:** the dependence is on the sequence's whole physical **cell set**, not just its
+> start offset. A fixed allocation alignment fixes the one-shot prefill probe but **not** the decode/
+> server case (the head-reset reuse fragments a growing sequence). The required quantum is the per-launch
+> FA reduction/split period, which is model- and shape-dependent (4B GQA4 uses the RDNA4 band; GSQ
+> qwen4exp GQA12 is excluded from it). Non-unified is green because each sequence owns a contiguous
+> region from cell 0 — the proposed fix is per-sequence contiguous, tile-aligned regions in the unified
+> attention cache. Evidence and probe: `FINDINGS-offset-mechanism.md`, `tools/`.
 
 > **Cold start.** Read this file in full, then `AGENTS.md` ("Report findings before shipping",
 > "Default-on policy", "WIP and promotion rules"), then the cold-start prompt
