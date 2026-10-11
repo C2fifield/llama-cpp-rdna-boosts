@@ -8,7 +8,7 @@ is the campaign record as it stood at promotion.  **Re-based onto r34
 (2026-10-08, done)** -- the branch is `40ce2ab86` (r34 tip) + the campaign, the wip lazy-NCCL commit
 dropped; `changes.patch` regenerated against `40ce2ab86`.  A **block-12 all-reduce bug** was root-caused
 en route ([`SM-TENSOR-AR.md`](SM-TENSOR-AR.md)),
-and the split-table admission-policy choice became the followup campaign [`../cache-split-admission/`](../../wip/cache-split-admission/README.md).
+and the split-table admission-policy choice became the followup campaign [`../cache-split-admission/`](../cache-split-admission/README.md) (now archived — superseded by r35's pool and r40's removal of the `-sm tensor` device-policy/remap family).
 Nothing here is part of the delivery.  A fresh session should read [`HANDOVER.md`](HANDOVER.md) for the code
 seams and the Phase plan, [`PARKED-BUG.md`](PARKED-BUG.md) for the partial-arena fault fixed before the
 pool (the handover's "host over-read" diagnosis was wrong — it was a slab access bug),

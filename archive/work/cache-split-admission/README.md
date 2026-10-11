@@ -1,5 +1,25 @@
 # Expert-cache admission policy on `-sm tensor` (split MoE) tables
 
+> **ARCHIVED 2026-10-11 — SUPERSEDED / REFUTED BY THE DELIVERY, NOT OPEN.**  The campaign's whole
+> subject — the `-sm tensor` split-table **device admission policy** and its `MOE_EXPERT_CACHE_DEVPOLICY_SPLIT`
+> selector — no longer exists.  The chain:
+> * **r35** folded the bounded pinned host pool (`--host-experts pool`, `MOE_HOST_POOL_MIB`), whose
+>   pool-aware device-policy fill was the campaign's step-4 integration.
+> * **r40** removed the device-remap family outright (`MOE_EXPERT_CACHE_DEVMAP` / `_DEVPOLICY` /
+>   `_DEVPOLICY_SPLIT` / `_KSLOT` / `_DEV_EAGER` and `MOE_HOST_POOL_POLICY`): the divergence was a
+>   hipBLASLt solution flip (issue #67 / ROCm/rocm-libraries#12126) whose fix (`ROCBLAS_USE_HIPBLASLT=0`)
+>   costs 12-17 % prefill, so the device path was dropped and the **eager host-routing path is the sole
+>   `-sm tensor` split policy** (`WORKLOG.md` 2026-10-10 (r40), `ENVIRONMENT.md` §1.2.1).
+>
+> So the campaign's proposed action (flip `DEVPOLICY_SPLIT`) is not merely unwise — it is impossible, and
+> the MTP-vs-plain tradeoff it measured is moot.  **Open residual (not this campaign):** the campaign's
+> bounded-arena plain-decode numbers (cache-on host promotion 10.2 vs cache-off 22.3 t/s) were measured on
+> r34 *before* the r40 removal; whether the current eager host-routing path still shows a bounded-arena
+> `-sm tensor` decode regression has not been re-measured.  If that is a concern it is a fresh
+> investigation, not a resumption of this one.
+>
+> The text below is the campaign record as it stood at archival.
+
 Status: **OPEN / scoping** (opened 2026-10-08 from the `host-expert-dio-cache` Phase 2b session).
 Re-measured 2026-10-08 on the r34-rebased campaign tree: the device policy is a large win in plain
 decode and **byte-identical** everywhere, but it is clearly slower under **MTP n3** (and more so with a

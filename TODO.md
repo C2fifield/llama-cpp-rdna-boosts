@@ -424,8 +424,8 @@ Record: `WORKLOG.md` 2026-09-29 (r24), `GREEDY-PURITY.md` §41.
 at n=1) but carries two small dips: **`q5_1` -3..-4 %** and **`iq4_xs` -3..-4 %** at n=2/3 -- both
 **+10..+12 %** at n=8, and the common MTP/DFlash verify widths are 4 and 8.  Kept as tuned (the aggregate
 band is a large net win); a per-type retune (e.g. 1 row for these two at 2..3 columns) needs its own
-verify-width A/B.  Record: `wip/mmvq-verify-rows/VERIFICATION-r21.md`, `WORKLOG.md` 2026-09-28 (r21,
-PR #57).
+verify-width A/B.  **Working home: `wip/mmvq-rpb-retune/`.**  Record:
+`archive/work/mmvq-verify-rows/VERIFICATION-r21.md`, `WORKLOG.md` 2026-09-28 (r21, PR #57).
 
 ### 27. Extend the RDNA4 GQA-6 FA band's 64-wide K/V row to the 2-byte (f16/bf16) arm
 

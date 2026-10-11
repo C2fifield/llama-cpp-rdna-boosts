@@ -1,5 +1,36 @@
 # WORKLOG - dated delivery records
 
+## 261011.010 (docs, wip audit) -- audit the `wip/` campaigns against r48; archive the delivered/superseded three and re-scope the partials
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  A cold audit of
+the nine `wip/` campaigns against the current r48 delivery, looking for content the delivery has since
+resolved.  Result: **three archived, two new focused campaigns, six left open.**
+
+**Archived (`archive/work/`), each with a resolution header in its `README.md`:**
+
+- **`mmvq-verify-rows/` — FULLY INTEGRATED.**  PR #57 was folded in **r21** (multi-row
+  `GGML_MMVQ_RDNA4_WEIGHT_RPB` / `calc_rows_per_block_weight` into block 13, `ggml_cuda_mul_small()` /
+  `__mul24` into block 10) and is still in r48; the campaign's "not integrated" status was stale.  The
+  only residual (the ROCm-7.14 `q5_1`/`iq4_xs` retune, TODO #28) is re-seeded as **`wip/mmvq-rpb-retune/`**.
+- **`cache-split-admission/` — SUPERSEDED / REFUTED.**  r35 folded the pool-aware device policy and r40
+  **removed the whole `-sm tensor` device-policy/remap family** (`MOE_EXPERT_CACHE_DEVPOLICY_SPLIT` etc. —
+  a hipBLASLt solution flip, not worth the 12-17 % prefill cost of disabling it), so the campaign's
+  proposed action is impossible.  The un-measured residual (bounded-arena `-sm tensor` decode under the
+  current eager host-routing path) is noted in the resolution header, not carried as a campaign.
+- **`host-memory-footprint/` — PARTIALLY OVERTAKEN.**  r33 removed the pageable `--host-experts mmap` /
+  `LLAMA_MMAP_HOST_EXPERTS` path (issue #116, no-XNACK) and r35 added the bounded pinned
+  `--host-experts pool`; the open remainder (reclaim the `RssFile` mmap pages of GPU-resident tensors;
+  hypotheses 3/4) is re-seeded as **`wip/host-memory-reclaim/`**.
+
+**Left open unchanged** (genuinely unresolved and not superseded): `kv-cell-offset-nondeterminism/`
+(PARKED, upstream-inherent; issue #134 closed), `fp8-support/` (PARKED, gate 2 failed), `nwarps/`
+(ACTIVE, env-OFF; `MMVQ_RDNA3_SMALL_M` absent from the delivery), `rs-rollback-boundary/` (OPEN/ACTIVE —
+its record is already scoped to the surviving ordering question; the per-sequence guard is delivered in
+block 02), `moe-cpu-overlap/` (scoping, TODO #36) and `strata-amd-kernels/` (scoping, TODO #35; note
+that block 10's `mmb.cu` already carries the `v_perm_b32` packed-byte form the campaign listed as a
+candidate).  `wip/CAMPAIGNS.md`, `TODO.md` #28 and the `archive/work/host-expert-dio-cache/` cross-link
+were updated to the new paths.
+
 ## 261011.009 (docs, container versions) -- container build lines move to ROCm 7.14.1 and 10.1; r48 GitHub Release backfilled
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).

@@ -1,5 +1,22 @@
 # `wip/` — host-memory footprint of GPU-resident weights (`fingon`, gfx1100)
 
+> **ARCHIVED 2026-10-11 — PARTIALLY ADDRESSED; the open remainder is now `wip/host-memory-reclaim/`.**
+> The delivery moved under this campaign between the seed (2026-10-02) and now:
+> * **r33** removed the pageable `--host-experts mmap` mode and the legacy `LLAMA_MMAP_HOST_EXPERTS=0`
+>   alias (issue #116: a no-XNACK GPU cannot read a pageable host master in a kernel), so hypothesis 2's
+>   "reclaimable page cache" fix is **dead** and the mitigation in this README ("read the master from the
+>   pageable mmap") no longer exists.
+> * **r35** shipped the replacement (from `archive/work/host-expert-dio-cache/`): the bounded pinned
+>   `--host-experts pool` (`MOE_HOST_POOL_MIB`, default `MOE_HOST_POOL_FRAC` = 25 % of the MoE host
+>   expert bytes) — a *budgeted* pinned host tier instead of the full-master `ROCm_Host` allocation.
+>
+> The seed measurement and hypotheses 1/3/4 (GPU-resident mmap page-cache reclamation; host/GPU
+> duplication; `--no-mmap`/`--mlock` accounting) are still unmeasured, and the `fingon` phenomenon has
+> not been re-measured with `--host-experts pool`.  Those are carried forward to
+> [`../../wip/host-memory-reclaim/README.md`](../../wip/host-memory-reclaim/README.md).  The text below is
+> the campaign record as it stood at archival; `memwatch.sh` is kept here for the new campaign to use
+> (it is a symlink-safe reference in the new README).
+
 **Status: OPEN — new investigation, seeded 2026-10-02.**  This is a `wip/` tree; nothing here is part of
 the delivery (`patches/`).  It applies only to `~/llama-fingon` (campaign) / `~/llama.cpp` (delivery) on
 `fingon`, which is never pushed.

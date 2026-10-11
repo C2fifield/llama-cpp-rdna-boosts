@@ -6,7 +6,7 @@ measurement.
 
 Related: `patches/README.md` block 10 (`mmb.cu` IQ dequant, `__mul24` exact scales), block 13
 (`mmvq.cu` multi-row verify blocks, `mul_mat_vec_q_moe`), block 15 (`topk-moe`, MoE gate+up+GLU),
-`wip/mmvq-verify-rows/`, `~Strata` `src/kernels/cuda/iq_kernels.cu`, `src/kernels/cpu/*`, and the
+`archive/work/mmvq-verify-rows/`, `~Strata` `src/kernels/cuda/iq_kernels.cu`, `src/kernels/cpu/*`, and the
 gfx1201 findings in Strata `docs/AMD_HIP.md`.
 
 ## Candidates (read from the current Strata tree)

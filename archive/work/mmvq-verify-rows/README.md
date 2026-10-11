@@ -1,12 +1,22 @@
 # Faster multi-token mmvq on RDNA4 (bit-exact)
 
+> **ARCHIVED 2026-10-11 — INTEGRATED, NOT OPEN.**  The three patches below were folded into the
+> delivery in **`v16-84e76d8a2-r21`** (PR #57): the multi-row launch into **block 13** (`mmvq.cu`,
+> `GGML_MMVQ_RDNA4_WEIGHT_RPB` / `_MIN_BLOCKS` / `calc_rows_per_block_weight`) and the
+> `ggml_cuda_mul_small()` / `__mul24` changes into **block 10** (`vecdotq.cuh`).  The r21 maintainer
+> verification is [`VERIFICATION-r21.md`](VERIFICATION-r21.md); the integration record is `WORKLOG.md`
+> 2026-09-28 (r21, PR #57) and `patches/README.md` (block 10 + block 13 amendments).  The set still
+> carries the constants in the current r48 tree.  The campaign's only residual is the ROCm-7.14
+> per-type retune of `q5_1` / `iq4_xs`, which is now the small open campaign `wip/mmvq-rpb-retune/`
+> (TODO #28).  This directory is the historical record; do not re-apply its patches.
+
 Three commits to `ggml/src/ggml-cuda/mmvq.cu` and `vecdotq.cuh` (+106 / −32 lines). They speed up the dense mmvq weight kernel (`mul_mat_vec_q_ksplit`) for 2–8-token batches, which are the speculative verify step and small multi-slot decodes. They also speed up the k-quant and i-quant dot products at every width.
 
 Per-row arithmetic is unchanged: same thread mapping, K order and warp reduction. So `W = 1..8` stays one hash, and the logits are bit-identical to the unpatched build.
 
 The patches `git am` cleanly on top of `scripts/apply-all.sh` for `v16-84e76d8a2-r17` (applied tree `dc7ce12a…`, matching `release.json`). Each commit builds on its own. Earlier versions of the first commit (a flat 4 rows) and of the multiply commits were developed and tested on r9 and r16; the final series was validated on r17.
 
-## The commits
+## The commits (now in the delivery)
 
 1. **Multi-row blocks for `ncols_dst` 2..8 on RDNA4** (`mmvq.cu`).
    - **The problem:** `calc_rows_per_block` falls through to 1 for every RDNA table, and RDNA4's nwarps is 1. So a 4-token verify re-read all four q8_1 activation columns once per weight row, about 8× the weight bytes, served from cache. At n = 4, every k-quant was issue-bound at ~400–490 GB/s-equivalent even when cache-resident. The Q6_K lm_head (248320 × 5120) streamed at 577 GB/s from DRAM at n = 1, but only 430 at n = 4.
