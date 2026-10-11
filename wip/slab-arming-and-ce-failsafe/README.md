@@ -28,6 +28,19 @@ The cache and the slab are not independent.  `alloc_table_locked` selects the ar
 `env && g_slab_armed` (`ggml-cuda.cu:863`), so the invariant is really "cache on implies `g_slab_armed`".
 Today that is violated on the `--fit off` path (item A), and the violation is invisible (item B).
 
+### Block ownership (fixed; every fix folds into an existing block, the set stays 0000-0015)
+
+| fix | owner block | why (verified against `patches/*.patch`) |
+|---|---|---|
+| A: parse ordering | **06** | `moe_cache_preflight`, `parse_env`, `moe_cache_init` are all introduced by block 06 |
+| B: not-armed diagnostic | **06** | the invariant lives in the cache enable path (`alloc_all_locked`) and the device preflight, both block 06 |
+| C: CE fail-soft | **12** | `ggml_backend_cuda_comm_allreduce_ce` is block 12 |
+| D: fail-soft yield | **06** | `ggml_cuda_device_malloc` and `moe_cache_shrink_step` are block 06 |
+| E: #135 verify/close | **12** | `allreduce-hip.cu` is block 12 (no code change unless the RDNA3 fast path is wanted) |
+
+Block 15 amends the slab and `ggml_cuda_device_malloc` (r37+), so folding these into block 06 can force a
+re-cut of block 15.  Apply the fix to the owner, then rebase/re-cut block 15 on top.  Never add a block.
+
 ## 1. Item A (BLOCKER) — `--fit off` never arms the slab, so the cache runs on a raw arena
 
 ### Symptom
@@ -246,11 +259,19 @@ thread sizing from `AGENTS.md`.
 Only after the maintainer has approved the findings and the fixes:
 
 1. Rebuild a **canonical fork** at `release.json.base` with `scripts/apply-all.sh` (strict `git am`; the
-   applied tree must equal `release.json.tree`).  Fold the fixes into the owning blocks:
-   * item A/B/D → block 06 (the general system-operations bucket owns the slab/allocator) or block 15
-     (the campaign-memory bucket where the slab currently lives) - confirm ownership with the maintainer;
-   * item C → block 12 (the hybrid all-reduce owns the CE arm);
-   * item E → no code change if the fast path is skipped; otherwise block 12.
+   applied tree must equal `release.json.tree`).  Fold every fix into the **existing** block that owns the
+   code; there is no new block (the set stays 0000-0015, 16 blocks).  Ownership is fixed by the patch set
+   (verified with `grep` over `patches/*.patch`):
+   * **block 06** (the general system-operations bucket) owns `moe-expert-cache.cu` (`parse_env`,
+     `moe_cache_init`, `moe_cache_preflight`, `alloc_all_locked`, `moe_cache_shrink_step`),
+     `ggml_cuda_device_malloc` (the fail-soft choke point), and the movable-boundary slab
+     (`ggml_cuda_slab_*`, `g_slab_armed`, the device preflight).  **Items A, B and D fold here.**
+   * **block 12** (hybrid HIP all-reduce) owns `ggml_backend_cuda_comm_allreduce_ce` and
+     `allreduce-hip.cu`.  **Items C and E fold here.**
+   * **block 15** (campaign memory wins) amends the slab and `ggml_cuda_device_malloc` (r37+).  A fix that
+     lands in block 06 can therefore force a re-cut of block 15's hunks: apply the fix to the owner (06),
+     then rebase/re-cut block 15 on top and re-run `scripts/apply-all.sh` and `scripts/validate-set.sh`.
+     Do **not** create a new block to dodge that rebase.
 2. `scripts/make-patches.sh`, then run the clean-apply simulation (fresh worktree, apply, build,
    coherence, and `scripts/gate-prefill-logits.sh`).
 3. `scripts/validate-set.sh` must be green (strict 16/16, reconstructed tree == `release.json`).
@@ -268,15 +289,13 @@ Only after the maintainer has approved the findings and the fixes:
 
 ## 8. Open questions for the maintainer (ask before implementing)
 
-1. **Block ownership** for items A/B/D: block 06 or block 15?  (`AGENTS.md` notes the slab currently
-   lives in block 15; block 06 is the system-operations bucket.)
-2. **Item E scope**: verify-and-close only, or also attempt the RDNA3-native `s_waitcnt_vscnt` P2P-lite
+1. **Item E scope**: verify-and-close only, or also attempt the RDNA3-native `s_waitcnt_vscnt` P2P-lite
    path?  The latter needs a 2× gfx11 pair to validate, which is not on this box.
-3. **Item C budget**: should the CE scratch get an explicit size budget/env knob (degrade to `internal`
+2. **Item C budget**: should the CE scratch get an explicit size budget/env knob (degrade to `internal`
    above it), or just route through `ggml_cuda_device_malloc` and rely on the arena yield?
-4. **Item B wording**: is a single invariant WARN at the cache-enable path enough, or is a dedicated
+3. **Item B wording**: is a single invariant WARN at the cache-enable path enough, or is a dedicated
    startup diagnostic (e.g. "SLAB disabled: GGML_CUDA_SLAB=0" vs "SLAB NOT ARMED: <reason>") preferred?
-5. Whether `--fit off` on the field server should also be revisited: the slab is only half the story if
+4. Whether `--fit off` on the field server should also be revisited: the slab is only half the story if
    the field config deliberately force-fits.
 
 ## 9. Files and anchors (r46 tree)
