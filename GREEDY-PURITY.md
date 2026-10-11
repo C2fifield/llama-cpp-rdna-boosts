@@ -1439,9 +1439,25 @@ pin the request schedule (sequential, or a fixed arrival order) and compare that
 `test-backend-ops` for the op-level guarantees.  The archived investigation is
 `archive/work/unified-cache-decode/`.
 
-**No performance angle.**  Making concurrent serving deterministic would require pinning the batch
-shape/grouping (or shape-independent reductions), which costs throughput; there is nothing to gain by
-fixing it.  The one performance-relevant knob is batching efficiency, which is orthogonal.
+**Refined 2026-10-13 (issue #134 / TODO #52 part C).**  The cause is narrower than "continuous
+batching": it is **unified KV** specifically.  `--no-kv-unified` with the same concurrent schedule is
+fully reproducible, because each sequence then owns a contiguous region starting at cell 0, so the
+flash-attention reduction grid is anchored per sequence.  Under `--kv-unified` a sequence's logits
+depend on the physical **set** of KV cells it occupies in the shared stream (the FA kernel reduces in
+fixed tiles anchored to the buffer base); the set is a function of the allocator's history, and a
+*start*-alignment is not enough because the cache's head-reset then re-fragments a growing sequence.
+The required quantum is the per-launch `nbatch_fa`/split period, which varies with head dim, GQA ratio,
+KV type and verify width (a fixed constant is not generally correct); it reproduces on unmodified
+upstream `a55e952b8`, so it is upstream-inherent, not a delivery defect.  **Workaround: `--no-kv-unified`
+when strict reproducibility is required.**  A proper fix (per-sequence contiguous, tile-aligned regions
+with a per-region anchored view, i.e. non-unified semantics inside the shared pool) is an upstream
+redesign; the campaign is **parked** at `wip/kv-cell-offset-nondeterminism/` (evidence:
+`FINDINGS-offset-mechanism.md`; probe + server repro under `tools/`).
+
+**No performance angle.**  Making concurrent serving deterministic would require either pinning the
+batch shape/grouping or carrying the per-sequence-region redesign; neither is a throughput win, and the
+field symptom is only a rounding-level near-tie flip, so there is nothing to gain by fixing it now.
+The one performance-relevant knob is batching efficiency, which is orthogonal.
 
 ## 39. A decode-only fusion must match the standalone launch it replaces (2026-09-28, r18)
 

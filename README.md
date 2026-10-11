@@ -483,6 +483,20 @@ per-process selection actually varies.  The r24 rope-fusion kill switches
 (`GGML_CUDA_DISABLE_ROPE_SET_ROWS=1`, `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`) and r25's fix remain
 shipped for bisection and for the real defect above.
 
+## Concurrent serving with `--kv-unified` is not deterministic (issue #134)
+
+Mixing `-np > 1` with `--kv-unified` does **not** give run-to-run reproducible greedy output: a
+sequence's attention result depends on the physical **set** of KV cells it occupies in the shared
+unified stream, and that set is a function of allocator/scheduling history (the flash-attention kernel
+reduces in fixed tiles anchored to the buffer base).  Identical concurrent repetitions can differ, and a
+concurrent run can differ from the same request run solo, at the rounding level (a greedy near-tie can
+flip).  **Use `--no-kv-unified` when strict reproducibility is required.**  This is inherent to
+upstream's unified-KV design — it reproduces on unmodified upstream `a55e952b8` — and not a defect
+introduced by this patch set; the analysis and reproducers are preserved (parked) at
+`wip/kv-cell-offset-nondeterminism/`.  Single-request and non-unified runs are unaffected, and the
+delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`, `native == staging`) are
+scoped to a fixed batch and are unchanged.
+
 ## When upstream master moves
 
 The patches are static against the fork point in `release.json.base`. When upstream

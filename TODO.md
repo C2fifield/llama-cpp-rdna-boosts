@@ -121,8 +121,12 @@ ordering hazard** (the pinned async D2H copy was not ordered against the next ub
 is now completed before the next ubatch runs; PPL `8.5100`, the probe bit-identical, prefill-logit
 `0.000707 / 98.755 %`. **The remaining component C** -- the `--kv-unified` server non-determinism (a
 sequence's attention result depends on the physical offset of its KV cells modulo the FA reduction tile, and
-it is upstream-inherent) -- is **moved to `wip/kv-cell-offset-nondeterminism/`** (handover + cold-start
-prompt). It is a separate root from the recurrent rollback (the `seq_rm` boundary warning is a false
+it is upstream-inherent) -- is **PARKED (2026-10-13) in `wip/kv-cell-offset-nondeterminism/`** (handover +
+cold-start prompt; refined findings in `FINDINGS-offset-mechanism.md`): the dependence is on the sequence's
+whole physical *cell set*, a fixed alignment is insufficient, and a proper fix needs per-sequence
+contiguous tile-aligned regions (an upstream redesign). Documented as a gotcha (README / `GREEDY-PURITY.md`
+§38); issue #134 closed as upstream-inherent. Reopen the campaign if the maintainer or @DanoPTT decides it
+is worth the redesign. It is a separate root from the recurrent rollback (the `seq_rm` boundary warning is a false
 positive: the probe is bit-exact at the production verify width). The predecessor record is
 `archive/work/moe-verify-fusions/`. The text below is the original finding.
 

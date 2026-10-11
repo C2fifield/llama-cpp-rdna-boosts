@@ -1,10 +1,19 @@
 # `kv-cell-offset-nondeterminism` — the unified-KV cell-offset / attention-tile alignment non-determinism (TODO #52 part C)
 
-**Status: OPEN (seeded 2026-10-12, after `v16-a55e952b8-r43`; mechanism refined 2026-10-13 — see
+**Status: PARKED (2026-10-13, after `v16-a55e952b8-r43`; mechanism refined 2026-10-13 — see
 [`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md)).** Not part of the delivery; nothing here
 may be applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in
 `AGENTS.md`). This is the working home for the residual that survived the r42 (part A) and r43 (part B)
 fixes to issue #134 / TODO #52.
+
+> **2026-10-13 disposition — PARKED, not archived.** The pragmatic call is to stop here: a proper fix
+> means per-sequence contiguous, tile-aligned KV regions (or per-region anchored reductions) in the
+> unified attention cache, i.e. a fundamental change to upstream's design, and there are more pressing
+> items. The finding is documented as a gotcha instead: **`-np > 1` + `--kv-unified` is not run-to-run
+> deterministic — use `--no-kv-unified` when strict reproducibility is required.** It reproduces on
+> unmodified upstream `a55e952b8`, so it is upstream-inherent rather than a delivery defect. Issue #134
+> is closed as upstream-inherent (comment 2026-10-13); reopen this campaign only if @DanoPTT (or the
+> maintainer) decides it is worth the upstream redesign.
 
 > **2026-10-13 refinement:** the dependence is on the sequence's whole physical **cell set**, not just its
 > start offset. A fixed allocation alignment fixes the one-shot prefill probe but **not** the decode/
