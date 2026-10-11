@@ -1,0 +1,56 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 270e7aa88..f63420020 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2356,6 +2356,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+     int64_t n_outputs_prev = 0;
+     int64_t n_tokens_prev  = 0;
+ 
++    // complete the async device->host readbacks issued for one ubatch
++    auto sync_readback = [&](ggml_tensor * t) {
++        if (t == nullptr) {
++            return;
++        }
++        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
++        if (backend != nullptr) {
++            ggml_backend_synchronize(backend);
++        }
++    };
++
+     do {
+         const auto & ubatch = mctx->get_ubatch();
+ 
+@@ -2540,7 +2551,32 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+         n_outputs_prev += n_outputs;
+         n_tokens_prev  += ubatch.n_tokens;
+-    } while (mctx->next());
++
++        if (!mctx->next()) {
++            break;
++        }
++
++        // Another ubatch follows and will reuse this graph's output tensors.  The readbacks above
++        // copied them into the persistent host output buffers asynchronously, so make sure those
++        // copies have completed before the next graph overwrites the source.  On backends whose
++        // pinned async device->host copy is not ordered against the compute stream (observed on
++        // ROCm) the next ubatch otherwise overwrites the source before an earlier copy reads it,
++        // and the host rows end up holding a later ubatch's data (multi-ubatch per-token outputs:
++        // perplexity / KLD, and the server's multi-sequence batches).  A single-ubatch decode has
++        // nothing to order against and pays nothing.
++        static const bool readback_sync = getenv("GGML_READBACK_SYNC") == nullptr || atoi(getenv("GGML_READBACK_SYNC")) != 0;
++        if (readback_sync && n_outputs > 0) {
++            sync_readback(t_logits);
++            sync_readback(t_embd);
++            sync_readback(t_h_nextn);
++            if (has_samplers) {
++                for (ggml_tensor * t : res->t_sampled)        { sync_readback(t); }
++                for (ggml_tensor * t : res->t_sampled_logits) { sync_readback(t); }
++                for (ggml_tensor * t : res->t_sampled_probs)  { sync_readback(t); }
++                for (ggml_tensor * t : res->t_candidates)     { sync_readback(t); }
++            }
++        }
++    } while (true);
+ 
+     // set to total number of outputs in the batch, for use in llama_get_logits_ith
+     n_outputs = n_outputs_all;
