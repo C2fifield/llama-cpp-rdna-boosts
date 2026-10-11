@@ -5,8 +5,8 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r46`** (canonical block-15 tip `533e355cd9`, net tree
-`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`): the r45 **block 16 is folded back into the 0000-0015
+**`a55e952b8`**, released as **`v16-a55e952b8-r46`** (canonical block-15 tip `2e19a9d3`, net tree
+`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`): the r45 **block 16 is folded back into the 0000-0015
 set** (host-side/system work into block 06, small-message all-reduce into block 12, and the
 decode/latency remainder plus issue #133 into block 15).  Before it,
 **`v16-a55e952b8-r44`** (canonical block-15 tip `4b2874db9`, net tree

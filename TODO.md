@@ -7,8 +7,8 @@ live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WO
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
 **Current state (release `v16-a55e952b8-r46`, 2026-10-15):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical tip `533e355cd952c0fe5bf9e3a3e171bba0d295752f`, net tree
-**`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+fork point **`a55e952b8`**, canonical tip `2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree
+**`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
 reproduces the tree).  r46 **folds the r45 block 16 back into the 0000-0015 set** (host-side/system work
 into block 06, the small-message all-reduce into block 12, and the decode/latency remainder into block
 15) and lands **issue #133** in block 15: the RDNA4 decode/verify band-WMMA predicate now folds GQA

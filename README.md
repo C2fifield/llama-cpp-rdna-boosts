@@ -19,8 +19,8 @@ blocks** — the `mmb` core into block 08, the catch-all system-operations fixes
 qwen4exp/QSA/HC/indexer work into block 15 — so the **16 patches alone reproduce the full campaign
 tree**.  `archive/work/mmb-general/` is retained only as the historical verification record;
 see [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery).  The current release is
-**`v16-a55e952b8-r46`** (canonical block-15 tip `533e355cd952c0fe5bf9e3a3e171bba0d295752f`, net tree
-`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`, **16 patches**): the r45 block 16 is **folded back into the
+**`v16-a55e952b8-r46`** (canonical block-15 tip `2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree
+`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`, **16 patches**): the r45 block 16 is **folded back into the
 0000-0015 set** (host-side/system work into block 06, small-message all-reduce into block 12, the
 decode/latency remainder into block 15) and **issue #133** rides in block 15 — the RDNA4 decode/verify
 band-WMMA predicate now folds GQA ratios above 8 (cap `GGML_HIP_FA_BAND_WMMA_GQA_MAX`, default 12), so

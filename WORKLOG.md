@@ -3,8 +3,8 @@
 ## 2026-10-15 (r46) -- block 16 folded back into 0000-0015; the RDNA4 band-WMMA GQA cap (issue #133, block 15)
 
 **Release `v16-a55e952b8-r46`** (base `a55e952b8`, canonical block-15 tip
-`533e355cd952c0fe5bf9e3a3e171bba0d295752f`, net tree
-`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`); **16 blocks** (00-15); `scripts/validate-set.sh` green
+`2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree
+`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`); **16 blocks** (00-15); `scripts/validate-set.sh` green
 (strict 16/16 `git am`, reconstructed tree == `release.json`).  The net tree is the r45 tree plus the
 #133 changes (only `ggml/src/ggml-cuda/fattn-common.cuh` and `tests/test-backend-ops.cpp` differ), so
 r45's validation carries; the fold only moves the patch boundary.
@@ -45,6 +45,17 @@ Perf (Flash-Next GSQ-IQ3_XXS + shared Q8_0 MTP head, 100K-token prompt, 128 gree
 KV): 2x R9700 MTP **73.4 -> 99.9 t/s (+36 %)**; 3x R9700 **70.0 -> 77.6 (+11 %)**; short context
 **-3 %** (the band's wider tile wastes query columns at n_q = 1 -- accepted: the short case costs little
 wall time and cannot be depth-gated without breaking the W = 1..8 width-purity invariant).
+
+**CI fix (same release).**  The `docker-ghcr.yml` container matrix builds `AMDGPU_TARGETS=gfx1100;
+gfx1150;gfx1151;gfx1200;gfx1201` with `GGML_BACKEND_DL=ON`; the r45 P2P all-reduce (block 12, folded
+from block 16 / PR #129) contains `asm volatile("s_wait_storecnt 0x0")`, which clang rejects on gfx11
+and gfx9 (`instruction not supported on this GPU`), so every r45 build failed at `allreduce-hip.cu`
+(in addition to the r43 `moe_cache_set_host_pool`/`_set_host_source` `GGML_BACKEND_DL` linker failure,
+already fixed by r44 #130 in block 15).  The asm is now behind `#if defined(RDNA4)` and every other
+target uses the full `__threadfence_system()` fence with the lite mode compiled out (`p2p_lite =
+false`, so the reader takes the volatile/fenced path); verified by compiling `allreduce-hip.cu` for
+gfx1100, gfx1150, gfx1151, gfx1200 and gfx1201.  No gfx1201 behavior change (the RDNA4 branch is
+unchanged).
 
 **Docs.**  `ENVIRONMENT.md` gains `GGML_HIP_FA_BAND_WMMA_GQA_MAX` and re-homes the former block-16
 variables to blocks 06/12/15; `patches/README.md`, `README.md`, `MANIFESTS.md`, `BASELINE.md`,

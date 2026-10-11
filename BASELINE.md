@@ -3,7 +3,7 @@
 Current state: `main` is the delivery branch carrying the **16-patch set**
 (block 00 + blocks 01-15) generated against the fork
 point **llama.cpp master `a55e952b8`**; the current release is **`v16-a55e952b8-r46`** (canonical block-15
-tip `533e355cd9`, net tree `af730ed56cd61cb3484b7bb9f817e1ce1534ded0`): the r45 **block 16 is folded
+tip `2e19a9d3`, net tree `a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`): the r45 **block 16 is folded
 back into the 0000-0015 set** (host-side/system work into block 06, small-message all-reduce into
 block 12, and the decode/latency remainder plus issue #133 into block 15).  Before
 it, **`v16-a55e952b8-r44`** (canonical block-15

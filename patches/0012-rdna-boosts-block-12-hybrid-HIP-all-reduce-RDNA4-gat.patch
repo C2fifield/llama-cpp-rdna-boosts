@@ -1,4 +1,4 @@
-From 9e2229bfc23c70e161d2597ed526d7edee856dd1 Mon Sep 17 00:00:00 2001
+From 4506e8956e77a5b3287e7cb09763bec5bc6ad560 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 1 Sep 2026 08:54:07 +0000
 Subject: [PATCH 12/15] rdna-boosts: block 12: hybrid HIP all-reduce
@@ -47,19 +47,19 @@ small-message all-reduce half of the former block 16: 4 blocks instead of 8 for 
 `GGML_CUDA_AR_SMALL_BYTES` (default 64 KiB) and the opt-in 2-device P2P all-reduce
 (`GGML_CUDA_AR_P2P=1`).  Net tree unchanged.
 ---
- ggml/src/ggml-cuda/allreduce-hip.cu | 1650 +++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/allreduce-hip.cu | 1662 +++++++++++++++++++++++++++
  ggml/src/ggml-cuda/allreduce.cu     |   27 +-
  ggml/src/ggml-cuda/allreduce.cuh    |   21 +
- ggml/src/ggml-cuda/ggml-cuda.cu     |  508 ++++++++-
- 4 files changed, 2162 insertions(+), 44 deletions(-)
+ ggml/src/ggml-cuda/ggml-cuda.cu     |  508 +++++++-
+ 4 files changed, 2174 insertions(+), 44 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/allreduce-hip.cu
 
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 new file mode 100644
-index 000000000..e27e7d0a2
+index 000000000..d956c71d0
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/allreduce-hip.cu
-@@ -0,0 +1,1650 @@
+@@ -0,0 +1,1662 @@
 +#include "allreduce.cuh"
 +
 +#if defined(GGML_USE_HIP)
@@ -252,7 +252,15 @@ index 000000000..e27e7d0a2
 +    // stores to post (s_wait_storecnt 0) and publishing the flag with a system-scope release store orders the
 +    // data before the flag (PCIe keeps posted writes to one peer in order) without the L2 write-back /
 +    // invalidate an all-thread __threadfence_system() emits per wavefront; the reader needs no acquire fence.
++    // s_wait_storecnt is a gfx12 (RDNA4) instruction -- gfx11 and gfx9 reject it at compile time.  Compile the
++    // lite mode out on every other target (the reader then takes the volatile/fenced path below), so the
++    // kernel still builds for the whole CI arch list; the lite path is an RDNA4 optimization.
++#if defined(RDNA4)
 +    const bool p2p_lite = p2p && lite;
++#else
++    const bool p2p_lite = false;
++    GGML_UNUSED(lite);
++#endif
 +
 +    // Vector unit for the wire type, sized to the arch's widest single-instruction
 +    // copy (16 B on Volta+/RDNA).  Each phase-1 iter writes one vector to host
@@ -318,7 +326,11 @@ index 000000000..e27e7d0a2
 +
 +    // Commit this block's host writes before signalling.
 +    if (p2p_lite) {
++#if defined(RDNA4)
 +        asm volatile("s_wait_storecnt 0x0" ::: "memory");
++#else
++        __threadfence_system();
++#endif
 +    } else {
 +        __threadfence_system();
 +    }
