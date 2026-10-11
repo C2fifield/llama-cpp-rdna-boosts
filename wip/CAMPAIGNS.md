@@ -28,6 +28,28 @@ is the signature of a stub, not of a campaign.
 | [`moe-cpu-overlap/`](moe-cpu-overlap/README.md) | genuine CPU/GPU overlap for the expert misses (the Strata shape) | OPEN / scoping (TODO #36) — **work in flight**: the note refutes the earlier "cannot be done" verdict for the interleaved shape and sets out the pipeline to try |
 | [`nwarps/`](nwarps/README.md) | per-M `nwarps` MoE candidate — the one deliberate width-purity impurity | ACTIVE (env-OFF) |
 | [`strata-amd-kernels/`](strata-amd-kernels/README.md) | compare Strata's AMD decode kernels against block-10/13/15 (TODO #35) | **scoping note — not yet started**: no implementation yet, just the candidate list and the comparison method |
+| [`mtp-3gpu-decode/`](mtp-3gpu-decode/README.md) | 3-GPU MTP decode is 2.6x slower than plain decode (TODO #51): re-measure on r48, then profile the 3-device internal all-reduce (the fast paths are 2-device-only), the tensor-split verify gather, and graph recapture | **OPEN (seeded 2026-10-11)** — re-seeded from the archived `slab-ring-region` finding; has never had a live campaign |
+| [`sched-cross-backend-events/`](sched-cross-backend-events/README.md) | PR #104 follow-ups (TODO #33): a foreign-event guard for the scheduler's first cross-backend `ggml_backend_event_wait`, per-change kill-switches, and the reporter-side FAIL→PASS for the alias guard | **OPEN (seeded 2026-10-11), non-blocking** — dropped follow-ups from the archived `2gpu-sched-fixes` |
+| [`fa-band-2byte-row/`](fa-band-2byte-row/README.md) | extend the RDNA4 GQA band's 64-wide K/V config row to the 2-byte f16/bf16 arm (`ncols == 16`; TODO #27) | **OPEN (seeded 2026-10-11), small tuning** |
+| [`gdn-conv-device-idiom/`](gdn-conv-device-idiom/README.md) | unify the device idiom in `gdn-conv.cu` vs `cpy-batch.cu` (TODO #32) | **OPEN (seeded 2026-10-11), cosmetic** — one-line fix at the next block-15 touch |
+| [`rdna-boosts-all-patch-hygiene/`](rdna-boosts-all-patch-hygiene/README.md) | the net-patch artifact's git cost (3.19 MiB × 194 revisions; `.git` 96 MiB) — keep / untrack / rewrite | **PARKED** (TODO "not planned now") — a decision item, not a kernel campaign |
+| [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
+| [`wshadow-cleanup/`](wshadow-cleanup/README.md) | enable `-Wshadow` for `src/` and fix the 46 "shadows a local variable" sites (TODO item 15) | **PARKED** — needs its own cleanup commit; touches ~20 upstream files |
+| [`moe-topk-fusion/`](moe-topk-fusion/README.md) | adopt the fused `topk_moe` (TODO item 5(a)) — ~0.5 % prefill for ~188 MB pinned logits and a numerics fork | **PARKED** — blocked on a CPU-reference quality gate |
+| [`ssm-alpha-beta-fusion/`](ssm-alpha-beta-fusion/README.md) | single-walk `ssm_alpha` + `ssm_beta` (TODO item 5(b)) — ~0.3-0.6 % prefill | **PARKED** — the two MUL_MATs are non-adjacent in the DFS graph; needs loader plumbing or a graph restructure |
+| [`lfru-host-weight-migration/`](lfru-host-weight-migration/README.md) | LFRU host→GPU slow migration of hot expert weights (TODO, parked) | **PARKED** — most of the premise is now covered by `moe-expert-cache` + `--host-experts pool`; re-scope before coding, and do not duplicate `moe-cpu-overlap` |
+| [`meta-segmented-expert-upload/`](meta-segmented-expert-upload/README.md) | finish the segmented host-resident expert upload so gemma4 + `-ncmoe` + `-sm tensor` stops being rejected (TODO, parked) | **PARKED** — a partial fix hung non-deterministically; needs a deterministic repro first |
+
+**TODO #29 is resolved and needs no campaign.** The address-selected `ROPE -> VIEW -> SET_ROWS` fusion was made
+bit-transparent in **r25** (`#pragma clang fp contract(off)` in `ggml/src/ggml-cuda/rope.cu`): the W=1 hash is now
+the same with and without `GGML_CUDA_DISABLE_ROPE_SET_ROWS`, and issue #67's residual cross-start flip was
+localized to hipBLASLt solution selection (external, ROCm/rocm-libraries#12126). The `TODO.md` #29 entry still
+reads as open (it was written 2026-09-29, before the r25 fix) — **propose closing it**, see `GREEDY-PURITY.md` §41.
+
+**Note on the `PARKED` rows.** These are open TODO items that the maintainer has explicitly marked "not planned
+now". They are seeded here as scoping notes (per the `TODO.md` header, which counts parked ideas as still open)
+so a cold session can pick one up without re-deriving it — they are **not** active work. If the maintainer
+would rather they not appear here, remove the rows and keep the directories as archive-style records.
 
 **Recently archived (2026-10-11 wip audit).**  `mmvq-verify-rows/` (integrated in r21 as PR #57 —
 block-10 + block-13; only the `q5_1`/`iq4_xs` retune remains, now `mmvq-rpb-retune/`),

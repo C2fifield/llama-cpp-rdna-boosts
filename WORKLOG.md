@@ -1,5 +1,45 @@
 # WORKLOG - dated delivery records
 
+## 261011.014 (docs, wip seed) -- seed a campaign for every open TODO item; #29 found already resolved
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  A cold scan of
+`TODO.md` against the r48 tree, checking each open item for a live `wip/` campaign.  A campaign now exists
+for every open item that lacked one; `wip/CAMPAIGNS.md` is updated with the new rows.
+
+**Seeded (4 open items from the Active section):**
+
+- **`wip/mtp-3gpu-decode/` (TODO #51).**  3-GPU MTP decode is 2.6x slower than plain decode.  It had no
+  campaign — TODO named **`archive/work/moe-verify-fusions/`**, which is a record, not a live campaign.  The
+  README flags that the finding is from clean **r38** and must be re-measured on r48 first (r41 eager NCCL
+  init, r45/r46 small-message AR knobs, r39 ring-in-slab all landed since), then profiles the 3-device
+  internal all-reduce (the copy-engine and P2P fast paths are 2-device-only), the tensor-split verify
+  gather, and graph recapture.
+- **`wip/sched-cross-backend-events/` (TODO #33).**  The three dropped follow-ups from PR #104's block-06/13
+  fix: a foreign-event guard for the scheduler's first cross-backend `ggml_backend_event_wait`, per-change
+  kill-switches, and the reporter-side FAIL->PASS for the alias guard.  No live campaign existed.
+- **`wip/fa-band-2byte-row/` (TODO #27).**  Add the missing `ncols == 16` band config row for the f16/bf16
+  arm.  (`WORKLOG 261011.012` had already checked and left #27 in TODO pending the maintainer; the campaign
+  is the handover.)
+- **`wip/gdn-conv-device-idiom/` (TODO #32).**  The two device idioms in `gdn-conv.cu` vs `cpy-batch.cu`;
+  one-line cleanup at the next block-15 touch.
+
+**Seeded as PARKED scoping notes (7 parked TODOs):** `rdna-boosts-all-patch-hygiene`,
+`rdna35-mmvq-fusion-perf`, `wshadow-cleanup`, `moe-topk-fusion`, `ssm-alpha-beta-fusion`,
+`lfru-host-weight-migration`, `meta-segmented-expert-upload`.  Each points at its archive record and
+re-states the item against r48; they are marked PARKED, not active.
+
+**Finding: TODO #29 is stale — the item is resolved.**  The address-selected
+`ROPE -> VIEW -> SET_ROWS` fusion was made bit-transparent in **r25** (`#pragma clang fp contract(off)` in
+`ggml/src/ggml-cuda/rope.cu`, present in r48): the W=1 hash is now the same with and without
+`GGML_CUDA_DISABLE_ROPE_SET_ROWS`, and issue #67's residual cross-start flip was localized to hipBLASLt
+solution selection (external, ROCm/rocm-libraries#12126).  The TODO #29 entry still reads as open because it
+was written 2026-09-29, before the r25 fix; **propose closing it** (see `GREEDY-PURITY.md` §41).  No
+campaign created for it.
+
+**Not done:** no campaign was created for the "Documented, deliberately NOT fixed" items (accepted
+limitations, no work intended) or for `wip/nwarps/` (a standalone WIP, not a TODO item).
+
+
 ## 261011.013 (containers) -- r48 images built+pushed locally; ccache added to the image build
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Follow-up to
