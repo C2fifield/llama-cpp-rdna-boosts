@@ -198,7 +198,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ├── GREEDY-PURITY.md       # purity rulebook: index, invariants, per-finding claims (read before shipping)
 │                          #   narratives/evidence for the closed cases: archive/docs/GREEDY-PURITY-FINDINGS.md
 ├── WORKLOG.md             # dated delivery records (newest first; README points here)
-├── rdna-boosts-all.patch  # convenience: the entire 16-patch net as ONE patch
+├── rdna-boosts-all.patch  # convenience: the entire 17-patch net as ONE patch
 ├── patches/               # the delivery set: 0000-0016
 │   └── README.md          # apply instructions + block-12 env knobs + server config
 ├── scripts/
@@ -310,8 +310,8 @@ cmake --build build -j
 ### Manual equivalent
 
 ```bash
-git am patches/000[1-9]-*.patch patches/001[0-5]-*.patch   # blocks 01-15
-git add -A && git commit -m "rdna-boosts: block 15: campaign memory wins"
+git am patches/000[1-9]-*.patch patches/001[0-6]-*.patch   # blocks 01-16
+git add -A && git commit -m "rdna-boosts: block 16: decode host-side and small-message latency wins"
 ```
 
 ### The `mmb` campaign is in the delivery
@@ -520,7 +520,7 @@ drifts and hunks no longer apply, re-base the block commits (the fork checkout c
 them), regenerate the whole set with `scripts/make-patches.sh`, then refresh
 `release.json` (`scripts/make-release.sh --base … --tip … --tree …`) and update the
 current-state headers. The old `baseline/<sha>`-branch-per-upstream-range workflow
-was retired when the delivery moved to the flat 16-patch set on `main`.
+was retired when the delivery moved to the flat 17-patch set on `main`.
 
 ## Upstreaming
 
