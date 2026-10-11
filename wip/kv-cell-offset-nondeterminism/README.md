@@ -18,10 +18,18 @@ fixes to issue #134 / TODO #52.
 > **2026-10-13 refinement:** the dependence is on the sequence's whole physical **cell set**, not just its
 > start offset. A fixed allocation alignment fixes the one-shot prefill probe but **not** the decode/
 > server case (the head-reset reuse fragments a growing sequence). The required quantum is the per-launch
-> FA reduction/split period, which is model- and shape-dependent (4B GQA4 uses the RDNA4 band; GSQ
-> qwen4exp GQA12 is excluded from it). Non-unified is green because each sequence owns a contiguous
+> FA reduction/split period, which is model- and shape-dependent (4B GQA4 takes the generic paths; GSQ
+> qwen4exp GQA12 now uses the RDNA4 band as of issue #133). Non-unified is green because each sequence owns a contiguous
 > region from cell 0 — the proposed fix is per-sequence contiguous, tile-aligned regions in the unified
 > attention cache. Evidence and probe: `FINDINGS-offset-mechanism.md`, `tools/`.
+>
+> **2026-10-11 (issue #133):** GSQ qwen4exp GQA 12 was **excluded** from the RDNA4 decode/verify band
+> when this campaign was written (`4 < gqa_ratio <= 8`).  The #133 fix raises the band cap to 12 and the
+> kernel folds the 12 heads into two `ncols2 = 8` groups (the second partial), so the GSQ model's
+> decode/verify band now takes `flash_attn_ext_f16`/`flash_attn_stream_k_fixup_uniform` instead of
+> `flash_attn_tile`.  Any re-run of this campaign's offset probe must be redone on that build: the
+> reduction grouping changed, so the recorded GSQ quantum/table below is pre-#133.  The 4B (GQA 4) is
+> unaffected.
 
 > **Cold start.** Read this file in full, then `AGENTS.md` ("Report findings before shipping",
 > "Default-on policy", "WIP and promotion rules"), then the cold-start prompt

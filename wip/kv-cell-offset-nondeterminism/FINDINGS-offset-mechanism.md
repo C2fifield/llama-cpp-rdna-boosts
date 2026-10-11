@@ -19,8 +19,10 @@ The non-unified cache is green because each sequence owns a contiguous region st
   start-alignment (`LLAMA_KV_ALIGN=64`) fixes the one-shot prefill probe but does **not** fix the
   decode/server case.
 - The required quantum is the **kernel's reduction/split period**, which is model- and shape-dependent:
-  it is not a constant. Both tested models miss the RDNA4 band predicate (`4 < gqa_ratio <= 8`;
-  4B GQA 4, GSQ qwen4exp GQA 12) and take the generic MMA/tile paths, but `nbatch_fa` itself varies
+  it is not a constant.  When this campaign was written both tested models missed the RDNA4 band
+  predicate (`4 < gqa_ratio <= 8`; 4B GQA 4, GSQ qwen4exp GQA 12) and took the generic MMA/tile paths.
+  Issue #133 raised the band cap to 12, so GSQ qwen4exp (GQA 12) now takes the band and its decode/
+  verify grouping changed; the 4B (GQA 4) is unchanged.  `nbatch_fa` itself varies
   with the query tile / verify width (64 vs 32), so a hardcoded alignment cannot be generally correct.
 - Alignment itself creates gaps, and the allocator's head-reset then reuses them, **fragmenting a
   growing sequence**; suppressing the reset reduces but does not remove the residual.
@@ -109,21 +111,23 @@ shared buffer and the sequence's cells are wherever the allocator put them.
 
 The FA kernel and its reduction/split grid are chosen from `(DKQ, DV, ncols, cc, ncols2, n_q)`
 (`ggml_cuda_fattn_mma_get_config_rdna` and `fatn-common.cuh`). Two switches matter here:
-- The RDNA4 band WMMA predicate is `4 < gqa_ratio <= 8`: **both** tested models miss it (4B GQA 4,
-  GSQ qwen4exp GQA 12), so both take the generic paths, but for different geometry
-  (head 256, GQA 4 vs 12 -> different `ncols2`/query-tile shaping; prefill is MMA, the decode band
-  falls to the tile kernel at `Q->ne[1] <= 8`).
+- The RDNA4 band WMMA predicate is `4 < gqa_ratio <= ggml_cuda_fattn_band_wmma_gqa_max()` (**8** when
+  this campaign was written; **12** after issue #133).  The 4B (GQA 4) still misses it and takes the
+  generic paths; GSQ qwen4exp (GQA 12) now **hits** it and takes the band (head 256, GQA 12 -> two
+  `ncols2 = 8` groups, the second partial), so its decode/verify no longer falls to the tile kernel at
+  `Q->ne[1] <= 8`.
 - The reduction tile `nbatch_fa` itself is shape-dependent within one model: for the head-256 rows it is
   64 for the wide tiles and 32 for the narrow ones, and the prefill rows use 32.
 
 | model | arch | head_k/v | GQA | KV | relevant selection | `nbatch_fa` (tested shape) |
 |---|---|---|---|---|---|---|
 | Qwen3.5-4B | qwen35 | 256 | 4 | f16 | band excluded (GQA <= 4); prefill MMA, decode tile | prefill 32; effective probe quantum 64 |
-| GSQ Flash-Next | qwen4exp | 256 | 12 | q8_0 | band excluded (GQA > 8); prefill MMA, decode tile | prefill 32; effective probe quantum 64 |
+| GSQ Flash-Next | qwen4exp | 256 | 12 | q8_0 | **banded since #133** (GQA 12 <= cap 12); prefill MMA, decode band | prefill 32; effective probe quantum 64 (pre-#133; **must be re-derived on the #133 build**) |
 
 So a single hardcoded alignment constant cannot be assumed correct across models, KV types, or verify
 widths; the correct grid is the per-launch reduction/split period, which is exactly why the fix belongs
-in the kernel/allocator anchoring, not in a fixed pad value.
+in the kernel/allocator anchoring, not in a fixed pad value.  Note that #133 also changed the GSQ
+**decode/verify** grid relative to the recorded probe: any GSQ number in this file predates it.
 
 ## 7. Proposed fix (maintainer's D1 / campaign direction 2)
 
