@@ -1,5 +1,36 @@
 # WORKLOG - dated delivery records
 
+## 261011.012 (docs, TODO prune) -- close TODO #6, #8 and #31, drop #12; #46/#27 checked and left pending
+
+**No delivery change.**  TODO.md prune per the maintainer:
+
+- **#6 (cross-arch / gfx1100 validation) — CLOSED (done).**  The gfx1100 leg is complete (GDN
+  KLD records, block-13 gfx1100 MoE MMQ, issues #59/#60, the `fingon` build/validation entries) and the
+  gfx1151 Phase-3 fingerprint work has its own records; the item's "§4.2 remainder" checkboxes were
+  flagged stale in the item itself.
+- **#8 (dual 7900XTX block-12 validation) — CLOSED (done).**  Note the r9 amendment
+  (`WORKLOG.md` 261004.005, issue #86) already removed the RDNA4-only AR gate: the internal/hybrid
+  pipeline is **default-on for every HIP arch** (`GGML_CUDA_AR_ALLOW_NON_RDNA4=1`), so the "gate stays
+  RDNA4-only until validated" wording was already stale; the block-13 gfx1100 leg is separately done.
+- **#12 (file the staged upstream PR candidates) — REMOVED.**  The `upstream/` directory is the record
+  (per `AGENTS.md`); filing is tracked there, not as a TODO item.
+- **#31 (PR #100 verify-step fusions) — CLOSED (merged).**  PR #102, the revised PR #100, was folded into
+  **block 15** in **r11** (`WORKLOG.md` 261004.008): `GGML_CUDA_FUSE_GLU_Q8_1`,
+  `GGML_CUDA_FUSE_GDN_CONV_VERIFY` and `GGML_CUDA_FUSE_CPY_BATCH` are in the delivery today
+  (`unary.cu`/`gdn-conv.cu`/`cpy-batch.cu`).  The TODO text had gone stale at "promotion-ready".
+- **#46 (re-cut PR #106 patch 0002, data-pointer `ggml_cuda_graph_key`) — CLOSED (won't do).**  The
+  re-cut was never implemented (the shipped key is still `(first node, n_tokens)`), and it is **not**
+  relevant: the r25 A/B measured the data-pointer hash as a **regression** on the movable-boundary slab
+  (51.8 -> 41.8 t/s at p-min 0.5, identical text/acceptance), so the alternate-cost workaround is the
+  product and there is no tracked bug it fixes.
+
+The empty `## Waiting on others` section is removed with #6/#8/#12.
+
+**#27 checked and left in TODO pending the maintainer's call:** the 2-byte f16/bf16 arm of the RDNA4
+GQA-6 FA band is *not* merged: the arm dispatches `case<DKQ,DV,2,8>` (ncols=16) and the band rows match
+only `ncols == 32`/`64`, so it keeps the generic 128-half2 row — the r21 entry calls it "a documented
+follow-up".
+
 ## 261011.011 (docs, staleness pass) -- correct the stale top-level docs: the `--host-experts mmap` policy, the README `#current-state` anchors, and the 2026-10-12..17 date drift
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Doc-only fixes

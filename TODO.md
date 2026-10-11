@@ -282,18 +282,6 @@ disabling hipBLASLt (corrupt at a thin headroom, stunted at 4096).  To revisit: 
 (headroom + explicit MIB, auto floor off under `-sm tensor`) or root-cause the corruption first.
 Full handover: `archive/work/fit-slab-accounting/README.md`.
 
-### 46. Re-cut PR #106 patch 0002 (data-pointer graph key) against the slab
-
-**Opened 2026-10-07** when r25 dropped the patch.  The patch hashes every node's and source's `data`
-pointer into `ggml_cuda_graph_key` so the alternating MTP verify/draft layouts each keep their own captured
-graph.  It was written against r17 and is a **regression on the r22+ movable-boundary slab**: per-device
-allocations vary between otherwise-identical calls, so the extra key component invalidates warm graphs and
-they are recaptured (3x R9700, qwen4exp UD-IQ3_XXS + shared Q8_0 MTP, `-sm tensor -ub 2048`: 41.8 vs 51.8
-t/s at `--spec-draft-p-min 0.5`; 88.2 vs 94.9 at p-min 0; text and acceptance identical either way).
-**Next:** re-cut it so the key is stable (e.g. hash a per-tensor layout/version id the allocator guarantees
-rather than a raw address), then A/B it on the `-sm tensor` MTP config.  The contributor may also re-cut it.
-Record: `WORKLOG.md` 2026-10-07 (r25); PR #106.
-
 ### 36. Genuine CPU/GPU overlap for the MoE misses (Strata's pipeline shape)
 
 **Opened 2026-10-05; scoping only.**  The delivered cache-on path computes every expert on the GPU
@@ -335,50 +323,6 @@ uses `ggml_cuda_info().devices[ctx.device].cc`.  They agree on every current gra
 is set before `ggml_cuda_try_fuse` runs, so it is two idioms for the same thing.  **Next:** pick one
 (pass the context device into the check, or use `ggml_cuda_get_device()` consistently) at the next
 block-15 touch.  Record: `archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md` (review notes).
-
-### 31. PR #100: three verify-step fusions (GLU -> Q8_1, GDN VCONV, batched CPY)
-
-**Opened 2026-10-04; accepted as a WIP record, NOT promoted.**  Contributor PR
-[#100](https://github.com/stew675/llama-cpp-rdna-boosts/pull/100) (@overdoingism) adds three
-default-on verify-step fusions, each with a kill switch, in `archive/work/rdna4-verify-fusions-lf/`:
-`GGML_CUDA_FUSE_GLU_Q8_1` (a verify-step GLU also writes the next mmvq's Q8_1), `GGML_CUDA_FUSE_GDN_CONV_VERIFY`
-(the fused GDN concat + conv for 2..255-token batches) and `GGML_CUDA_FUSE_CPY_BATCH` (consecutive
-same-layout f32 CPY nodes in one launch).  (The #100 revision used the `GGML_LF_*` names.)
-
-Review on r10 (test worktree `/home/stew675/llama-pr100`): applies cleanly and builds warning-free;
-output is byte-identical on 35B-A3B Q8_0 MTP n3 (`8d733a56c740`) and 27B Q4_K_XL MTP n3
-(`1acb04bd9104`, the recorded 27B gate) for fusions on == off == r10 baseline, with and without
-verify graphs; the batched-copy fusion fires and runs (150/528 runs).  Measured throughput is ~flat
-(27B 53.6 vs 52.9 t/s, 35B 143.2 vs 141.5 on vs off), so the win is unproven.
-
-**Before promotion:** (1) the `GGML_LF_GLU_Q8_CHECK=1` self-check is broken: it does a host sync
-under graph capture (`operation not permitted when stream is capturing`) and, with verify graphs
-disabled, perturbs the output (22079 vs 113 chars), so it is not a valid oracle; (2) the GLU fusion
-mark is file-static cross-node state passed from `ggml_cuda_try_fuse` to the launcher (fragile,
-single-threaded); (3) the `lf-*` / "Llama-Frankenstein" naming and AI-authored comments need
-normalising; (4) the PR body has no measurements; (5) VCONV relaxes a kernel precondition
-(`T >= 256` -> `T >= 2`) that needs a geometry sweep; (6) no arch gate despite the RDNA4 title;
-(7) the overlap with the existing fusion machinery needs review as a whole.  The author has been
-offered the chance to refine the PR first; otherwise it is a lower-priority item to pick up later.
-Record: `archive/work/rdna4-verify-fusions-lf/`.
-
-**Follow-up:** contributor [PR #102](https://github.com/stew675/llama-cpp-rdna-boosts/pull/102)
-(opened 2026-10-04) supersedes the #100 patch with a revised `verify-fusions.patch` built on r10,
-plus a geometry sweep (`vf_sweep.cpp`) and a rewritten README.  It removes the broken `_CHECK`
-self-check, moves the GLU mark into the CUDA context, normalises the naming and adds RDNA4 gates.
-**Verified 2026-10-04** against r10 (worktree `/home/stew675/llama-fix97`, branch `pr102-review`,
-build `build-pr102`): applies cleanly (tree `38ebce2f`), builds warning-free, and the 16,130-case
-`vf_sweep` is bit-identical across fusions on, fusions off and stock r10, with all three fusions
-confirmed firing (rocprof counts match the PR).  The end-to-end DFlash gate is byte-identical
-on == off == stock r10 (`55824e640aa0`).  All #100 review points are addressed.
-
-**A/B 2026-10-04 (the effect size is now settled):** Qwen3.8-27B-UD-Q4_K_XL + DFlash2, q8_0 KV,
-`-ub 512`, `-n 512`, WikiText-2 prefixes at 8.3K / 35.2K / 110.4K tokens, alternating on/off runs on
-the same binary.  Every on run beat every off run: **+1.51 % (5/5)**, **+1.56 % (5/5)**,
-**+1.31 % (3/3)**; generated text byte-identical within each depth.  So the win is real and larger
-than the earlier single-run spread suggested.  Under the default-on policy the patch is
-promotion-ready (block 15 is the natural home); promotion itself is the maintainer's call.
-Record: `archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md`.
 
 ### 30. Default-flip the DFlash device-resident layer features (PR #73) — **CLOSED 2026-10-07 (r26)**
 
@@ -437,39 +381,6 @@ only the **native-quantized** arm (`ncols1 = 4`).  The 2-byte f16/bf16 arm uses 
 64-wide row for the 2-byte arm is worth a sweep: the arm has no dequantisation to hide the unused
 columns, and r6 made native bf16 default-on so the arm is live.  Record:
 `archive/work/rdna4-fa-band/VERIFICATION-r21.md`, `WORKLOG.md` 2026-09-28 (r21, PR #62).
-
-## Waiting on others (not actionable in this repo)
-
-### 6. Cross-arch / gfx1100 validation (the gfx1201 port + its Phase 2.5 probe are DONE — see `WORKLOG.md`)
-- **Still open, needs other hardware:**
-  * gfx1100 (`fingon`, 24 GiB): the §4.2 remainder with *no* gfx1100 data yet — the GDN gfx11 NW16 scan
-    retune (~106K VGPR/CU vs a possible 64K classic), `split_j`/config rows, the quantize chunk,
-    routed-compact, the hc/PLE fusions, and the two block-13 MTP regression fixes under RDNA3
-    (acceptance gate).
-  * gfx1100 q8_0 native-arm prefill trade (2026-09-18, r5): the block-15 q8_0 native arm costs ~5 %
-    of gemma-4-26B-A4B head-512 deep prefill on gfx1100 (773 vs 813 t/s `pp2048 @ d98304` with
-    `GGML_CUDA_FA_KV_NATIVE=0`, stock 810) but buys +44 % decode at d65536, so it stays on.  The
-    dense head-256 model is unaffected (1405.9 vs 1404.4).  Candidate fix: keep native decode but
-    restore node-scratch F16 staging for prefill on RDNA3_0.  See `WORKLOG.md` 2026-09-18 (r5).
-  * gfx1151 (`halo`): Phase 3's cross-arch fingerprint check (gfx1201 == gfx1151 numerics) — a
-    verification goal, not a port; also item 7's MTP crossover re-measure (item 4 is closed).
-- **Tracker hygiene:** the plan's own open checkboxes are **stale** (Phase 1 is complete and the doc
-  predates qwen4exp's promotion to block 14); read the banner at the top of
-  `archive/work/qwen4exp/gfx1201-porting.md` before trusting them.
-
-### 8. Dual 7900XTX (gfx1100, community): block-12 validation
-- Hybrid HIP all-reduce on RDNA3 **pairs** is being validated by a community member on their dual-7900XTX
-  box (hybrid-dispatch matrix internal/nccl/none + the bounded-spin path at depth-16384).  The block-12
-  arch gate stays RDNA4-only until then.  Volunteer env: `GGML_CUDA_ALLREDUCE=internal`.
-- The block-13 gfx1100 leg is DONE (single-GPU 7900 XTX; see the `WORKLOG.md` entry); what remains here is block 12, which
-  is N/A on a single-GPU box.  Where: `patches/0012` + the block-12 notes in `patches/README.md`.
-
-### 12. Upstream: file the staged PR candidates
-- `upstream/README.md` — five are written up and evidence-verified on pristine master `9cf3bf256`:
-  the ggml-alloc unused-view release, the sched probe, the keys-only indexer cache (A1), the `attn_k`
-  null-mask guard (A2), plus `UPSTREAM-PR-fa-decode-verify-kernel-family.{md,patch}` (the F1 chooser fix,
-  whose NVIDIA/Ada half the fork deliberately does not land — see the AGENTS.md scope policy).
-- Filing is the maintainer's call.
 
 ## Documented, deliberately NOT fixed (accepted limitations — do not re-report)
 
