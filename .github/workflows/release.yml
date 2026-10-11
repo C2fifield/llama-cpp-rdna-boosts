@@ -87,12 +87,12 @@ jobs:
 
           Apply with \`scripts/apply-all.sh\` on a fresh llama.cpp checkout at \`${BASE}\`; verify the artifacts against \`SHA256SUMS\`.
 
-          Container images (ROCm 7.14 / 10.0) are built and pushed locally with \`scripts/build-containers.sh\` (see \`CONTAINERS.md\`):
+          Container images (ROCm 7.14.1 / 10.1) are built and pushed locally with \`scripts/build-containers.sh\` (see \`CONTAINERS.md\`):
 
           - \`${image}:server-rocm-<version>\` (alias \`${image}:rocm-<version>\`)
           - \`${image}:light-rocm-<version>\`
           - \`${image}:full-rocm-<version>\`
-          - immutable \`...-<version>-${BASE}\` variants and \`${image}:latest\` (ROCm 10.0)"
+          - immutable \`...-<version>-${BASE}\` variants and \`${image}:latest\` (ROCm 10.1)"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber \
               rdna-boosts-all.patch patches.tar.gz release.json SHA256SUMS

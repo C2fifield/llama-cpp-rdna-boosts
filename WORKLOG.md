@@ -1,5 +1,21 @@
 # WORKLOG - dated delivery records
 
+## 261011.009 (docs, container versions) -- container build lines move to ROCm 7.14.1 and 10.1; r48 GitHub Release backfilled
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).
+
+**ROCm lines.**  `scripts/build-containers.sh` and the manual `docker-ghcr.yml` matrix now build the
+`7.14.1` and `10.1` lines (base images `rocm/dev-ubuntu-24.04:7.14.1-full` and `...:10.1.0-full`)
+instead of the old `7.14`/`10.0` labels; the registry tags are `rocm-7.14.1`/`rocm-10.1` and `latest`
+now points at 10.1.  ROCm 7.2 (`-complete`) stays manual-only.  (`7.14-full`/`10.1-full` are not
+published base tags; the pinned patch versions are.)
+
+**r48 Release backfilled.**  The old tag-driven workflow chained its `Package GitHub Release` job to
+the container build, so cancelling the stuck r48 build also cancelled the Release.  `r48`'s GitHub
+Release is now cut locally (its assets come from the tag).  The rest of the backlog (`r29`-`r47`) is
+intentionally NOT backfilled -- those tags were cancelled by hand because those builds had bugs.
+
+
 ## 261011.008 (docs, local containers) -- release containers are built and pushed locally; WORKLOG adopts YYMMDD.VVV dated headers
 
 **No release.**  The delivery (`patches/`, `release.json`, `rdna-boosts-all.patch`) is untouched.

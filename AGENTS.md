@@ -359,20 +359,20 @@ gh auth refresh -h github.com -s write:packages            # once; podman needs 
 gh auth token | podman login ghcr.io -u stew675 --password-stdin
 
 ./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
-./scripts/build-containers.sh --rocm "7.14 10.0" --push    # the full release build
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push # the full release build
 # fast smoke, no push:
-./scripts/build-containers.sh --rocm 10.0 --arch gfx1201 --targets server
+./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server
 ```
 
 `scripts/build-containers.sh` reads `release.json`, materialises the canonical patched tree
 (`release.json.tip`, asserting `tree`) into `$HOME/llama-src`, writes the build-context
 `.dockerignore` (from `.devops/dockerignore`), builds `full`/`light`/`server` per ROCm line with the
 same build args the CI matrix used, applies the same registry tags (`rocm-<v>`,
-`server-/light-/full-rocm-<v>`, the immutable `-<base>` variants and `latest` on 10.0) and (`--push`)
+`server-/light-/full-rocm-<v>`, the immutable `-<base>` variants and `latest` on 10.1) and (`--push`)
 pushes to `ghcr.io/stew675/llama-cpp-rdna-boosts`.  `docker-ghcr.yml` remains only as a manual
 `workflow_dispatch` fallback.
 
-**Only ROCm 7.14 and 10.0 are built by default.**  7.2 (`-complete`) is much slower and is manual-only.
+**Only ROCm 7.14.1 and 10.1 are built by default.**  7.2 (`-complete`) is much slower and is manual-only.
 
 ## What NOT to do
 

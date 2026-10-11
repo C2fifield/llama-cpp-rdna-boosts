@@ -36,20 +36,20 @@ Registry path: `ghcr.io/<owner>/<repo>` (here
 | ROCm | base image | tags |
 |------|-----------|------|
 | 7.2  | `rocm/dev-ubuntu-24.04:7.2.4-complete`  | `rocm-7.2`, `server-rocm-7.2`, `light-rocm-7.2`, `full-rocm-7.2` *(manual dispatch only)* |
-| 7.14 | `rocm/dev-ubuntu-24.04:7.14.1-full`     | `rocm-7.14`, `server-rocm-7.14`, `light-rocm-7.14`, `full-rocm-7.14` |
-| 10.0 | `rocm/dev-ubuntu-24.04:10.0.0-full`     | `rocm-10.0`, `server-rocm-10.0`, `light-rocm-10.0`, `full-rocm-10.0`, `latest` |
+| 7.14.1 | `rocm/dev-ubuntu-24.04:7.14.1-full`   | `rocm-7.14.1`, `server-rocm-7.14.1`, `light-rocm-7.14.1`, `full-rocm-7.14.1` |
+| 10.1   | `rocm/dev-ubuntu-24.04:10.1.0-full`   | `rocm-10.1`, `server-rocm-10.1`, `light-rocm-10.1`, `full-rocm-10.1`, `latest` |
 
-**ROCm 7.2 is not built by the automatic (tag-push / weekly) release matrix.**  Its `-complete`
-base image compiles several times more slowly than the `-full` lines, and from release r10 onward its
-full image no longer fitted the build job's 6 h `timeout-minutes`; a timed-out build also never writes
-the registry build cache, so every retry started cold and failed the same way, which blocked the
-`release` job (it needs all builds) and left every tag release uncut.  The 7.2 line is still buildable by
-a manual `workflow_dispatch` asking for `7.2`, but expect it to be slow and possibly to time out.
+**ROCm 7.2 is not built by default.**  Its `-complete` base image compiles several times more slowly
+than the `-full` lines, and from release r10 onward its full image no longer fitted the 6 h build
+`timeout-minutes`; a timed-out build also never wrote the registry cache, so every retry started cold
+and failed the same way -- which blocked the (then build-chained) `release` job and left every tag
+release uncut.  The 7.2 line is still buildable with `--rocm 7.2` (or a manual `workflow_dispatch`
+asking for `7.2`), but expect it to be slow and possibly to time out.
 
 Each tag also has an immutable `<tag>-<fork-point>` variant pinned to the fork
 point (currently `<tag>-a55e952b8`; earlier releases used
 `<tag>-84e76d8a2`, `<tag>-ebbb18522`, `<tag>-d1d3c3396` and `<tag>-790cf51aa`). `rocm-<version>` is an alias of `server-rocm-<version>` (the serving
-image); `latest` points at the newest ROCm (10.0) server image.
+image); `latest` points at the newest ROCm (10.1) server image.
 
 The binaries are built for `gfx1100;gfx1150;gfx1151;gfx1200;gfx1201` (RDNA3 /
 RDNA3.5 / RDNA4) with runtime dispatch, so one image serves every targeted GPU
@@ -86,7 +86,7 @@ docker run --rm -it \
   --device /dev/kfd --device /dev/dri --group-add video \
   -e HSA_OVERRIDE_GFX_VERSION=11.5.1 \
   -v ~/models:/models -p 8080:8080 \
-  ghcr.io/stew675/llama-cpp-rdna-boosts:rocm-7.14 \
+  ghcr.io/stew675/llama-cpp-rdna-boosts:rocm-7.14.1 \
   -m /models/<model>.gguf -ngl 999
 ```
 
@@ -102,7 +102,7 @@ target.  On the validation host `llama-bench` (9B Q8_0) measured 577.27 vs
 > reproduced here) to break greedy purity where 7.14 is clean, see the "Separate,
 > untriaged" note in `TODO.md` item 22; it was also dropped from the automatic release
 > matrix because its image build outgrew the runner timeout (see the note above).
-> Prefer `rocm-7.14` (or `rocm-10.0`) for speculative decoding and for anything
+> Prefer `rocm-7.14.1` (or `rocm-10.1`) for speculative decoding and for anything
 > compared against the recorded hashes; if a 7.2 run disagrees with a 7.14 run,
 > suspect the toolchain before the delivery.
 
@@ -114,12 +114,12 @@ HIP backend cannot dlopen and llama.cpp reports "no usable GPU found".
 ## Running
 
 ```bash
-# server, all RDNA families, ROCm 7.14
+# server, all RDNA families, ROCm 7.14.1
 docker run --rm -it \
   --device /dev/kfd --device /dev/dri \
   --group-add video \
   -v ~/models:/models -p 8080:8080 \
-  ghcr.io/stew675/llama-cpp-rdna-boosts:rocm-7.14 \
+  ghcr.io/stew675/llama-cpp-rdna-boosts:rocm-7.14.1 \
   -m /models/Qwen3.5-4B-Q8_0.gguf -ngl 99 -sm tensor -mg 0
 ```
 
@@ -136,7 +136,7 @@ asset packaging stays in CI:
   `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`
   to the GitHub Release (about a minute; no compiler, no Docker).  The tag is
   checked against `release.json.release` and the `v16-<base>-r<N>` shape.
-- **local image build** → `scripts/build-containers.sh --rocm "7.14 10.0"
+- **local image build** → `scripts/build-containers.sh --rocm "7.14.1 10.1"
   --push` builds and pushes the images.  Run it before or after the tag; it
   reads the tree from `release.json`, not from the tag.
 - `docker-ghcr.yml` no longer runs automatically (no tag or schedule trigger);
@@ -178,7 +178,7 @@ To cut a release after a re-base or a block amendment:
 # images" in AGENTS.md).  Do this before the tag so a broken image never gets a
 # release name, or after it — the script reads the tree from release.json, not
 # from the tag.
-./scripts/build-containers.sh --rocm "7.14 10.0" --push
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push
 
 # freeze it: annotated tag on the commit that carries this release.json
 git tag -a v16-<base-sha>-r<N> -m "rdna-boosts v16-<base-sha>-r<N>"
@@ -226,10 +226,10 @@ gh auth refresh -h github.com -s write:packages            # once; podman needs 
 gh auth token | podman login ghcr.io -u stew675 --password-stdin
 
 ./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
-./scripts/build-containers.sh --rocm "7.14 10.0" --push    # build + push the release images
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push # build + push the release images
 
 # fast smoke: one ROCm line, one GPU arch, one target, no push
-./scripts/build-containers.sh --rocm 10.0 --arch gfx1201 --targets server
+./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server
 ```
 
 `--src DIR` overrides the build-context tree (default `$HOME/llama-src`);

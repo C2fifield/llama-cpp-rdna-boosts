@@ -22,7 +22,7 @@
 #                      (default $HOME/llama.cpp); used for a fast worktree
 #   --image IMAGE      registry image base (default
 #                      ghcr.io/stew675/llama-cpp-rdna-boosts)
-#   --rocm "7.14 10.0" ROCm release lines to build (7.2 is manual-only/slow)
+#   --rocm "7.14.1 10.1" ROCm release lines to build (7.2 is manual-only/slow)
 #   --arch LIST        AMDGPU_TARGETS override, e.g. gfx1201 for a fast smoke
 #                      build; default = the Dockerfile's full RDNA set
 #   --targets "full light server"   image targets to build
@@ -35,10 +35,10 @@
 # Typical release:
 #   gh auth refresh -h github.com -s write:packages   # once
 #   gh auth token | podman login ghcr.io -u stew675 --password-stdin
-#   ./scripts/build-containers.sh --rocm "7.14 10.0" --push
+#   ./scripts/build-containers.sh --rocm "7.14.1 10.1" --push
 #
 # Fast smoke (no push):
-#   ./scripts/build-containers.sh --rocm 10.0 --arch gfx1201 --targets server
+#   ./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -50,7 +50,7 @@ UPSTREAM_TARBALL="https://codeload.github.com/ggml-org/llama.cpp/tar.gz"
 SRC="${LLAMA_SRC_DIR:-$HOME/llama-src}"
 LLAMA_DIR="${LLAMA_CPP_DIR:-$HOME/llama.cpp}"
 IMAGE="${CONTAINER_IMAGE:-ghcr.io/stew675/llama-cpp-rdna-boosts}"
-ROCM_LINES="7.14 10.0"
+ROCM_LINES="7.14.1 10.1"
 ARCH=""
 TARGETS="full light server"
 PUSH=0
@@ -151,13 +151,13 @@ prepare_src() {
     verify_src
 }
 
-rocm_full() { case "$1" in 7.2) echo 7.2.4;; 7.14) echo 7.14.1;; 10.0) echo 10.0.0;; *) return 1;; esac; }
-rocm_suffix() { case "$1" in 7.2) echo complete;; 7.14|10.0) echo full;; *) return 1;; esac; }
+rocm_full() { case "$1" in 7.2) echo 7.2.4;; 7.14.1) echo 7.14.1;; 10.1) echo 10.1.0;; *) return 1;; esac; }
+rocm_suffix() { case "$1" in 7.2) echo complete;; 7.14.1|10.1) echo full;; *) return 1;; esac; }
 
 validate_rocm() {
     local v
     for v in $ROCM_LINES; do
-        rocm_full "$v" >/dev/null || die "unsupported ROCm release line: $v (7.2, 7.14, 10.0)"
+        rocm_full "$v" >/dev/null || die "unsupported ROCm release line: $v (7.2, 7.14.1, 10.1)"
         if [ "$v" = "7.2" ]; then
             echo "WARNING: ROCm 7.2 (-complete) builds are much slower; expect a long build" >&2
         fi
@@ -188,7 +188,7 @@ tags_for() { # $1=target  $2=rocm-line
         light)  echo "$IMAGE:light-rocm-$2 $IMAGE:light-rocm-$2-$base" ;;
         server)
             local t="$IMAGE:server-rocm-$2 $IMAGE:server-rocm-$2-$base $IMAGE:rocm-$2"
-            [ "$2" = "10.0" ] && t="$t $IMAGE:latest"
+            [ "$2" = "10.1" ] && t="$t $IMAGE:latest"
             echo "$t" ;;
         *) die "unknown target: $1" ;;
     esac
