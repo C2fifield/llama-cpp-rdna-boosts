@@ -13,112 +13,7 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 It ships as **16 patches** (block 00 + blocks 01-15) for a clean llama.cpp
 checkout at the fork point **`a55e952b8`** (upstream master, 2026-10-03
 re-base).  Each block is a self-contained `git am` commit, so you can apply
-the whole set or pick the ones you want.  The **`mmb` (bf16-WMMA weight GEMM) / QSA / indexer
-campaign**, formerly the 28-patch opt-in `archive/work/mmb-general/` set, is now **folded into the delivery
-blocks** — the `mmb` core into block 08, the catch-all system-operations fixes into block 06, and the
-qwen4exp/QSA/HC/indexer work into block 15 — so the **16 patches alone reproduce the full campaign
-tree**.  `archive/work/mmb-general/` is retained only as the historical verification record;
-see [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery).  The current release is
-**`v16-a55e952b8-r47`** (canonical block-15 tip `6daf815693704a214246bea7b60523ddff00a171`, net tree
-`0099dd85130db65cbfbcfd738abfc57566bffe6f`, **16 patches**): the `--fit off` slab blackout
-(**issue #136**) is fixed.  The MoE host-expert preflight now parses its environment before the cache
-gate, so the movable-boundary slab is **always armed when the cache is enabled, independent of
-`--fit`**; `GGML_CUDA_SLAB=0` is the only up-front opt-out, and a genuine slab-creation failure now
-errors and streams instead of silently building a raw arena.  The copy-engine all-reduce scratch is
-**fail-soft** (allocated through the shared OOM choke point, falls back to the internal pipeline,
-optional `GGML_CUDA_AR_CE_SCRATCH_MIB` budget), and the fail-soft arena yield is fixed for the
-slab-backed multi-GPU case (guarded on the global slab, device-scoped stand-down).
-
-Before it, **`v16-a55e952b8-r46`** (canonical block-15 tip `2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree
-`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`, **16 patches**): the r45 block 16 is **folded back into the
-0000-0015 set** (host-side/system work into block 06, small-message all-reduce into block 12, the
-decode/latency remainder into block 15) and **issue #133** rides in block 15 — the RDNA4 decode/verify
-band-WMMA predicate now folds GQA ratios above 8 (cap `GGML_HIP_FA_BAND_WMMA_GQA_MAX`, default 12), so
-qwen4exp `head 256 / GQA 12` no longer falls to the tile kernel: 2x R9700 Flash-Next MTP **+36 %** at
-100K depth (+11 % on 3 GPU, -3 % short context), width purity byte-identical, prefill logits unchanged,
-and a new CPU-oracle `test-backend-ops` gqa-12 matrix.  Before it, **`v16-a55e952b8-r45`** carried the
-contributor decode/latency PRs #124/#125/#126/#128/#129/#132 as a separate block 16.  Before that, **`v16-a55e952b8-r44`** folded the Windows
-host-pool portability fix (**issue #130**, block 15) and the per-sequence rollback guard (**issue #131**,
-block 02); **r43** ordered the multi-ubatch logits readback (block 06, TODO #52 part B); **r42** made the
-multi-sequence GDN kernel choice shape-consistent (block 02, TODO #52 part 1).  Before those,
-**`v16-a55e952b8-r41`** (canonical block-15 tip `a89ffa273`, net tree
-`46c4ce7a6a00aa6c6931c5a89faf847dde19fd34`): **block 12's hybrid NCCL init is eager again** — the r34
-lazy mid-run `ncclCommInitAll` perturbed the `-sm tensor -ncmoe` split compute and broke MTP purity under
-the expert cache; eager init is bit-identical to pure RCCL and restores it (**TODO #53**).  Before it,
-**`v16-a55e952b8-r40`** (as shipped, tip `b8d1e2988`): the device-remap (`DEVMAP`/`DEVPOLICY`/`KSLOT`/`DEV_EAGER`) experiment is
-**removed from the code base** — block 06 no longer creates it, so the eager host-routing path is the sole
-`-sm tensor` split policy — and the non-devmap WIP fixes ride with it (the per-table fusion guard that
-resolves **issue #50**, the narrow-2 slab MTP-aliasing fix, and `-ncmoe` host-expert offload).  The device
-path's divergence was a layout-sensitive **hipBLASLt** solution flip (**issue #67**), not a cache bug;
-removing it is MTP-pure on qwen4exp, within noise of the old `DEVMAP=0` performance, and keeps the
-prefill-logit gate at mean KLD 0.000707.  Before it, **`v16-a55e952b8-r38`** folded the `fit-slab-accounting` revival into block 06 (G1/G2 `--fit`
-arena+headroom reservation, G3 adaptive slab reserve, G4 `GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT`
-free-VRAM cap, G5 split-slice guard, G6 nextn-offload guard, G7 scheduler multi-consumer fill,
-per-device host-expert accounting) plus the G4 FA-staging cap in block 15.  Before it,
-**`v16-a55e952b8-r36`** (three contributor prefill PRs folded into the existing blocks: the shared BF16
-src1 reuse (#119) and the in-place host-expert prefill reads (#121) in block 15, and the pool free-VRAM
-floor plus the 6 GiB `-sm layer` slab headroom (#122) in blocks 06 and 09).  Before it,
-**`v16-a55e952b8-r35`** folded the bounded pinned host-expert pool into block 06: `--host-experts
-pool` adds an **optional** host pool over the page cache, sized to `MOE_HOST_POOL_MIB` (auto = 25 % of the
-MoE host expert bytes); the default stays `pinned`, and the `mul_mat_vec_q_moe` row-tail clamp is in block
-13.  Before that, **`v16-a55e952b8-r33`** removed the pageable host-expert master (**issue #116**:
-`--host-experts mmap` and `LLAMA_MMAP_HOST_EXPERTS` are dropped, `-ncmoe`/`-cmoe` experts are always
-pinned, and `MOE_EXPERT_CACHE_MIB` below 2048 errors).  Before that, **`v16-a55e952b8-r32`** fixed the two crashes found
-during the PR #115 review (the multi-sequence post-prefill re-reserve, **issue #48** in block 06, and the
-meta split-state stack overflow, **issue #49** in block 15).  Before that, **`v16-a55e952b8-r31`** (PR #115 folded into block 06: the MoE
-expert-cache decode/verify band follows the routed-expert MMVQ band -- **16 tokens on RDNA4** -- so
-12-16-token MTP verify batches stay on the arena; 16-token MoE batches **+5.7x**, `draft-mtp n-max 12`
-**+3.3x**, purity unchanged, `GGML_MOE_CACHE_MAX_TOK=8` restores the old band).  Before it,
-**`v16-a55e952b8-r30`**: **issue #113 root-caused and fixed -- the BF16/WMMA chunked GDN path is
-default-on again.**  The r29 KLD was an `A_sc` stride aliasing bug for `n_seqs > 1`, not bf16 precision;
-it is fixed in both GDN kernel files, and the op test's gates are now realistic with its bf16 tolerance
-tightened to 1e-4.  Mean KLD is back to 0.000707 / 0.000052 / 0.000150 (gfx1201 / gfx1100 / gfx1151) and
-prefill bf16 vs fp32 is +7.7/+7.9/+7.5 % on gfx1201, +4.2/+4.4/+3.9 % on gfx1100 and +5.1/+5.5/+4.5 %
-on gfx1151.  **`v16-a55e952b8-r29`** was: **the lossy BF16/WMMA chunked GDN path is now opt-in
-(issue #113)** -- the
-`GGML_CUDA_GDN_CHUNKED_BF16` default is flipped on -> off, because the bf16 kernel shifts prefill
-logits against the fp32 chunked/sequential path (mean KLD 0.032 / same-top-p 94 % on gfx1201, 0.62 /
-79 % on gfx1100) while the fp32 chunked kernel is clean (0.0005 / 99 %) and still beats sequential.
-The flip costs -7 % prefill on gfx1201 and -4 % on gfx1100; `=1` restores the old behaviour.
-**`v16-a55e952b8-r28`** was: **the `--host-experts` flag folded into block 06** -- the `-ncmoe`/`-cmoe`
-host-expert backing becomes a first-class `--host-experts <pinned|mmap|auto>` option
-(`llama_model_params.host_experts_mode`), default pinned unchanged, the legacy `LLAMA_MMAP_HOST_EXPERTS`
-env kept.  `--host-experts mmap` keeps the expert master in the pageable model mmap instead of the pinned
-`ROCm_Host` buffer: ~5 % slower prefill / ~0.5 % decode on 1x R9700 (35B-A3B Q4_K_M, `-ncmoe 40`), peak
-RSS **40.7 -> 22.2 GB** (the ~18.6 GB non-swappable `ROCm_Host` set becomes reclaimable page cache),
-greedy text byte-identical.  **`v16-a55e952b8-r27`** was: **PR #114 (@briansp2020) folded into block 15** -- four bit-identical qwen4exp
-decode fusions (the latency-scheduled BF16 `hc_mix` up/collapse, `HC_COMBINE` folded into the norm that
-reads it, the shared-expert `sigmoid`-`mul`-`add` gate, and the GDN `beta` sigmoid folded into the
-sequential kernel), each with a default-on `=0` kill-switch.  Measured here: **+2.4 % decode** (3-GPU
-`-sm tensor`, qwen4exp IQ3_XXS + MTP, byte-identical text) and **+12-21 %** on the `HC_MIX` op itself;
-`HC_MIX 30/30`, `GATED_DELTA_NET 46/46`, dense 4B same-seed unchanged.  **`v16-a55e952b8-r26`** was
-**PR #107** (DFlash F1 warn-and-fall-back plus default-on) and **PR #110** (DPP wave32 warp butterflies
-behind the build-time `-DGGML_HIP_NO_DPP_XOR` gate), plus a warning-free build.  **`v16-a55e952b8-r25`**:
-**PR #106 (issue #105) folded into blocks 06/08/14/15, minus its patch 0002**,
-plus `TODO #45`.  In: the retired-Q8_1-arena fix, the graph memory generation, the 8-version compacted
-meta split-state cache, qwen4exp's `block_out` unpin and planar HC_MIX, the conv-state tail copy, and the
-opt-in `LLAMA_KV_N_PAD_MIN`.  **Not in:** patch 0002 (hashing node/source `data` pointers into the graph
-key), because on the r22+ slab it invalidates warm graphs and recaptures (measured 41.8 vs 51.8 t/s at
-`--spec-draft-p-min 0.5`, 88.2 vs 94.9 at p-min 0, identical text and MTP acceptance).  **`v16-a55e952b8-r24`**: the **MoE expert-cache floor decides early again** (`MOE_EXPERT_CACHE_MIN_MIB`
-used to corrupt a run -- acceptance 0.00874 instead of 0.91797 -- because the early preflight walked the Meta
-device instead of the real device, leaving only a late, graph-breaking disable; the preflight now walks the
-host-expert map and runs before the context, and a late trip only warns), plus a **repack** that moves the
-whole **cache + arena/slab subsystem from blocks 13/14/15 into block 06** (blocks 07-15 rebased onto it;
-no code change, proven by tree equality).  **`v16-a55e952b8-r23`** was **diagnostics hygiene** found by the r22
-field run — six unconditional `MMB_*`
-stderr prints are gated on `GGML_CUDA_MMB_LOG`, `ggml_cuda_slab_extend` reports post-mapping free VRAM, the
-stale-alias count is surfaced, and the teardown compute-buffer size check no longer fires on a legitimate
-mid-run shrink.  **`v16-a55e952b8-r22`** was the **movable-boundary slab allocator** — ONE slab per device,
-reserved and mapped
-exactly once and split by a movable boundary (compute buffer below, MoE arena above), so a wide prefill and
-a large arena coexist and **HIP is never called at runtime** (nothing is ever unmapped, so the ROCm
-sub-range `hipMemUnmap` limitation stops mattering).  It ends the TODO #42 server crash: the wide-prefill
-drop is now default **on for every tool**, and `wide1 -> short -> wide2` at `-ub 8192` runs with **0 aborts**
-(server arena 15908.8 -> 38026.8 MiB, 67.0 % residency).  DoD `-ub 8192` cache-auto 16k: decode **74.2 t/s**
-/ prefill **1712.9 t/s**, coherent; MTP `-n 3000 --reasoning on` acceptance **bit-identical to r21**
-(0.53519).  `GGML_CUDA_SLAB=0` is the kill switch; see `ENVIRONMENT.md` §1.3.  Since **r37** the slab (and the
-slab-motivated compute chunk) is **armed only for models with host-resident experts**; a dense model never
-creates one (issues #118/#120).
+the whole set or pick the ones you want. 
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -529,6 +424,7 @@ them), regenerate the whole set with `scripts/make-patches.sh`, then refresh
 current-state headers. The old `baseline/<sha>`-branch-per-upstream-range workflow
 was retired when the delivery moved to the flat 16-patch set on `main`.
 
+
 ## Upstreaming
 
 Some blocks are candidates for upstream contribution to
@@ -537,67 +433,7 @@ expected to stay fork-local. Block 12's internal all-reduce is gated to
 RDNA4 pending community verification on RDNA3 pairs. See `MANIFESTS.md`
 for per-block verification and `BASELINE.md` for provenance.
 
-## Current state
 
-The delivery is the **16-patch set** (block 00 + blocks 01-15) for a clean llama.cpp checkout at the fork
-point recorded in [`release.json`](release.json) (**`a55e952b8`**, upstream master, 2026-10-03 re-base); the
-**current release is `v16-a55e952b8-r46`**: the r45 **block 16** is **folded back into the 0000-0015
-set** — the host-side/system half (the `seq_rm` used-range scan, the layer-uniform expert-cache
-re-arm, async graph-input uploads `GGML_CUDA_ASYNC_INPUT=1`, the legacy-pool cap
-`GGML_CUDA_POOL_CACHE_MB`) into **block 06**, the small-message all-reduce half
-(`GGML_CUDA_AR_SMALL_BLOCKS` default 4, P2P `GGML_CUDA_AR_P2P=1`) into **block 12**, and the
-decode/latency remainder (the GDN state-gather skip `GGML_CUDA_FUSE_GDN_STATE_GATHER=0`, the AVX2 S2
-top-k prefilter, the gfx1201 grid-stall pad `GGML_CUDA_GRID_STALL_PAD=0`) into **block 15**, together
-with **issue #133** (band-WMMA now folds GQA up to `GGML_HIP_FA_BAND_WMMA_GQA_MAX` = 12; qwen4exp GQA
-12 deep MTP +36 % on 2x R9700).  Before it,
-**`v16-a55e952b8-r44`**: the Windows host-pool portability fix (issue #130: POSIX file
-I/O behind helpers, `moe_cache_set_host_pool`/`_source` routed through the device API so a Windows DLL /
-`GGML_BACKEND_DL` build links) and a `-Wmissing-field-initializers` cleanup fold into **block 15**, and the
-per-sequence rollback guard (issue #131: the `llama-memory-recurrent` boundary warning now compares a
-sequence's rollback against that sequence's own last batch) folds into **block 02**.  No new block and no
-numerics change.  Before it,
-**`v16-a55e952b8-r43`**: the multi-ubatch logits readback is ordered (block 06).  Before it,
-**`v16-a55e952b8-r39`**: the op-offload H2D staging ring moves **inside** the
-movable-boundary slab (block 06 + block 15), so it stops competing with the post-slab consumers for the
-slab headroom and the r38 G4 default's ~16 % field-prefill cost is gone (field §5.5 prefill 781 -> 946 t/s
-at a 2.5 GiB region / 992 at 6 GiB, vs 922 stock; decode 61.1-61.4 vs 62.2; 0 NaN).  Before it,
-**`v16-a55e952b8-r38`**: the `fit-slab-accounting` revival is folded into block 06
-(G1/G2 `--fit` arena+headroom reservation, G3 adaptive slab reserve, G4
-`GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT` free-VRAM cap, G5 split-slice guard, G6 nextn-offload guard,
-G7 scheduler multi-consumer fill, per-device host-expert accounting) plus the G4 FA-staging cap in
-block 15.  Before it, **`v16-a55e952b8-r34`**: block 12's hybrid all-reduce no longer initialises NCCL
-eagerly -- NCCL comes up lazily on the first tensor too large for the internal pipeline (prefill), so a
-decode-only `-sm tensor` run never pays for it.  Eager `ncclCommInitAll` measurably degraded the
-internal pipeline ~3x even when no collective used it, which kept `-sm tensor` MoE decode at ~22 t/s
-instead of ~67 (now 69.5 t/s at `-ncmoe 0` on 3x R9700, output unchanged).  Before it,
-**`v16-a55e952b8-r33`** removed the pageable `--host-experts mmap` host master (issue #116: an RDNA part
-without XNACK cannot read a pageable address in a kernel), dropped `--host-experts mmap` /
-`LLAMA_MMAP_HOST_EXPERTS`, made the `-ncmoe`/`-cmoe` master always pinned and added the
-`MOE_EXPERT_CACHE_MIB >= 2048` floor.  Before it, **`v16-a55e952b8-r32`** was (both crashes found during
-the PR #115 review are fixed: issue #48, the post-prefill re-reserve no longer builds a zero-token
-attention graph for a multi-sequence decode, block 06; issue #49, the meta split-state computation no
-longer overflows the stack on a deep `src` chain, block 15).  Before it, **`v16-a55e952b8-r31`** was: PR #115 folded into
-block 06, the MoE expert-cache decode/verify band follows the routed-expert MMVQ band -- 16 tokens on
-RDNA4 -- so 12-16-token MTP verify batches stay on the arena; 16-token MoE batch +5.7x, `draft-mtp
-n-max 12` +3.3x, `n_max <= 7` pure, `GGML_MOE_CACHE_MAX_TOK=8` restores the old band.  Before it,
-**`v16-a55e952b8-r30`** was: issue #113 root-caused and fixed: the r29 divergence was an
-`A_sc` stride aliasing bug for `n_seqs > 1`, so `GGML_CUDA_GDN_CHUNKED_BF16` is default-on again at a
-near-lossless mean KLD of 0.0007 / 0.00005 / 0.00015 on gfx1201 / gfx1100 / gfx1151).  Before it,
-`v16-a55e952b8-r29` flipped the bf16 path off as a workaround; `v16-a55e952b8-r28` folded the `--host-experts` flag into block 06 (the
-`-ncmoe`/`-cmoe` host-expert backing becomes `--host-experts <pinned|mmap|auto>`, default pinned, the legacy
-`LLAMA_MMAP_HOST_EXPERTS` kept; `mmap` trades ~5 % prefill for ~18.6 GB less non-swappable host RAM; the
-previous `v16-a55e952b8-r27` folded PR #114's four bit-identical qwen4exp decode fusions into block 15,
-and `v16-a55e952b8-r26` added PR #107's DFlash F1 warn-and-fall-back plus default-on and PR #110's DPP
-wave32 warp butterflies behind the build-time `-DGGML_HIP_NO_DPP_XOR` gate).  `release.json` is the single source of truth for the canonical
-tip/tree, the block count and every artifact hash, and [`WORKLOG.md`](WORKLOG.md) records the dated history
-of every change, newest first.
-
-The set applies with **strict 16/16 `git am`** (no 3-way fallback, whitespace-clean) via
-`scripts/apply-all.sh`, and `scripts/validate-set.sh` re-checks the artifact hashes, the strict apply and
-the applied tree against `release.json`.  Per-block notes, environment knobs and the server configuration
-are in [`patches/README.md`](patches/README.md); apply order and the verification contract in
-[`MANIFESTS.md`](MANIFESTS.md); fork point and drift policy in [`BASELINE.md`](BASELINE.md); the purity
-rulebook in [`GREEDY-PURITY.md`](GREEDY-PURITY.md); every variable in [`ENVIRONMENT.md`](ENVIRONMENT.md).
 ## Community Acknowledgements
 
 This work is becoming a community effort and I'd like to offer special thanks to the
