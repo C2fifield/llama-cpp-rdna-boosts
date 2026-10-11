@@ -1,0 +1,52 @@
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 44ae21dff..28c982b1d 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1003,10 +1003,22 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+ 
+         // if we have enough unused cells before the current head ->
+         //   better to start searching from the beginning of the cache, hoping to fill it
+-        if (head_cur > cells.get_used() + 2*n_tokens) {
++        if (!getenv("LLAMA_KV_NO_RESET") && head_cur > cells.get_used() + 2*n_tokens) {
+             head_cur = 0;
+         }
+ 
++        // WIP test (TODO #52 part C): pad the allocation start to a multiple of the FA
++        // reduction tile so a sequence's cells are anchored to the tile grid.
++        if (const char * a = getenv("LLAMA_KV_ALIGN")) {
++            const uint32_t align = (uint32_t) atoi(a);
++            if (align > 0 && head_cur % align != 0) {
++                head_cur += align - (head_cur % align);
++                if (head_cur >= cells.size()) {
++                    head_cur = 0;
++                }
++            }
++        }
++
+         if (n_tokens > cells.size()) {
+             LLAMA_LOG_ERROR("%s: n_tokens = %d > size = %u\n", __func__, n_tokens, cells.size());
+             return { };
+@@ -1088,6 +1100,11 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+         if (res.idxs[s].size() < n_tokens) {
+             return { };
+         }
++
++        if (getenv("LLAMA_KV_OFFSET_DEBUG")) {
++            fprintf(stderr, "KVSLOT seq=%d first=%u last=%u n=%zu\n",
++                    (int) seq_id, res.idxs[s].front(), res.idxs[s].back(), res.idxs[s].size());
++        }
+     }
+ 
+     assert(res.s1 >= res.s0);
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index cd036742b..769fd5efb 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -151,6 +151,7 @@ endif ()
+ llama_build(test-recurrent-state-rollback.cpp)
+ llama_build(test-recurrent-state-depth.cpp)
+ llama_build(test-logits-width-probe.cpp)
++llama_build(test-multiseq-offset.cpp)
+ llama_build(test-save-load-state.cpp)
+ 
+ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
