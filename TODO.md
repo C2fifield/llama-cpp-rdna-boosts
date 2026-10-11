@@ -6,10 +6,14 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r46`, 2026-10-15):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical tip `2e19a9d398f5cbc16b6f549c244133d276c19e13`, net tree
-**`a6ca8905f3ce5eb9ac7bf67ff8863a0b43419293`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r46 **folds the r45 block 16 back into the 0000-0015 set** (host-side/system work
+**Current state (release `v16-a55e952b8-r48`, 2026-10-17):** the delivery is the **16-patch set** against
+fork point **`a55e952b8`**, canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
+**`3b9f403544169544f312bd24e4de31a554bf189d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
+GPU page fault): the Meta device now reports `host_buffer`/`events` and proxies its event iface, so the
+loader's pinned async-upload pipeline engages and the pageable `read_buf` SDMA path is gone; adapted from
+upstream PR #22466 and folded into **block 06** (see `WORKLOG.md` 2026-10-17, r48).  Before it, r46
+**folds the r45 block 16 back into the 0000-0015 set** (host-side/system work
 into block 06, the small-message all-reduce into block 12, and the decode/latency remainder into block
 15) and lands **issue #133** in block 15: the RDNA4 decode/verify band-WMMA predicate now folds GQA
 ratios up to `GGML_HIP_FA_BAND_WMMA_GQA_MAX` (default 12), so qwen4exp GQA-12 no longer falls to the

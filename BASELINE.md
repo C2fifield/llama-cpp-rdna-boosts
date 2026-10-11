@@ -2,7 +2,12 @@
 
 Current state: `main` is the delivery branch carrying the **16-patch set**
 (block 00 + blocks 01-15) generated against the fork
-point **llama.cpp master `a55e952b8`**; the current release is **`v16-a55e952b8-r47`** (canonical block-15
+point **llama.cpp master `a55e952b8`**; the current release is **`v16-a55e952b8-r48`** (canonical block-15
+tip `0bc12586`, net tree `3b9f403544169544f312bd24e4de31a554bf189d`): the `--load-mode none` + `-sm tensor`
+startup GPU fault (**issue #137**) is fixed in **block 06** (the Meta device reports `host_buffer`/`events`
+and proxies its event iface to the simple devices, so the loader's pinned async-upload pipeline engages;
+`ggml_backend_meta_set_tensor_async` is generalized to the loader's chunked and segmented ranges;
+adapted from upstream PR #22466).  Before it, **`v16-a55e952b8-r47`** (canonical block-15
 tip `6daf81569`, net tree `0099dd85130db65cbfbcfd738abfc57566bffe6f`): the `--fit off` slab blackout
 (**issue #136**) is fixed (block 06: the host-expert preflight parses its env before the cache gate, so
 the slab is always armed when the cache is enabled; a slab-creation failure errors and streams), the

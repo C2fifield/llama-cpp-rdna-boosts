@@ -3,7 +3,21 @@
 16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
 (re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
 
-> **Current release `v16-a55e952b8-r47` (2026-10-16) -- the `--fit off` slab blackout (issue #136) and the CE fail-soft:**
+> **Current release `v16-a55e952b8-r48` (2026-10-17) -- the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137):**
+> canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
+> `3b9f403544169544f312bd24e4de31a554bf189d`; strict **16/16** `git am` (`validate-set.sh` green).  The
+> fix folds into **block 06** (the loader + Meta-wrapper owner).  The Meta device now reports
+> `host_buffer`/`events` (ANDed with its simple devices) and proxies its event iface to them, so the
+> loader's existing pinned async-upload pipeline finally engages under `-sm tensor` instead of falling
+> back to a pageable `read_buf` (which SDMA read directly and faulted: `Faulty UTCL2 client ID: SDMA0`).
+> `ggml_backend_meta_set_tensor_async` is generalized to the loader's chunked ranges and segmented /
+> partial layouts (subsuming the block-15 `TODO #43` tail guard), and the loader's `upload_backend`
+> falls back to a real device's pinned host buft for its staging ring (the delivery's per-device
+> `ROCm_Host` makes the Meta device report none).  Adapted from upstream **PR #22466** (open and
+> mergeable upstream, unmerged since 2026-09-04).  See `WORKLOG.md` 2026-10-17 (r48) and
+> `archive/work/load-mode-none-meta-upload/`.
+>
+> **Previous release `v16-a55e952b8-r47` (2026-10-16) -- the `--fit off` slab blackout (issue #136) and the CE fail-soft:**
 > canonical tip `6daf815693704a214246bea7b60523ddff00a171`, net tree
 > `0099dd85130db65cbfbcfd738abfc57566bffe6f`; strict **16/16** `git am` (`validate-set.sh` green).  No new
 > block; block 15 is re-cut on top of blocks 06/12.

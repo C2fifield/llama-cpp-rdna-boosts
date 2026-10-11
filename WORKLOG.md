@@ -1,5 +1,60 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-17 (r48) -- fix the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137); close the #38 tracker
+
+**Release `v16-a55e952b8-r48`** (base `a55e952b8`, canonical block-15 tip
+`0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
+`3b9f403544169544f312bd24e4de31a554bf189d`); **16 blocks** (00-15); `scripts/validate-set.sh` green
+(strict 16/16 `git am`, reconstructed tree == `release.json`).  The fix folds into **block 06** (the
+loader + Meta-wrapper owner, and the first block that touches either file); block 15 no longer touches
+`meta_set_tensor_async`, so its old `TODO #43` tail hunk is subsumed.
+
+**The bug (issue #137).**  On 2x R9700 gfx1201, Qwen3.8-Flash-Next IQ4_NL with
+`-sm tensor -ncmoe 48 --load-mode none --lazy-mode off --fit off` + MTP n3, the load died roughly 1 run
+in 10 with `Memory access fault ... Page not present or supervisor privilege`.  The kernel journal is
+unambiguous about the client: `amdgpu ... [gfxhub] page fault ... Faulty UTCL2 client ID: SDMA0 (0xd)`,
+walking a pageable heap address.  The copy engine DMA-read pageable anonymous host memory.
+
+**Root cause.**  Under `-sm tensor` the device weights live in the **Meta** buffer, and the Meta device's
+capabilities are placeholders (`host_buffer = false`, `events = false`, `// TODO replace placeholders`)
+ANDed with the simple devices, so they can never be true.  `llama_model_loader::upload_backend` then
+never engaged (`D load_all_data: device Meta() does not support async, host buffers or events`), and the
+loader fell back to a pageable `std::vector<no_init<uint8_t>> read_buf` with a raw async H2D from it.
+`--load-mode auto`/`mmap` sources from the file-backed mapping (stable page cache) and `-sm layer` uses
+per-device buffers with a real `upload_backend`, which is why both were stable and only
+`--load-mode none` + `-sm tensor` faulted.
+
+**The fix (block 06).**  Adapted from upstream **PR #22466** ("ggml-backend-meta : async pinned upload
+for `-sm tensor` model load"; open and mergeable upstream, unmerged since 2026-09-04, and **not** among
+the 183 upstream commits since our base).  The Meta device now reports `host_buffer`/`events` (ANDed with
+the simple devices), proxies the device event iface (`event_new`/`free`/`synchronize`) and the backend
+`event_record`/`event_wait` to each simple backend, and `ggml_backend_meta_set_tensor_async` handles the
+loader's chunked ranges (partial head/tail rows) and multi-segment/partial layouts (an accumulator that
+delegates to the synchronous segmented handler).  That subsumes the previous `TODO #43` per-device tail
+guard.  Delivery-specific addition: because the delivery made `ROCm_Host` **per device**,
+`ggml_backend_dev_host_buffer_type(Meta)` is null, so `upload_backend` now falls back to a real device's
+pinned host buft for its staging ring.  (Loosening `get_host_buffer_type` instead was tried and rejected:
+it leaks into `make_cpu_buft_list` and moves the 27.8 GiB PLE into pinned `ROCm_Host`, restoring the
+whole-model 92.6 GiB pin.)
+
+**Validation (gfx1201).**  The loader logs `using async uploads for device Meta(), buffer type Meta(),
+backend Meta(ROCm0,ROCm1)`; the buffer layout is unchanged (`CPU 27806.97`, `Meta() 1789.79`,
+`ROCm_Host 64800.00` MiB).  Prefill-logit gate **PASS** (mean KLD **0.000707**, same-top-p **98.755 %**,
+identical to the recorded base).  `test-backend-ops -o MUL_MAT_ID` **931/931**.  Width purity on the dense
+27B Q8_0, 2-GPU `-sm tensor`, `--load-mode mlock`: `--spec-type none == draft-mtp
+--spec-draft-n-max 7` **byte-identical** (`c0f0edeac619`, `-n 1024`, `prompts/prose-rdna-boosts.txt`).
+Dense 4B Q8_0 coherence: `-sm tensor == -sm layer == 1 GPU`, and byte-identical to the unpatched build
+(`b065f37593b3`).  The field config: **10/10** loads clean, coherent output, `////` = 0 over a 512-token
+code run.  (The field config's greedy text is not run-to-run deterministic -- pre-existing `TODO.md` #50,
+the global fusion guard vs per-table slab eviction -- so text hashing is not a gate there; the dense 4B
+and the prefill-logit gate cover the numerics.  The fault is a ~1-in-10 race that also did not reproduce
+on the unpatched build across 7 runs, so the close is evidence-based, not statistical; reopen if it
+recurs.)
+
+**Tracker.**  The historical `TODO #38` (host-resident expert load page fault under `--load-mode none`)
+is now genuinely closed; this was its last known reproducer.  The campaign record moves from
+`wip/load-mode-none-meta-upload/` to `archive/work/load-mode-none-meta-upload/`.
+
 ## 2026-10-16 (r47) -- fix the `--fit off` slab blackout (issue #136) and make the CE all-reduce fail-soft; close #135
 
 **Release `v16-a55e952b8-r47`** (base `a55e952b8`, canonical block-15 tip
