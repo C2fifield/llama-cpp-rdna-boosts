@@ -108,10 +108,14 @@ export LD_LIBRARY_PATH=/opt/rocm-7.14.1-gfx120X/lib
 **Server gate** (`archive/work/moe-verify-fusions/tools/multiseq.sh` and its `_plain`/`_np2` variants):
 ```bash
 # unified, 2 slots, plain (no MTP), GSQ target; green iff A_solo == A_conc1..3
+PROMPTS=<repo>/wip/kv-cell-offset-nondeterminism/prompts
 M=/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
+  PROMPT_A=$PROMPTS/mixed30k.txt PROMPT_B=$PROMPTS/msqB.txt \
   GPUS=0,1 PORT=8997 <repo>/wip/kv-cell-offset-nondeterminism/tools/msq_plain.sh  \
   <build-dir> tag
 # compare: same with --no-kv-unified  -> green
+# (the prompts are historical field prompts: mixed30k.txt = README.md + ENVIRONMENT.md + CONTAINERS.md
+#  + archive/docs/baseline-history.md, sha256 69624f4d207f40bd...; msqB.txt is the short companion.)
 ```
 (Create the `_np2` variant by adding `-np 2` to the server line: `multiseq.sh` never passes `-np`, so
 the server otherwise auto-sets `-np 4` and forces `kv_unified=true`.)
