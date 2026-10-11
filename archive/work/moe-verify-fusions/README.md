@@ -1,7 +1,14 @@
 # `moe-verify-fusions` — the MoE verify step: cache-aware fusion selection (#50) and 3-GPU scaling (#51)
 
-**Status: OPEN (opened 2026-10-10).**  Not part of the delivery; nothing here may be applied to the fork
-without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
+**Status: CLOSED / ARCHIVED (2026-10-12, after `v16-a55e952b8-r43`).**  This campaign was opened
+2026-10-10 and is now archived.  Its two delivery tracks are done: **#50** (cache-aware fusion guard,
+`v16-a55e952b8-r40`), **#53** (35B-A3B lazy-NCCL, `v16-a55e952b8-r41`), and the multi-sequence line **#52
+part A** (GDN kernel choice, `-r42`) and **part B** (the held batching change; the actual defect was the
+multi-ubatch logits-readback ordering, `-r43`, block 06).  **Part C** (the unified-KV cell-offset /
+attention-tile non-determinism) moved to the new campaign **`wip/kv-cell-offset-nondeterminism/`**.  One
+item remains open from this campaign: **TODO #51** (3-GPU MTP verify regression), whose full record is
+kept here; it is tracked in `TODO.md` #51.  This directory is reference-only — nothing here may be applied
+to the fork.
 
 > **#53 is RESOLVED and DELIVERED in `v16-a55e952b8-r41` (2026-10-12).**  The 35B-A3B `-sm tensor -ncmoe`
 > impurity was **not** the internal host-staged all-reduce (which is bit-exact) but block 12's **lazy

@@ -41,9 +41,9 @@ could disagree with it has been deleted from the code base** (block 06 no longer
 host-routing path is the only `-sm tensor` split policy: MTP-pure on qwen4exp (`none == n3`),
 budget-sweep-pure (MIB8000 vs MIB14000 `None`), and within run-to-run noise of the old `DEVMAP=0`
 performance (delivery MTP prefill 1585.2 vs 1587.0, decode 72.36 vs 72.56; plain prefill 1471.8 vs 1471.9,
-decode 41.73 vs 41.80).  See `wip/moe-verify-fusions/FINDINGS-devmap-removal.md`.
+decode 41.73 vs 41.80).  See `archive/work/moe-verify-fusions/FINDINGS-devmap-removal.md`.
 
-**Working home: `wip/moe-verify-fusions/`** (tracked together with #51 — the maintainer suspects a shared root cause on the cache-band routed-MMVQ verify path).
+**Working home: `archive/work/moe-verify-fusions/`** (tracked together with #51 — the maintainer suspects a shared root cause on the cache-band routed-MMVQ verify path).
 
 **Opened 2026-10-10 (WIP finding, `archive/work/slab-ring-region/`).**  `ggml_cuda_cache_blocks_fusion`
 (`ggml-cuda.cu:5804`) is gated on the **global** `moe_cache_has_arena()`, but the movable-boundary slab
@@ -73,7 +73,7 @@ fixes — see the measured cost and the re-enable recipe in `ENVIRONMENT.md` §7
 
 ### 51. 3-GPU MTP decode is 2.6x SLOWER than plain decode (pre-existing)
 
-**Working home: `wip/moe-verify-fusions/`** (tracked together with #50 — the maintainer suspects a shared root cause on the cache-band routed-MMVQ verify path).
+**Working home: `archive/work/moe-verify-fusions/`** (tracked together with #50 — the maintainer suspects a shared root cause on the cache-band routed-MMVQ verify path).
 
 **Opened 2026-10-10 (found during the `archive/work/slab-ring-region/` 3-GPU gate).**  On 3 GPUs MTP is a *loss*,
 not a win — and it hits the production config (AGENTS.md: servers run unpinned, 3-GPU,
@@ -115,17 +115,19 @@ devices), the draft/target device placement, and whether the per-op graph captur
 `ggml_cuda_op_gated_delta_net_impl` took the whole-batch chunked kernel for `n_seqs > 1 && K == 1`
 unconditionally while the solo path took the sequential kernel, so a sequence's GDN result depended on its
 co-resident sequences; the multi-sequence branch now shares the single-sequence `n_tokens >
-GDN_CHUNKED_MIN_TOKENS` gate. The **remaining component C** (a unified-KV/attention state dependence that
-survives no co-batching at all, `MOE_EXPERT_CACHE_MIB=0`, and the part-1 fix) is still open; it is a
-separate root from the recurrent rollback (the `seq_rm` boundary warning is a false positive: the probe is
-bit-exact at the production verify width). A companion batching fix was prototyped and is decode-cost-free
-but breaks `llama-perplexity` at `n_seq >= 4`, so it was held. Handover:
-`wip/moe-verify-fusions/HANDOVER-multiseq-bc.md`; probes:
-`wip/moe-verify-fusions/tools/test-recurrent-state-multiseq.cpp`, `session-multiseq-instrumentation.diff`.
-The text below is the original finding.
+GDN_CHUNKED_MIN_TOKENS` gate. **Part B (the held multi-token batching change) is DELIVERED in `v16-a55e952b8-r43` (2026-10-12, block 06).**
+It was correct; it only appeared to break `llama-perplexity` at `n_seq >= 4` because of a **logits-readback
+ordering hazard** (the pinned async D2H copy was not ordered against the next ubatch's compute). The readback
+is now completed before the next ubatch runs; PPL `8.5100`, the probe bit-identical, prefill-logit
+`0.000707 / 98.755 %`. **The remaining component C** -- the `--kv-unified` server non-determinism (a
+sequence's attention result depends on the physical offset of its KV cells modulo the FA reduction tile, and
+it is upstream-inherent) -- is **moved to `wip/kv-cell-offset-nondeterminism/`** (handover + cold-start
+prompt). It is a separate root from the recurrent rollback (the `seq_rm` boundary warning is a false
+positive: the probe is bit-exact at the production verify width). The predecessor record is
+`archive/work/moe-verify-fusions/`. The text below is the original finding.
 
-**Working home: `wip/moe-verify-fusions/`** (found 2026-10-12 while investigating the single-sequence
-divergence — see [`HANDOVER-single-seq-rollback.md`](wip/moe-verify-fusions/HANDOVER-single-seq-rollback.md)).
+**Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-12 while investigating the single-sequence
+divergence — see [`HANDOVER-single-seq-rollback.md`](archive/work/moe-verify-fusions/HANDOVER-single-seq-rollback.md)).
 
 **Symptom.**  `llama-server -np 2 --kv-unified --spec-type draft-mtp`, two concurrent greedy requests (A
 long keeps decoding after B short finishes): the output is **not reproducible across identical
@@ -150,7 +152,7 @@ the all-reduce); `GGML_CUDA_GDN_CHUNKED=0` removes the snapshot substance but th
 is emitted **once per process** (a `static` flag), so a later occurrence is silent — do not rely on the
 log alone.
 
-**Reproducer:** `wip/moe-verify-fusions/tools/multiseq.sh <build_dir> <tag>` (env `GPUS`/`M`/`D`), e.g.
+**Reproducer:** `archive/work/moe-verify-fusions/tools/multiseq.sh <build_dir> <tag>` (env `GPUS`/`M`/`D`), e.g.
 `GPUS=0,1 ./multiseq.sh ~/llama.cpp/build-rocm-hybrid msq`.
 
 **Fix direction (not yet chosen):** the §27 invariant — *every batch that can be rolled back into must
@@ -172,8 +174,8 @@ product path: 35B-A3B `-ncmoe 99` + auto cache `none == n1 == n3 == n7` (short) 
 Full record: `WORKLOG.md` 2026-10-12 (r41); `patches/README.md` block 12.  The cache-off / `-ncmoe 0`
 (upstream-shaped) paths are pure too, but are not the product.  The text below is the original finding.
 
-**Working home: `wip/moe-verify-fusions/`** (opened 2026-10-10; handover:
-[`HANDOVER-35b-tensor-impurity.md`](wip/moe-verify-fusions/HANDOVER-35b-tensor-impurity.md)).
+**Working home: `archive/work/moe-verify-fusions/`** (opened 2026-10-10; handover:
+[`HANDOVER-35b-tensor-impurity.md`](archive/work/moe-verify-fusions/HANDOVER-35b-tensor-impurity.md)).
 
 **Symptom.**  `Qwen3.6-35B-A3B-Q8_0` (embedded `qwen35moe.nextn` MTP head), `-sm tensor -ncmoe 99`, 2 GPU:
 `--spec-type none` vs `--spec-type draft-mtp --spec-draft-n-max 3` **diverges at token 8**; the same model
