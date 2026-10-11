@@ -128,12 +128,19 @@ export LD_LIBRARY_PATH=/opt/rocm-7.14.1-gfx120X/lib
 # unified, 2 slots, plain (no MTP), GSQ target; green iff A_solo == A_conc1..3
 PROMPTS=<repo>/wip/kv-cell-offset-nondeterminism/prompts
 M=/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
-  PROMPT_A=$PROMPTS/mixed30k.txt PROMPT_B=$PROMPTS/msqB.txt \
+  PROMPT_A=$PROMPTS/mixed30k-v2.txt PROMPT_B=$PROMPTS/msqB.txt \
   GPUS=0,1 PORT=8997 <repo>/wip/kv-cell-offset-nondeterminism/tools/msq_plain.sh  \
   <build-dir> tag
 # compare: same with --no-kv-unified  -> green
-# (the prompts are historical field prompts: mixed30k.txt = README.md + ENVIRONMENT.md + CONTAINERS.md
-#  + archive/docs/baseline-history.md, sha256 69624f4d207f40bd...; msqB.txt is the short companion.)
+# (the prompts are historical field prompts.  mixed30k-v2.txt is the same doc dump as mixed30k.txt
+#  (README.md + ENVIRONMENT.md + CONTAINERS.md + archive/docs/baseline-history.md) with the GPU-fault
+#  strings reworded, so a log grep for a fault no longer matches the echoed prompt:
+#  99159 B, 33729 tokens, sha256 3e22e0fd6c60e507caac394d314725a15f4eaddf7a34ccc89dc47aefb42b2071.
+#  The original mixed30k.txt (99174 B, 33733 tokens, sha256 69624f4d207f40bd...) is KEPT unchanged,
+#  because the archived campaign results and the field tools refer to its hash.  msqB.txt is the short
+#  companion (sha256 8079985bb6bc7c48ecbd2d95e60ebfd396e4a78e9c56b63051e840ddda565057).
+#  Check faults with `<repo>/scripts/check-gpu-faults.sh --log <server.log>` rather than grepping the
+#  log: it reads the kernel journal and filters the echoed prompt lines.)
 ```
 (Create the `_np2` variant by adding `-np 2` to the server line: `multiseq.sh` never passes `-np`, so
 the server otherwise auto-sets `-np 4` and forces `kv_unified=true`.)
