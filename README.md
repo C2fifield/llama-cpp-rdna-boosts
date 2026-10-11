@@ -112,6 +112,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ├── prompts/               # versioned, hash-stable test prompts (sha256-recorded; never edited in place)
 ├── wiki/                  # source for the GitHub wiki (Home, MTP & Adaptive MTP, Quick Reference); see wiki/README.md
 ├── wip/                   # ACTIVE exploration docs / handoffs (currently only: nwarps/)
+├── beta/                  # promotion-candidate patches pending a beta test (NOT part of the delivery)
 ├── upstream/              # upstream-PR candidates (UPSTREAM-PR-*.md + .patch) + their index
 └── archive/               # the rest: archive/work/ (closed experiments + the archived wip/ trees) + archive/docs/ (history)
 ```

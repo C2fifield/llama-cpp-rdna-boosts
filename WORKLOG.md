@@ -1,5 +1,47 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-17 (beta) -- issue #138: FA prefill staging arena preallocation candidate in `beta/`
+
+**No release.  The delivery is untouched** (`patches/`, `release.json` and `rdna-boosts-all.patch`
+unchanged).  This records a beta candidate only.
+
+**The issue (issue #138, @DanoPTT).**  The per-stream F16 FA prefill staging arena
+(`fattn_stage_try_get`, block 15) grows in 1.25x steps by allocating the new arena and then
+`cudaFree`-ing the old one.  On Windows/WDDM a freed allocation stays committed against the process, so
+a 119k-token q8_0 prefill leaves ~2.65 GiB dead VRAM (final arena ~530 MiB, cumulative ladder ~5x),
+and a near-limit card then spills to shared memory (pp 793 -> 255 t/s, MTP acceptance 65% -> 41%).  On
+Linux/KFD the freed steps are returned and reused, so the symptom does not reproduce; the reporter
+re-verified the code path on r47, and it is byte-identical in r48 (block 15 unchanged r47 -> r48).
+
+**The candidate (`beta/fa-stage-prealloc/`).**  Patch sha256
+`f1a0f0b1c87dc77e6bce796af94b63262c109dce5a8a93d09685d262137d7f2a`, cut against the r48 tree
+`3b9f403544169544f312bd24e4de31a554bf189d`, applied tree
+`24fdc3c7f641e7b37a0d4b0a6d4024622bde94ce`; `git apply` and `git am` clean on a fresh
+`apply-all.sh` checkout.  This is the reporter's fix adapted to r48 (Option A): `launch_fattn` passes
+the F16 size of the K/V view roots as a hint (per-operand capped by `GGML_CUDA_FA_STAGE_MAX_MB`; an
+unbounded cap passes no hint) and the arena allocates it once.  The hint is tried only while
+`optional_alloc_within_free_cap` allows it (the r39 G4 slab guard) and falls back to the existing
+growth step on a refusal or a `cudaMalloc` failure, so an oversized hint cannot cost more than the
+pre-change path.  `GGML_CUDA_FA_STAGE_PREALLOC=0` restores the ladder (A/B / bisect).
+
+**Validation on Linux (gfx1201, ROCm 7.14, r48 + patch, `build-rocm-hybrid` at `0fb51947d`).**  Golden
+coherence (f16 KV, 3-GPU `-sm tensor`) `1c5d32ac537d` unchanged; q8_0-KV coherence A/B (31k prompt,
+`PREALLOC=0` vs default) byte-identical (`ab8e156cca11`); arena A/B by prefill-logit KLD (4B, q8_0 KV,
+ctx 16384, 16 chunks, `--ab PREALLOC=0`) mean KLD **0.000000** / same-top-p **99.997%**; the standard
+prefill-logit gate (27B Q8_0, f16 KV) PASS at mean KLD **0.000707** / **98.755%**, unchanged from base;
+pp16384 A/B on 27B Q5_K_M with q8_0 KV **1108.94 ± 0.92** (ladder) vs **1108.03 ± 0.61** (prealloc)
+t/s, within noise; `GGML_CUDA_FA_STAGE_MAX_MB=0`, `PREALLOC=0` and `MAX_MB=1` all produce identical
+greedy output.  The reporter's Windows symptom cannot be reproduced on Linux by construction, so the
+next step is their re-test with `beta/fa-stage-prealloc/BETA-TESTING.md`; a confirmation then decides
+the owning block and the fold.
+
+**`beta/` is reintroduced.**  It was removed in 2026-09-25 (r8) after `mmb-general` was integrated
+(`8ea6151`).  The directory is the external-validation holding area for promotion candidates that
+cannot sit in `wip/` because they edit a file a block owns: one sub-directory per candidate with a
+`README.md`, a `BETA-TESTING.md` and a patch cut against the current tree, never applied by
+`apply-all.sh`.  `beta/README.md` records the conventions; the `AGENTS.md` layout row and the WIP rule
+are updated to match.
+
 ## 2026-10-17 (r48) -- fix the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137); close the #38 tracker
 
 **Release `v16-a55e952b8-r48`** (base `a55e952b8`, canonical block-15 tip

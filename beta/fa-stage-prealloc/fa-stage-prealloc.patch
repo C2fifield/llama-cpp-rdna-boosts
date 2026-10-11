@@ -1,0 +1,152 @@
+From a3ed81a846be7b2311abcbba7bb7d60d408c2a72 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Sun, 11 Oct 2026 16:03:42 -0500
+Subject: [PATCH] beta: FA prefill staging arena preallocation (issue #138)
+
+Allocate the per-stream F16 staging arena once at its eventual full size
+instead of climbing the 1.25x growth ladder.  On Windows/WDDM a freed
+allocation stays committed against the process, so over a deep q8_0 prefill
+the ladder strands roughly 5x the final arena and a near-limit card spills to
+shared memory.
+
+launch_fattn passes a hint: the F16 size of the K/V view roots, capped per
+operand by GGML_CUDA_FA_STAGE_MAX_MB exactly as the request is.  An unbounded
+cap (GGML_CUDA_FA_STAGE_MAX_MB=0) passes no hint.  fattn_stage_try_get tries
+the hint first, but only while it stays within the optional-allocation free cap
+(the G4 slab guard), and falls back to the existing growth step on a refusal or
+a cudaMalloc failure, so an oversized hint can never cost more than before.
+
+GGML_CUDA_FA_STAGE_PREALLOC=0 restores the pre-change growth-only behaviour.
+
+Reported-by: Daniel Petrik (@DanoPTT)
+---
+ ggml/src/ggml-cuda/common.cuh       | 74 ++++++++++++++++++++---------
+ ggml/src/ggml-cuda/fattn-common.cuh | 16 ++++++-
+ 2 files changed, 66 insertions(+), 24 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 63ecfa903..9d94c5969 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1848,40 +1848,68 @@ struct ggml_backend_cuda_context {
+     // reserve -- the reserve sizes it for n_ctx -- so a llama-server --fit run can legitimately have
+     // less free memory at the first deep prefill than the fit projected; failing here must degrade
+     // to the native read, not kill the run.
+-    void * fattn_stage_try_get(int stream_no, size_t size) {
++    //
++    // `size_hint`, when non-zero, is the eventual full size this arena will be asked for (the F16
++    // size of the K/V view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB; computed by
++    // launch_fattn).  When it is set and at least `size`, the arena is allocated once at that size
++    // instead of climbing the 1.25x growth ladder: on Windows/WDDM a freed allocation stays
++    // committed against the process, so the ladder strands roughly 5x the final arena over a deep
++    // prefill.  The hint is only honoured when it stays within the optional-allocation free cap
++    // (the slab-active guard) and is tried before the ladder, so on refusal or cudaMalloc failure
++    // the existing growth step runs -- an oversized (or unbounded) hint can never cost more than
++    // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
++    void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
+         GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
+         if (size > fattn_stage_size[stream_no]) {
+-            const size_t new_size = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
+-            // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
+-            // still leave when the movable-boundary slab is active (see
+-            // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
+-            if (!optional_alloc_within_free_cap(fattn_stage_bytes() - fattn_stage_size[stream_no] + new_size)) {
+-                if (!fattn_stage_oom_warned) {
+-                    fattn_stage_oom_warned = true;
+-                    GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
+-                                  "(the slab is active and free VRAM is tight); reading the K/V cache "
+-                                  "natively instead (prefill may be slower)\n",
+-                                  __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
++            static const bool prealloc = []() {
++                const char * e = getenv("GGML_CUDA_FA_STAGE_PREALLOC");
++                return e == nullptr || atoi(e) != 0;
++            }();
++            const size_t new_size  = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
++            const size_t cur_total = fattn_stage_bytes() - fattn_stage_size[stream_no];
++            size_t alloc_size = new_size;
++            char * new_arena = nullptr;
++            if (prealloc && size_hint >= size) {
++                const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
++                if (optional_alloc_within_free_cap(cur_total + hint_size)) {
++                    if (cudaMalloc(&new_arena, hint_size) == cudaSuccess) {
++                        alloc_size = hint_size;
++                    } else {
++                        (void) cudaGetLastError(); // clear the sticky error, fall back to the growth step
++                    }
+                 }
+-                return nullptr;
+             }
+-            char * new_arena = nullptr;
+-            if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
+-                (void) cudaGetLastError(); // clear the sticky error
+-                if (!fattn_stage_oom_warned) {
+-                    fattn_stage_oom_warned = true;
+-                    GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
+-                                  "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
+-                                  __func__, new_size >> 20);
++            if (new_arena == nullptr) {
++                // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
++                // still leave when the movable-boundary slab is active (see
++                // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
++                if (!optional_alloc_within_free_cap(cur_total + new_size)) {
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
++                                      "(the slab is active and free VRAM is tight); reading the K/V cache "
++                                      "natively instead (prefill may be slower)\n",
++                                      __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
++                    }
++                    return nullptr;
++                }
++                if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
++                    (void) cudaGetLastError(); // clear the sticky error
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
++                                      "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
++                                      __func__, new_size >> 20);
++                    }
++                    return nullptr;
+                 }
+-                return nullptr;
+             }
+             if (fattn_stage[stream_no] != nullptr) {
+                 ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
+                 CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
+             }
+             fattn_stage[stream_no]      = new_arena;
+-            fattn_stage_size[stream_no] = new_size;
++            fattn_stage_size[stream_no] = alloc_size;
+         }
+         return fattn_stage[stream_no];
+     }
+diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
+index 1ca9c45e3..3fa9284a0 100644
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -1964,7 +1964,21 @@ void launch_fattn(
+     const bool stage_wants_K = !native_width && stage_cap_K && kv_native_K != FATTN_KV_NATIVE_NONE;
+     const bool stage_wants_V = !native_width && stage_cap_V && kv_native_V != FATTN_KV_NATIVE_NONE && !V_is_K_view;
+     const size_t stage_req = (stage_wants_K ? stage_bytes_K : 0) + (stage_wants_V ? stage_bytes_V : 0);
+-    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req) : nullptr;
++    // Issue #138: the eventual full size of the staging arena is known from the F16 size of the K/V
++    // view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB exactly as the request is.  Passing
++    // it lets the arena allocate once instead of climbing its 1.25x growth ladder, which on
++    // Windows/WDDM strands every freed step against the process (~5x the final arena over a deep
++    // prefill).  With an unbounded cap (=0) no hint is passed: the full root can be many GiB and the
++    // ladder stays the safer growth path there.
++    size_t stage_hint = 0;
++    if (stage_req != 0 && stage_max_bytes != 0) {
++        auto full_bytes = [stage_max_bytes](const ggml_tensor * t) {
++            const ggml_tensor * root = t->view_src != nullptr ? t->view_src : t;
++            return std::min((size_t) ggml_nelements(root)*sizeof(half), stage_max_bytes);
++        };
++        stage_hint = (stage_wants_K ? full_bytes(K) : 0) + (stage_wants_V ? full_bytes(V) : 0);
++    }
++    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req, stage_hint) : nullptr;
+     const bool stage_ok = stage_buf != nullptr;
+ 
+     const bool use_native_K = (native_width || !stage_ok || !stage_cap_K) && kv_native_K != FATTN_KV_NATIVE_NONE;
+-- 
+2.56.0
+

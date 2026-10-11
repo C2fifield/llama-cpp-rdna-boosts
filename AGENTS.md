@@ -73,6 +73,7 @@ amendment, or a note in the relevant record).
 | `benchmarks/` | dated bench records + methodology; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) and **`prefill-logit-methodology.md` = the prefill-logit KLD gate** (run before shipping any prefill-kernel change or release) |
 | `prompts/` | versioned, hash-stable test prompts; sizes/token counts/**sha256** in `prompts/README.md`. A shipped prompt is **never edited in place** (add a new file); a result is only valid against the prompt hash it names |
 | `wip/` | **ACTIVE** exploration docs/tools — **NOT part of the delivery**; see the WIP rule. Each campaign is a self-contained handover under its own `README.md` (no `wip/README.md`); the open set is indexed in `wip/CAMPAIGNS.md` |
+| `beta/` | **promotion-candidate patches** staged for a beta test — **NOT part of the delivery**. Each candidate is `<name>/` with `README.md` (what/why/status), `BETA-TESTING.md` (the tester's apply + gate checklist) and `<name>.patch` cut against the current `release.json` tree. Nothing here is applied by `apply-all.sh`; a confirmed or refuted candidate moves to `archive/work/` and is recorded in `WORKLOG.md` |
 | `upstream/` | **upstream-PR candidates** (self-contained changes for unadulterated `ggml-org/llama.cpp`), each `UPSTREAM-PR-*.md` + `.patch`; see its README |
 | `archive/docs/` | moved-out historical records (validation/baseline history, the pre-cleanup AGENTS.md) — reference only |
 | `archive/work/` | closed experiments and campaigns, preserved for future re-evaluation (mmb/qsa3, moe-expert-cache, issues/PRs, …) — reference only |
@@ -125,6 +126,13 @@ asks for that specific item**. WIP stays env-gated OFF and excluded from `patche
 out is promotion: collect *validated* wins, give each an env kill-switch, re-validate the
 **combination** (individual validations do not carry over), then cut a new block with the maintainer's
 go-ahead. Anything also applicable to unadulterated upstream gets a copy under `upstream/`.
+
+**`beta/` is the external-validation holding area, not a third kind of source.**  A candidate that
+cannot sit in `wip/` because it edits a file a block owns, but is not yet validated on the reporter's
+platform, goes to `beta/<name>/` (a `README.md`, a `BETA-TESTING.md` and a patch cut against the
+current `release.json` tree; nothing in it is applied by `apply-all.sh`).  On confirmation or
+refutation it moves to `archive/work/<name>/` and is recorded in `WORKLOG.md` — same no-stub rule as
+`wip/`.
 
 **A finished campaign leaves `wip/` — it does not become a stub.**  The moment a campaign is promoted
 (folded into `patches/`), closed, or refuted, its record moves to `archive/work/<campaign>/` and the
