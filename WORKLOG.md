@@ -1,5 +1,61 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-14 (r45) -- block 16: the contributor decode/latency PRs (#124, #125, #126, #128, #129, #132)
+
+**Release `v16-a55e952b8-r45`** (base `a55e952b8`, canonical block-16 tip
+`f92e5284bf19847c9fc33ac60cf4ef5562c2136b`, net tree
+`064c72ae60c2153a525d4681df1e19aad516f08c`); **17 blocks** (00-16); `scripts/validate-set.sh` green
+(strict 17/17 `git am`, reconstructed tree == `release.json`).  New **block 16** carries the six
+contributor WIP campaigns, all promoted and archived under `archive/work/<campaign>/RESOLUTION.md`.
+
+**#124 (GDN state-gather skip, block 16).** In the one-sequence `<= 16`-token decode/verify band the
+CUDA graph now skips each GDN layer's `GET_ROWS` recurrent-state gather; the sequential kernel reads
+`s0` straight from the cache row (a plain copy, so bit-identical).  Default-on kill-switch
+`GGML_CUDA_FUSE_GDN_STATE_GATHER=0`.  Two non-CUDA-backend riders keep the row ids alive:
+`rs_s_copy` is flagged `OUTPUT` in `src/llama-graph.cpp`, and the scheduler keeps that flag on a
+single split-input copy (`n_copies == 1`) in `ggml/src/ggml-backend.cpp`.  `@DanoPTT`'s r38 Windows
+concurrent-sequence report is the documented unified-KV/attention-offset non-determinism
+(`wip/kv-cell-offset-nondeterminism/`, issue #134), not the skip; the maintainer confirmed the
+non-determinism sources were resolved by the earlier campaigns.
+
+**#125 (decode host-side, block 16).** `0002` `llama_kv_cache::seq_rm` scans only
+`[used_min(), used_max_p1())`; `0003` adds an AVX2 block-max + NaN prefilter to the S2 exact top-k
+fast path (runtime AVX2 check, scalar fallback; `_WIN32` uses `IsProcessorFeaturePresent`, the
+`@DanoPTT` link fix); both always on.  `0001` async graph-input uploads (per-device 16 MiB pinned
+ring, done-event ordering, `<= 1 MiB` COMPUTE-buffer writes) is **opt-in**
+`GGML_CUDA_ASYNC_INPUT=1`.
+
+**#126 (expert-cache re-arm, block 16).** `0001` makes `moe_cache_rearm` re-arm every allocated table
+of a stood-down layer together, so a layer partially taken by slab chunks comes back slot-uniform.
+`0002`/`0003` are **not applicable**: they fix the pipelined used-list readback and the device
+`expert -> slot` map that r40's DEVMAP removal deleted.
+
+**#128 (grid-stall pad, block 16).** `ggml_cuda_grid_stall_pad()` detects a launch whose block count
+is a multiple of 256 (work-item count a multiple of 65536) and adds one returning block to
+`mul_mat_vec_f` / `mul_mat_vec_q_ksplit` / `mul_mat_vec_q_moe`; bit-identical, default-on
+`GGML_CUDA_GRID_STALL_PAD=0`; HIP-only, and removable once AMD fixes ROCm/legacy-rocm-build#6689.
+
+**#129 (all-reduce small-message latency, block 16).** `0001` launches 4 blocks (not 8) for small
+decode/verify messages (`GGML_CUDA_AR_SMALL_BLOCKS`, `GGML_CUDA_AR_SMALL_BYTES`), default-on.  `0002`
+is the opt-in 2-device P2P push all-reduce with lightweight fences (`GGML_CUDA_AR_P2P=1`,
+`GGML_CUDA_AR_P2P_LITE`).
+
+**#132 (legacy-pool cache cap, block 16).** Opt-in `GGML_CUDA_POOL_CACHE_MB=N` frees the legacy
+HIP/CUDA pool's cached bytes before a new device allocation once they exceed N MiB; unset/0 keeps
+today's behaviour.  Reported win is at ~256K context; not reproduced at 64K here (peak dominated by
+weights), kept opt-in.
+
+**Validation (gfx1201).** `Qwen3.5-4B-Q8_0` same-seed coherence `1c5d32ac537d` unchanged.  Prefill-logit
+mean KLD **0.000707 / same-top-p 98.755 %** (PASS, identical to base).  `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS`
++ shared `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`, 2x R9700, `--lazy-mode off --fit on -sm tensor`,
+q8_0 KV, MTP `n_max 3`, `-n 3000`: `--spec-type none == draft-mtp` byte-identical and identical to the
+r44 baseline (`2b2341670f23`); default **127.7 -> 130.1 t/s (+1.9 %)** and **135.9 t/s (+6.4 %)** with
+`GGML_CUDA_ASYNC_INPUT=1` (4 repeat runs, same sha).  `test-backend-ops -o GATED_DELTA_NET`,
+`MUL_MAT_ID`, `FLASH_ATTN_QSA`: all OK.  A clean build emits no new warnings.
+
+**Fork refresh.** `~/llama.cpp`'s `rdna-boosts` branch must be re-cut from this set and force-pushed to
+the personal fork (never upstream); do not hand-edit `patches/`.
+
 ## 2026-10-13 (r44) -- Windows host-pool portability (issue #130, block 15) + per-sequence rollback guard (issue #131, block 02)
 
 **Release `v16-a55e952b8-r44`** (base `a55e952b8`, canonical block-15 tip

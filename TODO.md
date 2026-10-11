@@ -169,6 +169,12 @@ prefill when a rollback can follow it, or (c) pin the rollback into the batch's 
 with a matrix (2-seq × prefill-in-flight × `GGML_CUDA_GDN_CHUNKED`) and re-check the reporter's PR #124
 scenario before that PR is ever merged.
 
+**Re-check done 2026-10-14 (r45).**  PR #124 was **merged in block 16** on the maintainer's decision.  The
+reporter's concurrent-sequence variation is the unified-KV/attention-offset non-determinism above (issue
+#134) — reproduced on this tree with the skip absent — so it is not the skip.  Documented as the
+`-np > 1 --kv-unified` gotcha (`--no-kv-unified` is deterministic); the skip itself is bit-identical in
+the single-request and 2-GPU MTP gates (`archive/work/gdn-state-gather-skip/RESOLUTION.md`).
+
 ### 53. 35B-A3B (`qwen35moe`) is not bit-pure under `-sm tensor` + `-ncmoe` (MTP and plain forward) — CORRECTNESS
 
 **RESOLVED (2026-10-12), DELIVERED in `v16-a55e952b8-r41`.**  The cause was **not** the internal

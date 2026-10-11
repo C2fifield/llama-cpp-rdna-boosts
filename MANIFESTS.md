@@ -4,11 +4,14 @@ Squashed, standalone diff blocks of RDNA-specific performance and correctness
 work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
-The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r44`** (canonical block-15 tip `4b2874db9`, net tree
+The **current delivery** is a **17-patch set** (block 00 + blocks 01-16) against upstream master
+**`a55e952b8`**, released as **`v16-a55e952b8-r45`** (canonical block-16 tip `f92e5284bf19`, net tree
+`064c72ae60c2153a525d4681df1e19aad516f08c`): a new **block 16** folds the contributor decode/latency
+PRs #124, #125, #126, #128, #129 and #132.  Before it,
+**`v16-a55e952b8-r44`** (canonical block-15 tip `4b2874db9`, net tree
 `fb348f69badfab0bb2a284c97eaed84117ea57d9`): the Windows host-pool portability fix (issue #130) and a
 `-Wmissing-field-initializers` cleanup fold into **block 15**, and the per-sequence recurrent rollback
-guard (issue #131) folds into **block 02** -- no new block.  Before it,
+guard (issue #131) folds into **block 02** -- no new block.  Before that,
 **`v16-a55e952b8-r41`** (canonical block-15 tip `a89ffa273`, net tree
 `46c4ce7a6a00aa6c6931c5a89faf847dde19fd34`): **block 12's hybrid NCCL init is eager again** — the r34
 lazy mid-run `ncclCommInitAll` perturbed the `-sm tensor -ncmoe` split compute and broke MTP purity under

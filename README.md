@@ -10,15 +10,29 @@ support, and an attention-memory campaign that frees several GiB of VRAM.
 [`ENVIRONMENT.md`](ENVIRONMENT.md) documents every variable the set adds or repoints: its default, and
 whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning value, or a diagnostic.
 
-It ships as **16 patches** (block 00 + blocks 01-15) for a clean llama.cpp
+It ships as **17 patches** (block 00 + blocks 01-16) for a clean llama.cpp
 checkout at the fork point **`a55e952b8`** (upstream master, 2026-10-03
 re-base).  Each block is a self-contained `git am` commit, so you can apply
 the whole set or pick the ones you want.  The **`mmb` (bf16-WMMA weight GEMM) / QSA / indexer
 campaign**, formerly the 28-patch opt-in `archive/work/mmb-general/` set, is now **folded into the delivery
 blocks** — the `mmb` core into block 08, the catch-all system-operations fixes into block 06, and the
-qwen4exp/QSA/HC/indexer work into block 15 — so the **16 patches alone reproduce the full campaign
+qwen4exp/QSA/HC/indexer work into block 15 — so the **17 patches alone reproduce the full campaign
 tree**.  `archive/work/mmb-general/` is retained only as the historical verification record;
 see [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery).  The current release is
+**`v16-a55e952b8-r45`** (canonical block-16 tip `f92e5284bf19847c9fc33ac60cf4ef5562c2136b`, net tree
+`064c72ae60c2153a525d4681df1e19aad516f08c`, **17 patches**): **block 16 folds the contributor
+decode/latency PRs #124, #125, #126, #128, #129 and #132** — the GDN state-gather skip
+(`GGML_CUDA_FUSE_GDN_STATE_GATHER=0`) and the gfx1201 grid-stall pad (`GGML_CUDA_GRID_STALL_PAD=0`), both
+bit-identical and default-on; the `seq_rm` used-range scan and the AVX2 S2 top-k prefilter (always on);
+the layer-uniform expert-cache re-arm; fewer AR blocks for small decode/verify messages
+(`GGML_CUDA_AR_SMALL_BLOCKS`, default-on); plus the **opt-in** async graph-input uploads
+(`GGML_CUDA_ASYNC_INPUT=1`), P2P all-reduce (`GGML_CUDA_AR_P2P=1`) and legacy-pool cap
+(`GGML_CUDA_POOL_CACHE_MB`).  Coherence, prefill-logit (mean KLD 0.000707 / same-top-p 98.755 %), MTP
+purity and the backend-op tests all pass; 2x R9700 Flash-Next MTP `n_max 3` measures +1.9 % default and
++6.4 % with async, every arm bit-identical.  Before it, **`v16-a55e952b8-r44`** folded the Windows
+host-pool portability fix (**issue #130**, block 15) and the per-sequence rollback guard (**issue #131**,
+block 02); **r43** ordered the multi-ubatch logits readback (block 06, TODO #52 part B); **r42** made the
+multi-sequence GDN kernel choice shape-consistent (block 02, TODO #52 part 1).  Before those,
 **`v16-a55e952b8-r41`** (canonical block-15 tip `a89ffa273`, net tree
 `46c4ce7a6a00aa6c6931c5a89faf847dde19fd34`): **block 12's hybrid NCCL init is eager again** — the r34
 lazy mid-run `ncclCommInitAll` perturbed the `-sm tensor -ncmoe` split compute and broke MTP purity under
@@ -109,7 +123,7 @@ git checkout a55e952b8
 bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts
 ```
 
-- One-line summary of each block: [The 16 blocks](#the-16-blocks)
+- One-line summary of each block: [The 17 blocks](#the-17-blocks)
 - The folded `mmb`/QSA campaign: [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery)
 - Apply details, env knobs, server config: [`patches/README.md`](patches/README.md)
 - **Running a model bigger than your VRAM on one card** (`-ncmoe` + the MoE expert cache, with the
@@ -185,7 +199,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 │                          #   narratives/evidence for the closed cases: archive/docs/GREEDY-PURITY-FINDINGS.md
 ├── WORKLOG.md             # dated delivery records (newest first; README points here)
 ├── rdna-boosts-all.patch  # convenience: the entire 16-patch net as ONE patch
-├── patches/               # the delivery set: 0000-0015
+├── patches/               # the delivery set: 0000-0016
 │   └── README.md          # apply instructions + block-12 env knobs + server config
 ├── scripts/
 │   ├── apply-all.sh       # the verified apply flow (git am; automatic -3 fallback on drift)
@@ -204,7 +218,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 > in `archive/docs/` (see also `archive/work/` for the closed experiments).
 > Do not mix them with the current `patches/` files.
 
-## The 16 blocks
+## The 17 blocks
 
 | patch | what |
 |-------|------|
@@ -224,16 +238,18 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0013` | **fused MoE gate+up+GLU MMQ + mmvq short-K item-split** — prefill fused expert MMQ (RDNA4 + RDNA3_5 + RDNA3_0, Q3_K/Q4_K/Q5_K/Q8_0/Q6_K, env opt-out `GGML_CUDA_DISABLE_MOE_MMQ_FUSION`) + decode item-split (rpb 2/4/8) merged with the upstream has_fusion mmvq path |
 | `0014` | **qwen4exp / Qwen3.8-Flash-Next support** — QSA sparse FA (default) + fused indexer top-k, HC_MIX/HC_COMBINE fused decode ops, managed lazy reader, MTP draft-head, WS4 hyperconn prefill fusions, QSA decode campaign + per-arch dense/QSA decode policy (promoted from `beta/qwen4exp`; see `patches/README.md` block-14 notes). The masked-V/freed-cell fixes it once carried now live in blocks 00 (Vulkan) and 03 (HIP). |
 | `0015` | **attention-memory wins (block 15)** — promoted 2026-09-12 from `archive/work/block-15-campaign-wins/`: **V3** derived kq mask (`LLAMA_KQ_MASK_DERIVED`, on by default), **V4** native q8_0 + **V5** native bf16 K/V in the FA kernels (both behind `GGML_CUDA_FA_KV_NATIVE`, opt-in default 0), **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived QSA per-block bias + visibility (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), **W3** keys-only QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), **W4** ggml-alloc unused-view release (no gate; A/B revert in `archive/work/block-15-campaign-wins/ab/`).  ~3.4 GiB/GPU + ~1.2 GiB host saved on qwen4exp, ~800 MiB/GPU + ~800 MiB host on dense models, at ~1.3 % prefill / ~0.3 % decode. **Now also folds the qwen4exp/QSA/HC/indexer campaign** (`qsa3` packed-block WMMA attention, fused indexer top-k + prefill score fusions, HC16 native-BF16 producers, `hc_gate_mix`, sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the host-buffer/CPU/meta fixes) — the former `archive/work/mmb-general` work.  Also carries the r14-r21 **MoE expert-cache** work: auto sizing, host-pinned expert buffers, the op-offload H2D staging path, the compute-buffer slack, the fail-soft arena yield, the per-layer uniform slot re-size (`t.slots` fix), the `MTP_DRAFT_N_UBATCH` cap, and the cli-only wide-prefill drop.  **r22 adds the movable-boundary slab allocator** (ONE slab per device, reserved and mapped once, split by a movable boundary: compute buffer below, MoE arena above, HIP never called at runtime) which SUPERSEDES the per-allocation VMM pool (removed) and the fail-soft arena yield, sizes the arena on a decode-band pass, right-sizes the compute reserve to the observed workload, and makes the wide-prefill drop default-on for servers too — the TODO #42 abort is gone. **r27 folds PR #114's four qwen4exp decode fusions:** the latency-scheduled BF16 `hc_mix` up/collapse (`GGML_HC_UP_V2=0`), `HC_COMBINE` fused into that norm (`GGML_CUDA_FUSE_HC_COMBINE_MIX=0`), the shared-expert `sigmoid`-`mul`-`add` gate (`GGML_CUDA_FUSE_SIGMOID_MUL_ADD=0`), and the GDN `beta` sigmoid folded into the sequential kernel (`GGML_CUDA_FUSE_GDN_BETA_SIGMOID=0`); +2.4 % decode on qwen4exp, byte-identical text. |
+| `0016` | **decode host-side and small-message latency wins (block 16)** — promoted 2026-10-14 from the contributor WIP campaigns `archive/work/{gdn-state-gather-skip,decode-host-overhead,moe-cache-rearm-uniform,rdna4-grid-stall-pad,allreduce-small-msg-latency,pool-cache-cap}/` (PRs #124, #125, #126, #128, #129, #132).  Default-on: the one-sequence `<= 16`-token **GDN state-gather skip** (sequential kernel reads `s0` from the cache row; bit-identical, `GGML_CUDA_FUSE_GDN_STATE_GATHER=0`), the **gfx1201 grid-stall pad** (one returning block on a multiple-of-256 launch; bit-identical, `GGML_CUDA_GRID_STALL_PAD=0`), the **layer-uniform expert-cache re-arm** (a stood-down layer's other tables re-arm with it), the `seq_rm` **used-range scan** and the **AVX2 S2 top-k prefilter**, and **fewer AR blocks for small decode/verify messages** (default 4, `GGML_CUDA_AR_SMALL_BLOCKS=8` restores).  Opt-in: **async graph-input uploads** (`GGML_CUDA_ASYNC_INPUT=1`, +6.4 % MTP on 2x R9700), the 2-device **P2P all-reduce** (`GGML_CUDA_AR_P2P=1`) and the **legacy-pool cache cap** (`GGML_CUDA_POOL_CACHE_MB`).  Detail and validation: `patches/README.md` block-16 notes and `archive/work/<campaign>/RESOLUTION.md`. |
 
-> **The delivery is `0000`–`0015` (16 patches).**  Release `v16-a55e952b8-r16` briefly shipped two
-> extra blocks (`0016` op-offload staging redirect, `0017` per-device tensor-split guard); **r17 folded
-> both back into the existing blocks**, so they are documented in the `0006`/`0013`/`0015` rows above and
-> the prose at the top of this section — there is no `patches/0016*.patch`.
+> **The delivery is `0000`–`0016` (17 patches).**  Block `0016` was added in
+> `v16-a55e952b8-r45` (the contributor decode/latency PRs; see the `0016` row above).
+> (Historically, release `v16-a55e952b8-r16` briefly shipped a *different* `0016`/`0017` pair —
+> op-offload staging redirect and per-device tensor-split guard; **r17 folded both into the
+> `0006`/`0013`/`0015` rows above**, and that old `0016` is unrelated to the current one.)
 
 > **Block 15 (attention-memory wins) is part of the delivery since
 > 2026-09-12** (`patches/0015`, promoted from
-> `archive/work/block-15-campaign-wins/`; a fresh set is now **16 patches**,
-> blocks 00-15).
+> `archive/work/block-15-campaign-wins/`; a fresh set is now **17 patches**,
+> blocks 00-16).
 
 > **Greedy-purity note (read before shipping):** on the K-split decode
 > paths, block 10 (`0010`) is the only patch that changes decode numerics on
@@ -313,7 +329,7 @@ any more**:
 * **block 15** absorbs `qsa3`, the fused indexer top-k + prefill score fusions, HC16, `hc_gate_mix`,
   sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the meta/CPU backend fixes.
 
-Applying the 16 patches to the fork point in [`release.json`](release.json) therefore reproduces the
+Applying the 17 patches to the fork point in [`release.json`](release.json) therefore reproduces the
 **full campaign tree** in one pass:
 
 ```bash
@@ -516,9 +532,14 @@ for per-block verification and `BASELINE.md` for provenance.
 
 ## Current state
 
-The delivery is the **16-patch set** (block 00 + blocks 01-15) for a clean llama.cpp checkout at the fork
+The delivery is the **17-patch set** (block 00 + blocks 01-16) for a clean llama.cpp checkout at the fork
 point recorded in [`release.json`](release.json) (**`a55e952b8`**, upstream master, 2026-10-03 re-base); the
-**current release is `v16-a55e952b8-r44`**: the Windows host-pool portability fix (issue #130: POSIX file
+**current release is `v16-a55e952b8-r45`**: a new **block 16** folds the contributor decode/latency PRs
+#124, #125, #126, #128, #129 and #132 (the GDN state-gather skip and the gfx1201 grid-stall pad,
+both default-on bit-identical; the `seq_rm` used-range scan and the AVX2 S2 top-k prefilter, always
+on; the layer-uniform expert-cache re-arm; fewer AR blocks for small messages; plus the opt-in
+`GGML_CUDA_ASYNC_INPUT`, `GGML_CUDA_AR_P2P` and `GGML_CUDA_POOL_CACHE_MB`).  Before it,
+**`v16-a55e952b8-r44`**: the Windows host-pool portability fix (issue #130: POSIX file
 I/O behind helpers, `moe_cache_set_host_pool`/`_source` routed through the device API so a Windows DLL /
 `GGML_BACKEND_DL` build links) and a `-Wmissing-field-initializers` cleanup fold into **block 15**, and the
 per-sequence rollback guard (issue #131: the `llama-memory-recurrent` boundary warning now compares a
