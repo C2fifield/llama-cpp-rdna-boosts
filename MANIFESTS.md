@@ -4,10 +4,11 @@ Squashed, standalone diff blocks of RDNA-specific performance and correctness
 work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
-The **current delivery** is a **17-patch set** (block 00 + blocks 01-16) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r45`** (canonical block-16 tip `f92e5284bf19`, net tree
-`064c72ae60c2153a525d4681df1e19aad516f08c`): a new **block 16** folds the contributor decode/latency
-PRs #124, #125, #126, #128, #129 and #132.  Before it,
+The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
+**`a55e952b8`**, released as **`v16-a55e952b8-r46`** (canonical block-15 tip `533e355cd9`, net tree
+`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`): the r45 **block 16 is folded back into the 0000-0015
+set** (host-side/system work into block 06, small-message all-reduce into block 12, and the
+decode/latency remainder plus issue #133 into block 15).  Before it,
 **`v16-a55e952b8-r44`** (canonical block-15 tip `4b2874db9`, net tree
 `fb348f69badfab0bb2a284c97eaed84117ea57d9`): the Windows host-pool portability fix (issue #130) and a
 `-Wmissing-field-initializers` cleanup fold into **block 15**, and the per-sequence recurrent rollback

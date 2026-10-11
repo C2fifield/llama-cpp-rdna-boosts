@@ -6,10 +6,14 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r41`, 2026-10-12):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical tip `a89ffa2735d2141293ed5472beab6746a47fbbf7`, net tree
-**`46c4ce7a6a00aa6c6931c5a89faf847dde19fd34`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r41 makes block 12's hybrid NCCL init **eager** again (the r34 lazy mid-run init was
+**Current state (release `v16-a55e952b8-r46`, 2026-10-15):** the delivery is the **16-patch set** against
+fork point **`a55e952b8`**, canonical tip `533e355cd952c0fe5bf9e3a3e171bba0d295752f`, net tree
+**`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r46 **folds the r45 block 16 back into the 0000-0015 set** (host-side/system work
+into block 06, the small-message all-reduce into block 12, and the decode/latency remainder into block
+15) and lands **issue #133** in block 15: the RDNA4 decode/verify band-WMMA predicate now folds GQA
+ratios up to `GGML_HIP_FA_BAND_WMMA_GQA_MAX` (default 12), so qwen4exp GQA-12 no longer falls to the
+tile kernel (2x R9700 deep MTP +36 %).  Before it, r41 made block 12's hybrid NCCL init **eager** again (the r34 lazy mid-run init was
 what made `-sm tensor -ncmoe` MTP-impure under the auto cache; the internal AR is bit-exact), so the 35B-A3B
 `-ncmoe 99` + auto-cache field is `none == n1 == n3 == n7` and `none == n3` on the long field, and
 qwen4exp stays pure (**#53 closed**).  The previous paragraph records the r32 state.  `release.json` is the source of truth.  r32 fixes the two bugs found during the

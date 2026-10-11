@@ -1,5 +1,55 @@
 # WORKLOG - dated delivery records
 
+## 2026-10-15 (r46) -- block 16 folded back into 0000-0015; the RDNA4 band-WMMA GQA cap (issue #133, block 15)
+
+**Release `v16-a55e952b8-r46`** (base `a55e952b8`, canonical block-15 tip
+`533e355cd952c0fe5bf9e3a3e171bba0d295752f`, net tree
+`af730ed56cd61cb3484b7bb9f817e1ce1534ded0`); **16 blocks** (00-15); `scripts/validate-set.sh` green
+(strict 16/16 `git am`, reconstructed tree == `release.json`).  The net tree is the r45 tree plus the
+#133 changes (only `ggml/src/ggml-cuda/fattn-common.cuh` and `tests/test-backend-ops.cpp` differ), so
+r45's validation carries; the fold only moves the patch boundary.
+
+**Packaging -- block 16 folded thematically.**  The r45 block 16 (the six contributor PRs) is
+distributed instead of carried as a 17th block, restoring the 0000-0015 set:
+- **block 06** (general system-operations bucket): the `llama_kv_cache::seq_rm` used-range scan, the
+  layer-uniform expert-cache re-arm, and the opt-in async graph-input uploads
+  (`GGML_CUDA_ASYNC_INPUT=1`) + legacy-pool cache cap (`GGML_CUDA_POOL_CACHE_MB`).
+- **block 12** (hybrid all-reduce): the small-message AR block count (`GGML_CUDA_AR_SMALL_BLOCKS=8`
+  restores) and the opt-in 2-device P2P path (`GGML_CUDA_AR_P2P=1`).
+- **block 15** (campaign/attention memory): the GDN state-gather skip
+  (`GGML_CUDA_FUSE_GDN_STATE_GATHER=0`, with the `rs_s_copy` / split-copy `OUTPUT` flags), the AVX2 S2
+  exact top-k prefilter, the gfx1201 grid-stall pad (`GGML_CUDA_GRID_STALL_PAD=0`, mmvf/mmvq), and
+  issue #133.
+The distribution follows code ownership: the r45 block-16 hunks were cut against the block-15 tree, and
+the GDN decoder (`beta_sigmoid`) and mmvq decode-grid (`GGML_MMVQ_RDNA4_DECODE_GRID`) work they extend
+were introduced by block 15, so those pieces belong to block 15; only the host-side/system and AR
+pieces had an earlier home.
+
+**Issue #133 (block 15) -- the decode/verify band folds GQA 12.**  `ggml_cuda_fattn_band_wmma_applies`
+required `gqa_ratio <= 8`, so the qwen4exp geometry (head 256, 24 q / 2 kv = GQA 12) fell to
+`flash_attn_tile<256,256,1,4>` (ncols2 = 4 -> 3 KV passes per KV head) for n_q <= 8.  The band already
+loads a partial final `ncols2 = 8` group and masks its unused columns on the Q load and the dst write,
+so the fix only raises the cap: `GGML_HIP_FA_BAND_WMMA_GQA_MAX`, default **12** (`<= 8` restores the
+old whole-group fold; `GGML_HIP_FA_BAND_WMMA=0` still disables the band wholesale).  A new
+`test-backend-ops` CPU-oracle matrix covers head-256/GQA-12 at nb 1/3/5/8, kv 512/4096 and
+f16/bf16/q8_0.  The parked `wip/kv-cell-offset-nondeterminism/` note that "GSQ qwen4exp GQA12 is
+excluded from the band" is updated: it is now banded, so that campaign's probe must be re-derived on
+this build.
+
+**Validation (gfx1201).**  Kernel trace: the baseline decode runs `flash_attn_tile`, the fix runs
+`flash_attn_ext_f16` (band) + `flash_attn_stream_k_fixup_uniform`.  `test-backend-ops -o FLASH_ATTN_EXT`
+**6358/6358 OK** (the new gqa-12 cases pass on both the band and the tile build); width purity
+`--spec-type none == draft-mtp --spec-draft-n-max 7` **byte-identical** at 100K depth on 2 and 3 GPUs;
+`Qwen3.5-4B-Q8_0` coherence identical; prefill-logit **mean KLD 0.000707 / same-top-p 98.755 % (PASS)**.
+Perf (Flash-Next GSQ-IQ3_XXS + shared Q8_0 MTP head, 100K-token prompt, 128 greedy, `n-max 3`, q8_0
+KV): 2x R9700 MTP **73.4 -> 99.9 t/s (+36 %)**; 3x R9700 **70.0 -> 77.6 (+11 %)**; short context
+**-3 %** (the band's wider tile wastes query columns at n_q = 1 -- accepted: the short case costs little
+wall time and cannot be depth-gated without breaking the W = 1..8 width-purity invariant).
+
+**Docs.**  `ENVIRONMENT.md` gains `GGML_HIP_FA_BAND_WMMA_GQA_MAX` and re-homes the former block-16
+variables to blocks 06/12/15; `patches/README.md`, `README.md`, `MANIFESTS.md`, `BASELINE.md`,
+`TODO.md` and the current-state headers move to r46 / 16 blocks.
+
 ## 2026-10-14 (r45) -- block 16: the contributor decode/latency PRs (#124, #125, #126, #128, #129, #132)
 
 **Release `v16-a55e952b8-r45`** (base `a55e952b8`, canonical block-16 tip

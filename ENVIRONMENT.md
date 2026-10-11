@@ -139,7 +139,7 @@ tensor address).  It replaces the per-allocation VMM pool (`GGML_CUDA_COMPUTE_VM
 | `GGML_CUDA_SLAB_RING_MIB` | `6144` | tuning | MiB cap on the H2D staging-ring region the slab carves as a **work sub-region** (r39).  The auto size is `slots x (largest host table + 512)`, and that estimate comes from `llama_model::max_host_weight_tensor_bytes()`, which can be a MERGED host tensor (every layer/expert in one -- measured 27 GiB on Qwen3.8-Flash-Next where the largest staged slice is 270 MiB), so this cap keeps the region proportional to a real table.  The ring lives between the narrow work floor and the wide work view, never in the arena, and is reclaimed on the prefill->decode drop.  `0` puts the ring back outside the slab (the raw `cudaMalloc` + G4 path).  The field tables (270 MiB) fit in `2560` and give nearly the same prefill as `6144`. |
 | `GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT` | `50` | tuning / kill-switch | caps an **optional** raw allocation at this percentage of the device's *free* VRAM.  Since r39 the op-offload H2D staging ring lives **inside the slab** (see `GGML_CUDA_SLAB_RING_MIB` above), so this now effectively guards the **FA prefill staging arena** only (`GGML_CUDA_SLAB_RING_MIB=0` restores the ring to this path).  A refusal is graceful: the ring falls back to the serial path, the FA staging to the native K/V read (one-time warning) -- and on `fingon` that refusal is *faster* than allowing it (2502.2 vs 2315.1 t/s prefill), so this is an adaptive win, not a limitation.  `0` restores the pre-change unbounded behaviour.  **Inert unless the slab is active on the device**, so a non-host-expert / non-ROCm run is unchanged; it is a cap, never a reservation.  `GGML_SCHED_STAGE_MAX_MB` remains the hard ring override. |
 | `GGML_COMPUTE_BUFFER_CHUNK_MIB` | `256` | tuning | the compute buffer is allocated in whole chunks + one spare (`(ceil(need/C)+1)*C`), so growth inside the chunk is free.  `0` falls back to `GGML_COMPUTE_BUFFER_MARGIN_PCT`.  Since **r37** the chunk applies **only when the slab is in use**: a dense model (no slab) falls back to the percentage margin, which removes the +739 MiB of issue #120. |
-| `GGML_CUDA_POOL_CACHE_MB` | unset / `0` = unlimited (r45, block 16) | **opt-in tuning** | cap on the bytes of FREED buffers the **legacy** `ggml_cuda_pool_leg` keeps cached.  A long prefill's temporaries grow with the KV length and each smaller predecessor stays cached, so at ~256K the idle VRAM starves allocations outside the pool.  Before a new device allocation, once the cached bytes exceed this MiB value the pool frees them (never during graph capture).  Unset/0/negative/garbage = today's behaviour.  Only the legacy pool is touched (HIP uses it; CUDA's VMM pool is unaffected), and the release is a whole-cache flush, not largest-first eviction. |
+| `GGML_CUDA_POOL_CACHE_MB` | unset / `0` = unlimited (r46, block 06) | **opt-in tuning** | cap on the bytes of FREED buffers the **legacy** `ggml_cuda_pool_leg` keeps cached.  A long prefill's temporaries grow with the KV length and each smaller predecessor stays cached, so at ~256K the idle VRAM starves allocations outside the pool.  Before a new device allocation, once the cached bytes exceed this MiB value the pool frees them (never during graph capture).  Unset/0/negative/garbage = today's behaviour.  Only the legacy pool is touched (HIP uses it; CUDA's VMM pool is unaffected), and the release is a whole-cache flush, not largest-first eviction. |
 
 **Why the cards sit near-full.**  `GGML_CUDA_SLAB_HEADROOM_MIB` is what is free *at the moment the slab is
 extended*, and the steady state is that minus everything allocated afterwards — measured ~3.7 GiB of it: the
@@ -232,10 +232,10 @@ See `AGENTS.md`.
 |---|---|---|---|
 | `GGML_CUDA_ALLREDUCE` | `hybrid` on Linux | tuning | `hybrid` (NCCL for large, internal for small) \| `internal` \| `nccl` \| `ce` (SDMA copy-engine, 2 GPU).  Unrecognised values warn and fall through to the platform default.  `nccl` is **not** bit-identical under `-sm tensor` (the internal AR BF16-round-trips), so use it as a smoke comparison only. |
 | `GGML_CUDA_P2P` | off | tuning | enables peer access.  Note VMM allocations need explicit `cuMemSetAccess` for P2P (see `FOLLOWUP-compute-arena-chunking.md`). |
-| `GGML_CUDA_AR_SMALL_BLOCKS` | `4` (r45, block 16) | kill-switch / tuning | block count for a **small** internal all-reduce (decode/verify, `<= GGML_CUDA_AR_SMALL_BYTES`).  Each block signals and polls its own arrival slot, so fewer blocks shorten the call.  `GGML_CUDA_AR_SMALL_BLOCKS=8` restores the pre-r45 launch; the fused stage and larger messages always keep 8. |
-| `GGML_CUDA_AR_SMALL_BYTES` | `65536` (r45, block 16) | tuning | the small-message threshold in bytes for the knob above. |
-| `GGML_CUDA_AR_P2P` | off (r45, block 16) | **opt-in** | 2-device, not-fused P2P push all-reduce: each device writes its wire data and arrival token into the peer's fine-grained VRAM and reads locally, replacing the host ring and the three all-thread `__threadfence_system()` calls with a store-count drain plus one system-scope release store.  Falls back to the host ring if peer access / fine-grained allocation fails or there are not exactly 2 devices.  Bit-identical; MTP-neutral on the reporter's box, +2.6 % one-token decode. |
-| `GGML_CUDA_AR_P2P_LITE` | `1` (r45, block 16) | kill-switch | `0` keeps the full `__threadfence_system()` fences on the P2P path (A/B only). |
+| `GGML_CUDA_AR_SMALL_BLOCKS` | `4` (r46, block 12) | kill-switch / tuning | block count for a **small** internal all-reduce (decode/verify, `<= GGML_CUDA_AR_SMALL_BYTES`).  Each block signals and polls its own arrival slot, so fewer blocks shorten the call.  `GGML_CUDA_AR_SMALL_BLOCKS=8` restores the pre-r45 launch; the fused stage and larger messages always keep 8. |
+| `GGML_CUDA_AR_SMALL_BYTES` | `65536` (r46, block 12) | tuning | the small-message threshold in bytes for the knob above. |
+| `GGML_CUDA_AR_P2P` | off (r46, block 12) | **opt-in** | 2-device, not-fused P2P push all-reduce: each device writes its wire data and arrival token into the peer's fine-grained VRAM and reads locally, replacing the host ring and the three all-thread `__threadfence_system()` calls with a store-count drain plus one system-scope release store.  Falls back to the host ring if peer access / fine-grained allocation fails or there are not exactly 2 devices.  Bit-identical; MTP-neutral on the reporter's box, +2.6 % one-token decode. |
+| `GGML_CUDA_AR_P2P_LITE` | `1` (r46, block 12) | kill-switch | `0` keeps the full `__threadfence_system()` fences on the P2P path (A/B only). |
 
 ---
 
@@ -275,7 +275,7 @@ These use `getenv(...) == nullptr || atoi(...) != 0`, so unset = **on** and `0` 
 (Git history note: these were originally *opt-in* `=1` switches; they are now default-on kill-switches.)
 
 The same idiom — and therefore also default-on despite the name — covers
-`GGML_CUDA_DISABLE_IDX_RELU_SUM`, `GGML_CUDA_CONCAT_VERIFY` and (r45, block 16) `GGML_CUDA_FUSE_GDN_STATE_GATHER`.
+`GGML_CUDA_DISABLE_IDX_RELU_SUM`, `GGML_CUDA_CONCAT_VERIFY` and (r46, block 15) `GGML_CUDA_FUSE_GDN_STATE_GATHER`.
 
 ### 7.2 `GGML_CUDA_DISABLE_*` — value-gated (`=1` disables, `0` keeps it on)
 
@@ -314,8 +314,8 @@ The same idiom — and therefore also default-on despite the name — covers
 | `LLAMA_HC_MIX_PLANAR` | on | kill-switch | `0` restores the interleaved HC_MIX output (r24) instead of the planar layout (r25; BF16 CUDA path only). |
 | `LLAMA_CONV_TAIL_CONT` | off | kill-switch (**opt-in**) | `1` restores the `cont` + `cpy` conv-state tail copy instead of the direct strided 2D memcpy (r25). |
 | `GGML_FORCE_NO_INTEGRATED` | off | ignore integrated GPUs when picking devices. |
-| `GGML_CUDA_ASYNC_INPUT` | off (r45, block 16) | **opt-in** | async graph-input uploads: a `set_tensor` of `<= 1 MiB` into a COMPUTE buffer stages through a per-device 16 MiB pinned ring with a done-event ordering, so the host does not block on every copy; any setup failure falls back to the synchronous path.  Bit-identical in 4 repeat runs; kept opt-in because of the historical single-run impurity described in `archive/work/decode-host-overhead/`. |
-| `GGML_CUDA_GRID_STALL_PAD` | on, HIP only (r45, block 16) | kill-switch | `0` disables the gfx1201 grid-size dispatch workaround: a launch whose block count is a multiple of 256 (or work-item count a multiple of 65536) waits ~6-11 us on gfx1201 (ROCm/legacy-rocm-build#6689), so `mul_mat_vec_f`/`mul_mat_vec_q_ksplit`/`mul_mat_vec_q_moe` add one returning block.  Bit-identical; delete the helper and its call sites once AMD ships the fix. |
+| `GGML_CUDA_ASYNC_INPUT` | off (r46, block 06) | **opt-in** | async graph-input uploads: a `set_tensor` of `<= 1 MiB` into a COMPUTE buffer stages through a per-device 16 MiB pinned ring with a done-event ordering, so the host does not block on every copy; any setup failure falls back to the synchronous path.  Bit-identical in 4 repeat runs; kept opt-in because of the historical single-run impurity described in `archive/work/decode-host-overhead/`. |
+| `GGML_CUDA_GRID_STALL_PAD` | on, HIP only (r46, block 15) | kill-switch | `0` disables the gfx1201 grid-size dispatch workaround: a launch whose block count is a multiple of 256 (or work-item count a multiple of 65536) waits ~6-11 us on gfx1201 (ROCm/legacy-rocm-build#6689), so `mul_mat_vec_f`/`mul_mat_vec_q_ksplit`/`mul_mat_vec_q_moe` add one returning block.  Bit-identical; delete the helper and its call sites once AMD ships the fix. |
 
 ---
 
@@ -324,7 +324,7 @@ The same idiom — and therefore also default-on despite the name — covers
 | variable | default | class | notes |
 |---|---|---|---|
 | `GGML_HIP_FA_BAND_WIDE` | on | kill-switch | `0` disables the wide band. |
-| `GGML_HIP_FA_BAND_WMMA` / `GGML_HIP_FA_BAND_WMMA_SPLIT` | unset | tuning | band kernel selection. |
+| `GGML_HIP_FA_BAND_WMMA` / `GGML_HIP_FA_BAND_WMMA_SPLIT` / `GGML_HIP_FA_BAND_WMMA_GQA_MAX` | unset | tuning | band kernel selection.  `GQA_MAX` (default `12`) is the largest GQA ratio the band folds into its `ncols2 = 8` groups; `<= 8` keeps the old whole-group fold (issue #133). |
 | `GGML_CUDA_FA_WMMA_256` / `GGML_CUDA_FA_WMMA_MAX_HEAD` | unset | tuning | WMMA tile / head caps. |
 | `GGML_CUDA_FA_KV_NATIVE` / `GGML_CUDA_FA_MASK_SKIP` | unset | tuning | native-KV and mask-skip paths. |
 | `GGML_CUDA_FA_STAGE_MAX_MB` | unset | tuning | FA staging budget. |
@@ -342,7 +342,7 @@ The QSA op has a CPU oracle: `test-backend-ops -o FLASH_ATTN_QSA` (18/18 minimum
 |---|---|---|---|
 | `GGML_CUDA_GDN_CHUNKED` | on | kill-switch | compared as a **string** against `"0"` — literally `GGML_CUDA_GDN_CHUNKED=0` forces the sequential kernel (correct, bit-identical, slow). The chunked prefill is K-independent with threshold `max(K>16?K:16, n_rs_batch)`. |
 | `GGML_CUDA_GDN_CHUNKED_BF16` | on | kill-switch | BF16/WMMA chunked GDN variant, **default-on since r30** (RDNA3/RDNA4, `S_v == 128` prefill). Near-lossless, not bit-exact (bf16 operands, fp32 accumulation; ~1e-5 op NMSE; prefill mean KLD 0.0007 / 0.00005 / 0.00015 on gfx1201 / gfx1100 / gfx1151, same-top-p >= 98.7 %). `=0` runs the fp32 chunked kernel. r29 had defaulted it off as a workaround for the n_seqs > 1 `A_sc` stride aliasing bug (issue #113), fixed in r30. |
-| `GGML_CUDA_FUSE_GDN_STATE_GATHER` | on (r45, block 16) | kill-switch | in the one-sequence `<= 16`-token decode/verify band the graph skips the per-GDN-layer recurrent-state `GET_ROWS` and the sequential kernel reads `s0` from the cache row directly (`GET_ROWS` is a plain copy, so bit-identical).  Uses the §7.1 presence idiom (unset = on, `0` = gather as before). |
+| `GGML_CUDA_FUSE_GDN_STATE_GATHER` | on (r46, block 15) | kill-switch | in the one-sequence `<= 16`-token decode/verify band the graph skips the per-GDN-layer recurrent-state `GET_ROWS` and the sequential kernel reads `s0` from the cache row directly (`GET_ROWS` is a plain copy, so bit-identical).  Uses the §7.1 presence idiom (unset = on, `0` = gather as before). |
 | `GDN_DBG_SKIP_KKT`, `GDN_DBG_SKIP_SCAN` | off | diagnostic | skip stages (debug). |
 
 ---
