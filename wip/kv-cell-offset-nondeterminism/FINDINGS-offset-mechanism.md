@@ -19,8 +19,9 @@ The non-unified cache is green because each sequence owns a contiguous region st
   start-alignment (`LLAMA_KV_ALIGN=64`) fixes the one-shot prefill probe but does **not** fix the
   decode/server case.
 - The required quantum is the **kernel's reduction/split period**, which is model- and shape-dependent:
-  it is not a constant. 4B (GQA 4) takes the RDNA4 band WMMA; GSQ/qwen4exp (GQA **12**) is *excluded*
-  from the band (`4 < gqa_ratio <= 8`) and takes generic MMA with a different `nbatch_fa`/split.
+  it is not a constant. Both tested models miss the RDNA4 band predicate (`4 < gqa_ratio <= 8`;
+  4B GQA 4, GSQ qwen4exp GQA 12) and take the generic MMA/tile paths, but `nbatch_fa` itself varies
+  with the query tile / verify width (64 vs 32), so a hardcoded alignment cannot be generally correct.
 - Alignment itself creates gaps, and the allocator's head-reset then reuses them, **fragmenting a
   growing sequence**; suppressing the reset reduces but does not remove the residual.
 - **Proposed fix (direction 2):** give each sequence a contiguous, tile-aligned region in the unified
@@ -104,17 +105,25 @@ contiguous — so the reduction grid is anchored to the sequence by construction
 sequences share one region and the K/V view starts at 0 with a mask, so the grid is anchored to the
 shared buffer and the sequence's cells are wherever the allocator put them.
 
-## 6. The quantum is model/kernel-dependent (answers "is alignment layout-dependent?" — yes)
+## 6. The grid is kernel-config-dependent, not a universal constant
 
-| model | arch | head_k/v | GQA | KV | FA path | `nbatch_fa` |
+The FA kernel and its reduction/split grid are chosen from `(DKQ, DV, ncols, cc, ncols2, n_q)`
+(`ggml_cuda_fattn_mma_get_config_rdna` and `fatn-common.cuh`). Two switches matter here:
+- The RDNA4 band WMMA predicate is `4 < gqa_ratio <= 8`: **both** tested models miss it (4B GQA 4,
+  GSQ qwen4exp GQA 12), so both take the generic paths, but for different geometry
+  (head 256, GQA 4 vs 12 -> different `ncols2`/query-tile shaping; prefill is MMA, the decode band
+  falls to the tile kernel at `Q->ne[1] <= 8`).
+- The reduction tile `nbatch_fa` itself is shape-dependent within one model: for the head-256 rows it is
+  64 for the wide tiles and 32 for the narrow ones, and the prefill rows use 32.
+
+| model | arch | head_k/v | GQA | KV | relevant selection | `nbatch_fa` (tested shape) |
 |---|---|---|---|---|---|---|
-| Qwen3.5-4B | qwen35 | 256 | **4** | f16 | RDNA4 **band** WMMA + generic MMA prefill | band 64; prefill 32 |
-| GSQ Flash-Next | qwen4exp | 256 | **12** | q8_0 | band predicate needs `4 < gqa_ratio <= 8` → **excluded**; generic MMA `ncols2=4` | 64 (W≤4) / 32 (W 5-8, prefill) |
+| Qwen3.5-4B | qwen35 | 256 | 4 | f16 | band excluded (GQA <= 4); prefill MMA, decode tile | prefill 32; effective probe quantum 64 |
+| GSQ Flash-Next | qwen4exp | 256 | 12 | q8_0 | band excluded (GQA > 8); prefill MMA, decode tile | prefill 32; effective probe quantum 64 |
 
-(`ggml_cuda_fattn_band_wmma_applies`: `gqa_ratio > 4 && gqa_ratio <= 8`.) So a single hardcoded
-alignment constant cannot be correct across models, KV types, or verify widths; the correct grid is the
-per-launch reduction/split period, which is exactly why the fix belongs in the kernel/allocator
-anchoring, not in a fixed pad value.
+So a single hardcoded alignment constant cannot be assumed correct across models, KV types, or verify
+widths; the correct grid is the per-launch reduction/split period, which is exactly why the fix belongs
+in the kernel/allocator anchoring, not in a fixed pad value.
 
 ## 7. Proposed fix (maintainer's D1 / campaign direction 2)
 
