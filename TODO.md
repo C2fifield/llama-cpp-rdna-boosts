@@ -130,7 +130,8 @@ is worth the redesign. It is a separate root from the recurrent rollback. The `s
 (Issue #131) is a false positive in the cross-sequence case: the probe is bit-exact at the production
 verify width, and **r44 block 02** now tracks the last-batch shape **per sequence** so the diagnostic
 reports the right sequence. The deeper "large prefill as the last prepared batch before a rollback"
-ordering is parked in `wip/rs-rollback-boundary/`. The predecessor record is
+ordering is **OPEN and being resumed** in `wip/rs-rollback-boundary/` (seeded, not parked: see
+`wip/CAMPAIGNS.md`). The predecessor record is
 `archive/work/moe-verify-fusions/`. The text below is the original finding.
 
 **Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-12 while investigating the single-sequence

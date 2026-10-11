@@ -1,9 +1,11 @@
 # `rs-rollback-boundary` — the recurrent rollback-boundary guard and the "large prefill as the last prepared batch" ordering (issue #131)
 
-**Status: OPEN (seeded 2026-10-13).** Not part of the delivery; nothing here may be applied to the
+**Status: OPEN, active (being resumed).** Not part of the delivery; nothing here may be applied to the
 fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). The
 per-sequence guard fix itself has been folded into the delivery (block 02); this campaign is the
-**remaining** investigation, which is not a delivery correctness fix.
+**remaining** investigation, which is not a delivery correctness fix. The r44 `WORKLOG.md`/`TODO.md`
+wording that called this ordering "parked" is **historical**: the campaign was seeded, never closed, and
+`wip/CAMPAIGNS.md` lists it as OPEN. **Resume from §3 (open questions).**
 
 > **Cold start.** Read this file in full, then `AGENTS.md` ("Report findings before shipping",
 > "WIP and promotion rules", "Default-on policy"), then issue #131 and the predecessor records
@@ -117,8 +119,12 @@ legitimately follow it.
 - `tools/issue131_repro.sh <build_dir> <tag>`: the dense 27B repro. Env `KVUNI`, `CHUNKED`, `CTX`, `NB`,
   `UB`, `GPUS`, `PROMPT_A`/`PROMPT_B`, `NPA`/`NPB`. Does A solo plus 3 concurrent A+B repetitions,
   prints the text hashes and the warning count.
-- Prompts: `/tmp/issue131-A.txt` (24000 chars) and `/tmp/issue131-B.txt` (40000 chars), both cut from
-  `../kv-cell-offset-nondeterminism/prompts/mixed30k.txt` (sha256 in that directory's README).
+- Prompts (committed): `prompts/issue131-A.txt` (24000 B, sha256 `0282e185…`) and
+  `prompts/issue131-B.txt` (40000 B, sha256 `403c8c20…`); `tools/issue131_repro.sh` defaults to them.
+  Both were cut from `../kv-cell-offset-nondeterminism/prompts/mixed30k.txt` (sha256 `69624f4d…`).
+  New runs should cut from `mixed30k-v2.txt` (the fault-grep-clean revision, sha256 `3e22e0fd…`), so a
+  fault grep over the server log does not match the echoed prompt; the old cut is kept so the recorded
+  result stays reconstructible.
 - The MoE firing reproducer is `archive/work/moe-verify-fusions/tools/multiseq.sh` (GSQ + shared MTP
   head, 2 GPUs, `-ncmoe 48`).
 - WIP instrumentation (in the `/home/stew675/kv-offset-r43` worktree, branch `wip/kv-cell-offset`,
@@ -145,5 +151,9 @@ repro above is a reproducer, not a gate.
   #50/#51/#52) and `HANDOVER-single-seq-rollback.md` §6.
 - `archive/work/gdn-rs-rollback/` (the snapshot-bound work).
 - `TODO.md` #52 (the `seq_rm` boundary warning is described there as a false positive).
+- **Not related:** issue #133 (long-context Flash-Next decode falls back to the tile FA kernel because
+  GQA 12 is outside the band-WMMA gate) is attention-kernel selection, a different subsystem from the
+  recurrent memory rollback guard. The shared use of Flash-Next + MTP is incidental; there is no shared
+  root cause. See `wip/CAMPAIGNS.md` for the current open set.
 - The delivery fix: `patches/0002-rdna-boosts-block-02-fused-chunked-gated-delta-net-pre...patch`
   (per-sequence guard); record in `WORKLOG.md` for the release that carries it.
