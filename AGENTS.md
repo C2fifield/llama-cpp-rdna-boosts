@@ -49,6 +49,10 @@ amendment, or a note in the relevant record).
   3. Build it and run the coherence + MTP gates and `scripts/gate-prefill-logits.sh`; `scripts/validate-set.sh` must be green.
   4. `git push --force-with-lease origin rdna-boosts` — the **personal fork only**, never upstream;
      never a bare `--force`.
+- **Every release MUST also publish the ROCm container images**, built locally with
+  `scripts/build-containers.sh` (Common tasks → "Build the release container images (local)"; see also
+  `CONTAINERS.md`).  CI no longer builds them — the tag-push matrix took ~5 h and its failure mode was
+  a cold retry.  The fork-branch refresh and the local image push are both part of tagging a release.
 - The `~/llama.cpp` checkout exists to host the block commits and to apply/test the diff set locally.
   Apart from the release-time branch refresh above it is disposable: delete the pre-patched branch and
   re-apply rather than editing history in place.
@@ -78,7 +82,7 @@ amendment, or a note in the relevant record).
 | `archive/docs/` | moved-out historical records (validation/baseline history, the pre-cleanup AGENTS.md) — reference only |
 | `archive/work/` | closed experiments and campaigns, preserved for future re-evaluation (mmb/qsa3, moe-expert-cache, issues/PRs, …) — reference only |
 | `baseline/*` branches, `block/*` tags | **historical** pre-block-12 checkpoints — do not use for the current delivery |
-| `.github/workflows/` | `validate.yml` (per-push delivery validation) and `docker-ghcr.yml` (tag-driven ROCm images + Release; fork point read from `release.json`; see `CONTAINERS.md`) |
+| `.github/workflows/` | `validate.yml` (per-push delivery validation), `release.yml` (tag-triggered GitHub Release assets) and `docker-ghcr.yml` (manual-only ROCm image fallback); fork point read from `release.json`. **The release container images are built locally by `scripts/build-containers.sh`, not in CI** — see `CONTAINERS.md` |
 
 ## Scope policy — RDNA first, other backends uninjured
 
@@ -341,6 +345,35 @@ seconds). The FA instances are deliberately force-inlined — do **not** outline
 (measured: a universal 1.5-2.5 % prefill loss). This is the sanctioned answer to "the build is slow";
 detail in `archive/work/build-time-regression/`.
 
+### Build the release container images (local)
+
+The ROCm container images are built and pushed **locally**, not by GitHub Actions — a tag-push CI
+build took ~5 h for two ROCm lines (and a failed/timed-out run wrote no registry cache, so every retry
+was cold).  This is part of cutting a release, alongside the `rdna-boosts` fork-branch refresh in the
+Pushing policy.  The fast CI workflows stay: `validate.yml` (per-push patch validation) and
+`release.yml` (the tag-triggered GitHub Release carrying `rdna-boosts-all.patch`, `patches.tar.gz`,
+`release.json` and `SHA256SUMS`).
+
+```bash
+gh auth refresh -h github.com -s write:packages            # once; podman needs write:packages
+gh auth token | podman login ghcr.io -u stew675 --password-stdin
+
+./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
+./scripts/build-containers.sh --rocm "7.14 10.0" --push    # the full release build
+# fast smoke, no push:
+./scripts/build-containers.sh --rocm 10.0 --arch gfx1201 --targets server
+```
+
+`scripts/build-containers.sh` reads `release.json`, materialises the canonical patched tree
+(`release.json.tip`, asserting `tree`) into `$HOME/llama-src`, writes the build-context
+`.dockerignore` (from `.devops/dockerignore`), builds `full`/`light`/`server` per ROCm line with the
+same build args the CI matrix used, applies the same registry tags (`rocm-<v>`,
+`server-/light-/full-rocm-<v>`, the immutable `-<base>` variants and `latest` on 10.0) and (`--push`)
+pushes to `ghcr.io/stew675/llama-cpp-rdna-boosts`.  `docker-ghcr.yml` remains only as a manual
+`workflow_dispatch` fallback.
+
+**Only ROCm 7.14 and 10.0 are built by default.**  7.2 (`-complete`) is much slower and is manual-only.
+
 ## What NOT to do
 
 - Do not `git apply` the concatenated block series (drops hunks); use `scripts/apply-all.sh`.
@@ -359,5 +392,12 @@ The docs have a freshness problem by design: historical records are kept, and th
 in the header sections (`patches/README.md`, `README.md`, `release.json`, the top of
 MANIFESTS/BASELINE) plus the newest `WORKLOG.md` entry. When you change the delivery, update those
 headers and add a new dated `WORKLOG.md` entry (newest first) — never edit dated validation records in
-place. Keep this file terse: policies, invariants and pointers only. Session/dev handovers belong
+place.
+
+**WORKLOG dated headers use `YYMMDD.VVV`** (e.g. `## 261011.005 (r47) -- ...`).  `YYMMDD` is the
+real local calendar date and `VVV` is a per-date, monotonically increasing 3-digit sequence number in
+file order (the topmost/newest entry of a date carries the highest number).  The date is only a
+date — never treat it as a version; the revision is the explicit `(rNN)` tag.  A new entry takes
+today's real date and the next free number for that date.  Do not invent or extrapolate a future
+date: if the work is done today, the header says today. Keep this file terse: policies, invariants and pointers only. Session/dev handovers belong
 under `wip/` or `archive/docs/`, not at the repo top level.

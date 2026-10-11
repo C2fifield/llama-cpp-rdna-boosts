@@ -1,19 +1,21 @@
-# Release pipeline: build llama.cpp with the rdna-boosts patch set applied,
-# publish ROCm container images to GHCR, and cut a GitHub Release carrying the
-# packaged patch set.
+# Manual fallback: build llama.cpp with the rdna-boosts patch set applied and
+# publish ROCm container images to GHCR.
 #
-# This workflow is TAG-DRIVEN.  It runs for a `v*` tag (a frozen delivery), on
-# manual dispatch, and on the weekly schedule.  Ordinary commits to main
-# (docs / WORKLOG / benchmarks churn) do NOT trigger it -- those are covered
-# by validate.yml.  Documentation churn used to fan out into nine multi-hour
-# container builds and, worse, could fail at `git am` over a stale fork point.
+# The release images are normally built and pushed LOCALLY with
+# scripts/build-containers.sh.  A tag-push CI build took ~5 h for two ROCm
+# lines, could not be re-run cheaply (a failed/timed-out build never wrote the
+# registry cache, so every retry was cold) and offered no useful log until it
+# was over.  This workflow is kept ONLY as a manual `workflow_dispatch`
+# fallback; it no longer runs on tag pushes or on the schedule.  The cheap
+# tag-triggered GitHub Release (patch set + SHA256SUMS) lives in release.yml.
 #
 # release.json is the single source of truth (fork point, canonical tip/tree,
 # block count, per-artifact sha256).  The base is read from it, and each build
-# asserts the reconstructed tree equals release.json.tree, so the workflow can
-# no longer drift from the patch set.
+# asserts the reconstructed tree equals release.json.tree, so this can no
+# longer drift from the patch set.  The build matrix mirrors what
+# scripts/build-containers.sh does locally, so the two stay comparable.
 #
-# Pipeline:
+# Pipeline (manual dispatch only):
 #   1. read release.json + resolve the ROCm build matrix,
 #   2. shallow-download upstream llama.cpp at release.json.base (codeload
 #      tarball by SHA -- no full history; `git add -A -f` so upstream-tracked
@@ -21,23 +23,16 @@
 #   3. apply patches/0000..0015 with scripts/apply-all.sh (strict `git am`)
 #      and assert the applied tree == release.json.tree,
 #   4. build the full / light / server images against ROCm 7.14 and 10.0
-#      (both -full base).  ROCm 7.2 is NOT part of the automatic (tag/schedule)
-#      matrix: its `-complete` base compiles far more slowly, its full image
-#      repeatedly exceeded the 6 h runner timeout and, because a timed-out
-#      build never writes the registry cache, every retry was cold again.
-#      It remains available via a manual workflow_dispatch asking for `7.2`.
-#   5. push to ghcr.io/<owner>/<repo> and, when every build passed, create the
-#      GitHub Release with the patch set + SHA256SUMS.
+#      (both -full base).  ROCm 7.2 (-complete) is slower and remains
+#      requestable via the dispatch input.
+#   5. push to ghcr.io/<owner>/<repo> (nothing is pushed if `push` is unchecked).
 #
 # Reference: upstream llama.cpp's .github/workflows/docker.yml and
 # .devops/rocm.Dockerfile.
 
-name: Release ROCm containers + patch set
+name: ROCm containers (manual fallback)
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       rocm_versions:
@@ -50,9 +45,6 @@ on:
         required: true
         default: true
         type: boolean
-  schedule:
-    # Weekly rebuild: the images are expensive, no need for per-push builds.
-    - cron: "23 5 * * 0"
 
 concurrency:
   # A release must not be cancelled mid-push; group by ref so a new tag never
@@ -292,54 +284,3 @@ jobs:
           cache-from: type=registry,ref=${{ steps.tags.outputs.cache }}
           cache-to: type=registry,ref=${{ steps.tags.outputs.cache }},mode=max
 
-  release:
-    name: Package GitHub Release
-    needs: [prepare, build]
-    # Only for a tag push: a dispatch/schedule run must not cut a release.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Check out delivery repo
-        uses: actions/checkout@v5
-
-      - name: Assemble release assets
-        run: |
-          set -euo pipefail
-          tar czf patches.tar.gz patches/
-          sha256sum rdna-boosts-all.patch release.json patches/*.patch > SHA256SUMS
-          echo "=== SHA256SUMS ==="
-          cat SHA256SUMS
-
-      - name: Create or update the GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BASE: ${{ needs.prepare.outputs.base }}
-          TREE: ${{ needs.prepare.outputs.tree }}
-          N_BLOCKS: ${{ needs.prepare.outputs.n_blocks }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          image="${REGISTRY}/${owner_lc}/${repo}"
-          notes="llama.cpp fork point \`${BASE}\`, canonical tree \`${TREE}\`, ${N_BLOCKS} patches (block 00 + blocks 01-15).
-
-          Apply with \`scripts/apply-all.sh\` on a fresh llama.cpp checkout at \`${BASE}\`; verify the artifacts against \`SHA256SUMS\`.
-
-          Container images (ROCm 7.14 / 10.0):
-
-          - \`${image}:server-rocm-<version>\` (alias \`${image}:rocm-<version>\`)
-          - \`${image}:light-rocm-<version>\`
-          - \`${image}:full-rocm-<version>\`
-          - immutable \`...-<version>-${BASE}\` variants and \`${image}:latest\` (ROCm 10.0)"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" --clobber \
-              rdna-boosts-all.patch patches.tar.gz release.json SHA256SUMS
-          else
-            gh release create "$tag" \
-              --title "rdna-boosts ${tag}" \
-              --notes "$notes" \
-              rdna-boosts-all.patch patches.tar.gz release.json SHA256SUMS
-          fi

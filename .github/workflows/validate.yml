@@ -5,8 +5,10 @@
 # fail at `git am` (which is exactly what happened on 2026-09-13: the
 # workflow's FORK_POINT had gone stale after the re-base onto 790cf51aa).
 #
-# It does NOT build anything and does NOT touch Docker/GHCR.  The expensive
-# release pipeline lives in docker-ghcr.yml and is tag-driven.
+# It does NOT build anything and does NOT touch Docker/GHCR.  The tag-triggered
+# GitHub Release (patch set + SHA256SUMS) lives in release.yml; the ROCm
+# container images are built and pushed locally by scripts/build-containers.sh,
+# not in CI.
 #
 # Checks (scripts/validate-set.sh, driven by release.json):
 #   * no tracked path uses a character Windows forbids (a single one makes the

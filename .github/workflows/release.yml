@@ -1,0 +1,104 @@
+# Cut a GitHub Release carrying the packaged patch set.
+#
+# This is the CHEAP half of the old release pipeline and stays in CI: on a `v*`
+# tag push it attaches rdna-boosts-all.patch, patches.tar.gz, release.json and
+# SHA256SUMS to the Release.  About a minute; no compiler, no Docker.
+#
+# The expensive half -- building and pushing the ROCm container images -- is
+# done LOCALLY with scripts/build-containers.sh (see CONTAINERS.md and the
+# AGENTS.md "Build the release container images (local)" task).  It used to run
+# in docker-ghcr.yml on the same tag and took ~5 h for two ROCm lines; that
+# workflow is now a manual `workflow_dispatch` fallback only.
+
+name: Release patch set
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  release:
+    name: Package GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out delivery repo
+        uses: actions/checkout@v5
+
+      - name: Read and validate release.json
+        id: r
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release.json
+          base="$(jq -r '.base' release.json)"
+          tree="$(jq -r '.tree' release.json)"
+          n_blocks="$(jq -r '.n_blocks' release.json)"
+          rel="$(jq -r '.release' release.json)"
+          test -n "$base" && test "$base" != "null"
+          test -n "$tree" && test "$tree" != "null"
+          # Release identity: the tag must equal release.json.release, so a release
+          # can never be cut under a name the manifest does not record.
+          if [ "${GITHUB_REF_NAME}" != "$rel" ]; then
+            echo "ERROR: tag ${GITHUB_REF_NAME} does not match release.json release ${rel}" >&2
+            exit 1
+          fi
+          # ... and the name must follow v16-<base>-r<N> (the tag carries the short
+          # fork-point SHA while release.json may record either form).
+          tag_base="$(sed -E 's/^v16-(.+)-r[1-9][0-9]*$/\1/' <<< "${GITHUB_REF_NAME}")"
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v16-.+-r[1-9][0-9]*$ ]] || [ "${#tag_base}" -lt 7 ] || [[ "${base}" != "${tag_base}"* ]]; then
+            echo "ERROR: tag ${GITHUB_REF_NAME} must match v16-<base>-r<N> for release.json base ${base}" >&2
+            exit 1
+          fi
+          {
+            echo "base=$base"
+            echo "tree=$tree"
+            echo "n_blocks=$n_blocks"
+          } >> "$GITHUB_OUTPUT"
+          echo "release identity OK: ${rel}"
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          tar czf patches.tar.gz patches/
+          sha256sum rdna-boosts-all.patch release.json patches/*.patch > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ steps.r.outputs.base }}
+          TREE: ${{ steps.r.outputs.tree }}
+          N_BLOCKS: ${{ steps.r.outputs.n_blocks }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          image="${REGISTRY}/${owner_lc}/${repo}"
+          notes="llama.cpp fork point \`${BASE}\`, canonical tree \`${TREE}\`, ${N_BLOCKS} patches (block 00 + blocks 01-15).
+
+          Apply with \`scripts/apply-all.sh\` on a fresh llama.cpp checkout at \`${BASE}\`; verify the artifacts against \`SHA256SUMS\`.
+
+          Container images (ROCm 7.14 / 10.0) are built and pushed locally with \`scripts/build-containers.sh\` (see \`CONTAINERS.md\`):
+
+          - \`${image}:server-rocm-<version>\` (alias \`${image}:rocm-<version>\`)
+          - \`${image}:light-rocm-<version>\`
+          - \`${image}:full-rocm-<version>\`
+          - immutable \`...-<version>-${BASE}\` variants and \`${image}:latest\` (ROCm 10.0)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" --clobber \
+              rdna-boosts-all.patch patches.tar.gz release.json SHA256SUMS
+          else
+            gh release create "$tag" \
+              --title "rdna-boosts ${tag}" \
+              --notes "$notes" \
+              rdna-boosts-all.patch patches.tar.gz release.json SHA256SUMS
+          fi

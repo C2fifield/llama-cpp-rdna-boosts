@@ -1,0 +1,14 @@
+# Build-context ignore file for .devops/rdna-rocm.Dockerfile.
+#
+# The container build context is the patched llama.cpp source tree, and
+# podman/docker only reads `.dockerignore` from the CONTEXT directory -- so
+# scripts/build-containers.sh copies this file to `<src>/.dockerignore` before
+# building (this repo's root is not the context).  Keep only paths that are not
+# part of the canonical source tree or that are build output; excluding a
+# tracked source file would make the built tree differ from release.json.
+.git
+build/
+build-*/
+*.gguf
+__pycache__/
+*.pyc
