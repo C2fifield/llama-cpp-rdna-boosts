@@ -545,3 +545,44 @@ APERTURE_VIOLATION` seen at 06/07 (r49 passes 931/931) — a later block's dispa
 old-06 (iface/scheduler/Meta/slab/cache engine/host-expert loader) + old-09b + old-11 (graph-offload) +
 old-13 engine + old-15 hooks/arena/r48.  After it lands, the old-15 cache/qwen4exp `ggml-cuda.cu` arms
 stripped from 08 can be re-added (they belong with the cache/qwen4exp APIs).
+
+---
+
+## 14. Block 09 `slab-moe` rebuilt (2026-10-12)
+
+**`v2-phase1` = `4463f18c7`** (blocks 00–09); per-block fresh `all` build **10/10**.
+
+### Contents
+
+- **old-06** (the bucket): the generic MoE expert-cache iface (`ggml-backend-impl.h`, `ggml-backend.*`,
+  `ggml/include/ggml-backend.h`), the scheduler routed-expert rebalance + merged per-layer MoE split,
+  the Meta delegation (`ggml-backend-meta.cpp`), the movable-boundary slab + `ggml_cuda_device_malloc`
+  fail-soft + `optional_alloc_within_free_cap` (`ggml-cuda.cu`, `ggml-cuda-vmm.h`), the host-expert
+  pinned `ROCm_Host` loader / `--host-experts` (`llama-model-loader.*`, `llama-model.*`, `common/arg.cpp`),
+  the expert-cache engine (`moe-expert-cache.{cu,h}`), the per-backend `stage_*` NULL fills, the
+  `ggml-alloc.c` drop-buffers, `common/fit.cpp`, and `GGML_ENV_STR`.
+- **old-09b**: the slab headroom plumbing.
+- **old-11**: the prefill-vs-decode graph-skip and the HIP `hipGraphExecUpdate` recapture.
+- **old-15**: the slab `narrow2`/`arena_top` extensions, the host pool/source (`MOE_HOST_POOL_MIB`),
+  `stage_gather`, the `fattn_stage` arena + its `memory_breakdown` accounting (`src/llama-context.cpp`),
+  the h2d staging ring, and the cache-aware `MUL_MAT_ID`/`try_fuse` stand-down
+  (`moe_cache_redirect_fused`) — **without** the qwen4exp/HC and cache-blocks (`cpy_batch`) arms, which
+  belong to `10 qwen4exp`.
+- `ggml/src/ggml-moe-weighted-reduction.h` (the portable MWR matcher, added by old-14 but needed by the
+  old-06 Meta graph optimizer).
+
+### Gates
+
+| gate | result |
+|---|---|
+| per-block fresh `all` build | **10/10** |
+| 35B-A3B Q4_K_M `-ncmoe 40` cache off == on (`MOE_EXPERT_CACHE_MIB=2048`) | identical greedy text |
+| `gate-prefill-logits.sh` | mean KLD **0.000586**, same-top-p **98.725 %** PASS |
+
+### Note for the maintainer (Phase-2 follow-up)
+
+The maintainer observed that splitting `ggml-cuda.cu` into multiple files would have helped.  It is the
+same conclusion the campaign reached from the other direction: the Phase-2 extraction
+(`ggml-cuda-try-fuse.cu`, `ggml-cuda-slab.cu`, `ggml-cuda-moe-cache-hooks.cu`, `ggml-cuda-arena.cu`)
+is the real fix for the appender conflicts this block hit.  Recorded as a follow-up effort, not a
+blocker.
