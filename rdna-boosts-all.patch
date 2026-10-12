@@ -9508,7 +9508,7 @@ index 77fd28894..b80d78443 100644
          case GGML_TYPE_Q5_1:
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cu b/ggml/src/ggml-cuda/cpy-batch.cu
 new file mode 100644
-index 000000000..1561188c2
+index 000000000..fbdcdc213
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cu
 @@ -0,0 +1,108 @@
@@ -9577,7 +9577,7 @@ index 000000000..1561188c2
 +} // namespace
 +
 +int ggml_cuda_cpy_batch(ggml_backend_cuda_context & ctx, ggml_cgraph * cgraph, const int i) {
-+    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ctx.device].cc)) return 0;
++    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) return 0;
 +    ggml_tensor * first = cgraph->nodes[i];
 +    if (!cb_member(first)) return 0;
 +    // the run: copies with the first one's layouts, possibly separated by no-op view nodes (consumed with the run)
@@ -32336,9 +32336,38 @@ index 180b2d937..8ec1794e2 100644
  // ---------------------------------------------------------------------------------------------
  
 diff --git a/ggml/src/ggml-cuda/mmq-load-tiles.cuh b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
-index d5654868b..a2a2785a5 100644
+index d5654868b..6dfd54b57 100644
 --- a/ggml/src/ggml-cuda/mmq-load-tiles.cuh
 +++ b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
+@@ -47,18 +47,18 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
+             const int q  = qxi[j];
+ 
+             // unpack crumbs into nibble indices
+-            const int n0 = __byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
+-            const int n1 = __byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
++            const int n0 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
++            const int n1 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
+             // unpack nibbles into byte values
+-            const int s0 = __byte_perm(0x01FF, 0x01FF, n0 >>  0);
+-            const int s1 = __byte_perm(0x01FF, 0x01FF, n1 >>  0);
+-            const int s2 = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
+-            const int s3 = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
++            const int s0 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >>  0);
++            const int s1 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >>  0);
++            const int s2 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >> 16);
++            const int s3 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >> 16);
+             // unshuffle values
+-            const int v0 = __byte_perm(s0, s1, 0x5410);
+-            const int v1 = __byte_perm(s0, s1, 0x7632);
+-            const int v2 = __byte_perm(s2, s3, 0x5410);
+-            const int v3 = __byte_perm(s2, s3, 0x7632);
++            const int v0 = ggml_cuda_byte_perm(s0, s1, 0x5410);
++            const int v1 = ggml_cuda_byte_perm(s0, s1, 0x7632);
++            const int v2 = ggml_cuda_byte_perm(s2, s3, 0x5410);
++            const int v3 = ggml_cuda_byte_perm(s2, s3, 0x7632);
+ 
+ #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+             x_qs[i*sram_stride           + dst_offset + j*4+0] = v0;
 @@ -1134,11 +1134,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
              const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[l]];
              const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
@@ -46685,7 +46714,7 @@ index 04f3af644..72bf44e4d 100644
 +bool ggml_cuda_sigmoid_mul_add_fusable(const ggml_tensor * sig, const ggml_tensor * mul, const ggml_tensor * add);
 +void ggml_cuda_op_sigmoid_mul_add(ggml_backend_cuda_context & ctx, ggml_tensor * sig, ggml_tensor * mul, ggml_tensor * add);
 diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
-index f65fe530e..1e15c6b26 100644
+index f65fe530e..1916e4e38 100644
 --- a/ggml/src/ggml-cuda/vecdotq.cuh
 +++ b/ggml/src/ggml-cuda/vecdotq.cuh
 @@ -2,6 +2,17 @@
@@ -46706,7 +46735,29 @@ index f65fe530e..1e15c6b26 100644
  #include <cstdint>
  
  static __device__ __forceinline__ int get_int_b1(const void * x, const int & i32) {
-@@ -103,6 +114,13 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
+@@ -94,6 +105,21 @@ static __device__ __forceinline__ int2 get_int_from_table_16(const int & q4, con
+ #endif
+ }
+ 
++// CUDA's __byte_perm selects output byte i with the nibble at bits [4*i, 4*i+3] of the selector.
++// AMD's v_perm_b32 selects output byte i with the whole byte at bits [8*i, 8*i+7] of the selector,
++// so the four nibbles have to be expanded before the instruction can be used.  The HIP __byte_perm
++// is a private-memory union of four indexed byte loads, so every other i-quant table lookup already
++// goes through __builtin_amdgcn_perm; use the same instruction here.  Bit-identical by construction.
++static __device__ __forceinline__ int ggml_cuda_byte_perm(const int x, const int y, const int s) {
++#if defined(GGML_USE_HIP)
++    const uint32_t sel = ((uint32_t) s & 0x00000007u) | (((uint32_t) s & 0x00000070u) << 4) |
++                         (((uint32_t) s & 0x00000700u) << 8) | (((uint32_t) s & 0x00007000u) << 12);
++    return (int) __builtin_amdgcn_perm((uint32_t) y, (uint32_t) x, sel);
++#else
++    return __byte_perm(x, y, s);
++#endif
++}
++
+ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
+     // v is a 7 bit int, with the 8th sign being encodable as popcnt
+     // with xor we can "correct" the bit instead of having to mask
+@@ -103,6 +129,13 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
      return s * 0x01010101;
  }
  
@@ -46720,7 +46771,7 @@ index f65fe530e..1e15c6b26 100644
  // VDR = vec dot ratio, how many contiguous integers each thread processes when the vec dot kernel is called
  // MMVQ = mul_mat_vec_q, MMQ = mul_mat_q
  
-@@ -243,6 +261,16 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_imp
+@@ -243,6 +276,16 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_imp
  #define VDR_Q8_0_Q8_1_MMVQ 2
  #define VDR_Q8_0_Q8_1_MMQ 8
  
@@ -46737,7 +46788,7 @@ index f65fe530e..1e15c6b26 100644
  template <typename T, int vdr> static __device__ __forceinline__ T vec_dot_q8_0_q8_1_impl(
      const int * v, const int * u, const T & d8_0, const T & d8_1) {
  
-@@ -377,7 +405,7 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1_impl_mmvq(
+@@ -377,7 +420,7 @@ static __device__ __forceinline__ float vec_dot_q2_K_q8_1_impl_mmvq(
  
          const int vi = (v >> (2*i)) & 0x03030303;
  
@@ -46746,7 +46797,7 @@ index f65fe530e..1e15c6b26 100644
  
          // fill int with 4x m
          int m = sc >> 4;
-@@ -473,7 +501,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(
+@@ -473,7 +516,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(
  
          const int vi = __vsub4(vil, vih);
  
@@ -46755,7 +46806,7 @@ index f65fe530e..1e15c6b26 100644
      }
  
      return d3 * sumf;
-@@ -502,6 +530,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
+@@ -502,6 +545,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
  }
  
  #define VDR_Q4_K_Q8_1_MMVQ 2
@@ -46763,7 +46814,7 @@ index f65fe530e..1e15c6b26 100644
  #define VDR_Q4_K_Q8_1_MMQ  8
  
  // contiguous v/x values
-@@ -520,8 +549,36 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
+@@ -520,8 +564,36 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
          const int dot1 = ggml_cuda_dp4a(v1i, u[2*i+1], ggml_cuda_dp4a(v0i, u[2*i+0], 0)); // SIMD dot product
          const int dot2 = ggml_cuda_dp4a(0x01010101, u[2*i+1], ggml_cuda_dp4a(0x01010101, u[2*i+0], 0)); // sum of u
  
@@ -46802,7 +46853,7 @@ index f65fe530e..1e15c6b26 100644
      }
  
      const float2 dm4f = __half22float2(dm4);
-@@ -558,6 +615,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
+@@ -558,6 +630,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
  }
  
  #define VDR_Q5_K_Q8_1_MMVQ 2
@@ -46810,7 +46861,7 @@ index f65fe530e..1e15c6b26 100644
  #define VDR_Q5_K_Q8_1_MMQ  8
  
  // contiguous v/x values
-@@ -582,8 +640,43 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq(
+@@ -582,8 +655,43 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq(
          const int dot1 = ggml_cuda_dp4a(v0i, u[2*i+0], ggml_cuda_dp4a(v1i, u[2*i+1], 0)); // SIMD dot product
          const int dot2 = ggml_cuda_dp4a(0x01010101, u[2*i+0], ggml_cuda_dp4a(0x01010101, u[2*i+1], 0)); // sum of u
  
@@ -46856,7 +46907,7 @@ index f65fe530e..1e15c6b26 100644
  
      }
  
-@@ -620,7 +713,14 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
+@@ -620,7 +728,14 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
      return dm4f.x*sumf_d - dm4f.y*sumf_m;
  }
  
@@ -46871,7 +46922,7 @@ index f65fe530e..1e15c6b26 100644
  #define VDR_Q6_K_Q8_1_MMQ  8
  
  // contiguous v/x values
-@@ -640,7 +740,36 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmvq(
+@@ -640,7 +755,36 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmvq(
  
          const int vi = __vsub4((vil | vih), 0x20202020); // vi = (vil | vih) - 32
  
@@ -46909,7 +46960,36 @@ index f65fe530e..1e15c6b26 100644
      }
  
      return d*sumf;
-@@ -865,6 +994,32 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
+@@ -701,18 +845,18 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
+         const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
+ 
+         // unpack crumbs into nibble indices
+-        const int n0 = __byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
+-        const int n1 = __byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
++        const int n0 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
++        const int n1 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
+         // unpack nibbles into byte values
+-        const int s0 = __byte_perm(0x01FF, 0x01FF, n0 >>  0);
+-        const int s1 = __byte_perm(0x01FF, 0x01FF, n1 >>  0);
+-        const int s2 = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
+-        const int s3 = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
++        const int s0 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >>  0);
++        const int s1 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >>  0);
++        const int s2 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >> 16);
++        const int s3 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >> 16);
+         // unshuffle values
+-        const int v0 = __byte_perm(s0, s1, 0x5410);
+-        const int v1 = __byte_perm(s0, s1, 0x7632);
+-        const int v2 = __byte_perm(s2, s3, 0x5410);
+-        const int v3 = __byte_perm(s2, s3, 0x7632);
++        const int v0 = ggml_cuda_byte_perm(s0, s1, 0x5410);
++        const int v1 = ggml_cuda_byte_perm(s0, s1, 0x7632);
++        const int v2 = ggml_cuda_byte_perm(s2, s3, 0x5410);
++        const int v3 = ggml_cuda_byte_perm(s2, s3, 0x7632);
+ 
+         sumi = ggml_cuda_dp4a(v0, u0, sumi);
+         sumi = ggml_cuda_dp4a(v1, u1, sumi);
+@@ -865,6 +1009,32 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
      return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, __low2half(bq8_1->ds));
  }
  
@@ -46942,7 +47022,7 @@ index f65fe530e..1e15c6b26 100644
  static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -965,6 +1120,59 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
+@@ -965,6 +1135,59 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
      return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
  }
  
@@ -47002,7 +47082,7 @@ index f65fe530e..1e15c6b26 100644
  static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -1016,6 +1224,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
+@@ -1016,6 +1239,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
      return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
  }
  
@@ -47067,7 +47147,7 @@ index f65fe530e..1e15c6b26 100644
  static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -1042,6 +1308,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
+@@ -1042,6 +1323,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
  }
  
@@ -47109,7 +47189,7 @@ index f65fe530e..1e15c6b26 100644
  #define VDR_IQ2_XXS_Q8_1_MMVQ 2
  #define VDR_IQ2_XXS_Q8_1_MMQ  2
  
-@@ -1060,19 +1361,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
+@@ -1060,19 +1376,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
          const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
  
@@ -47132,7 +47212,7 @@ index f65fe530e..1e15c6b26 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1097,12 +1396,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1097,12 +1411,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l0/2] & 0x1FF];
          const uint32_t signs = unpack_ksigns(q2[l0/2] >> 9);
  
@@ -47147,7 +47227,7 @@ index f65fe530e..1e15c6b26 100644
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
          if (l0 < 4) {
-@@ -1113,7 +1410,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1113,7 +1425,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -47156,7 +47236,7 @@ index f65fe530e..1e15c6b26 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1143,11 +1440,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1143,11 +1455,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
      for (int l0 = 0; l0 < 8; l0 += 2) {
          const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
  
@@ -47171,7 +47251,7 @@ index f65fe530e..1e15c6b26 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1160,7 +1455,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1160,7 +1470,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -47180,7 +47260,7 @@ index f65fe530e..1e15c6b26 100644
  
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1184,13 +1479,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1184,13 +1494,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
          const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
          const uint32_t signs = unpack_ksigns(aux32 >> (7*l0/2));
  
@@ -47196,7 +47276,7 @@ index f65fe530e..1e15c6b26 100644
  
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
-@@ -1199,7 +1492,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1199,7 +1507,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
      }
  
      const int ls = aux32 >> 28;
@@ -47205,7 +47285,7 @@ index f65fe530e..1e15c6b26 100644
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1228,11 +1521,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1228,11 +1536,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
              iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
              iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
  
@@ -47220,7 +47300,7 @@ index f65fe530e..1e15c6b26 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1241,7 +1532,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1241,7 +1547,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
          sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
      }
  
@@ -47229,7 +47309,7 @@ index f65fe530e..1e15c6b26 100644
  
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1373,7 +1664,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
+@@ -1373,7 +1679,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
      }
  
      const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
@@ -52537,7 +52617,7 @@ index 08489a4be..5711521f5 100644
  
      // computed before each graph build
 diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
-index 045489df7..b6a4005b1 100644
+index 045489df7..c4dce08f6 100644
 --- a/src/llama-mmap.cpp
 +++ b/src/llama-mmap.cpp
 @@ -69,6 +69,7 @@ static std::string llama_format_win_err(DWORD err) {
@@ -52575,6 +52655,45 @@ index 045489df7..b6a4005b1 100644
  size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
  bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
  
+@@ -553,22 +556,24 @@ struct llama_mmap::impl {
+         GGML_ASSERT(last % page_size == 0);
+         GGML_ASSERT(last > first);
+ 
+-        void * next_page_start = (uint8_t *) addr + first;
+-
+-        if (munmap(next_page_start, len)) {
+-            LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
+-        }
+-
++        // Only munmap the parts that are still mapped: a tensor whose data has been uploaded to a
++        // device is unmapped as soon as it is loaded, so the final offload cleanup must not munmap
++        // the same range twice (munmap of an unmapped range fails) and must keep the fragments
++        // pointing into the mapping intact.
+         std::vector<std::pair<size_t, size_t>> new_mapped_fragments;
+         for (const auto & frag : mapped_fragments) {
+-            if (frag.first < first && frag.second > last) {
+-                new_mapped_fragments.emplace_back(frag.first, first);
+-                new_mapped_fragments.emplace_back(last, frag.second);
+-            } else if (frag.first < first && frag.second > first) {
+-                new_mapped_fragments.emplace_back(frag.first, first);
+-            } else if (frag.first < last && frag.second > last) {
+-                new_mapped_fragments.emplace_back(last, frag.second);
+-            } else if (frag.first >= first && frag.second <= last) {
++            const size_t lo = std::max(frag.first, first);
++            const size_t hi = std::min(frag.second, last);
++            if (lo < hi) {
++                if (munmap((char *) addr + lo, hi - lo)) {
++                    LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
++                }
++                if (frag.first < first) {
++                    new_mapped_fragments.emplace_back(frag.first, first);
++                }
++                if (frag.second > last) {
++                    new_mapped_fragments.emplace_back(last, frag.second);
++                }
+             } else {
+                 new_mapped_fragments.push_back(frag);
+             }
 diff --git a/src/llama-mmap.h b/src/llama-mmap.h
 index 6c6393d57..8cce74993 100644
 --- a/src/llama-mmap.h
@@ -52599,10 +52718,15 @@ index 6c6393d57..8cce74993 100644
  
      void seek(size_t offset, int whence) const;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 6cc0b2028..644df9697 100644
+index 6cc0b2028..a603f69da 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -14,6 +14,12 @@
+@@ -10,10 +10,17 @@
+ #include <array>
+ #include <cinttypes>
+ #include <cstdint>
++#include <cstdlib>
+ #include <cstring>
  #include <future>
  #include <regex>
  
@@ -52615,7 +52739,7 @@ index 6cc0b2028..644df9697 100644
  static const size_t kiB = 1024;
  static const size_t MiB = 1024*kiB;
  static const size_t GiB = 1024*MiB;
-@@ -537,9 +543,11 @@ llama_model_loader::llama_model_loader(
+@@ -537,9 +544,11 @@ llama_model_loader::llama_model_loader(
          std::vector<std::string> & splits,
          FILE * file,
          llama_load_mode load_mode,
@@ -52627,7 +52751,7 @@ index 6cc0b2028..644df9697 100644
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
          : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
-@@ -555,10 +563,28 @@ llama_model_loader::llama_model_loader(
+@@ -555,10 +564,28 @@ llama_model_loader::llama_model_loader(
      }
  
      tensor_buft_overrides = param_tensor_buft_overrides_p;
@@ -52656,7 +52780,7 @@ index 6cc0b2028..644df9697 100644
      if (!fname.empty()) {
          // Load the main GGUF
          struct ggml_context * ctx = NULL;
-@@ -1113,6 +1139,48 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1113,6 +1140,48 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -52705,7 +52829,7 @@ index 6cc0b2028..644df9697 100644
  struct ggml_tensor * llama_model_loader::create_tensor(
          const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
          const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
-@@ -1175,9 +1243,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1175,9 +1244,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // skip unused tensors
@@ -52719,7 +52843,7 @@ index 6cc0b2028..644df9697 100644
  
              size_data -= nbytes;
              n_created++;
-@@ -1216,7 +1286,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1216,7 +1287,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          const buft_list_t * buft_list;
          switch (info.layer) {
              case LLM_TENSOR_LAYER_INPUT:
@@ -52731,7 +52855,7 @@ index 6cc0b2028..644df9697 100644
                  break;
              case LLM_TENSOR_LAYER_OUTPUT:
                  buft_list = buft_list_output;
-@@ -1237,9 +1310,70 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1237,9 +1311,70 @@ struct ggml_tensor * llama_model_loader::create_tensor(
              for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
                  std::regex pattern(overrides->pattern);
                  if (std::regex_search(tensor_name, pattern)) {
@@ -52804,7 +52928,7 @@ index 6cc0b2028..644df9697 100644
                          if (use_mmap) {
                              static std::once_flag once;
                              std::call_once(once, [] {
-@@ -1267,8 +1401,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1267,8 +1402,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // avoid using a host buffer when using mmap
@@ -52820,7 +52944,7 @@ index 6cc0b2028..644df9697 100644
              auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
              if (!cpu_dev) {
                  throw std::runtime_error("no CPU backend found");
-@@ -1326,7 +1466,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1326,7 +1467,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          ggml_set_name(&t_meta, tn.str().c_str());
  
          ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
@@ -52834,7 +52958,7 @@ index 6cc0b2028..644df9697 100644
          ggml_context * ctx = ctx_for_buft(buft);
          ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
          ggml_set_name(ret, tn.str().c_str());
-@@ -1339,8 +1484,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1339,8 +1485,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          return NULL;
      }
  
@@ -52846,7 +52970,7 @@ index 6cc0b2028..644df9697 100644
          is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()));
      }
  
-@@ -1364,6 +1511,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1364,6 +1512,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
      if (buft == nullptr) {
          return nullptr;
      }
@@ -52856,7 +52980,63 @@ index 6cc0b2028..644df9697 100644
  
      ggml_context * ctx = ctx_for_buft(buft);
  
-@@ -1557,6 +1707,21 @@ bool llama_model_loader::load_all_data(
+@@ -1407,6 +1558,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
+     }
+ }
+ 
++// Release a tensor's host-mapping pages as soon as it has been uploaded to a device, so a large
++// offload does not have to hold the entire model mapping and the host expert pool at once.  The range
++// is unmapped outright (madvise(MADV_DONTNEED) is not enough: the ROCm runtime re-faults those pages on
++// the next pageable H2D copy).  Default on; LLAMA_LOAD_RELEASE_MMAP=0 disables it.
++static bool llama_load_release_mmap() {
++    static const bool enabled = getenv("LLAMA_LOAD_RELEASE_MMAP") == nullptr || atoi(getenv("LLAMA_LOAD_RELEASE_MMAP")) != 0;
++    return enabled;
++}
++
+ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps) {
+     // note: read_lazy also requires mmap; this condition make sure it's usable even when --load-mode is not set to mmap
+     if (use_mmap || lazy.any()) {
+@@ -1426,11 +1586,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+                 }
+             }
+ 
+-            const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
++            // With incremental release enabled, do not fault the whole file in up front: the loader
++            // then releases each tensor's pages as it uploads them, and an up-front full-file prefetch
++            // would still peak at model + host pool.  Kernel readahead keeps sequential reads efficient.
++            const size_t prefetch_size = prefetch && use_mmap && !llama_load_release_mmap() ? -1 : 0;
+ 
+             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
+                     lazy.for_file(idx));
+-            mmaps_used.emplace_back(mapping->size(), 0);
++            mmaps_used.emplace_back();
+             if (mlock_mmaps) {
+                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
+                 mlock_mmap->init(mapping->addr());
+@@ -1446,6 +1609,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+     }
+ }
+ 
++void llama_model_loader::mark_mmap_used(uint32_t idx, size_t offs, size_t size) {
++    if (idx >= mmaps_used.size()) {
++        return;
++    }
++    mmaps_used[idx].emplace_back(offs, offs + size);
++}
++
+ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const {
+     GGML_ASSERT(!mappings.empty());
+     const auto & mapping = mappings.at(idx);
+@@ -1504,6 +1674,8 @@ bool llama_model_loader::load_all_data(
+     }
+     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
+ 
++    const bool release_mmap = llama_load_release_mmap();
++
+     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
+ 
+     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
+@@ -1557,6 +1729,21 @@ bool llama_model_loader::load_all_data(
          }
  
          auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
@@ -52878,7 +53058,42 @@ index 6cc0b2028..644df9697 100644
          if (!host_buft) {
              LLAMA_LOG_DEBUG("%s: no host buffer type found for device %s\n", func,
                  ggml_backend_dev_name(dev));
-@@ -1746,6 +1911,17 @@ bool llama_model_loader::load_all_data(
+@@ -1662,11 +1849,31 @@ bool llama_model_loader::load_all_data(
+                     lmlock->grow_to(weight->offs + n_size);
+                 }
+ 
+-                auto & mmap_used = mmaps_used[weight->idx];
+-                mmap_used.first  = std::min(mmap_used.first,  weight->offs);
+-                mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
++                // the tensor points directly into the mapping; the page must survive the load
++                mark_mmap_used(weight->idx, weight->offs, n_size);
+             } else {
+                 ggml_backend_tensor_set(cur, data, 0, n_size);
++                // The tensor now lives in a device (or non-mapping host) buffer, so its backing mmap
++                // pages are dead weight during the rest of the load.  Drop them incrementally: a
++                // full-file mapping plus the host expert pool otherwise has to be resident at once,
++                // which starves a memory-constrained host.  `madvise(MADV_DONTNEED)` is not enough
++                // here -- the ROCm runtime re-faults the pages on the next pageable H2D copy -- so the
++                // range is munmapped.  Not with `--mlock` (the pages were asked to stay) and not with
++                // `check_tensors` (the async validation may still be reading the range).
++                if (release_mmap && lmlocks == nullptr && !check_tensors && !lazy.has(cur)) {
++                    // never unmap a range a host-pointer tensor points into: a tied embedding is
++                    // loaded twice (once mmap-backed, once copied to a device) from the same range
++                    bool host_backed = false;
++                    for (const auto & r : mmaps_used[weight->idx]) {
++                        if (weight->offs < r.second && r.first < weight->offs + n_size) {
++                            host_backed = true;
++                            break;
++                        }
++                    }
++                    if (!host_backed) {
++                        mapping->unmap_fragment(weight->offs, weight->offs + n_size);
++                    }
++                }
+             }
+         } else {
+             const auto & file = files.at(weight->idx);
+@@ -1746,6 +1953,17 @@ bool llama_model_loader::load_all_data(
              }
          }
  
@@ -52896,8 +53111,33 @@ index 6cc0b2028..644df9697 100644
          size_done += n_size;
      }
  
+@@ -1777,11 +1995,20 @@ bool llama_model_loader::load_all_data(
+         // unmap offloaded tensors and metadata
+         if (use_mmap) {
+             for (uint32_t idx = 0; idx < mappings.size(); idx++) {
+-                const auto & mmap_used = mmaps_used.at(idx);
+                 auto & mapping = mappings.at(idx);
+-                mapping->unmap_fragment(0, mmap_used.first);
+-                if (mmap_used.second != 0) {
+-                    mapping->unmap_fragment(mmap_used.second, mapping->size());
++                auto used = mmaps_used.at(idx);
++                std::sort(used.begin(), used.end());
++                size_t pos = 0;
++                for (const auto & r : used) {
++                    const size_t beg = std::min(r.first,  mapping->size());
++                    const size_t end = std::min(r.second, mapping->size());
++                    if (beg > pos) {
++                        mapping->unmap_fragment(pos, beg);
++                    }
++                    pos = std::max(pos, end);
++                }
++                if (pos < mapping->size()) {
++                    mapping->unmap_fragment(pos, mapping->size());
+                 }
+             }
+         }
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 9e51d0ce7..c2d4bd040 100644
+index 9e51d0ce7..939d928bf 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -70,6 +70,7 @@ struct llama_model_loader {
@@ -52951,18 +53191,23 @@ index 9e51d0ce7..c2d4bd040 100644
  
      gguf_context_ptr metadata_ptr;
      struct gguf_context * metadata; // either metadata_ptr.get() or externally set
-@@ -140,6 +159,10 @@ struct llama_model_loader {
-     size_t size_data = 0;
-     std::vector<std::pair<size_t, size_t>> mmaps_used;
+@@ -138,7 +157,14 @@ struct llama_model_loader {
  
+     size_t size_done = 0;
+     size_t size_data = 0;
+-    std::vector<std::pair<size_t, size_t>> mmaps_used;
++    // exact byte ranges of each mapped file that are backed directly by a host-pointer (mmap) buffer.
++    // A tensor duplicated host-side and device-side (a tied embedding) shares its range, so the device
++    // copy must not unmap pages the host copy still points into.
++    std::vector<llama_mmap::ranges> mmaps_used;
++
 +    // wip/moe-cache-autosize: bytes of host-resident MoE expert weights per device, accumulated by
 +    // `create_tensor` (works under `no_alloc`, unlike a scan of the allocated tensors).
 +    std::map<ggml_backend_dev_t, size_t> moe_host_expert_bytes;
-+
+ 
      // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
      struct ggml_backend_buft_comparator {
-         bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
-@@ -158,7 +181,18 @@ struct llama_model_loader {
+@@ -158,7 +184,18 @@ struct llama_model_loader {
              if (lhs.lazy != rhs.lazy) {
                  return lhs.lazy < rhs.lazy;
              }
@@ -52982,7 +53227,7 @@ index 9e51d0ce7..c2d4bd040 100644
          }
      };
  
-@@ -179,9 +213,11 @@ struct llama_model_loader {
+@@ -179,9 +216,11 @@ struct llama_model_loader {
          std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
          FILE * file,
          llama_load_mode load_mode,
@@ -52994,8 +53239,18 @@ index 9e51d0ce7..c2d4bd040 100644
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
  
+@@ -244,6 +283,9 @@ struct llama_model_loader {
+ 
+     void get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const;
+ 
++    // record an exact mmap-backed byte range of file `idx` (a tensor held in a host-pointer buffer)
++    void mark_mmap_used(uint32_t idx, size_t offs, size_t size);
++
+     // release a weight's mmap pages
+     void unmap_weight(const llama_tensor_weight & w) const;
+ 
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 97e0cee70..6d6f4e300 100644
+index 97e0cee70..bae480aae 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -354,6 +354,47 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
@@ -53142,7 +53397,24 @@ index 97e0cee70..6d6f4e300 100644
      // per-tensor activation precision policy
      prec_policy.load(ml, *this);
  
-@@ -2033,6 +2134,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
+@@ -1873,6 +1974,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+                 }
+                 bufs.emplace_back(buf);
+                 buf_map.emplace(idx, buf);
++
++                // record the exact mmap-backed ranges before any data is loaded, so the loader's
++                // per-tensor release never unmaps pages that a host-pointer tensor points into
++                // (a tied embedding is loaded once mmap-backed and once copied to a device)
++                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
++                    const auto * w = ml.get_weight(ggml_get_name(t));
++                    if (w != nullptr && (uint32_t) w->idx == idx) {
++                        ml.mark_mmap_used(idx, w->offs, ggml_nbytes(t));
++                    }
++                }
+             }
+         } else {
+             ggml_backend_buffer_t buf;
+@@ -2033,6 +2144,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
      return ret;
  }
  
@@ -53169,7 +53441,7 @@ index 97e0cee70..6d6f4e300 100644
  uint64_t llama_model::n_elements() const {
      return pimpl->n_elements;
  }
-@@ -2492,6 +2613,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2492,6 +2623,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                      /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                      /* n_seq_max         */ cparams.n_seq_max,
                      /* n_rs_seq          */ cparams.n_rs_seq,
@@ -53177,7 +53449,7 @@ index 97e0cee70..6d6f4e300 100644
                      /* offload           */ cparams.offload_kqv,
                      /* unified           */ cparams.kv_unified,
                      /* filter_attn       */ std::move(filter_attn),
-@@ -2665,10 +2787,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2665,10 +2797,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
          default:
              {
                  // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
@@ -53230,7 +53502,7 @@ index 97e0cee70..6d6f4e300 100644
  
                  const bool mtp_on_hybrid_nemotron =
                      params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -2682,6 +2845,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2682,6 +2855,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                              std::max((uint32_t) 1, cparams.n_seq_max),
                              cparams.n_seq_max,
                              cparams.n_rs_seq,
@@ -53238,7 +53510,7 @@ index 97e0cee70..6d6f4e300 100644
                              nullptr);
                  } else if (llm_arch_is_hybrid(arch) && !mtp_on_hybrid_qwen && !mtp_on_hybrid_nemotron) {
                      // The main difference between hybrid architectures is the
-@@ -2743,6 +2907,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2743,6 +2917,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                              /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,
@@ -53246,7 +53518,7 @@ index 97e0cee70..6d6f4e300 100644
                              /* offload           */ cparams.offload_kqv,
                              /* unified           */ cparams.kv_unified,
                              /* filter_attn       */ std::move(filter_attn),
-@@ -2763,6 +2928,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2763,6 +2938,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                              /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,
@@ -53254,7 +53526,7 @@ index 97e0cee70..6d6f4e300 100644
                              /* offload           */ cparams.offload_kqv,
                              /* unified           */ cparams.kv_unified,
                              /* filter_attn       */ std::move(filter_attn),
-@@ -2783,6 +2949,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2783,6 +2959,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                              /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,
@@ -53262,7 +53534,7 @@ index 97e0cee70..6d6f4e300 100644
                              /* offload           */ cparams.offload_kqv,
                              /* unified           */ cparams.kv_unified,
                              /* filter_attn       */ std::move(filter_attn),
-@@ -2930,6 +3097,7 @@ llama_model_params llama_model_default_params() {
+@@ -2930,6 +3107,7 @@ llama_model_params llama_model_default_params() {
          /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
@@ -53270,7 +53542,7 @@ index 97e0cee70..6d6f4e300 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -2941,6 +3109,7 @@ llama_model_params llama_model_default_params() {
+@@ -2941,6 +3119,7 @@ llama_model_params llama_model_default_params() {
          /*.no_host                     =*/ false,
          /*.no_alloc                    =*/ false,
          /*.load_mtp                    =*/ false,
@@ -53278,7 +53550,7 @@ index 97e0cee70..6d6f4e300 100644
      };
  
      return result;
-@@ -3361,6 +3530,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
+@@ -3361,6 +3540,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
      return model->tensors_by_name;
  }
  
@@ -53351,7 +53623,7 @@ index 97e0cee70..6d6f4e300 100644
  int32_t llama_model_n_expert(const struct llama_model * model) {
      return model->hparams.n_expert;
  }
-@@ -3386,7 +3621,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+@@ -3386,7 +3631,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
      TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
      TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
      TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),

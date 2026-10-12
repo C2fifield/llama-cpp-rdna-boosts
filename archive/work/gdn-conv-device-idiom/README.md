@@ -1,9 +1,13 @@
 # `gdn-conv-device-idiom` — one device idiom in `gdn-conv.cu` (TODO #32)
 
+> **PROMOTED 2026-10-11 (r49) — folded into block 15.**  `ggml_cuda_cpy_batch` now asks
+> `ggml_cuda_get_device()` like `gdn-conv.cu` (`cpy-batch.cu:66`); a no-op idiom fix with no
+> behavioural or perf impact.  Record: `WORKLOG.md` 261011.017 (r49).
+
 **Status: OPEN (seeded 2026-10-11), cosmetic.** Not part of the delivery; nothing here may be applied to
 the fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). Same item as
 **TODO #32**. Found during the PR #102 review; recorded in
-[`archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md`](../../archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md)
+[`archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md`](../rdna4-verify-fusions-lf/VERIFICATION-r10.md)
 (review notes). No correctness impact, no perf impact — this is a one-line consistency fix to make at the
 next block-15 touch.
 
@@ -63,7 +67,7 @@ the block-15 commit's diff reviewable), exactly as the TODO suggests.
 ## 4. Pointers
 
 - `TODO.md` #32.
-- [`archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md`](../../archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md)
+- [`archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md`](../rdna4-verify-fusions-lf/VERIFICATION-r10.md)
   (the review note, §"Verify-step A/B" and the bullet naming both idioms).
 - `ggml/src/ggml-cuda/gdn-conv.cu:72`, `ggml/src/ggml-cuda/cpy-batch.cu:66`,
   `ggml/src/ggml-cuda/ggml-cuda.cu` (`ggml_cuda_should_fuse_mul_mat_vec_q`).

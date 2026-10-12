@@ -1,4 +1,4 @@
-From 0bc12586413e7fe4547916dc3ed43453b3eb09b8 Mon Sep 17 00:00:00 2001
+From f0a74f4cc721f425beabdd6517c191ade29cb450 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Thu, 10 Sep 2026 16:34:03 +0000
 Subject: [PATCH 15/15] rdna-boosts: block 15: campaign memory wins
@@ -515,6 +515,17 @@ decode/latency remainder of the former block 16: the GDN state-gather skip (#124
 top-k AVX2 prefilter (#125), the gfx1201 grid-stall pad (#128, mmvf/mmvq), and issue #133's
 band-WMMA GQA cap (the decode/verify band now folds gqa ratios up to 12).  Net tree unchanged except
 for the #133 fix.
+
+Amended 2026-10-12 (r49) with two AMD-only consistency fixes (TODO #32 and #54; the latter was
+`wip/q1-0-byte-perm`, the former `wip/gdn-conv-device-idiom`).  (1) Q1_0 table lookup: a new
+`ggml_cuda_byte_perm(x, y, s)` (HIP: expand the four selector nibbles to selector bytes and use
+`__builtin_amdgcn_perm`; otherwise `__byte_perm`) now backs all 24 call sites in `vec_dot_q1_0_q8_1`
+and `ggml_cuda_mmq_load_tiles_q1_0`, whose HIP `__byte_perm` was a private-memory union of four
+indexed byte loads while every other i-quant lookup already used the instruction.  Bit-identical by
+construction: exact over 16M randomized GPU cases, and `test-backend-ops -o MUL_MAT` 1304/1304
+(ROCm0) including every q1_0 width.  No local Q1_0 model, so no speed claim.  (2) `ggml_cuda_cpy_batch`
+asks the device through `ggml_cuda_get_device()` like `gdn-conv.cu` instead of `ctx.device`; a no-op
+idiom fix (the current device is set for the split) with no behavioural or perf impact.
 ---
  common/arg.cpp                                |   25 +-
  common/common.cpp                             |   15 -
@@ -568,7 +579,7 @@ for the #133 fix.
  ggml/src/ggml-cuda/mmb.cu                     |  241 ++-
  ggml/src/ggml-cuda/mmb.cuh                    |   18 +
  ggml/src/ggml-cuda/mmid.cu                    |    3 +-
- ggml/src/ggml-cuda/mmq-load-tiles.cuh         |   34 +-
+ ggml/src/ggml-cuda/mmq-load-tiles.cuh         |   54 +-
  ggml/src/ggml-cuda/mmq-vec-dot.cuh            |    2 +
  ggml/src/ggml-cuda/mmq.cu                     |   24 +-
  ggml/src/ggml-cuda/mmq.cuh                    |   89 +-
@@ -690,7 +701,7 @@ for the #133 fix.
  .../template-instances/generate_cu_files.py   |   11 +-
  ggml/src/ggml-cuda/unary.cu                   |  195 ++-
  ggml/src/ggml-cuda/unary.cuh                  |    3 +
- ggml/src/ggml-cuda/vecdotq.cuh                |   41 +-
+ ggml/src/ggml-cuda/vecdotq.cuh                |   76 +-
  ggml/src/ggml-et/ggml-et.cpp                  |    1 +
  ggml/src/ggml-hexagon/ggml-hexagon.cpp        |    1 +
  ggml/src/ggml-hip/CMakeLists.txt              |   11 +
@@ -728,7 +739,7 @@ for the #133 fix.
  tests/test-llama-archs.cpp                    |    9 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 212 files changed, 12731 insertions(+), 1373 deletions(-)
+ 212 files changed, 12766 insertions(+), 1393 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -3725,7 +3736,7 @@ index ee24653e0..f040e58fc 100644
          }
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cu b/ggml/src/ggml-cuda/cpy-batch.cu
 new file mode 100644
-index 000000000..1561188c2
+index 000000000..fbdcdc213
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cu
 @@ -0,0 +1,108 @@
@@ -3794,7 +3805,7 @@ index 000000000..1561188c2
 +} // namespace
 +
 +int ggml_cuda_cpy_batch(ggml_backend_cuda_context & ctx, ggml_cgraph * cgraph, const int i) {
-+    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ctx.device].cc)) return 0;
++    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) return 0;
 +    ggml_tensor * first = cgraph->nodes[i];
 +    if (!cb_member(first)) return 0;
 +    // the run: copies with the first one's layouts, possibly separated by no-op view nodes (consumed with the run)
@@ -13360,9 +13371,38 @@ index ce8249222..6818bfab9 100644
              ids, ids_src1, ids_dst, expert_bounds, n_tokens, nchannels_y, si1, sis1, write_inverse);
          return;
 diff --git a/ggml/src/ggml-cuda/mmq-load-tiles.cuh b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
-index d5654868b..a2a2785a5 100644
+index d5654868b..6dfd54b57 100644
 --- a/ggml/src/ggml-cuda/mmq-load-tiles.cuh
 +++ b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
+@@ -47,18 +47,18 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
+             const int q  = qxi[j];
+ 
+             // unpack crumbs into nibble indices
+-            const int n0 = __byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
+-            const int n1 = __byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
++            const int n0 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
++            const int n1 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
+             // unpack nibbles into byte values
+-            const int s0 = __byte_perm(0x01FF, 0x01FF, n0 >>  0);
+-            const int s1 = __byte_perm(0x01FF, 0x01FF, n1 >>  0);
+-            const int s2 = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
+-            const int s3 = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
++            const int s0 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >>  0);
++            const int s1 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >>  0);
++            const int s2 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >> 16);
++            const int s3 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >> 16);
+             // unshuffle values
+-            const int v0 = __byte_perm(s0, s1, 0x5410);
+-            const int v1 = __byte_perm(s0, s1, 0x7632);
+-            const int v2 = __byte_perm(s2, s3, 0x5410);
+-            const int v3 = __byte_perm(s2, s3, 0x7632);
++            const int v0 = ggml_cuda_byte_perm(s0, s1, 0x5410);
++            const int v1 = ggml_cuda_byte_perm(s0, s1, 0x7632);
++            const int v2 = ggml_cuda_byte_perm(s2, s3, 0x5410);
++            const int v3 = ggml_cuda_byte_perm(s2, s3, 0x7632);
+ 
+ #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+             x_qs[i*sram_stride           + dst_offset + j*4+0] = v0;
 @@ -1134,11 +1134,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
              const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[l]];
              const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
@@ -17078,10 +17118,32 @@ index e20f179d9..72bf44e4d 100644
 +bool ggml_cuda_sigmoid_mul_add_fusable(const ggml_tensor * sig, const ggml_tensor * mul, const ggml_tensor * add);
 +void ggml_cuda_op_sigmoid_mul_add(ggml_backend_cuda_context & ctx, ggml_tensor * sig, ggml_tensor * mul, ggml_tensor * add);
 diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
-index 399120456..1e15c6b26 100644
+index 399120456..1916e4e38 100644
 --- a/ggml/src/ggml-cuda/vecdotq.cuh
 +++ b/ggml/src/ggml-cuda/vecdotq.cuh
-@@ -114,6 +114,13 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
+@@ -105,6 +105,21 @@ static __device__ __forceinline__ int2 get_int_from_table_16(const int & q4, con
+ #endif
+ }
+ 
++// CUDA's __byte_perm selects output byte i with the nibble at bits [4*i, 4*i+3] of the selector.
++// AMD's v_perm_b32 selects output byte i with the whole byte at bits [8*i, 8*i+7] of the selector,
++// so the four nibbles have to be expanded before the instruction can be used.  The HIP __byte_perm
++// is a private-memory union of four indexed byte loads, so every other i-quant table lookup already
++// goes through __builtin_amdgcn_perm; use the same instruction here.  Bit-identical by construction.
++static __device__ __forceinline__ int ggml_cuda_byte_perm(const int x, const int y, const int s) {
++#if defined(GGML_USE_HIP)
++    const uint32_t sel = ((uint32_t) s & 0x00000007u) | (((uint32_t) s & 0x00000070u) << 4) |
++                         (((uint32_t) s & 0x00000700u) << 8) | (((uint32_t) s & 0x00007000u) << 12);
++    return (int) __builtin_amdgcn_perm((uint32_t) y, (uint32_t) x, sel);
++#else
++    return __byte_perm(x, y, s);
++#endif
++}
++
+ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
+     // v is a 7 bit int, with the 8th sign being encodable as popcnt
+     // with xor we can "correct" the bit instead of having to mask
+@@ -114,6 +129,13 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
      return s * 0x01010101;
  }
  
@@ -17095,7 +17157,36 @@ index 399120456..1e15c6b26 100644
  // VDR = vec dot ratio, how many contiguous integers each thread processes when the vec dot kernel is called
  // MMVQ = mul_mat_vec_q, MMQ = mul_mat_q
  
-@@ -1354,13 +1361,11 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
+@@ -823,18 +845,18 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
+         const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
+ 
+         // unpack crumbs into nibble indices
+-        const int n0 = __byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
+-        const int n1 = __byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
++        const int n0 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
++        const int n1 = ggml_cuda_byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
+         // unpack nibbles into byte values
+-        const int s0 = __byte_perm(0x01FF, 0x01FF, n0 >>  0);
+-        const int s1 = __byte_perm(0x01FF, 0x01FF, n1 >>  0);
+-        const int s2 = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
+-        const int s3 = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
++        const int s0 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >>  0);
++        const int s1 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >>  0);
++        const int s2 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n0 >> 16);
++        const int s3 = ggml_cuda_byte_perm(0x01FF, 0x01FF, n1 >> 16);
+         // unshuffle values
+-        const int v0 = __byte_perm(s0, s1, 0x5410);
+-        const int v1 = __byte_perm(s0, s1, 0x7632);
+-        const int v2 = __byte_perm(s2, s3, 0x5410);
+-        const int v3 = __byte_perm(s2, s3, 0x7632);
++        const int v0 = ggml_cuda_byte_perm(s0, s1, 0x5410);
++        const int v1 = ggml_cuda_byte_perm(s0, s1, 0x7632);
++        const int v2 = ggml_cuda_byte_perm(s2, s3, 0x5410);
++        const int v3 = ggml_cuda_byte_perm(s2, s3, 0x7632);
+ 
+         sumi = ggml_cuda_dp4a(v0, u0, sumi);
+         sumi = ggml_cuda_dp4a(v1, u1, sumi);
+@@ -1354,13 +1376,11 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
          const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
  
@@ -17111,7 +17202,7 @@ index 399120456..1e15c6b26 100644
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, k0 + 1);
          sumi = ggml_cuda_dp4a(grid1, u1, sumi);
      }
-@@ -1391,12 +1396,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1391,12 +1411,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l0/2] & 0x1FF];
          const uint32_t signs = unpack_ksigns(q2[l0/2] >> 9);
  
@@ -17126,7 +17217,7 @@ index 399120456..1e15c6b26 100644
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
          if (l0 < 4) {
-@@ -1437,11 +1440,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1437,11 +1455,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
      for (int l0 = 0; l0 < 8; l0 += 2) {
          const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
  
@@ -17141,7 +17232,7 @@ index 399120456..1e15c6b26 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1478,13 +1479,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1478,13 +1494,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
          const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
          const uint32_t signs = unpack_ksigns(aux32 >> (7*l0/2));
  
@@ -17157,7 +17248,7 @@ index 399120456..1e15c6b26 100644
  
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
-@@ -1522,11 +1521,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1522,11 +1536,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
              iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
              iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
  
@@ -19788,10 +19879,10 @@ index 26318241c..cb62766b2 100644
              // Clearing the state mid-batch would require special-casing which isn't done.
              LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 91724fb50..644df9697 100644
+index a3029e4da..a603f69da 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -14,12 +14,11 @@
+@@ -15,12 +15,11 @@
  #include <future>
  #include <regex>
  
@@ -19809,7 +19900,7 @@ index 91724fb50..644df9697 100644
  
  static const size_t kiB = 1024;
  static const size_t MiB = 1024*kiB;
-@@ -577,7 +576,11 @@ llama_model_loader::llama_model_loader(
+@@ -578,7 +577,11 @@ llama_model_loader::llama_model_loader(
                         "by a no-XNACK GPU, issue #116); using pinned instead\n", __func__);
      }
      if (host_experts_mode == LLAMA_HOST_EXPERTS_MODE_POOL) {
@@ -19822,7 +19913,7 @@ index 91724fb50..644df9697 100644
          LLAMA_LOG_INFO("%s: host_experts_mode=POOL: bounded pinned host pool enabled "
                         "(MOE_HOST_POOL_MIB, default 25%% of the MoE host expert bytes)\n", __func__);
      }
-@@ -1466,7 +1469,6 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1467,7 +1470,6 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          if (buft == nullptr) { // e.g. TENSOR_SKIP
              return nullptr;
          }
@@ -19830,7 +19921,7 @@ index 91724fb50..644df9697 100644
          if (ggml_backend_buft_is_host(buft) && tn.str().find("exps") != std::string::npos) {
              moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), buft, buft_list_layer);
          }
-@@ -1914,8 +1916,10 @@ bool llama_model_loader::load_all_data(
+@@ -1956,8 +1958,10 @@ bool llama_model_loader::load_all_data(
          if (cur->data != nullptr && cur->buffer != nullptr && cur->ne[2] > 1 &&
                  ggml_backend_buffer_is_host(cur->buffer) &&
                  std::string(ggml_get_name(cur)).find("exps") != std::string::npos) {
@@ -19844,7 +19935,7 @@ index 91724fb50..644df9697 100644
  
          size_done += n_size;
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 5cc9b4ae0..c2d4bd040 100644
+index c2efc0e9b..939d928bf 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -93,9 +93,10 @@ struct llama_model_loader {
@@ -19862,7 +19953,7 @@ index 5cc9b4ae0..c2d4bd040 100644
          // decide whether this tensor is read lazily
          // pass w to also record it, or nullptr to only ask
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 66f018164..6d6f4e300 100644
+index ffc8fb0d7..bae480aae 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -426,7 +426,46 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
@@ -19913,7 +20004,7 @@ index 66f018164..6d6f4e300 100644
      const bool is_dsv4 = ud->model->arch == LLM_ARCH_DEEPSEEK4 ||
          (ud->model->arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0);
  
-@@ -2095,6 +2134,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
+@@ -2105,6 +2144,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
      return ret;
  }
  
@@ -19940,7 +20031,7 @@ index 66f018164..6d6f4e300 100644
  uint64_t llama_model::n_elements() const {
      return pimpl->n_elements;
  }
-@@ -2728,10 +2787,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2738,10 +2797,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
          default:
              {
                  // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
@@ -19993,7 +20084,7 @@ index 66f018164..6d6f4e300 100644
  
                  const bool mtp_on_hybrid_nemotron =
                      params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -2998,7 +3098,6 @@ llama_model_params llama_model_default_params() {
+@@ -3008,7 +3108,6 @@ llama_model_params llama_model_default_params() {
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
          /*.host_experts_mode           =*/ LLAMA_HOST_EXPERTS_MODE_PINNED,
@@ -20001,7 +20092,7 @@ index 66f018164..6d6f4e300 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -3471,9 +3570,6 @@ bool llama_moe_cache_stats(const llama_model * model, int64_t * hits, int64_t *
+@@ -3481,9 +3580,6 @@ bool llama_moe_cache_stats(const llama_model * model, int64_t * hits, int64_t *
          }
      }
      return false;

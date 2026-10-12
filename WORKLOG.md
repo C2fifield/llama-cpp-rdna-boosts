@@ -1,5 +1,95 @@
 # WORKLOG - dated delivery records
 
+## 261011.017 (r49) -- mmap host-memory reclaim (block 06) + Q1_0 perm port and `cpy-batch` idiom (block 15); three campaigns promoted
+
+**Delivery change.**  `release.json` is now `v16-a55e952b8-r49` (base `a55e952b8`, canonical tip
+`f0a74f4cc`, net tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`; `validate-set.sh` green, 16/16 strict
+`git am`).  Three `wip/` campaigns were promoted and their records moved to `archive/work/` with
+resolution banners (no stubs): `host-memory-reclaim/` -> **block 06**, `q1-0-byte-perm/` and
+`gdn-conv-device-idiom/` -> **block 15**.  `TODO.md` #54 and #32 are closed.
+
+**Block 06 -- the mmap host-memory reclaim.**  The loader used to fault the whole model file in up front
+(`MAP_POPULATE` / `POSIX_MADV_WILLNEED` with `prefetch = -1`) and unmapped it only at the end of the
+load, so a `-ncmoe` load held the full model mapping **and** the pinned `ROCm_Host` expert master at the
+same time.  The reclaim skips the up-front full-file prefetch (`init_mappings`) and unmaps each tensor's
+mapping range right after `ggml_backend_tensor_set` copies it to its device buffer (`load_all_data`).
+The **exact** mmap-backed ranges (host-pointer / `buffer_from_host_ptr` buffers) are recorded before any
+load (`mark_mmap_used`, called from `llama_model_base::load_tensors`), so the release never touches a
+range a host-pointer tensor points into: a tied embedding (`token_embd` == `output`) is loaded twice
+from the same range (once mmap-backed, once copied to a device), and unmapping it left the host copy
+dangling (SIGSEGV in a CPU `GET_ROWS`).  The end-of-load cleanup now unmaps the exact **complement** of
+those ranges, and `unmap_fragment` is idempotent (it munmaps only the still-mapped intersections, so a
+per-tensor release and the final cleanup cannot double-unmap).  `madvise(MADV_DONTNEED)` is **not**
+usable here: the ROCm runtime re-faults those pages on the next pageable H2D copy (reproduced in
+isolation), so the range is munmapped.  `LLAMA_LOAD_RELEASE_MMAP=0` restores the pre-r49 behaviour; the
+release is skipped under `--load-mode mlock`/`--mlock`, `--check-tensors` and lazy tensors.
+`mmaps_used` changed from a per-file min/max pair to a list of exact ranges.
+
+Measured (gfx1201, 2x R9700, `llama-bench -p 16 -n 0`), peak `VmRSS` / `RssFile`, reclaim off -> on:
+
+| model | config | off | on |
+|---|---|---:|---:|
+| Qwen3.8-Flash-Next-IQ4_NL (100 GB, 176.9B A3B) | `-ncmoe 40` | 122.5 / 68.2 GiB | **55.4 / 0.7 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 40` | 40.7 / 21.8 GiB | **19.8 / 0.6 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 0` | 22.0 / 21.8 GiB | **0.67 / 0.40 GiB** |
+
+The on peak equals `--load-mode none` (55.8 GiB / 0.26 GiB) on the 100 GB model, so the host-memory
+reason the field preferred `--load-mode none` is gone.  Warm-load cost ~1 s (this model), ~1.2 s (warm
+35B).  Same-seed and `-sm tensor` coherence r48 == r49 byte-identical; the 35B `--spec-type draft-mtp`
+`-n 2000` text is r48 == r49 byte-identical (175.2 vs 174.9 t/s).
+
+**Finding (not fixed here): `--host-experts pool` does not reduce host RSS.**  It keeps the full pinned
+`ROCm_Host` master (the source logs *"Phase 2b; full pinned master kept"*); measured `RssShmem` is
+identical with and without the pool (18.7 GiB on 35B-A3B `-ncmoe 40`; 54.1 GiB on Flash-Next IQ4_NL
+`-ncmoe 40`).  The r49 peak is therefore dominated by that master.  Re-seeded as the separate campaign
+`wip/host-expert-master-drop/` (`TODO #55`); it is the strongest lever for issue #139.  `ENVIRONMENT.md`
+§1.2.1 now says so.
+
+**Block 15 -- Q1_0 `__byte_perm` -> `v_perm_b32` (TODO #54).**  New `ggml_cuda_byte_perm(x, y, s)` (HIP:
+expand the four selector nibbles to selector bytes and use `__builtin_amdgcn_perm`; otherwise
+`__byte_perm`) replaces HIP's private-memory `__byte_perm` at all 24 Q1_0 sites in
+`vec_dot_q1_0_q8_1` and `ggml_cuda_mmq_load_tiles_q1_0`.  Bit-identical: exact over 16.7M randomized
+GPU cases (0 mismatches; selectors with bit 3 and high bits exercised) and
+`test-backend-ops -o MUL_MAT -b ROCm0` **1304/1304** with every `q1_0` width.  No Q1_0 model locally, so
+no speed claim.  Upstream candidate `upstream/UPSTREAM-PR-q1-0-amd-perm.*` (applies clean to `a55e952b8`).
+
+**Block 15 -- `cpy-batch.cu` device idiom (TODO #32).**  `ggml_cuda_cpy_batch` now asks
+`ggml_cuda_get_device()` like `gdn-conv.cu` instead of `ctx.device`; a no-op on the current graph (the
+device is set before `ggml_cuda_try_fuse` runs).
+
+**Validation (r49, gfx1201).**  `scripts/validate-set.sh` green (fresh-tarball strict apply and tree
+match).  Prefill-logit KLD gate: mean KLD **0.000707** / same-top-p **98.755 %** (limit 0.005 / 98 %).
+`MUL_MAT_ID` **931/931**; q1_0 `MUL_MAT` **1304/1304**.  4B `-sm tensor` coherence r48 == r49
+byte-identical.  35B-A3B `--spec-type draft-mtp -n 2000 --reasoning off` text r48 == r49 byte-identical.
+
+**Issue #139 (contribution, @briansp2020).**  His field report: the amdgpu driver stops all of a
+process's GPU queues whenever the kernel migrates/reclaims a `hipHostMalloc`/`hipHostRegister` page, and
+a stop over the AR spin budget leaves a timed-out call unreduced.  The r49 reclaim gives back up to
+~67 GiB of mmap on the 100 GB model, which should lower overall memory pressure (and thus the queue
+stops) even though the pinned master is unchanged.  A reply was posted on the issue asking him to
+exercise r49 and report whether the stops/timeouts drop.
+
+**Docs.**  `ENVIRONMENT.md` gains `LLAMA_LOAD_RELEASE_MMAP` (§4) and a pool-does-not-reduce-RSS note
+(§1.2.1); `TODO.md` current state -> r49, #54/#32 closed, #55 added; `wip/CAMPAIGNS.md` rows updated
+(promoted rows removed, `host-expert-master-drop/` added); `patches/README.md` current-release blockquote
+and a dated r49 amendment; `upstream/README.md` row + `.md`/`.patch`; the three campaign records under
+`archive/work/`.
+
+**`fingon` validation (gfx1100, 30.5 GiB RAM, single RX 7900 XTX).**  The 35B-A3B Q4_K_M `-ncmoe 40`
+case, same r49 binary, reclaim on vs off (`memwatch.sh`, 2 s samples):
+
+| arm | peak `VmRSS` | peak `RssFile` | `RssShmem` | swap | wall | pp256 `avg_ts` |
+|---|---:|---:|---:|---:|---:|---:|
+| on (r49 default) | 19.6 GiB | 0.33 GiB | 18.7 GiB | 0 | 19 s | 363.2 |
+| off (`LLAMA_LOAD_RELEASE_MMAP=0`) | 29.5 GiB | 21.8 GiB | 18.7 GiB | 111 MiB | 25 s | 351.5 |
+
+The legacy arm reaches the 30.5 GiB box limit, starts swapping and churns page cache (kswapd); the r49
+arm stays at ~19.6 GiB with no swap, so the reclaim both fits the box and is faster there.  This is the
+seed phenomenon from the archived `host-memory-footprint` campaign, fixed.
+
+**Tagging.**  Container images and the `rdna-boosts` fork-branch refresh are the remaining release steps,
+per the Pushing policy.
+
 ## 261011.016 (docs, campaign closure) -- close `strata-amd-kernels` as refuted; seed `q1-0-byte-perm` (#54)
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; `~/llama.cpp` tree clean).

@@ -3,7 +3,20 @@
 16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
 (re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
 
-> **Current release `v16-a55e952b8-r48` (2026-10-11) -- the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137):**
+> **Current release `v16-a55e952b8-r49` (2026-10-11) -- the mmap host-memory reclaim + two AMD consistency fixes:**
+> canonical block-15 tip `f0a74f4cc`, net tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`; strict **16/16**
+> `git am` (`validate-set.sh` green).  **Block 06** takes the loader reclaim: the loader no longer
+> prefetches the whole file and unmaps each tensor's mapping range right after its device upload
+> (`LLAMA_LOAD_RELEASE_MMAP`, default on, `=0` kill-switch; the exact host-pointer-backed ranges are
+> preserved; skipped under `--mlock`/`--check-tensors`/lazy).  Peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL
+> (100 GB, 176.9B A3B) `-ncmoe 40`, 2 GPUs: **122.5 -> 55.4 GiB** (RssFile 68.2 -> 0.7 GiB), equal to
+> `--load-mode none`; 35B-A3B `-ncmoe 40` 40.7 -> 19.8 GiB; all-GPU 22.0 -> 0.7 GiB.  **`fingon`** (gfx1100,
+> 30.5 GiB RAM) 35B-A3B `-ncmoe 40`: 29.5 -> 19.6 GiB and no swap (the legacy arm swaps).  **Block 15** takes
+> the Q1_0 `__byte_perm` -> `v_perm_b32` port (bit-identical; `MUL_MAT` 1304/1304 with every `q1_0` width)
+> and the `cpy-batch.cu` device idiom.  See `WORKLOG.md` 261011.017 (r49); campaign records now under
+> `archive/work/host-memory-reclaim/`, `archive/work/q1-0-byte-perm/`, `archive/work/gdn-conv-device-idiom/`.
+>
+> **Previous release `v16-a55e952b8-r48` (2026-10-11) -- the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137):**
 > canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
 > `3b9f403544169544f312bd24e4de31a554bf189d`; strict **16/16** `git am` (`validate-set.sh` green).  The
 > fix folds into **block 06** (the loader + Meta-wrapper owner).  The Meta device now reports
@@ -1363,6 +1376,60 @@ The 2026-09-17 re-base resolved three blocks:
 
 The amendment history below is newest first.  Per-block content lives in the block notes
 (`## Block NN notes`); the dated `## YYYY-MM-DD …` sections are the amendment records.
+
+## 2026-10-11 block-06 + block-15 amendment (r49): the mmap host-memory reclaim, the Q1_0 perm port and the cpy-batch idiom
+
+**Block 06 -- mmap host-memory reclaim (TODO: the r49 `host-memory-reclaim` campaign).**  The loader
+previously faulted the whole model file in up front (MAP_POPULATE / `POSIX_MADV_WILLNEED` with
+`prefetch = -1`) and only unmapped it at the end of the load, so a `-ncmoe` load held the full model
+mapping **and** the pinned `ROCm_Host` expert master at the same time.  The reclaim:
+
+- skips the up-front full-file prefetch while enabled (`init_mappings`);
+- unmaps each tensor's mapping range right after `ggml_backend_tensor_set` copies it to its device
+  buffer (`load_all_data`);
+- records the **exact** mmap-backed ranges (host-pointer / `buffer_from_host_ptr` buffers) **before any
+  load** (`mark_mmap_used`, called from `llama_model_tensors_load`), so the release never touches a
+  range a host-pointer tensor points into.  This matters because a tied embedding (`token_embd` ==
+  `output`) is loaded twice from the same range (once mmap-backed, once copied to a device); unmapping
+  it left the host copy dangling (SIGSEGV in a CPU `GET_ROWS`).
+- the end-of-load cleanup now unmaps the exact **complement** of those ranges, and `unmap_fragment` is
+  idempotent (it munmaps only the still-mapped intersections, so a per-tensor release and the final
+  cleanup cannot double-unmap).
+
+`madvise(MADV_DONTNEED)` is **not** usable here: the ROCm runtime re-faults the pages on the next
+pageable H2D copy (reproduced in isolation), so the range is munmapped.  `LLAMA_LOAD_RELEASE_MMAP=0`
+restores the pre-r49 behaviour; the release is skipped under `--load-mode mlock`/`--mlock`,
+`--check-tensors` and lazy tensors.  `mmaps_used` changed from a per-file min/max pair to a list of
+exact ranges.
+
+Measured (gfx1201, 2x R9700, `llama-bench -p 16 -n 0`, peak `VmRSS` / `RssFile`):
+
+| model | config | off | on |
+|---|---|---:|---:|
+| Qwen3.8-Flash-Next-IQ4_NL (100 GB, 176.9B A3B) | `-ncmoe 40` | 122.5 / 68.2 GiB | **55.4 / 0.7 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 40` | 40.7 / 21.8 GiB | **19.8 / 0.6 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 0` | 22.0 / 21.8 GiB | **0.67 / 0.40 GiB** |
+
+The on peak equals `--load-mode none` (55.8 GiB / 0.26 GiB) on the 100 GB model.  Warm-load cost ~1 s
+(this model), ~1.2 s (warm 35B).  Same-seed and `-sm tensor` coherence byte-identical; `--load-mode
+none` is unaffected (reclaim is mmap-only).  The remaining peak is the full pinned `ROCm_Host` master;
+`--host-experts pool` does **not** reduce it yet (source: *"Phase 2b; full pinned master kept"*) -- that
+is the separate `wip/host-expert-master-drop/` campaign.
+
+**Block 15 -- Q1_0 `__byte_perm` -> `v_perm_b32` (TODO #54).**  New `ggml_cuda_byte_perm(x, y, s)`
+(HIP: expand the four selector nibbles to selector bytes and use `__builtin_amdgcn_perm`; otherwise
+`__byte_perm`) replaces HIP's private-memory `__byte_perm` at all 24 Q1_0 sites in `vec_dot_q1_0_q8_1`
+and `ggml_cuda_mmq_load_tiles_q1_0`.  Bit-identical: exact over 16.7M randomized GPU cases (0
+mismatches) and `test-backend-ops -o MUL_MAT -b ROCm0` **1304/1304** with every `q1_0` width.  No Q1_0
+model locally, so no speed claim.  Upstream candidate: `upstream/UPSTREAM-PR-q1-0-amd-perm.*`.
+
+**Block 15 -- `cpy-batch.cu` device idiom (TODO #32).**  `ggml_cuda_cpy_batch` now asks
+`ggml_cuda_get_device()` like `gdn-conv.cu` instead of `ctx.device`; a no-op on the current graph.
+
+**Validation:** `validate-set.sh` green (16/16 strict `git am`); prefill-logit mean KLD **0.000707** /
+same-top-p **98.755 %**; `MUL_MAT_ID` 931/931; q1_0 `MUL_MAT` 1304/1304; 4B `-sm tensor` coherence
+r48 == r49 byte-identical; 35B-A3B `--spec-type draft-mtp` `-n 2000` text r48 == r49 byte-identical
+(175.2 vs 174.9 t/s).  Full record: `WORKLOG.md` 261011.017 (r49).
 
 ## 2026-10-11 block-06 amendment (r43): the multi-ubatch logits readback is ordered (TODO #52 part B)
 

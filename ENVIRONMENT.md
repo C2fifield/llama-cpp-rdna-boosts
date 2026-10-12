@@ -106,6 +106,11 @@ pinned` (and `auto`) keeps the usual behaviour and allocates **no** pool.  When 
 pinned bounce buffer over the page cache, one per host tensor, process-wide budget, and it serves the MoE
 expert-cache fills.  r35.
 
+**It does not reduce host RSS yet.**  It keeps the full pinned `ROCm_Host` master (the source logs
+*"Phase 2b; full pinned master kept"*), so measured `RssShmem` is identical with and without the pool
+(18.7 GiB on 35B-A3B `-ncmoe 40`; 54.1 GiB on Flash-Next IQ4_NL `-ncmoe 40`).  Dropping the master is a
+separate campaign: `wip/host-expert-master-drop/`.
+
 | variable / flag | default | class | notes |
 |---|---|---|---|
 | `--host-experts pool` | `pinned` | option | select the bounded host pool.  `pinned`/`auto` = no pool; `mmap` was removed in r33. |
@@ -212,6 +217,7 @@ an environment variable).  Plain `--spec-type draft-mtp` does not use it.
 | variable | default | class | notes |
 |---|---|---|---|
 | `LLAMA_MMAP_HOST_EXPERTS` | — | **removed (r33)** | the legacy alias for `--host-experts`.  The pageable `--host-experts mmap` mode was dropped in r33 (issue #116): a no-XNACK GPU (gfx1201 reports `XNACK enabled: NO`) cannot read a pageable host master in a kernel, so `-ncmoe`/`-cmoe` experts are always pinned (`ROCm_Host`).  The variable is now ignored.  The bounded pinned DIO host tier that replaces the reclaimable-page-cache idea is the `archive/work/host-expert-dio-cache/` campaign. |
+| `LLAMA_LOAD_RELEASE_MMAP` | **on** (block 06, r49) | kill-switch | unmaps each model-mapping range right after the tensor is copied to its device buffer, and skips the up-front whole-file prefetch, so a `-ncmoe` load does not hold the full file mapping and the pinned host expert master at the same time.  `madvise(MADV_DONTNEED)` is not enough here (the ROCm runtime re-faults those pages on the next pageable H2D copy), so the range is munmapped; the exact ranges a host-pointer tensor points into (a tied embedding is loaded host-side and device-side from the same range) are preserved.  `0` restores the pre-r49 prefetch-then-unmap-at-end behaviour.  Skipped under `--load-mode mlock`/`--mlock`, `--check-tensors` and lazy tensors. |
 | `LLAMA_TENSOR_HOST_BUFT` | unset | tuning | host buffer type for overridden tensors. |
 | `LLAMA_DEVICE_INPUT` | off | **opt-in** | device-side input handling. |
 | `LLAMA_DROP_COMPUTE_BUFFERS` | **on** (every tool) | tuning / kill-switch | drop the wide-prefill compute layout at the prefill→decode transition so a wide `-ub` and a large arena coexist (`-ub 8192` cache-auto cli decode 45.6 → 78.7 t/s).  Follows `common_params::drop_compute_buffers`; set the env to `0`/`1` to override.  **A server may drop too** (this was cli-only until r22): the movable-boundary slab reclaims a later wide layout with a boundary move, which is verified on `wide1 → short → wide2` at `-ub 8192` (0 aborts, all coherent).  `0` is only needed where the compute layout CANNOT be reclaimed — i.e. with `GGML_CUDA_SLAB=0`. |

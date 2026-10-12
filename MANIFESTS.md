@@ -5,7 +5,14 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r48`** (canonical block-15 tip `0bc12586`, net tree
+**`a55e952b8`**, released as **`v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree
+`45ba5da24f872c5f9aa1b70b85470b5eb4d98395`): the mmap host-memory reclaim lands in **block 06** (the
+loader stops prefetching the whole file and unmaps each tensor's mapping right after its device upload,
+so a `-ncmoe` load never holds the full mapping and the pinned host master at once;
+`LLAMA_LOAD_RELEASE_MMAP=0` kill-switch; peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL `-ncmoe 40` 122.5 -> 55.4
+GiB, equal to `--load-mode none`) and two AMD consistency fixes land in **block 15** (the Q1_0
+`__byte_perm` -> `v_perm_b32` port, bit-identical, and the `cpy-batch.cu` device idiom).  Before it,
+**`v16-a55e952b8-r48`** (canonical block-15 tip `0bc12586`, net tree
 `3b9f403544169544f312bd24e4de31a554bf189d`): the `--load-mode none` + `-sm tensor` startup GPU fault
 (**issue #137**) is fixed in **block 06** (the Meta device now reports `host_buffer`/`events` and proxies
 its event iface to the simple devices, so the loader's pinned async-upload pipeline engages;

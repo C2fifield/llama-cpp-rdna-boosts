@@ -1,5 +1,11 @@
 # Q1_0 `__byte_perm` → `v_perm_b32` (the last un-ported i-quant table lookup)
 
+> **PROMOTED 2026-10-11 (r49) — folded into block 15.**  All 24 Q1_0 sites now go through
+> `ggml_cuda_byte_perm` (HIP: nibble→byte selector expansion + `__builtin_amdgcn_perm`), with an
+> `upstream/UPSTREAM-PR-q1-0-amd-perm.*` candidate cut.  Bit-identical: exact over 16M randomized GPU
+> cases and `test-backend-ops -o MUL_MAT` 1304/1304 with every q1_0 width.  Record: `WORKLOG.md`
+> 261011.017 (r49).
+
 **Status: OPEN / scoping, small (2026-10-11).**  Seeded from the K0 of the now-closed
 `strata-amd-kernels` campaign (its only residual), and it **replaces that campaign** in the open set
 (`TODO.md` #54).  Not part of the delivery.

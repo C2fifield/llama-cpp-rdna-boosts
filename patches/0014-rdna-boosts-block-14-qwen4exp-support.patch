@@ -1,4 +1,4 @@
-From 08c5a3ef86da2d1be51e7b26623a6ff8b7d07ad7 Mon Sep 17 00:00:00 2001
+From a0204158c481c87a444c7e1186f831f963d6535b Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 8 Sep 2026 01:30:06 +0000
 Subject: [PATCH 14/15] rdna-boosts: block 14: qwen4exp support
@@ -7605,10 +7605,10 @@ index 8d703f37a..88b0e2cad 100644
  private:
      llama_memory_hybrid_idx * mem = nullptr;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 0868636d7..91724fb50 100644
+index 4cd144144..a3029e4da 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -1136,6 +1136,14 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1137,6 +1137,14 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -7623,7 +7623,7 @@ index 0868636d7..91724fb50 100644
  // wip/fit-slab-accounting: account a host-resident MoE expert tensor's bytes per REAL device, so the
  // fit's G1/G2 reservation and the post-prefill drop/rearm cover every device.  Under `-sm tensor` the
  // layer's device is the Meta wrapper and the tensor is split across its simple devices, so distribute the
-@@ -1232,9 +1240,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1233,9 +1241,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // skip unused tensors
@@ -7637,7 +7637,7 @@ index 0868636d7..91724fb50 100644
  
              size_data -= nbytes;
              n_created++;
-@@ -1472,8 +1482,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1473,8 +1483,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          return NULL;
      }
  
@@ -7650,7 +7650,7 @@ index 0868636d7..91724fb50 100644
      }
  
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 31d909202..5cc9b4ae0 100644
+index cd838c120..c2efc0e9b 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -70,6 +70,7 @@ struct llama_model_loader {
@@ -7684,10 +7684,10 @@ index 31d909202..5cc9b4ae0 100644
              return !ranges.empty();
          }
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index f445ff3bd..66f018164 100644
+index 0092db28f..ffc8fb0d7 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -2731,7 +2731,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2741,7 +2741,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                  const bool mtp_on_hybrid_qwen =
                      params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                      (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
@@ -7696,7 +7696,7 @@ index f445ff3bd..66f018164 100644
  
                  const bool mtp_on_hybrid_nemotron =
                      params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -2998,6 +2998,7 @@ llama_model_params llama_model_default_params() {
+@@ -3008,6 +3008,7 @@ llama_model_params llama_model_default_params() {
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
          /*.host_experts_mode           =*/ LLAMA_HOST_EXPERTS_MODE_PINNED,
@@ -7704,7 +7704,7 @@ index f445ff3bd..66f018164 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -3524,7 +3525,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+@@ -3534,7 +3535,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
      TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
      TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
      TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),

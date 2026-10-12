@@ -6,10 +6,16 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r48`, 2026-10-11):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
-**`3b9f403544169544f312bd24e4de31a554bf189d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
+**Current state (release `v16-a55e952b8-r49`, 2026-10-11):** the delivery is the **16-patch set** against
+fork point **`a55e952b8`**, canonical block-15 tip `f0a74f4cc`, net tree
+**`45ba5da24f872c5f9aa1b70b85470b5eb4d98395`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r49 adds the mmap host-memory reclaim (block 06): the loader no longer faults the
+whole model file in up front and it unmaps each tensor's mapping range right after the copy to its device
+buffer, so a `-ncmoe` load never holds the full mapping and the pinned host master at once
+(`LLAMA_LOAD_RELEASE_MMAP=0` is the kill-switch; peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL `-ncmoe 40`,
+2 GPUs: 122.5 -> 55.4 GiB, equal to `--load-mode none`), and folds two AMD consistency fixes into block
+15 (the Q1_0 `__byte_perm` -> `v_perm_b32` port and the `cpy-batch.cu` device idiom; both bit-identical
+or no-ops -- TODO #54 and #32 closed).  Before it, r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
 GPU page fault): the Meta device now reports `host_buffer`/`events` and proxies its event iface, so the
 loader's pinned async-upload pipeline engages and the pageable `read_buf` SDMA path is gone; adapted from
 upstream PR #22466 and folded into **block 06** (see `WORKLOG.md` 261011.006 (r48)).  Before it, r46
@@ -41,15 +47,15 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
-### 54. Finish the AMD `v_perm_b32` port for Q1_0 (the last un-ported i-quant table lookup)
+### 55. Remove the full pinned `ROCm_Host` master when `--host-experts pool` is on
 
-**Opened 2026-10-11; small, and no speed claim.**  Seeded from the K0 of the closed
-`strata-amd-kernels` campaign (#35) and **replaces** it.  Two sites still call HIP's private-memory
-`__byte_perm` while every other i-quant lookup already uses `__builtin_amdgcn_perm`: `vec_dot_q1_0_q8_1`
-(`vecdotq.cuh:833-844`) and `ggml_cuda_mmq_load_tiles_q1_0` (`mmq-load-tiles.cuh:50-61`) — ~24 call
-sites, a mechanical mirror of the existing Q2_0 HIP arms.  **Bit-identical by construction**, and there
-is **no Q1_0 model locally**, so the gate is the `test-backend-ops -o MUL_MAT` CPU oracle (Q1_0 is in
-`all_types`), not a benchmark.  Also an `upstream/` candidate.  Record: `wip/q1-0-byte-perm/README.md`.
+**Opened 2026-10-11; scoping.**  The r49 mmap reclaim (block 06) removed the mmap half of the `-ncmoe`
+host peak, but `--host-experts pool` still keeps the **full pinned master** (r35 shipped the pool as a
+bounce tier; the source logs "Phase 2b; full pinned master kept").  `RssShmem` is identical with and
+without the pool: 18.7 GiB on 35B-A3B `-ncmoe 40`, 54.1 GiB on Flash-Next IQ4_NL `-ncmoe 40`.
+Dropping the master is the strongest lever for issue #139 (the amdgpu driver stops all of a process's
+GPU queues when the kernel migrates a GPU-mapped host page).  **Working home:
+`wip/host-expert-master-drop/`.**  Gates and the reader enumeration are in that README.
 
 ### 50. The cache-aware fusion guard is global while the slab's eviction is per-table (code `OPEN 2`)
 
@@ -309,15 +315,6 @@ CPU compute; see `archive/work/moe-expert-cache/WORKLOG.md`).  Strata's custom e
 *because* it is not under llama.cpp's serial scheduler.  **Next:** O0 - measure how much of a 52 t/s
 token is the UVA cold fraction at 43 % residency; if it is <20 %, park it.  Design space and gates:
 `wip/moe-cpu-overlap/README.md`.
-
-### 32. `gdn-conv.cu` device idiom (block 15; found in the PR #102 review)
-
-**Opened 2026-10-04; cosmetic, no correctness impact.**  `gdn_conv_check` gates the 2..255-token arm
-on `ggml_cuda_info().devices[ggml_cuda_get_device()].cc`, while the batched-copy path added by PR #102
-uses `ggml_cuda_info().devices[ctx.device].cc`.  They agree on every current graph because the device
-is set before `ggml_cuda_try_fuse` runs, so it is two idioms for the same thing.  **Next:** pick one
-(pass the context device into the check, or use `ggml_cuda_get_device()` consistently) at the next
-block-15 touch.  Record: `archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md` (review notes).
 
 ### 30. Default-flip the DFlash device-resident layer features (PR #73) — **CLOSED 2026-10-07 (r26)**
 

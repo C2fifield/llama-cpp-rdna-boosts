@@ -1,4 +1,4 @@
-From 6ab436c57ab354bda940cf48830164531c081553 Mon Sep 17 00:00:00 2001
+From e240df1af9d9aaa0e34c2b769d74a72417fe5d1c Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 13:14:24 +0000
 Subject: [PATCH 06/15] rdna-boosts: block 06: general system-operations bucket
@@ -58,6 +58,19 @@ absorbs the host-side/system half of the former block 16: the `llama_kv_cache::s
 scan, the layer-uniform expert-cache re-arm (`moe_cache_rearm`), and the opt-in async graph-input
 uploads (`GGML_CUDA_ASYNC_INPUT=1`) + legacy-pool cache cap (`GGML_CUDA_POOL_CACHE_MB`).  Net tree
 unchanged.
+
+Amended 2026-10-12 (r49) with the mmap host-memory reclaim.  The loader no longer faults the whole
+model file in up front, and it unmaps each tensor's mapping range right after the copy to its device
+buffer, so the model mapping and the pinned `ROCm_Host` expert master are never both fully resident
+during load.  The exact mmap-backed ranges are recorded before any load (`mark_mmap_used`; a tied
+embedding is loaded twice, host-side and device-side, from the same range) and excluded from the
+release; the end-of-load cleanup unmaps their exact complement and is idempotent.  `madvise(MADV_DONTNEED)`
+does not work here -- the ROCm runtime re-faults those pages on the next pageable H2D copy -- so the
+range is munmapped.  `LLAMA_LOAD_RELEASE_MMAP=0` is the kill-switch; `--mlock`, `--check_tensors` and
+lazy tensors are skipped.  Measured (2x R9700, Qwen3.8-Flash-Next-IQ4_NL, 176.9B A3B, `-ncmoe 40`):
+peak VmRSS 122.5 -> 55.4 GiB (RssFile 68.2 -> 0.7 GiB), equal to `--load-mode none`; 35B-A3B
+`-ncmoe 40` 40.7 -> 19.8 GiB, all-GPU 22.0 -> 0.7 GiB.  Warm-load cost ~1 s (this model), ~1.2 s
+(warm 35B).  Same-seed and `-sm tensor` coherence byte-identical; `--load-mode none` is unaffected.
 ---
  common/arg.cpp                                |   14 +
  common/common.cpp                             |   19 +
@@ -241,17 +254,17 @@ unchanged.
  src/llama-cparams.h                           |   11 +
  src/llama-ext.h                               |   11 +
  src/llama-kv-cache.cpp                        |    7 +-
- src/llama-mmap.cpp                            |    7 +-
+ src/llama-mmap.cpp                            |   37 +-
  src/llama-mmap.h                              |    5 +
- src/llama-model-loader.cpp                    |  169 +-
- src/llama-model-loader.h                      |   25 +-
- src/llama-model.cpp                           |  136 +-
+ src/llama-model-loader.cpp                    |  238 +-
+ src/llama-model-loader.h                      |   33 +-
+ src/llama-model.cpp                           |  146 +-
  src/llama-model.h                             |    3 +
  src/llama-quant.cpp                           |    2 +-
  src/llama.cpp                                 |    2 +-
  tools/cli/cli.cpp                             |    6 +
  tools/llama-bench/llama-bench.cpp             |   60 +-
- 192 files changed, 10746 insertions(+), 327 deletions(-)
+ 192 files changed, 10839 insertions(+), 351 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
  create mode 100644 ggml/src/ggml-cuda/moe-expert-cache.cu
  create mode 100644 ggml/src/ggml-cuda/moe-expert-cache.h
@@ -13234,7 +13247,7 @@ index 1d0554fa1..a4728f962 100644
                      continue;
                  }
 diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
-index 045489df7..b6a4005b1 100644
+index 045489df7..c4dce08f6 100644
 --- a/src/llama-mmap.cpp
 +++ b/src/llama-mmap.cpp
 @@ -69,6 +69,7 @@ static std::string llama_format_win_err(DWORD err) {
@@ -13272,6 +13285,45 @@ index 045489df7..b6a4005b1 100644
  size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
  bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
  
+@@ -553,22 +556,24 @@ struct llama_mmap::impl {
+         GGML_ASSERT(last % page_size == 0);
+         GGML_ASSERT(last > first);
+ 
+-        void * next_page_start = (uint8_t *) addr + first;
+-
+-        if (munmap(next_page_start, len)) {
+-            LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
+-        }
+-
++        // Only munmap the parts that are still mapped: a tensor whose data has been uploaded to a
++        // device is unmapped as soon as it is loaded, so the final offload cleanup must not munmap
++        // the same range twice (munmap of an unmapped range fails) and must keep the fragments
++        // pointing into the mapping intact.
+         std::vector<std::pair<size_t, size_t>> new_mapped_fragments;
+         for (const auto & frag : mapped_fragments) {
+-            if (frag.first < first && frag.second > last) {
+-                new_mapped_fragments.emplace_back(frag.first, first);
+-                new_mapped_fragments.emplace_back(last, frag.second);
+-            } else if (frag.first < first && frag.second > first) {
+-                new_mapped_fragments.emplace_back(frag.first, first);
+-            } else if (frag.first < last && frag.second > last) {
+-                new_mapped_fragments.emplace_back(last, frag.second);
+-            } else if (frag.first >= first && frag.second <= last) {
++            const size_t lo = std::max(frag.first, first);
++            const size_t hi = std::min(frag.second, last);
++            if (lo < hi) {
++                if (munmap((char *) addr + lo, hi - lo)) {
++                    LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
++                }
++                if (frag.first < first) {
++                    new_mapped_fragments.emplace_back(frag.first, first);
++                }
++                if (frag.second > last) {
++                    new_mapped_fragments.emplace_back(last, frag.second);
++                }
+             } else {
+                 new_mapped_fragments.push_back(frag);
+             }
 diff --git a/src/llama-mmap.h b/src/llama-mmap.h
 index 6c6393d57..8cce74993 100644
 --- a/src/llama-mmap.h
@@ -13296,10 +13348,15 @@ index 6c6393d57..8cce74993 100644
  
      void seek(size_t offset, int whence) const;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 6cc0b2028..e3ab9ba0e 100644
+index 6cc0b2028..482c7ed22 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -14,6 +14,13 @@
+@@ -10,10 +10,18 @@
+ #include <array>
+ #include <cinttypes>
+ #include <cstdint>
++#include <cstdlib>
+ #include <cstring>
  #include <future>
  #include <regex>
  
@@ -13313,7 +13370,7 @@ index 6cc0b2028..e3ab9ba0e 100644
  static const size_t kiB = 1024;
  static const size_t MiB = 1024*kiB;
  static const size_t GiB = 1024*MiB;
-@@ -537,9 +544,11 @@ llama_model_loader::llama_model_loader(
+@@ -537,9 +545,11 @@ llama_model_loader::llama_model_loader(
          std::vector<std::string> & splits,
          FILE * file,
          llama_load_mode load_mode,
@@ -13325,7 +13382,7 @@ index 6cc0b2028..e3ab9ba0e 100644
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
          : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
-@@ -555,10 +564,24 @@ llama_model_loader::llama_model_loader(
+@@ -555,10 +565,24 @@ llama_model_loader::llama_model_loader(
      }
  
      tensor_buft_overrides = param_tensor_buft_overrides_p;
@@ -13350,7 +13407,7 @@ index 6cc0b2028..e3ab9ba0e 100644
      if (!fname.empty()) {
          // Load the main GGUF
          struct ggml_context * ctx = NULL;
-@@ -1113,6 +1136,40 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1113,6 +1137,40 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -13391,7 +13448,7 @@ index 6cc0b2028..e3ab9ba0e 100644
  struct ggml_tensor * llama_model_loader::create_tensor(
          const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
          const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
-@@ -1216,7 +1273,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1216,7 +1274,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          const buft_list_t * buft_list;
          switch (info.layer) {
              case LLM_TENSOR_LAYER_INPUT:
@@ -13403,7 +13460,7 @@ index 6cc0b2028..e3ab9ba0e 100644
                  break;
              case LLM_TENSOR_LAYER_OUTPUT:
                  buft_list = buft_list_output;
-@@ -1237,9 +1297,70 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1237,9 +1298,70 @@ struct ggml_tensor * llama_model_loader::create_tensor(
              for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
                  std::regex pattern(overrides->pattern);
                  if (std::regex_search(tensor_name, pattern)) {
@@ -13476,7 +13533,7 @@ index 6cc0b2028..e3ab9ba0e 100644
                          if (use_mmap) {
                              static std::once_flag once;
                              std::call_once(once, [] {
-@@ -1267,8 +1388,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1267,8 +1389,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // avoid using a host buffer when using mmap
@@ -13492,7 +13549,7 @@ index 6cc0b2028..e3ab9ba0e 100644
              auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
              if (!cpu_dev) {
                  throw std::runtime_error("no CPU backend found");
-@@ -1326,7 +1453,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1326,7 +1454,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          ggml_set_name(&t_meta, tn.str().c_str());
  
          ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
@@ -13506,7 +13563,7 @@ index 6cc0b2028..e3ab9ba0e 100644
          ggml_context * ctx = ctx_for_buft(buft);
          ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
          ggml_set_name(ret, tn.str().c_str());
-@@ -1364,6 +1496,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1364,6 +1497,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
      if (buft == nullptr) {
          return nullptr;
      }
@@ -13516,7 +13573,63 @@ index 6cc0b2028..e3ab9ba0e 100644
  
      ggml_context * ctx = ctx_for_buft(buft);
  
-@@ -1557,6 +1692,21 @@ bool llama_model_loader::load_all_data(
+@@ -1407,6 +1543,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
+     }
+ }
+ 
++// Release a tensor's host-mapping pages as soon as it has been uploaded to a device, so a large
++// offload does not have to hold the entire model mapping and the host expert pool at once.  The range
++// is unmapped outright (madvise(MADV_DONTNEED) is not enough: the ROCm runtime re-faults those pages on
++// the next pageable H2D copy).  Default on; LLAMA_LOAD_RELEASE_MMAP=0 disables it.
++static bool llama_load_release_mmap() {
++    static const bool enabled = getenv("LLAMA_LOAD_RELEASE_MMAP") == nullptr || atoi(getenv("LLAMA_LOAD_RELEASE_MMAP")) != 0;
++    return enabled;
++}
++
+ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps) {
+     // note: read_lazy also requires mmap; this condition make sure it's usable even when --load-mode is not set to mmap
+     if (use_mmap || lazy.any()) {
+@@ -1426,11 +1571,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+                 }
+             }
+ 
+-            const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
++            // With incremental release enabled, do not fault the whole file in up front: the loader
++            // then releases each tensor's pages as it uploads them, and an up-front full-file prefetch
++            // would still peak at model + host pool.  Kernel readahead keeps sequential reads efficient.
++            const size_t prefetch_size = prefetch && use_mmap && !llama_load_release_mmap() ? -1 : 0;
+ 
+             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
+                     lazy.for_file(idx));
+-            mmaps_used.emplace_back(mapping->size(), 0);
++            mmaps_used.emplace_back();
+             if (mlock_mmaps) {
+                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
+                 mlock_mmap->init(mapping->addr());
+@@ -1446,6 +1594,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+     }
+ }
+ 
++void llama_model_loader::mark_mmap_used(uint32_t idx, size_t offs, size_t size) {
++    if (idx >= mmaps_used.size()) {
++        return;
++    }
++    mmaps_used[idx].emplace_back(offs, offs + size);
++}
++
+ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const {
+     GGML_ASSERT(!mappings.empty());
+     const auto & mapping = mappings.at(idx);
+@@ -1504,6 +1659,8 @@ bool llama_model_loader::load_all_data(
+     }
+     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
+ 
++    const bool release_mmap = llama_load_release_mmap();
++
+     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
+ 
+     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
+@@ -1557,6 +1714,21 @@ bool llama_model_loader::load_all_data(
          }
  
          auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
@@ -13538,7 +13651,42 @@ index 6cc0b2028..e3ab9ba0e 100644
          if (!host_buft) {
              LLAMA_LOG_DEBUG("%s: no host buffer type found for device %s\n", func,
                  ggml_backend_dev_name(dev));
-@@ -1746,6 +1896,15 @@ bool llama_model_loader::load_all_data(
+@@ -1662,11 +1834,31 @@ bool llama_model_loader::load_all_data(
+                     lmlock->grow_to(weight->offs + n_size);
+                 }
+ 
+-                auto & mmap_used = mmaps_used[weight->idx];
+-                mmap_used.first  = std::min(mmap_used.first,  weight->offs);
+-                mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
++                // the tensor points directly into the mapping; the page must survive the load
++                mark_mmap_used(weight->idx, weight->offs, n_size);
+             } else {
+                 ggml_backend_tensor_set(cur, data, 0, n_size);
++                // The tensor now lives in a device (or non-mapping host) buffer, so its backing mmap
++                // pages are dead weight during the rest of the load.  Drop them incrementally: a
++                // full-file mapping plus the host expert pool otherwise has to be resident at once,
++                // which starves a memory-constrained host.  `madvise(MADV_DONTNEED)` is not enough
++                // here -- the ROCm runtime re-faults the pages on the next pageable H2D copy -- so the
++                // range is munmapped.  Not with `--mlock` (the pages were asked to stay) and not with
++                // `check_tensors` (the async validation may still be reading the range).
++                if (release_mmap && lmlocks == nullptr && !check_tensors && !lazy.has(cur)) {
++                    // never unmap a range a host-pointer tensor points into: a tied embedding is
++                    // loaded twice (once mmap-backed, once copied to a device) from the same range
++                    bool host_backed = false;
++                    for (const auto & r : mmaps_used[weight->idx]) {
++                        if (weight->offs < r.second && r.first < weight->offs + n_size) {
++                            host_backed = true;
++                            break;
++                        }
++                    }
++                    if (!host_backed) {
++                        mapping->unmap_fragment(weight->offs, weight->offs + n_size);
++                    }
++                }
+             }
+         } else {
+             const auto & file = files.at(weight->idx);
+@@ -1746,6 +1938,15 @@ bool llama_model_loader::load_all_data(
              }
          }
  
@@ -13554,8 +13702,33 @@ index 6cc0b2028..e3ab9ba0e 100644
          size_done += n_size;
      }
  
+@@ -1777,11 +1978,20 @@ bool llama_model_loader::load_all_data(
+         // unmap offloaded tensors and metadata
+         if (use_mmap) {
+             for (uint32_t idx = 0; idx < mappings.size(); idx++) {
+-                const auto & mmap_used = mmaps_used.at(idx);
+                 auto & mapping = mappings.at(idx);
+-                mapping->unmap_fragment(0, mmap_used.first);
+-                if (mmap_used.second != 0) {
+-                    mapping->unmap_fragment(mmap_used.second, mapping->size());
++                auto used = mmaps_used.at(idx);
++                std::sort(used.begin(), used.end());
++                size_t pos = 0;
++                for (const auto & r : used) {
++                    const size_t beg = std::min(r.first,  mapping->size());
++                    const size_t end = std::min(r.second, mapping->size());
++                    if (beg > pos) {
++                        mapping->unmap_fragment(pos, beg);
++                    }
++                    pos = std::max(pos, end);
++                }
++                if (pos < mapping->size()) {
++                    mapping->unmap_fragment(pos, mapping->size());
+                 }
+             }
+         }
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 9e51d0ce7..31d909202 100644
+index 9e51d0ce7..cd838c120 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -80,6 +80,8 @@ struct llama_model_loader {
@@ -13578,18 +13751,23 @@ index 9e51d0ce7..31d909202 100644
  
      gguf_context_ptr metadata_ptr;
      struct gguf_context * metadata; // either metadata_ptr.get() or externally set
-@@ -140,6 +146,10 @@ struct llama_model_loader {
-     size_t size_data = 0;
-     std::vector<std::pair<size_t, size_t>> mmaps_used;
+@@ -138,7 +144,14 @@ struct llama_model_loader {
  
+     size_t size_done = 0;
+     size_t size_data = 0;
+-    std::vector<std::pair<size_t, size_t>> mmaps_used;
++    // exact byte ranges of each mapped file that are backed directly by a host-pointer (mmap) buffer.
++    // A tensor duplicated host-side and device-side (a tied embedding) shares its range, so the device
++    // copy must not unmap pages the host copy still points into.
++    std::vector<llama_mmap::ranges> mmaps_used;
++
 +    // wip/moe-cache-autosize: bytes of host-resident MoE expert weights per device, accumulated by
 +    // `create_tensor` (works under `no_alloc`, unlike a scan of the allocated tensors).
 +    std::map<ggml_backend_dev_t, size_t> moe_host_expert_bytes;
-+
+ 
      // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
      struct ggml_backend_buft_comparator {
-         bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
-@@ -158,7 +168,18 @@ struct llama_model_loader {
+@@ -158,7 +171,18 @@ struct llama_model_loader {
              if (lhs.lazy != rhs.lazy) {
                  return lhs.lazy < rhs.lazy;
              }
@@ -13609,7 +13787,7 @@ index 9e51d0ce7..31d909202 100644
          }
      };
  
-@@ -179,9 +200,11 @@ struct llama_model_loader {
+@@ -179,9 +203,11 @@ struct llama_model_loader {
          std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
          FILE * file,
          llama_load_mode load_mode,
@@ -13621,8 +13799,18 @@ index 9e51d0ce7..31d909202 100644
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
  
+@@ -244,6 +270,9 @@ struct llama_model_loader {
+ 
+     void get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const;
+ 
++    // record an exact mmap-backed byte range of file `idx` (a tensor held in a host-pointer buffer)
++    void mark_mmap_used(uint32_t idx, size_t offs, size_t size);
++
+     // release a weight's mmap pages
+     void unmap_weight(const llama_tensor_weight & w) const;
+ 
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index bdd379b14..554266b8a 100644
+index bdd379b14..470256216 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -354,6 +354,47 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
@@ -13721,7 +13909,24 @@ index bdd379b14..554266b8a 100644
      // per-tensor activation precision policy
      prec_policy.load(ml, *this);
  
-@@ -2935,6 +2997,7 @@ llama_model_params llama_model_default_params() {
+@@ -1873,6 +1935,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+                 }
+                 bufs.emplace_back(buf);
+                 buf_map.emplace(idx, buf);
++
++                // record the exact mmap-backed ranges before any data is loaded, so the loader's
++                // per-tensor release never unmaps pages that a host-pointer tensor points into
++                // (a tied embedding is loaded once mmap-backed and once copied to a device)
++                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
++                    const auto * w = ml.get_weight(ggml_get_name(t));
++                    if (w != nullptr && (uint32_t) w->idx == idx) {
++                        ml.mark_mmap_used(idx, w->offs, ggml_nbytes(t));
++                    }
++                }
+             }
+         } else {
+             ggml_backend_buffer_t buf;
+@@ -2935,6 +3007,7 @@ llama_model_params llama_model_default_params() {
          /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
@@ -13729,7 +13934,7 @@ index bdd379b14..554266b8a 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -2946,6 +3009,7 @@ llama_model_params llama_model_default_params() {
+@@ -2946,6 +3019,7 @@ llama_model_params llama_model_default_params() {
          /*.no_host                     =*/ false,
          /*.no_alloc                    =*/ false,
          /*.load_mtp                    =*/ false,
@@ -13737,7 +13942,7 @@ index bdd379b14..554266b8a 100644
      };
  
      return result;
-@@ -3366,6 +3430,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
+@@ -3366,6 +3440,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
      return model->tensors_by_name;
  }
  

@@ -1,4 +1,4 @@
-From 2facd255718263f3ee1ef34f88323adcdef6d53a Mon Sep 17 00:00:00 2001
+From c3fce844ae76fc61d1fb129887cb337c89962128 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 1 Sep 2026 11:50:35 +0000
 Subject: [PATCH 13/15] rdna-boosts: block 13: fused MoE gate+up+GLU MMQ + mmvq
@@ -3420,10 +3420,10 @@ index 974477bbb..7c2a01d8c 100644
  DECL_MMQ_CASE(GGML_TYPE_Q8_0);
 +DECL_MMQ_CASE_GATE(GGML_TYPE_Q8_0);
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index e3ab9ba0e..0868636d7 100644
+index 482c7ed22..4cd144144 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -1456,6 +1456,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1457,6 +1457,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          if (buft == nullptr) { // e.g. TENSOR_SKIP
              return nullptr;
          }
@@ -3432,10 +3432,10 @@ index e3ab9ba0e..0868636d7 100644
              moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), buft, buft_list_layer);
          }
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 554266b8a..f445ff3bd 100644
+index 470256216..0092db28f 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -3470,6 +3470,9 @@ bool llama_moe_cache_stats(const llama_model * model, int64_t * hits, int64_t *
+@@ -3480,6 +3480,9 @@ bool llama_moe_cache_stats(const llama_model * model, int64_t * hits, int64_t *
          }
      }
      return false;

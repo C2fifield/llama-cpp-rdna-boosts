@@ -1,12 +1,20 @@
 # `host-memory-reclaim` — reclaiming the host memory of GPU-resident weights (and the `-ncmoe` pool)
 
+> **PROMOTED 2026-10-11 (r49) — folded into block 06, and the fix differs from this plan.**  The plan's
+> steady-state `madvise` reclamation was moot (r48 already unmapped the mapping at end of load); the real
+> problem is the **peak during load**.  The loader no longer prefetches the whole file and unmaps each
+> tensor's mapping range right after its device upload (`LLAMA_LOAD_RELEASE_MMAP`, default on, `=0`
+> kill-switch).  Measured on 2x R9700, Qwen3.8-Flash-Next-IQ4_NL (100 GB) `-ncmoe 40`: peak VmRSS
+> 122.5 → 55.4 GiB, equal to `--load-mode none`.  The `--host-experts pool` full pinned master is a
+> separate campaign (`wip/host-expert-master-drop/`).  Record: `WORKLOG.md` 261011.017 (r49).
+
 **Status: OPEN (seeded 2026-10-11, re-scoped from `archive/work/host-memory-footprint/`).**  This is a
 `wip/` tree; nothing here is part of the delivery (`patches/`).  It applies only to `~/llama-fingon`
 (campaign) / `~/llama.cpp` (delivery) on `fingon` (RX 7900 XTX, 24 GiB VRAM, ~30.5 GiB RAM, gfx1100,
 ROCm 7.14), which is never pushed.
 
 This campaign is the open remainder of the archived
-[`../../archive/work/host-memory-footprint/`](../../archive/work/host-memory-footprint/README.md)
+[`../../archive/work/host-memory-footprint/`](../host-memory-footprint/README.md)
 (seed measurement 2026-10-02).  Two of its hypotheses were overtaken by the delivery; the rest are still
 unmeasured.
 
@@ -71,7 +79,7 @@ MQ4=/llm/models/Qwen3.6/35B-A3B/Q4_K_M/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 ```
 
 `memwatch.sh` lives in the archived campaign
-([`../../archive/work/host-memory-footprint/memwatch.sh`](../../archive/work/host-memory-footprint/memwatch.sh)).
+([`../../archive/work/host-memory-footprint/memwatch.sh`](../host-memory-footprint/memwatch.sh)).
 
 | axis | values |
 |---|---|
@@ -94,7 +102,7 @@ Record per config: peak `VmRSS` / `RssAnon` / `RssFile` / `RssShmem` / `VmSwap` 
 
 ## Pointers
 
-- Archived seed campaign: [`../../archive/work/host-memory-footprint/`](../../archive/work/host-memory-footprint/README.md).
+- Archived seed campaign: [`../../archive/work/host-memory-footprint/`](../host-memory-footprint/README.md).
 - The pool: `archive/work/host-expert-dio-cache/` (PROMOTED, r35); `ENVIRONMENT.md` §1.2.1; r33's
   pageable removal and r35's pool are in `WORKLOG.md` 2026-10-08 (r34/r35).
 - `ENVIRONMENT.md` §"host experts" for the current `--host-experts` modes.
