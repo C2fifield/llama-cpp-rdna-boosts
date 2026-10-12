@@ -1,5 +1,24 @@
 # WORKLOG - dated delivery records
 
+## 261011.018 (r49, containers) -- r49 release-container images built and pushed locally; ccache ~52 %
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; the fork tree is
+`f0a74f4cc`).  `scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune` built and pushed all
+**15** GHCR tags from the canonical r49 tree (tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`) and then
+pruned the locally built images (the ROCm base images and the ccache store are kept).
+
+**Wall time 67m57s** for both ROCm lines, against the old tag-push CI matrix's ~5 h (which also had a
+cold retry on failure).  **ccache** (4.12.3, wired into the Dockerfile in r48) gave `full-rocm-7.14.1`
+**1301/2508 = 51.87 %** hits and `full-rocm-10.1` **1784/3344 = 53.35 %** hits.  The ~52 % (not the ~99 %
+a same-source rebuild gets) is because r49 changed `vecdotq.cuh`, which fans out into most
+quant/MMQ/MMVQ kernel TUs, so about half are genuine misses; a release that only touches `.cu` bodies
+should hit far higher.
+
+**Tags pushed** to `ghcr.io/stew675/llama-cpp-rdna-boosts`: `full`/`light`/`server` x `rocm-7.14.1` and
+`rocm-10.1` (each with its immutable `-a55e952b8` variant), plus `rocm-7.14.1`, `rocm-10.1` and `latest`
+(now 10.1).  The `v16-a55e952b8-r49` tag was then pushed to trigger `release.yml` (the GitHub Release
+assets: `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).
+
 ## 261011.017 (r49) -- mmap host-memory reclaim (block 06) + Q1_0 perm port and `cpy-batch` idiom (block 15); three campaigns promoted
 
 **Delivery change.**  `release.json` is now `v16-a55e952b8-r49` (base `a55e952b8`, canonical tip
