@@ -118,3 +118,51 @@ Confirm the approach for the flash-attention stack (targets 05/06/07):
 
 Once decided, the same "self-contained extraction" pattern can be applied to the other interleaved
 `ggml-cuda.cu` concerns (fusions, MoE hooks), while the file-level splits proceed mechanically.
+
+## 6. Update — closer inspection of the FA kernel (2026-10-12, after choosing B)
+
+Option B was chosen. Inspecting the actual kernel call chain shows why the 3-way split is a genuine
+kernel-layer refactor, not a header move:
+
+- Both concerns are threaded as **function parameters through the whole call chain**:
+  `flash_attn_ext_f16_iter(..., const kq_derived_t derived, const fattn_kv_native_t kv_native)`,
+  `_process_tile(..., derived, kv_native, ...)`, the `flash_attn_ext_f16` kernel, and the `load_tile`
+  helpers (`fattn-mma-f16.cuh` lines ~736, ~898, ~1550, ~2207, ~2321, ~2384, ~2449). The concern
+  **implementations** are already fairly self-contained (dequant chunk helpers; `kq_derived_t` +
+  `flash_attn_kq_derived_blocks`), but the **interface** carries both.
+- `fattn-common.cuh`'s `fattn_kernel_t` typedef and struct area carry both the derived parameters
+  (`cell_pos`/`tok_lo`/`tok_hi`) and the native parameters (`kv_native_K`/`kv_native_V`), side by side
+  (lines ~78-96).
+- `load_tile` branches on `kv_native_type` with a `switch` calling the per-type chunk dequantizers;
+  `iter`/`process_tile` branch on `derived.cell_pos != nullptr` in ~10 places; both are inline in the
+  kernel bodies, not helper calls.
+
+A clean 05/06/07 split therefore requires **layering the kernel interface across the targets**: target
+05 (band) must ship the kernel *without* the `derived`/`kv_native` parameters and branches, target 06
+adds the native parameter + enum/policy + load switch, target 07 adds the derived parameter + struct +
+classification + branches. That is ~1-2k lines of careful, gate-sensitive churn across `fattn-mma-f16.cuh`,
+`fattn-tile.cuh`, `fattn-vec.cuh`, `fattn.cu`, `fattn-common.cuh`, and it must clear the full FA matrix
+(`FLASH_ATTN_EXT` 6000+), width purity, prefill-logit and same-seed gates at each intermediate.
+
+### Refined recommendation
+
+**Keep targets 05/06/07 as ONE "flash-attention optimizations" block for Phase 1, but still do the G8
+module extraction inside it**: move the band predicates to `fattn-band.cuh`, the native enum/policy/chunk
+dequantizers to `fattn-native-kv.cuh`, and `kq_derived_t` + `flash_attn_kq_derived_blocks` to
+`fattn-derived-mask.cuh`, leaving the shared kernel interface and call points in `fattn-common.cuh` /
+`fattn.cu`. This:
+
+- satisfies G8 (concern bodies in self-contained files; only the shared kernel interface/call points
+  remain interleaved, and the interface genuinely is shared plumbing),
+- avoids the risky cross-target kernel layering,
+- still removes the FA code from the old-15 super-block, and
+- is independently gateable (the refactor is meant to be bit-identical, so the existing FA gates are the
+  proof) before any per-concern behavioural change.
+
+The three modules can then be promoted into separate blocks later (Phase 3) **if** the FA gates make the
+layering worth it. Net target count becomes **16** (00-04, 05-fa, 06 mmb, 07 kquant, 08 fused-prefill,
+09 fused-moe, 10 qwen4exp, 11 qsa, 12 moe-iface, 13 moe-cache, 14 graph-offload, 15 mmap-reclaim), or a
+renumber of the same set.
+
+**Requested:** confirm this refinement (one FA block + module extraction) or insist on the full 3-way
+kernel layering (B, larger/riskier).
