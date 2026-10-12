@@ -460,3 +460,40 @@ stop sharing a function.
 - **B:** make 07 absorb the mmvq hunks now via a Phase-2 extraction (a day-scale refactor of
   `mmvq.cu`), keeping the width-probe gate on 07.
 - **C:** something else.
+
+---
+
+## 12. Block 08 `fused-prefill` — BLOCKED on a second entanglement (2026-10-12)
+
+The old-08 fusion set was assembled on a scratch branch **`v2-prefill-wip` = `17ce09fa7`**
+(`gdn-conv`, `ple-conv`, `norm-gated`, `topk-moe`, `norm`, `unary`, `getrows`, `argsort`,
+`ggml-cpu/ops.cpp`, `common.cuh`, the `ggml-cuda.cu` `try_fuse` fusion arms).  `v2-phase1` is left at
+**`95d15bad9`** (block 07) — clean.
+
+### Finding
+
+With the old-08 fusions applied, the **fusion-on greedy text is wrong**: on the 4B Q8_0 (single GPU,
+`-n 20 --seed 42 --temp 0`) the default build emits `[Start thinking] Thinking`, while
+`GGML_CUDA_DISABLE_FUSION=1` emits `[Start thinking] Thinking Process:\n1. **Analyze the Request:** ...`
+— and the fusion-off text matches the r49 known-good (`f0a74f4cc`) **both** with its fusions on and
+off.  So the delivery's fusions are bit-identical, and the block-08 assembly is incomplete/faulty.
+
+The missing pieces are **old-15's PR #63 corrections**: the `rms_norm_q8_1_f32` refactor
+(`norm.cu`), `ggml_cuda_op_add_rms_norm_q8_1` / `ggml_cuda_op_rms_norm_q8_1` (`norm.cu` +
+`ggml-cuda.cu` `try_fuse` arms) and the `ssm_gate_beta` ncols arm (**`mmvq.cu`**).  The old-08
+norm→Q8_1 activation fold is only correct with that correction.  Since the `ssm_gate_beta` half lives
+in `mmvq.cu` — the file already deferred to 09 — **08 and 09 are interdependent**, exactly like the
+07/09 mmvq split in §11.
+
+### Decision requested (maintainer)
+
+- **A:** merge `08 fused-prefill` + `09 fused-moe` into one **fusions** block (old-08 fusions + PR #63 +
+  old-13/old-08 mmvq + MWR).  This is the honest unit of the current code: the fusions and the mmvq
+  dispatch share `ggml-cuda.cu` `try_fuse`, `mmvq.cu`, `norm.cu`, `common.cuh` and the
+  `ggml_cuda_mm_fusion_args` plumbing.
+- **B:** do the Phase-2 extraction first (feature-local `*_try_fuse` matchers + `mmvq-rdna.cuh`), then
+  keep the planned 08/09 split.
+- **C:** leave 08 broken and continue to 09–13, fixing the fusions at the end (the final tree is what
+  matters; the per-block gates for 08 would be red).
+
+`v2-phase1` is clean at block 07; nothing is half-applied.  The scratch branch preserves the 08 attempt.

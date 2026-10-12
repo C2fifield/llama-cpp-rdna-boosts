@@ -13,9 +13,11 @@ committed** on a dedicated branch (`v2-phase1` = `95d15bad9`).  Per-block fresh 
 same-seed text identical to the r49 known-good; block 06: MUL_MAT 2444/2444; block 07: MUL_MAT
 2444/2444.  Nothing is broken or half-applied.
 
-**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9–§11.  §11 is plan-affecting
-(the mmvq row-loop is not hunk-separable from fused-MoE; deferred to 09, so the width-probe PASS moves
-to 09 — decision requested).  `GGML_CUDA_OP_TIMING` still needs a home decision.
+**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9–§12.  §11 and §12 are
+plan-affecting: the mmvq row-loop is not hunk-separable from fused-MoE (deferred to 09, so the
+width-probe PASS moves to 09), and the 08 fused-prefill fusions are not correct without old-15 PR #63
+(whose `ssm_gate_beta` half is in the same `mmvq.cu`) — decisions requested.  `GGML_CUDA_OP_TIMING`
+still needs a home decision.
 
 ## 1. Ref map (exact)
 
@@ -26,6 +28,7 @@ to 09 — decision requested).  `GGML_CUDA_OP_TIMING` still needs a home decisio
 | Phase-1 worktree | `~/llama-v2` (git worktree of `~/llama.cpp`), branch **`v2-phase1`** |
 | clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `95d15bad9` (blocks 00–07) |
 | scratch (partial FA) | branch `v2-fa-wip` = `116ff4ccf` (do **not** use; kept only as a record) |
+| scratch (partial 08 fused-prefill) | branch `v2-prefill-wip` = `17ce09fa7` (do **not** use; fusions-on text is wrong — see `PHASE1-STATUS.md` §12) |
 | other worktrees | `~/llama.cpp` (user's build), `~/llama-rebase` (canonical published chain), `~/llama-src` |
 
 `~/llama-v2` shares the `~/llama.cpp` git object store. The delivery patches (`~/llama-cpp-rdna-boosts/patches`)
@@ -93,14 +96,14 @@ reference the fusions; 10 precedes 11 (qwen4exp consumes it); 12 after 11; 13 la
 folded into each flag's owning block. Generated `template-instances/*` travel with the type axis that
 dispatches to them.
 
-## 5. `05 fa` — DONE (`05e88da52`); `06 mmb` — DONE (`298060c73`); `07 kquant` — DONE (`95d15bad9`); next: `08 fused-prefill`
+## 5. `05 fa` — DONE (`05e88da52`); `06 mmb` — DONE (`298060c73`); `07 kquant` — DONE (`95d15bad9`); `08 fused-prefill` — BLOCKED (`PHASE1-STATUS.md` §12)
 
-> **Status 2026-10-12 (session 2):** blocks 05–07 are built and committed.  See `PHASE1-STATUS.md` §9
-> (05), §10 (06) and §11 (07).  **§11 has a plan-affecting finding: the mmvq multi-row/row-loop hunks
-> (old-15 PR #57) are not hunk-separable from the fused-MoE item-split, so they are deferred to 09 and
-> the `test-logits-width-probe` `width_purity` PASS moves to 09.**  **Next task:** `08 fused-prefill`
-> (old-08 fusions: `gdn-conv`, `ple-conv`, `norm-gated`, `norm`, `unary`, `topk-moe`, `getrows`,
-> `argsort`, `ggml-cpu/ops.cpp`; old-15 PR #63).  The steps below are the record of how 05 was assembled.
+> **Status 2026-10-12 (session 2):** blocks 05–07 are built and committed; `v2-phase1` = `95d15bad9`
+> (clean).  **Two plan-affecting entanglements are recorded and need a decision:** §11 (the mmvq
+> multi-row/row-loop is not hunk-separable from fused-MoE; deferred to 09) and §12 (the 08 fusions are
+> not correct without old-15 PR #63, whose `ssm_gate_beta` half is in the same `mmvq.cu`).  The 08
+> attempt is on scratch branch `v2-prefill-wip` = `17ce09fa7`.  The steps below are the record of how
+> 05 was assembled.
 
 Worktree `~/llama-v2`, branch `v2-phase1` at `2a1502311`.
 
