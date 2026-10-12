@@ -446,6 +446,12 @@ Give it a deterministic repro (e.g. `compute-sanitizer`, or the `GGML_CUDA_SPLIC
 
 ## Merge hygiene — finer block-06 dispatch split (r50 follow-up)
 
+**SUPERSEDED by `wip/patch-block-reorg/` (seeded 2026-10-12).**  The r50 finer split is now one part of a
+larger, fundamental re-organisation of the whole block taxonomy (the r50 lateral move into block 15 is
+reversed by the target map in `MIGRATION-MAP.md`).  The spec below is retained as the hunk-level detail
+for the `ggml_cuda_try_fuse` / `ggml-backend-meta.cpp` moves; the live campaign and the decisions it
+needs are in that directory (`OPEN-QUESTIONS.md`).
+
 The r50 per-block sweep is **16/16**, but block 06's fusion dispatch (`ggml_cuda_try_fuse` additions + the
 six `ggml_cuda_match_*` matchers for hc-mix / combine-norm / idx-relu / cache-blocks) now lives in
 **block 15** as a lateral move, so block 15 grew ~+1.4k lines and the features are not dispatched at their

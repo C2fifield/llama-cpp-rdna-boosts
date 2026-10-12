@@ -1,5 +1,32 @@
 # WORKLOG - dated delivery records
 
+## 261012.003 (docs, wip seed) -- seed `wip/patch-block-reorg/`: fundamental block-taxonomy re-org
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Seeded the
+follow-up the r50 merge-hygiene note flagged as open: a **fundamental** re-organisation of the 16-block
+set into an orthogonal taxonomy, whose success criterion is the **next** re-base being cheap, not merely
+the current one fitting.  The r50 work (`archive/work/r50-merge-hygiene/`) was a narrow, tree-invariant
+"make each commit build" redistribution; it did not change the taxonomy and (by moving the
+`ggml_cuda_try_fuse` dispatch/matchers laterally into block 15) grew the block-15 super-block.  This
+campaign is the design layer above it.
+
+**Audit delivered (measured on the tree-identical re-cut chain `af0595360`):** per-block size/file
+counts, the pairwise coupling matrix, the hub-file list (`ggml-cuda.cu` is touched by 10/16 blocks), and
+the specific pathologies (block 06 bucket, block 15 super-block, block 04 FA/MMQ mix, the tiny 05/07/09/11,
+instances stranded from their type axis).  Proposed target: **19 blocks (00-18)** grouped foundation ->
+multi-GPU -> decode/speculation -> flash attention -> quantized GEMM -> kernel fusions -> host-resident
+MoE -> memory -> models -> host hot-path; the tiny blocks are absorbed (05/07/09a -> 00, 09b -> MoE,
+11 -> graph handling); block 15 is split across ~10 owners; generated template instances travel with
+their type axis (the per-block-build requirement).
+
+**Files:** `wip/patch-block-reorg/{README,REBASE-RESILIENCE,TARGET-BLOCKS,MIGRATION-MAP,FILE-OWNERSHIP,OPEN-QUESTIONS}.md`;
+`wip/CAMPAIGNS.md` updated with the row.
+
+**Awaiting the maintainer:** Q1 target count + the MoE (12/13) and qwen4exp (16/17) seams; Q2 aggressive
+vs minimal reorder; Q3 tree-invariant-only; Q4 getenv-sweep handling; Q6 renumbering/doc strategy; Q7/Q8
+whether to adopt a feature/integration split and whether Phase 2 is in scope.  **No commit may move until
+Q1-Q3 and Q6 are decided.**  `TODO.md` gets a cross-reference (this is the tracker for the re-org).
+
 ## 261012.002 (r50) -- per-block merge hygiene: 16/16 `all` sweep; release re-cut to tip `84058162b`
 
 **Delivery change.**  `release.json` re-cut: canonical tip `9a9e6aa6c` -> **`84058162b`**; the net tree is
