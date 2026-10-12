@@ -497,3 +497,51 @@ in `mmvq.cu` — the file already deferred to 09 — **08 and 09 are interdepend
   matters; the per-block gates for 08 would be red).
 
 `v2-phase1` is clean at block 07; nothing is half-applied.  The scratch branch preserves the 08 attempt.
+
+---
+
+## 13. Block 08 `fused-kernels` — the merged block (2026-10-12, maintainer-approved)
+
+The maintainer approved the merged block.  **08 `fused-kernels`** is committed on `v2-phase1` as
+**`a32c95a6e`** (blocks 00–08); per-block fresh `all` build **9/9**.
+
+### Contents (old-08 + old-13 + old-15 PR #57/#63, minus the cache/qwen4exp arms)
+
+- **old-08 fusions**: `gdn-conv`, `ple-conv`, `norm-gated`, `topk-moe`, the `norm`/`unary`/`getrows`/
+  `argsort` kernels, the CPU references (`ggml-cpu/ops.cpp`) and the `try_fuse` arms.
+- **old-13**: fused MoE gate+up+GLU MMQ, the mmvq short-K item-split/ksplit, the routed-compact MMQ
+  (`mmq.cuh`, `mmq-config-rdna3-5.cuh`), MWR (`moe-weighted-reduction`), the mmq gate instances.
+- **old-15 PR #57/#63**: the mmvq multi-row/row-loop decode (`GGML_MMVQ_RDNA4_DECODE_GRID`,
+  `nrows_loop`, the `lf_nval` halving reduction), `ssm_gate_beta`/`ssm_conv_l2_gatebeta`, the
+  `rms_norm_q8_1` refactor (`norm.cu`) and `quantize_mmq_q8_1_glu`.
+- **Deliberately excluded** (they depend on later blocks and were stripped to keep the block
+  self-contained): the MoE-cache-aware reads (`moe_cache_get_cold`, the B1 stand-down
+  `moe_cache_redirect_fused`), the qwen4exp/HC arms (`ggml_cuda_hc_*`, `idx_relu_sum`) and the old-15
+  `ggml-cuda.cu` fusion arms that call them.  The stripped reads fall back to the resident-only path
+  (bit-identical).  **These arms must be re-added when `slab-moe` / `qwen4exp` land** — the block is
+  *correct* without them, just without those last fusions.
+
+### Gates — all green
+
+| gate | result |
+|---|---|
+| per-block fresh `all` build | **9/9** |
+| fusion on == off (4B Q8_0, `-n 20 --seed 42 --temp 0`) | identical greedy text |
+| `test-logits-width-probe` (4B) | **width_purity PASS** (worst maxdiff 0) |
+| `test-backend-ops -o MUL_MAT` | **2444/2444** |
+| `gate-prefill-logits.sh` | mean KLD **0.000586**, same-top-p **98.725 %** PASS |
+
+`test-backend-ops -o MUL_MAT_ID` still has the 4 `f16 / dup=1` failures + `HSA_STATUS_ERROR_MEMORY_
+APERTURE_VIOLATION` seen at 06/07 (r49 passes 931/931) — a later block's dispatch fix, not this one.
+
+### Resulting block set (13 blocks)
+
+00 foundation, 01 allreduce, 02 mtp-adaptive, 03 gdn, 04 bf16-kv, **05 fa**, **06 mmb**, **07 kquant**,
+**08 fused-kernels** (merged old 08+09), then **09 slab-moe**, **10 qwen4exp**, **11 qsa**,
+**12 mmap-reclaim**.
+
+### Next task: `09 slab-moe`
+
+old-06 (iface/scheduler/Meta/slab/cache engine/host-expert loader) + old-09b + old-11 (graph-offload) +
+old-13 engine + old-15 hooks/arena/r48.  After it lands, the old-15 cache/qwen4exp `ggml-cuda.cu` arms
+stripped from 08 can be re-added (they belong with the cache/qwen4exp APIs).

@@ -7,17 +7,16 @@ findings log.
 
 ## TL;DR
 
-The **audit is complete**, the **method is proven**, and **target blocks 00–07 are rebuilt and
-committed** on a dedicated branch (`v2-phase1` = `95d15bad9`).  Per-block fresh builds are green
-(8/8); block 05 gates: FLASH_ATTN_EXT 6389/6389 in three arms, prefill-logit 0.000586 / 98.725 %,
-same-seed text identical to the r49 known-good; block 06: MUL_MAT 2444/2444; block 07: MUL_MAT
-2444/2444.  Nothing is broken or half-applied.
+The **audit is complete**, the **method is proven**, and **target blocks 00–08 are rebuilt and
+committed** on a dedicated branch (`v2-phase1` = `a32c95a6e`).  Per-block fresh builds are green
+(9/9).  Block 05: FLASH_ATTN_EXT 6389/6389 ×3, prefill-logit 0.000586 / 98.725 %, same-seed text
+identical to the r49 known-good.  Blocks 06/08: MUL_MAT 2444/2444, width_purity PASS, fusion on ==
+off.  Nothing is broken or half-applied.
 
-**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9–§12.  §11 and §12 are
-plan-affecting: the mmvq row-loop is not hunk-separable from fused-MoE (deferred to 09, so the
-width-probe PASS moves to 09), and the 08 fused-prefill fusions are not correct without old-15 PR #63
-(whose `ssm_gate_beta` half is in the same `mmvq.cu`) — decisions requested.  `GGML_CUDA_OP_TIMING`
-still needs a home decision.
+**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9–§13.  §11/§12 led the
+maintainer to approve merging the planned 08+09 into **08 fused-kernels** (§13); the MoE-cache-aware
+and qwen4exp arms were stripped and must be re-added when `09 slab-moe`/`10 qwen4exp` land.
+`GGML_CUDA_OP_TIMING` still needs a home decision.
 
 ## 1. Ref map (exact)
 
@@ -26,9 +25,9 @@ still needs a home decision.
 | delivery repo | `~/llama-cpp-rdna-boosts` (branch `main`, pushed to `origin` = `git@github.com:stew675/llama-cpp-rdna-boosts.git`) |
 | reference release | `release.json` base `097cf33d9` (tree `30c400ccea2e2fb47b663036a6cee08a4dc542d8`), tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
 | Phase-1 worktree | `~/llama-v2` (git worktree of `~/llama.cpp`), branch **`v2-phase1`** |
-| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `95d15bad9` (blocks 00–07) |
+| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `a32c95a6e` (blocks 00–08) |
 | scratch (partial FA) | branch `v2-fa-wip` = `116ff4ccf` (do **not** use; kept only as a record) |
-| scratch (partial 08 fused-prefill) | branch `v2-prefill-wip` = `17ce09fa7` (do **not** use; fusions-on text is wrong — see `PHASE1-STATUS.md` §12) |
+| scratch (08 build) | branch `v2-prefill-wip` = `5f11da3ce` (the merged-block source; block 08 `a32c95a6e` is the squashed version) |
 | other worktrees | `~/llama.cpp` (user's build), `~/llama-rebase` (canonical published chain), `~/llama-src` |
 
 `~/llama-v2` shares the `~/llama.cpp` git object store. The delivery patches (`~/llama-cpp-rdna-boosts/patches`)
@@ -61,7 +60,8 @@ its source hunks with `git apply -3` (zero conflicts; file/line counts match the
 | 04 | bf16-kv | old 03 | 8 files, +630/−214 |
 | 05 | fa | old 04-FA + 08-FA + 15-FA, minus the arena | 24 files + 286 instances, +3082/−313 |
 | 06 | mmb | old 08-MMB half | `mmb.{cu,cuh}` + 3 files, +2603/−3 |
-| 07 | kquant | old 04-MMQ + old 10 + old 15 Q1_0/grid/mmvf | 9 files, +725/−119 (mmvq row-loop deferred to 09) |
+| 07 | kquant | old 04-MMQ + old 10 + old 15 Q1_0/grid/mmvf | 9 files, +725/−119 |
+| 08 | fused-kernels | old 08 fusions + old 13 + old 15 PR57/63 (cache/qwen4exp arms stripped) | 27 files + 6 instances, +4774/−420 |
 
 **Tooling proven:** `git show <src> --format= -- <paths> | git apply -3` for whole-file moves, and
 `tools/select_hunks.py '<regex>'` to lift hunks by content. See `PHASE1-STATUS.md` §2.
@@ -96,14 +96,14 @@ reference the fusions; 10 precedes 11 (qwen4exp consumes it); 12 after 11; 13 la
 folded into each flag's owning block. Generated `template-instances/*` travel with the type axis that
 dispatches to them.
 
-## 5. `05 fa` — DONE (`05e88da52`); `06 mmb` — DONE (`298060c73`); `07 kquant` — DONE (`95d15bad9`); `08 fused-prefill` — BLOCKED (`PHASE1-STATUS.md` §12)
+## 5. `05 fa` – `08 fused-kernels` DONE; next: `09 slab-moe`
 
-> **Status 2026-10-12 (session 2):** blocks 05–07 are built and committed; `v2-phase1` = `95d15bad9`
-> (clean).  **Two plan-affecting entanglements are recorded and need a decision:** §11 (the mmvq
-> multi-row/row-loop is not hunk-separable from fused-MoE; deferred to 09) and §12 (the 08 fusions are
-> not correct without old-15 PR #63, whose `ssm_gate_beta` half is in the same `mmvq.cu`).  The 08
-> attempt is on scratch branch `v2-prefill-wip` = `17ce09fa7`.  The steps below are the record of how
-> 05 was assembled.
+> **Status 2026-10-12 (session 2):** blocks 05–08 are built and committed; `v2-phase1` = `a32c95a6e`
+> (clean, 9/9).  The planned 08+09 were merged into **08 fused-kernels** (maintainer-approved; see
+> `PHASE1-STATUS.md` §11–§13).  **Next task:** `09 slab-moe` (old-06 iface/scheduler/Meta/slab/cache
+> engine/host-expert loader + old-09b + old-11 graph-offload + old-13 engine + old-15 hooks/arena/r48);
+> afterwards the cache/qwen4exp `ggml-cuda.cu` arms stripped from 08 can be re-added.  The steps below
+> are the record of how 05 was assembled.
 
 Worktree `~/llama-v2`, branch `v2-phase1` at `2a1502311`.
 
