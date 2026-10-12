@@ -1,5 +1,27 @@
 # WORKLOG - dated delivery records
 
+## 261012.004 (docs, wip decisions) -- patch-block-reorg: maintainer decisions recorded; target renumbered to 18 blocks
+
+**No delivery change.**  Recorded the maintainer's answers to the `wip/patch-block-reorg/` questions and
+propagated them through the campaign docs:
+
+- **Q1:** keep the MoE and qwen4exp concerns **separate**, and order **qwen4exp before host-resident
+  MoE** (qwen4exp is independent; host MoE is the broad enabler across all MoE models and lands after /
+  enabled by the model-specific work).  The r50 lateral move of the `ggml_cuda_match_hc_mix` /
+  `_hc_combine_norm_*` / `_match_idx_relu_sum` matchers into block 15 is **reversed**: those matchers need
+  `ggml_cuda_hc_mix_args` (qwen4exp) and belong to the qwen4exp block.  Verified the Fused-MoE fusions
+  (old-13) are shape-matched with no qwen4exp type dependency, so they stay before qwen4exp.
+- **Q2:** aggressive reorder; treat this as **V2.0** of the original work (archive the old block history,
+  rewrite the top-level docs, clean break-point).
+- **Q3:** tree-invariant *where practical* in Phase 1; every content exception is a documented Phase-2 item.
+- **Q6:** new numbers + mnemonic aliases; current-state docs use the aliases, dated records keep historical
+  numbers, old→new map published.
+
+**Target renumbered 19 -> 18 blocks (00-17):** `12 qwen4exp`, `13 qsa`, `14 moe-iface`, `15 moe-cache`,
+`16 graph-offload`, `17 mmap-reclaim`; the getenv hot-path caching is **folded into the owning blocks**
+(Q4 recommended; a sweep block would be 18).  Still open: Q4 (confirm fold), Q7/Q8 (Phase-2 code
+structure and scope).  Files updated: `wip/patch-block-reorg/{README,TARGET-BLOCKS,MIGRATION-MAP,FILE-OWNERSHIP,REBASE-RESILIENCE,OPEN-QUESTIONS}.md`, `wip/CAMPAIGNS.md`.
+
 ## 261012.003 (docs, wip seed) -- seed `wip/patch-block-reorg/`: fundamental block-taxonomy re-org
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Seeded the

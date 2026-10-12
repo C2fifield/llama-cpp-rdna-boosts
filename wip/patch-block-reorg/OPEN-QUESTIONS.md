@@ -1,139 +1,119 @@
-# Open questions — decisions required from the maintainer
+# Open questions — decisions from the maintainer
 
-Per `AGENTS.md` ("Report findings before shipping"), these are the decisions that must be made **before**
-any commit is moved. Each has a recommendation; the maintainer's call is final and should be recorded
-(here, and in the relevant `WORKLOG.md` entry).
+Per `AGENTS.md` ("Report findings before shipping"), these are the decisions that gate the re-org. The
+maintainer's answers of **2026-10-12** are recorded; only Q4/Q5/Q7/Q8 remain open or for clarification.
 
 ---
 
-## Q1 — Target block count and the two contested seams (BLOCKING)
+## Q1 — Separate the MoE and qwen4exp concerns; order qwen4exp first — **DECIDED (separate)**
 
-The recommended target is **19 blocks (00–18)** (`README.md` §4, `TARGET-BLOCKS.md`). Two seams are
-genuinely arguable:
+**Decision (maintainer):** keep the MoE pair and the qwen4exp pair **separate** (targets 14/15 and 12/13),
+and order **qwen4exp before the host-resident MoE blocks**. Rationale: qwen4exp is independent, but its
+architecture is what makes host-resident MoE effective; host MoE is the broad enabler across all MoE
+models and therefore lands after the model-specific work.
 
-- **Q1a — MoE: keep target 12 (interface/scheduler/Meta/slab) and 13 (cache engine/hooks) separate, or
-  merge into one "Host-Resident MoE Experts + Slab handler" block?**
-  The user's brief named "Host-Resident MoE Experts + Slab handler" as *one* block. The two-block split
-  follows the layer seam (generic plumbing vs. policy + hooks) and the user's other instruction to break
-  up oversized blocks. They share `moe-expert-cache.{cu,h}` and `ggml-cuda.cu` regions.
-  **Recommendation: keep them separate** (12 vs 13), because a merged block would again be ~7k lines and
-  ~20 modified upstream files — a rebase super-block. If the maintainer prefers the brief's single block,
-  merge 12+13 and accept the size.
-- **Q1b — qwen4exp: keep target 16 (model/HC/lazy/MTP head) and 17 (QSA/indexer/QSA memory) separate, or
-  merge into one qwen4exp block?**
-  Same tension. 17 is the larger half (~5k lines) but the QSA op code is fairly self-contained; the seam
-  is `src/models/qwen4exp.cpp` and `src/llama-graph.cpp`.
-  **Recommendation: keep them separate** (16 vs 17), with the caveat that the W1–W3 memory wins touch
-  graph/model files shared with 16, so the two must be adjacent and 17 after 16.
+**Consequence applied:** the r50 lateral move of the `ggml_cuda_match_hc_mix` /
+`_hc_combine_norm_*` / `_match_idx_relu_sum` matchers (which need `ggml_cuda_hc_mix_args`) is **reversed**:
+they belong to the qwen4exp block (12), not the MoE blocks. Verified that old-13 (Fused MoE) fusions are
+shape-matched and have no compile dependency on qwen4exp types, so Fused MoE (11) stays before qwen4exp.
 
-**Decision:** _pending._
+## Q2 — Aggressive reorder; V2.0 clean break — **DECIDED (aggressive / V2.0)**
 
-## Q2 — Reorder aggressively or minimally?
+**Decision (maintainer):** be as aggressive as needed. Rewrite the top-level documents, move much of the
+old block history to `archive/`, and establish a clean break-point — treat this as **V2.0** of the
+original work rather than an incremental renumbering. Historical detail remains discoverable in the
+archive.
 
-- **Aggressive** (recommended): adopt the full order in `README.md` §5. Adds `01 All-reduce` early and
-  moves qwen4exp/MoE late; minimises hub-function interleaving and forward deps. Cost: the redistribution
-  is a real reconstruction, and every block's commit content changes.
-- **Minimal**: keep the existing order, only absorb the tiny blocks and split the giants. Far less work,
-  but leaves the forward-dep-prone order and does not group related blocks.
+**Consequence applied:** target order `00 … 17` per `README.md` §4; dated records are not rewritten, but
+current-state docs are re-issued for V2.0; the old→new map is published here/`WORKLOG.md` and the old
+`patches/README.md` history is archived rather than maintained forward.
 
-**Recommendation: aggressive**, because the whole point is to avoid the next rebase's pain; a minimal
-reorder only fixes the current one (which r50 already did).
+## Q3 — Tree-invariant where practical, document exceptions — **DECIDED (practical invariant)**
 
-**Decision:** _pending._
+**Decision (maintainer):** Phase 1 should be as tree-invariant as practical, but the choice is not
+black-and-white; any content cleanup that is needed is documented as a **Phase-2 item** rather than
+silently folded. This matches the original Option A with an explicit exception list.
 
-## Q3 — Tree-invariant only, or allow small content clean-ups?
+**Consequence applied:** `CONTENT-CLEANUP` items are collected in `REBASE-RESILIENCE.md` §5 / a running
+list; each must be listed and approved, never hidden inside a boundary move.
 
-Phase 1 should keep the net tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8` byte-identical. During
-redistribution, small content problems may surface (a stray hunk, a duplicate from the r50 lateral move,
-a comment citing a moved symbol).
+## Q6 — New numbers + mnemonic aliases, clean doc break — **DECIDED**
 
-- **Option A (recommended):** Phase 1 is strictly tree-invariant; any content issue is recorded and, if
-  the maintainer wants it fixed, deferred to a separate follow-up commit (not silently folded).
-- **Option B:** allow a small, listed set of clean-ups inside Phase 1 and re-baseline the tree.
+**Decision (maintainer):** yes. New numbers plus mnemonic aliases (`00-foundation`, `09-kquant`, …), with
+the V2.0 clean break from Q2.
 
-**Recommendation: A.** Tree invariance is the strongest proof the re-org is correct; mixing content fixes
-makes a failed per-block build ambiguous.
+**Consequence applied:** current-state docs (`README.md`, `AGENTS.md` Critical facts, `ENVIRONMENT.md`
+headers, `patches/README.md` top, `TODO.md`, `release.json`, `MANIFESTS.md`/`BASELINE.md` headers) use the
+new numbers/aliases; dated records keep their historical numbers; the old→new table is published.
+Block-15 alone had ~1132 references across 303 markdown files, so the doc pass is a real work package.
 
-**Decision:** _pending._
+---
 
-## Q4 — Distribute the getenv sweep (target 18) or keep it a sweep block?
+## Q4 — getenv hot-path caching: sweep block vs. folded — **OPEN (recommended: fold)**
 
-Target 18 caches `getenv` on hot paths. As a block it touches ~40 files owned by other blocks, so it is
-the highest-coupling block and can only be last.
-- **Option A (recommended):** keep it a single trailing block and accept that it is a sweep; it is
-  pure-perf, droppable, and last by construction.
-- **Option B:** distribute each cached flag to the block that introduced the flag. Zero cross-block
-  coupling, but 10–15 blocks each carry an unrelated micro-hunk, and the "cache the getenv" change
-  becomes invisible as a concern.
-- **Option C:** drop target 18 from the re-org and keep the sweep as a standalone later campaign.
+**What the choice actually is.** Old-15's issue-#65 amendment caches ~25 `getenv()` reads that sit on
+per-op / per-graph / per-tensor hot paths (`LLAMA_HC_CN_DEBUG`, `GGML_CUDA_DISABLE_CONV_FUSION`,
+`GGML_CUDA_GCDBG`, `GGML_CUDA_OP_TIMING`, `GGML_STREAMDBG`, `GGML_META_*`, `GGML_SCHED_*`,
+`GGML_CUDA_MMQ_J_MAX`, `GGML_CUDA_GDN_CHUNKED(_BF16)`, …). Each cached read is one or two lines in the
+file that *owns the flag*.
 
-**Recommendation: A**, with C as the escape hatch if the maintainer dislikes sweep blocks.
+- **Fold (recommended):** each cache-the-getenv line goes into the block that introduced the flag. No
+  block touches ~40 files; the change is invisible as a concern; perfectly orthogonal (G2). The new
+  total is **18 blocks (00–17)**.
+- **Sweep block (18):** keep them as one trailing block. Easier to revert as a unit, but it is the most
+  coupled block in the set (touches ~40 files owned by others) and can only be last.
 
-**Decision:** _pending._
+**Recommendation: fold.** This is consistent with the Q2 V2.0/orthogonality direction. This is not about
+`ENVIRONMENT.md` (which already groups variables by feature) — it is purely about the **patch-block**
+structure.
 
-## Q5 — What happens to the r50 per-block build gate and `release.json`?
+**Decision:** _pending (fold assumed in the docs)._
 
-The re-org changes `n_blocks`. `scripts/gate-per-block-build.sh` reads `release.json`'s `base..tip`, so it
-must be regenerated before the gate runs. The tip commit changes even though the tree does not.
-- **Recommendation:** run `scripts/make-release.sh` for a scratch manifest, run the gate against the new
-  chain, and only then overwrite `release.json`; `validate-set.sh` proves the tree. No hand-edited hashes.
+## Q5 — `release.json` / per-block gate flow — **NOT A DECISION (procedure)**
 
-**Decision:** _pending (mechanical; flag if a different flow is wanted)._
+There is no real choice here; I should not have listed it as one. It is procedure: the re-org changes
+`n_blocks` and the tip, so `release.json` must be regenerated with `scripts/make-release.sh` (never
+hand-edited) and `scripts/gate-per-block-build.sh` then reads the new `base..tip`. No action required.
 
-## Q6 — Renumbering / documentation strategy (BLOCKING for the doc pass)
+## Q7 — Feature-block + integration-block split — **OPEN (clarified)**
 
-Renumbering invalidates the numeric handles used everywhere (`block 15` alone has ~1132 references in
-303 markdown files). Dated records must stay historical. Options:
+**What the choice is.** A *code-structure* change (Phase 2), not a Phase-1 taxonomy choice: for the
+features whose logic is interleaved into an actively-churning upstream function (`ggml_cuda_try_fuse`,
+the mmvq dispatch, `fattn.cu`), extract the feature's logic into a feature-local function/file and reduce
+the block's upstream-file hunk to a **one-line call**. The alternative is a literal second "integration
+block" per feature holding all dispatch edits.
 
-- **Option A — Renumber + mapping table (recommended for a fundamental re-org).** New numbers 00–18;
-  update only *current-state* docs (`patches/README.md` top, `README.md`, `ENVIRONMENT.md`,
-  `AGENTS.md` Critical facts, `TODO.md`, `release.json`, `MANIFESTS.md`/`BASELINE.md` headers). Add an
-  old→new table to this campaign and to `WORKLOG.md`. Dated records keep their original numbers.
-  Risk: `AGENTS.md`'s "Critical facts" block references are the most-used and must be updated carefully.
-- **Option B — Keep the old numbers; change only contents; append new blocks as 16, 17, ….** Minimises doc
-  churn but produces a confusing order and cannot express the reorder cleanly.
-- **Option C — Mnemonic names as the primary handle** (`block 03-gdn`, `block 09-kquant`, …) with numbers
-  secondary. Most future-proof (G7) and the recommended end state combined with A, but it is a larger doc
-  rewrite now.
-- **Option D — Hybrid:** new numbers + a short mnemonic alias per block, published in one table that the
-  current-state docs can use (`block 09-kquant`). Historical docs keep old numbers.
-
-**Recommendation: D** (new numbers + mnemonic aliases), which is A plus the G7 stability benefit; fall
-back to A if the alias table is judged too much extra work.
+- **Recommended:** the one-line-call extraction, **not** a second block per feature. It gets most of the
+  rebase-resilience benefit without splitting one concern across two blocks (G1) or breaking the
+  per-block build gate.
+- **Decision needed only if** you want the literal integration-block scheme.
 
 **Decision:** _pending._
 
-## Q7 — Adopt a feature/integration block split (Phase 2)?
+## Q8 — Is Phase 2 in scope for this campaign? — **OPEN (clarified)**
 
-A per-feature "integration block" (all dispatch/registration in a dedicated block, features as new files
-only) would give the best rebase resilience (`REBASE-RESILIENCE.md` §6), at the cost of two blocks per
-feature and a larger Phase-2 refactor.
-- **Recommendation: no as a separate-block scheme; yes to its spirit** — enforce "one-line arm → feature-
-  local function" so the upstream-file hunk is tiny, without a second block. Revisit after Phase 1's
-  measurement.
+**What the choice is.** Phase 1 = move hunks between blocks (no code change). Phase 2 = refactor the code
+so feature logic is local to feature files (`REBASE-RESILIENCE.md` §5). Phase 2 is delivery-affecting and
+needs its own gates (it can change the net tree from the Phase-1 baseline).
 
-**Decision:** _pending._
-
-## Q8 — Is Phase 2 in scope for this campaign at all?
-
-Phase 1 is a boundary re-org; Phase 2 changes code. `AGENTS.md` requires reporting and a maintainer
-decision before delivery-affecting work.
-- **Recommendation:** scope this campaign to **Phase 1 + the Phase-2 measurement**; open a **separate**
-  campaign for any Phase-2 refactor once the post-Phase-1 numbers are in.
+- **Recommended:** finish **Phase 1** (and re-measure the modified-file count per block), then open a
+  **separate campaign** for the Phase-2 items that still dominate. The cheap item (one-line `try_fuse`
+  arms) can be pulled into the V2.0 effort if you want.
+- Given the Q2 V2.0 framing you may prefer Phase 2 to be part of V2.0. Either is fine; the only thing to
+  avoid is doing a code refactor inside the boundary move and losing the tree-invariant proof.
 
 **Decision:** _pending._
 
 ---
 
-## Other findings to report (not decisions, but noted)
+## Other findings (not decisions)
 
 - The local `~/llama.cpp` `rdna-boosts` tip (`af0595360`) is tree-identical to the published
   `release.json.tree`, but its commit hashes differ from the published `patches/` `From:` hashes. All
   redistribution must start from a canonical chain rebuilt at `release.json.base` via
-  `scripts/apply-all.sh`, per the existing "Regenerate the patches" flow.
+  `scripts/apply-all.sh`.
 - Block 05 shares **no file** with any other old block — the cleanest possible absorb into target 00.
-- Block 09 is genuinely two concerns (`compute_headroom` for recurrent views vs. slab headroom for the
-  MoE arena); the split is not optional if target 00 and 12 are to be orthogonal.
-- The r50 hygiene's lateral move of the `ggml_cuda_try_fuse` dispatch/matchers into block 15 **grew the
-  super-block**; the new taxonomy must reverse that by sending each matcher to its owner block
-  (`MIGRATION-MAP.md` old-06). If Phase 1 keeps the r50 placement, the goal is not met.
+- Block 09 is two concerns (`compute_headroom` for recurrent views vs. slab headroom for the MoE arena);
+  the split is required if targets 00 and 14 are to be orthogonal.
+- The r50 lateral move of the `ggml_cuda_try_fuse` dispatch/matchers into block 15 **grew the
+  super-block**; Q1 reverses it by sending the qwen4exp matchers to 12 and the cache-blocks matcher to 15.

@@ -56,7 +56,7 @@ blocks. Once those travel with their axis (G6), 06's real added-file count colla
 files are mostly generated instances and new `.cu` kernels; its 105 modified files are the real problem.
 
 **Target design consequence:** maximise the number of *new* files per target block and minimise the
-number of *modified upstream* files, especially shared ones. The 19-block target already does this by
+number of *modified upstream* files, especially shared ones. The 18-block target already does this by
 giving the big generated/feature code to its own blocks; Phase 2 (§5) pushes further.
 
 ## 3. Per-target-block rebase-cost ranking
@@ -79,13 +79,13 @@ in the block's surface × the interleaving depth.
 | 09 K-quant boosts | ~8 | high | deep in `mmvq.cu`/`mmq*` | **high** | upstream actively reworks MMQ/MMVQ (e.g. #29953, #28935) |
 | 10 Fused prefill | ~20 | high | deep in `ggml-cuda.cu` try_fuse | **high** | many arms in one function |
 | 11 Fused MoE | ~15 | high | deep in `ggml-cuda.cu`/`mmq*`/`mmvq*` | **high** | the hardest seam; adjacent to 09 |
-| 12 MoE iface/sched/slab | ~20 | high | medium | **high** | `ggml-backend.cpp`/`ggml-backend-meta.cpp`/`ggml-cuda.cu` alloc region are upstream-active |
-| 13 Expert-cache engine | ~15 | high | deep | **high** | engine file is ours; the hooks interleave with 10/11 |
-| 14 Graph handling | ~4 | medium | deep in `ggml-cuda.cu` | **medium** | small, but in a churning region |
-| 15 Host memory reclaim | ~4 | low | shallow | **low** | loader-only; independent |
-| 16 qwen4exp model/HC | ~35 | medium | medium | **medium** | many files but mostly qwen4exp/HC-specific |
-| 17 QSA/indexer | ~25 | medium | medium | **medium** | own indexer/QSA files; model file shared with 16 |
-| 18 getenv sweep | ~40+ | very high | shallow | **high** | by design it touches every cached flag; it is last and droppable |
+| 12 qwen4exp model/HC | ~35 | medium | medium | **medium** | many files but mostly qwen4exp/HC-specific; precedes host MoE per Q1 |
+| 13 QSA/indexer | ~25 | medium | medium | **medium** | own indexer/QSA files; model file shared with 12 |
+| 14 MoE iface/sched/slab | ~20 | high | medium | **high** | `ggml-backend.cpp`/`ggml-backend-meta.cpp`/`ggml-cuda.cu` alloc region are upstream-active |
+| 15 Expert-cache engine | ~15 | high | deep | **high** | engine file is ours; the hooks interleave with 10/11 |
+| 16 Graph handling | ~4 | medium | deep in `ggml-cuda.cu` | **medium** | small, but in a churning region |
+| 17 Host memory reclaim | ~4 | low | shallow | **low** | loader-only; independent |
+| (18) getenv sweep | ~40+ | very high | shallow | **high** | only if kept as a block; folded by default (Q4) |
 
 The concentration is clear: **the flash-attention and quant-GEMM blocks (04–11) carry most of the rebase
 cost**, because upstream churns those files. The taxonomy cannot remove that, but it can (a) keep each
@@ -124,12 +124,12 @@ upstream-file hunk becomes small. Ranked by rebase-pain relief per unit of risk:
 
 | rank | candidate | current home | proposed shape | risk |
 |---|---|---|---|---|
-| 1 | `ggml_cuda_try_fuse` arms (MoE, prefill fusions, cache hooks) | 10/11/13 | each arm already calls a matcher; ensure **every** arm is one call + a feature-local `_match`/`_op` pair; no inline setup in `try_fuse` | low (mechanical, already the pattern) |
+| 1 | `ggml_cuda_try_fuse` arms (MoE, prefill fusions, cache hooks) | 10/11/15 | each arm already calls a matcher; ensure **every** arm is one call + a feature-local `_match`/`_op` pair; no inline setup in `try_fuse` | low (mechanical, already the pattern) |
 | 2 | MMQ `J` selection / config dispatch | 08/09 | move our config rows into a feature-local config function/table (partly done) | medium (numerics-sensitive; gate it) |
 | 3 | `mmvq.cu` dispatch (item-split vs ksplit vs VDR) | 09/11 | feature-local dispatch helper + own kernel file where possible | medium/high (band-uniform purity) |
 | 4 | FA `type_KV`/band dispatch in `fattn.cu` | 04/05/06/07 | a feature-local chooser already exists; move the remaining inline branches out | high (numerics/purity; large gates) |
-| 5 | `llama-context.cpp` glue (FA hint, readback, MoE) | 00/05/12 | keep each hunk a small standalone block; do not refactor for its own sake | low |
-| 6 | `src/llama.cpp` / `llama-model-loader.cpp` loader glue | 12/15 | already mostly local functions | low |
+| 5 | `llama-context.cpp` glue (FA hint, readback, MoE) | 00/05/14 | keep each hunk a small standalone block; do not refactor for its own sake | low |
+| 6 | `src/llama.cpp` / `llama-model-loader.cpp` loader glue | 14/17 | already mostly local functions | low |
 
 **Recommendation:** do Phase 1 first; then re-measure the rebase cost (the modified-file count per target
 block) and only do the Phase-2 items that still dominate. Item 1 is the cheapest and highest-value.

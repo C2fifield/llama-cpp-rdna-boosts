@@ -18,6 +18,27 @@ applied to the fork without the maintainer's explicit go-ahead (see the WIP and 
 > before moving any commit.** Do not restructure the `patches/` set until the maintainer picks the target
 > and the granularity.
 
+## Decisions recorded (2026-10-12, maintainer)
+
+- **Q1 — separate the MoE and qwen4exp concerns, and order qwen4exp *before* the host-resident MoE
+  blocks.** qwen4exp is independent but its architecture is what makes host-resident MoE effective; the
+  host-MoE work is the broad enabler across all MoE models, so it lands after the model-specific work.
+  The only compile dependency is the qwen4exp/HC matcher set (`ggml_cuda_hc_mix_args`), which therefore
+  belongs to the qwen4exp block — not to the MoE blocks as r50 left it.
+- **Q2 — aggressive reorder; treat this as V2.0.** Rewrite the top-level documents, move the old block
+  history to `archive/`, and establish a clean break-point. A key ordering consequence: the old-13
+  (Fused MoE) fusions are shape-matched and have **no** compile dependency on qwen4exp types, so target
+  11 stays before qwen4exp.
+- **Q3 — tree-invariant *where practical* in Phase 1; document every content exception as a Phase-2
+  item.** Not a hard invariant if a genuine cleanup is needed, but never silently folded.
+- **Q6 — new numbers plus mnemonic aliases** (`00-foundation`, `09-kquant`, …); current-state docs use
+  the aliases, dated records keep their historical numbers, and an old→new map is published.
+- **Q4 (recommended, confirm):** fold the getenv hot-path caching into the block that owns each flag
+  rather than keep a ~40-file sweep block. Default target is therefore **18 blocks (00–17)**; a trailing
+  sweep block is 18 if preferred.
+- **Q5** is procedure, not a decision (see `OPEN-QUESTIONS.md`). **Q7/Q8** (Phase-2 code structure and
+  scope) are clarified in `OPEN-QUESTIONS.md`.
+
 ---
 
 ## 0. The problem: rebasing the block set is a hunk-jigsaw
@@ -129,34 +150,34 @@ touched by 10/16 blocks, and nine other files by 4–8 blocks.
 
 ## 4. Target organisation (summary)
 
-Full spec: `TARGET-BLOCKS.md`. Recommended: **19 blocks (00–18)**, grouped foundation → multi-GPU →
-decode/speculation → flash attention → quantized GEMM → kernel fusions → host-resident MoE → memory →
-models → host hot-path.
+Full spec: `TARGET-BLOCKS.md`. Recommended: **18 blocks (00–17)** (getenv folded into owners; a
+sweep block would make 19), grouped foundation → multi-GPU → decode/speculation → flash attention →
+quantized GEMM → kernel fusions → **qwen4exp → host-resident MoE** → memory → host hot-path.
 
-| new | name | absorbs |
-|---|---|---|
-| 00 | Foundation: band-uniformity, Meta-wrapper, allocator & base correctness | 00, 05, 07, 09a, 06-logits-order, 15-W4, 15-cpy-batch |
-| 01 | Hybrid HIP all-reduce | 12 |
-| 02 | Adaptive MTP draft depth | 01 |
-| 03 | Chunked gated-delta-net prefill | 02 |
-| 04 | BF16 KV cache + native-BF16 flash attention | 03 |
-| 05 | Flash-attention RDNA4 WMMA band (GQA fold, wide verify band) | 04-FA, 15-band |
-| 06 | Native quantized K/V reads in flash attention | 15-V4/V5, stage arena, prefill band split |
-| 07 | Derived kq-mask attention memory | 15-V3 |
-| 08 | MMB quantized prefill GEMM | 08-MMB |
-| 09 | K-quant boosts (mmvq VDR, Q6_K MMQ, Q1_0 perm, grid pad) | 10, 04-MMQ, 15-Q1_0/grid/PR57 |
-| 10 | Fused prefill kernels (conv1d, RMS-norm, top-k MoE, verify fusions) | 08-fusions, 15-PR63 |
-| 11 | Fused MoE kernels (gate+up+GLU MMQ, item-split, shared-expert, MWR) | 13, 08-mmID, 15-PR114 |
-| 12 | Host-resident MoE: interface, scheduler, Meta, slab | 06-iface/sched/meta/slab, 09b, 15-r48 |
-| 13 | CUDA decode expert-cache engine, consumer hooks & arena | 06-engine, 13-engine, 15-hooks |
-| 14 | CUDA/HIP graph handling for expert-offload decode | 11, 06-async/pool |
-| 15 | Host memory reclaim (mmap release) | 06-mmap, 15-r49-mmap |
-| 16 | qwen4exp model support (arch, lazy reader, HC, MTP head) | 14-model/HC/lazy, 15-HC16/policy |
-| 17 | QSA sparse attention, indexer and QSA memory | 14-QSA/indexer, 15-W1–W3 |
-| 18 | Host hot-path flag caching (getenv) | 15-env-caching |
+| new | alias | name | absorbs |
+|---|---|---|---|
+| 00 | `foundation` | Foundation: band-uniformity, Meta-wrapper, allocator & base correctness | 00, 05, 07, 09a, 06-logits-order, 15-W4, 15-cpy-batch |
+| 01 | `allreduce` | Hybrid HIP all-reduce | 12 |
+| 02 | `mtp-adaptive` | Adaptive MTP draft depth | 01 |
+| 03 | `gdn` | Chunked gated-delta-net prefill | 02 |
+| 04 | `bf16-kv` | BF16 KV cache + native-BF16 flash attention | 03 |
+| 05 | `fa-band` | Flash-attention RDNA4 WMMA band (GQA fold, wide verify band) | 04-FA, 15-band |
+| 06 | `fa-native-kv` | Native quantized K/V reads in flash attention | 15-V4/V5, stage arena, prefill band split |
+| 07 | `kq-derived` | Derived kq-mask attention memory | 15-V3 |
+| 08 | `mmb` | MMB quantized prefill GEMM | 08-MMB |
+| 09 | `kquant` | K-quant boosts (mmvq VDR, Q6_K MMQ, Q1_0 perm, grid pad) | 10, 04-MMQ, 15-Q1_0/grid/PR57 |
+| 10 | `fused-prefill` | Fused prefill kernels (conv1d, RMS-norm, top-k MoE, verify fusions) | 08-fusions, 15-PR63 |
+| 11 | `fused-moe` | Fused MoE kernels (gate+up+GLU MMQ, item-split, shared-expert, MWR) | 13, 08-mmID, 15-PR114 |
+| 12 | `qwen4exp` | qwen4exp model support (arch, lazy reader, HC, MTP head, HC matchers) | 14-model/HC/lazy, 15-HC16/policy, r50 HC matchers |
+| 13 | `qsa` | QSA sparse attention, indexer and QSA memory | 14-QSA/indexer, 15-W1–W3 |
+| 14 | `moe-iface` | Host-resident MoE: interface, scheduler, Meta, slab | 06-iface/sched/meta/slab, 09b, 15-r48 |
+| 15 | `moe-cache` | CUDA decode expert-cache engine, consumer hooks & arena | 06-engine, 13-engine, 15-hooks |
+| 16 | `graph-offload` | CUDA/HIP graph handling for expert-offload decode | 11, 06-async/pool |
+| 17 | `mmap-reclaim` | Host memory reclaim (mmap release) | 06-mmap, 15-r49-mmap |
+| (18) | `host-hotpath` | Host hot-path getenv caching — **folded into owners by default** | 15-env-caching |
 
-Two seams are deliberately left as maintainer decisions (`OPEN-QUESTIONS.md` Q1): whether the two MoE
-blocks (12/13) stay separate or merge, and whether the two qwen4exp blocks (16/17) stay separate or merge.
+Two seams were contested and are now **resolved in favour of separating** (Q1): the MoE pair (14/15) and
+the qwen4exp pair (12/13). The getenv sweep is folded by default (Q4).
 
 ## 5. Ordering and dependency DAG
 
@@ -167,24 +188,26 @@ blocks (12/13) stay separate or merge, and whether the two qwen4exp blocks (16/1
   ├─ 03 Chunked GDN                                        │
   ├─ 04 BF16 KV / native BF16 FA                           │
   │     ├─ 05 FA band ── 06 native K/V ── 07 derived mask  │
-  ├─ 08 MMB ─── 09 K-quant boosts ─── 11 MoE fusions ──┐   │
-  ├─ 10 Fused prefill kernels ─────────────────────────┤   │
-  │                                                    ├─ 13 expert-cache engine
-  │                        12 MoE iface/sched/slab ────┤
-  │                                                    └─ 14 graph handling
-  ├─ 15 Host memory reclaim
-  ├─ 16 qwen4exp model ── 17 QSA/indexer (needs 05/06/07/08/11)
-  └───────────────────────────────────────────────────── 18 host flag caching
+  ├─ 08 MMB ─── 09 K-quant boosts ── 11 Fused MoE ───┐     │
+  ├─ 10 Fused prefill kernels ───────────────────────┤     │
+  │                                                  ├─ 15 expert-cache engine
+  ├─ 12 qwen4exp model ── 13 QSA/indexer ────────────┤     │
+  │              │                                   │     │
+  │              └───────────── 14 MoE iface/sched/slab ───┘
+  │                                     └─ 16 graph handling
+  └─ 17 Host memory reclaim      (getenv caching folded into owners)
 ```
 
 Hard dependency notes: 05 needs 04's `type_KV` axis; 06/07 need 05; 08 sets the FA-quants / MMB policy;
-11 interleaves with 09's mmvq dispatch; 13 needs 12's iface and 11's kernels; 14 needs 13's arming; 18 is
-last by construction; 17 needs 05–08/11 and 16's model plumbing.
+11 interleaves with 09's mmvq dispatch; **12/13 (qwen4exp) precede 14/15/16 (host MoE)** per Q1 — the
+host-MoE matchers consume `ggml_cuda_hc_mix_args` from 12; old-13's Fused MoE fusions are shape-matched
+and stay in 11; 15 needs 14's iface and 11's kernels; 16 needs 15's arming; 17 needs 14/15; the getenv
+caching is folded into the flag's owning block.
 
 ## 6. Two-phase plan
 
 **Phase 1 — taxonomy re-org (this campaign's first deliverable).** Redistribute the existing hunks into
-the 19-block target, reorder, absorb the tiny blocks, and split the super-blocks — **as far as possible a
+the 18-block target, reorder, absorb the tiny blocks, and split the super-blocks — **as far as possible a
 pure commit-boundary move keeping the net tree `f102245…` invariant.** Validate with a fresh per-commit
 `all` build + `validate-set.sh` + the release gates. This alone removes the forward deps and the giant
 blocks.
@@ -236,10 +259,9 @@ Do not start the renumber until the maintainer picks.
 
 ## 10. Open decisions
 
-See `OPEN-QUESTIONS.md`. Blocking: **Q1** target count and the MoE/qwen4exp seams; **Q2** aggressive vs
-minimal reorder; **Q3** tree-invariant only vs. allow small content clean-ups; **Q6** renumbering/doc
-strategy. `REBASE-RESILIENCE.md` adds **Q7** whether to adopt a feature/integration block split
-(Phase 2) and **Q8** whether to accept Phase 2 at all in this campaign.
+Q1, Q2, Q3 and Q6 are **decided** (see "Decisions recorded" above). Still open: **Q4** (getenv sweep vs
+fold — folded recommended), **Q5** (procedure, not a decision), **Q7/Q8** (Phase-2 code structure and
+scope). See `OPEN-QUESTIONS.md` for the clarified statements. `REBASE-RESILIENCE.md` §5 scopes Phase 2.
 
 ## 11. Files in this campaign
 
