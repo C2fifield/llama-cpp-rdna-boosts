@@ -419,3 +419,44 @@ Target **06 mmb** is committed on `v2-phase1` as **`298060c73`**.  Per-block fre
 - **Re-run `test-logits-width-probe` at `07 kquant`; it must PASS there** (that is the checkpoint that
   closes the 06 gate dependency).
 - The `GGML_CUDA_OP_TIMING` placement question from §9 finding 2 is still open.
+
+---
+
+## 11. Block 07 `kquant` rebuilt — with a plan-affecting finding (2026-10-12)
+
+Target **07 kquant** is committed on `v2-phase1` as **`95d15bad9`** (blocks 00–07).  Per-block fresh
+`all` build: **8/8**; `test-backend-ops -o MUL_MAT` **2444/2444**.
+
+### What moved into 07
+
+- **old-04 MMQ**: `GGML_CUDA_MMQ_J_MAX` in `ggml_cuda_mul_mat_q` + the `mmq-vec-dot.cuh`
+  `x_scale`/`x_df` register hoist.
+- **old-10 (whole)**: per-type mmvq VDR/nwarps (Q4_K/Q5_K/Q6_K/Q8_0), dense Q6_K `VDR=2`, the
+  MoE-expert VDR split, `vecdotq.cuh` + `ggml-cuda.cu` + tests.
+- **old-15 kquant bits**: the Q1_0 `ggml_cuda_byte_perm` / `apply_ksigns` port (`vecdotq.cuh`,
+  `mmq-load-tiles.cuh`), the gfx1201 grid-stall pad (`common.cuh` + `mmvf.cu`), the `mmvf.cu`
+  multi-token cross-warp reduction and the `mmq-vec-dot.cuh` `#pragma unroll 1` (gfx12 VGPR spills).
+- old-04's MUL_MAT Q6_K/Q8_0 test shapes (left out of 05).
+
+### FINDING — the mmvq multi-row/row-loop hunks are not hunk-separable from fused-MoE
+
+The `mmvq.cu` side of old-15's PR #57 (`GGML_MMVQ_RDNA4_DECODE_GRID`, the `nrows_loop` row loop, the
+`lf_nval` recursive-halving reduction and the two-rows-per-block sweep) is **interleaved inside the same
+functions as the fused-MoE item-split/ksplit machinery** (`mul_mat_vec_q_ksplit`,
+`mul_mat_vec_q_switch_ncols_dst`, `mul_mat_vec_q_moe`).  A `git apply -3` of those hunks onto the 06
+tree conflicts at 6 sites (the merge pulls the fused-MoE code in), because old-15's `mmvq.cu` base
+already contains old-13/old-08's item-split.  **They are deferred to `09 fused-moe`**, which owns the
+mmvq item-split and already needs the same file.
+
+**Consequence:** `test-logits-width-probe`'s `width_purity` will PASS at **09**, not 07.  The 07 build
+is otherwise clean (MUL_MAT 2444/2444; the grid pad and old-10 VDR are in).  This is the clearest
+Phase-2 extraction candidate so far: the mmvq dispatch (`calc_nwarps` / `calc_rows_per_block*` /
+row-loop selection) should become a feature-local `mmvq-rdna.cuh` so the kquant and fused-MoE concerns
+stop sharing a function.
+
+**Decision requested (maintainer):**
+- **A (what was done):** keep the deferral — 07 ships the VDR/Q1_0/MMQ/grid parts, 09 ships the mmvq
+  row-loop/`lf_nval` and the width-probe PASS.
+- **B:** make 07 absorb the mmvq hunks now via a Phase-2 extraction (a day-scale refactor of
+  `mmvq.cu`), keeping the width-probe gate on 07.
+- **C:** something else.
