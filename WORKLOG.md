@@ -34,6 +34,15 @@ the block-15 state, and the `ggml-backend-meta.cpp` move is blocked on the block
 (prefill-logits KLD 0.000707 / 98.755 %, q4exp quant coherence, coherence, 35B draft-mtp) carry
 unchanged; re-confirmed by `validate-set.sh` and the per-block sweep.
 
+**Publish (2026-10-12).**  Fork `rdna-boosts` refreshed: a clean checkout at `097cf33d9` re-applied the
+16 patches (`apply-all.sh`, strict), built (`build-r50-fork`), passed same-seed coherence +
+`gate-prefill-logits.sh` (0.000707 / 98.755 %) + `gate-qwen4exp-quant-coherence.sh` (all measured quants
+coherent, 0 `////`) + 35B-A3B `--spec-type draft-mtp` (coherent), and was force-pushed to `origin`
+(`stew675/llama.cpp`): `f0a74f4cc` -> **`d5b64ece3`** (tree `f102245…`).  Container images built locally and
+pushed (`scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune`): **15** GHCR tags
+(`full`/`light`/`server` x `rocm-7.14.1`/`rocm-10.1` + the `-097cf33d9` immutable variants + `rocm-*` +
+`latest`).
+
 ## 261012.001 (r50) -- re-base onto upstream `097cf33d9` (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted
 
 **Delivery change.**  `release.json` is now `v16-097cf33d9-r50` (base `097cf33d9`, base tree
