@@ -586,3 +586,94 @@ same conclusion the campaign reached from the other direction: the Phase-2 extra
 (`ggml-cuda-try-fuse.cu`, `ggml-cuda-slab.cu`, `ggml-cuda-moe-cache-hooks.cu`, `ggml-cuda-arena.cu`)
 is the real fix for the appender conflicts this block hit.  Recorded as a follow-up effort, not a
 blocker.
+
+---
+
+## 15. `test-llama-archs` GPU fault — DIAGNOSED: a pre-existing delivery defect, not a reorg artifact
+
+(2026-10-12, session 3.  This is the finding the maintainer asked to be reported before the plan is
+changed.  It **does not change the block plan**; it is a delivery correctness bug that block 09
+faithfully reproduces.)
+
+### What the fault is
+
+`test-llama-archs -a deepseek2` aborts with a GPU memory fault during the **`deepseek2 / MoE cache`**
+config's first decode:
+
+```
+Memory access fault ... faulting addr: 0x7f…  (a HOST/pinned range)
+kernel: void mul_mat_vec_f<float, float, 1, 64, false, true>(...)
+grid=[24640, 2, 2], workgroup=[64, 1, 1]
+```
+
+`mul_mat_vec_f<T,type_acc,ncols_dst,block_size,has_fusion,is_multi_token_id>` with template arguments
+`<float,float,1,64,false,true>` is the **multi-token `MUL_MAT_ID`** path (`is_multi_token_id=true`,
+`ncols_dst=1`, `block_size=64`, no fusion), launched by `mmvf.cu`
+`mul_mat_vec_f_cuda_switch_ncols_dst` (`has_ids && ncols_dst > 1`).  It reads the expert weight `src0`
+— which under host-resident experts is the pinned `ROCm_Host` buffer — past the end of its mapping.
+
+`deepseek2` is the **only** architecture the test gives a host-expert/MoE-cache config
+(`host_experts_test()` returns true for `LLM_ARCH_DEEPSEEK2` only), so the fault is only *exposed*
+there; it is not necessarily deepseek2-specific.
+
+### Bisect result (fixed seed 42, `-a deepseek2`)
+
+| build | ref | result |
+|---|---|---|
+| upstream base | `097cf33d9` | **PASS 7/7** (incl. `MoE cache` and `MoE cache, layer split`) |
+| v2 block 08 `fused-kernels` | `a32c95a6e` | **PASS** — MoE-cache rows OK (1 pre-existing CPU mixed-batch FAIL) |
+| v2 block 09 `slab-moe` | `4463f18c7` | **FAULT** |
+| **published reference tip** | **`84058162b`** (`~/llama-rebase/build-r50`) | **FAULT** (identical kernel/signature) |
+
+Conclusions:
+
+1. **It predates block 10** (it is present at block 09).  Block 10 is not the cause.
+2. **It is not a v2-reorg artifact** — the untouched published delivery at `84058162b` reproduces it
+   exactly.  The redistribution merely carried it along; block 09 is a faithful reconstruction.
+3. **It is introduced by the delivery's block-09 content** (old-06/09b/11/15 `slab-moe`: the host-expert
+   pinned loader / Meta / scheduler / cache hooks).  Block 08, which does not have the delivery's
+   MoE stack, passes.
+4. It was missed by the release gates because none of them runs `test-llama-archs`, and the
+   `deepseek2 / MoE cache` config is the only host-expert test path.
+
+### The test's cache is the *upstream* engine, not ours
+
+The test sets `llama_context_params.moe_cache_size` (~1.5 MiB), which constructs the **upstream**
+`src/llama-moe-cache.cpp` engine (`src/llama-context.cpp:657`; `--moe-cache-mib`), **not** the delivery's
+`ggml/src/ggml-cuda/moe-expert-cache.cu` (`MOE_EXPERT_CACHE_MIB`).  This is why none of the delivery's
+cache knobs change the outcome, and it points the regression at the delivery's changes to the backend
+plumbing that the upstream engine rides on (scheduler routed-expert rebalance / merged per-layer MoE
+split, Meta delegation, the pinned `ROCm_Host` host-expert loader, the `stage_*`/preflight interface),
+not at the delivery's own cache engine.
+
+### Kill-switch matrix (all still fault)
+
+`GGML_CUDA_GRID_STALL_PAD=0` (grid pad is not the padding block; the fault persists without it),
+`GGML_CUDA_SLAB=0`, `MOE_EXPERT_CACHE_MIB=0`, `MOE_EXPERT_CACHE_FILL=0`, `GGML_CUDA_DISABLE_FUSION=1`.
+The earlier note in `HANDOFF-SESSION3.md` that the fault "also faults with `GGML_CUDA_DISABLE_FUSION=1`"
+is confirmed; the grid-pad hypothesis is **excluded**.
+
+### Reproduce
+
+```bash
+# block 09 (or any block >= 09, and the published tip)
+cd ~/llama-v2 && git checkout v2-phase1     # or a build of 84058162b
+build/bin/test-llama-archs -a deepseek2 -s 42
+
+# upstream base passes the same command:
+cd /home/stew675/llama-base/build-base && build/bin/test-llama-archs -a deepseek2 -s 42
+```
+
+### Ask the maintainer
+
+This is a **structural delivery finding** (a real, reproducible corruption/fault on a supported flag),
+so per `AGENTS.md` it is reported before anything is changed.  It is **orthogonal to the block plan** —
+the v2 block boundaries are correct; the bug is inside the block-09 concern.  Options:
+
+- **A (recommended):** record it as a new `TODO.md` item / known issue and continue the Phase-1 block
+  work (10/11/12) unchanged; fix the block-09 MoE-stack regression as its own campaign (it needs the
+  upstream-`moe_cache_size` + pinned-host-expert path, i.e. `--moe-cache-mib` + `--host-experts`).
+- **B:** make `test-llama-archs -a deepseek2` a release gate and fix the regression before V2.0.
+- **C:** declare the upstream `--moe-cache-mib` engine unsupported by this delivery and remove/disable
+  it (then the test config never builds it), if that is the intended product position.
+

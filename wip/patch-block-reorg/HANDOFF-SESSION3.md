@@ -80,6 +80,16 @@ machinery `hc-mix`/`hyperconn`/`dsv4-hc`, HC ops in `ggml.h`/`ggml.c`, `llama-me
 3. If it is block-10-caused, check the qwen4exp HC/`MUL_MAT_ID` launch geometry against the kernel's
    `nrows` argument.
 
+> **DIAGNOSED (session 3): see `PHASE1-STATUS.md` §15.**  The fault **predates block 10** but is **not
+a reorg/block-10 artifact and not even a v2 artifact**: with a fixed seed (`-s 42`, `-a deepseek2`)
+the upstream base `097cf33d9` **passes 7/7**, v2 block 08 `a32c95a6e` **passes**, v2 block 09
+`4463f18c7` **faults**, and the untouched **published reference tip `84058162b` also faults** (identical
+`mul_mat_vec_f<float,float,1,64,false,true>` signature).  It is a **pre-existing delivery defect inside
+the block-09 `slab-moe` concern** (host-expert pinned loader / Meta / scheduler / cache hooks) on the
+upstream `--moe-cache-mib` engine path; the grid-pad and `batched_reduce` hypotheses are excluded
+(`GGML_CUDA_GRID_STALL_PAD=0` still faults).  It does not change the block plan — the maintainer's
+decision on how/when to fix it is pending (options in §15).  Do **not** block `10 qwen4exp` on it.
+
 **Note on old-14's QSA/indexer files** (`fattn-qsa.cu`, `indexer-*.cu`, `mmvf.cu` additions,
 `mmq.cu`/`mmq.cuh`): they are currently inside the block-10 WIP. The plan puts QSA/indexer in `11 qsa`.
 The cleanest path is probably to keep them here (old-14 introduces them together) and make `11 qsa`
