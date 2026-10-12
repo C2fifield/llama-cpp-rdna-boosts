@@ -157,3 +157,19 @@ Ownership is **not yet confirmed**: the F16 `MUL_MAT_ID` dup path is not touched
 Per-block fresh-configure `all` sweep, the full gate suite (coherence vs a known-good, `-n 2000/3000`
 MTP, `scripts/gate-prefill-logits.sh`, `scripts/gate-qwen4exp-quant-coherence.sh`), `make-patches.sh` +
 `make-release.sh` + `validate-set.sh`, and the fork/container publish (after maintainer sign-off).
+
+### RESOLVED: the `dup` regression is UPSTREAM, not ours
+
+Built a plain (unpatched) `097cf33d9` `test-backend-ops` (`~/llama.cpp/build-ops-base`) and ran the same
+`-p 'dup=1'` filter. It fails the **identical** four F16 cases (`ERR ~1.45-1.86`) and **faults in the same
+`quantize_mmq_q8_1`** with the same ROCm "Memory access fault" / core dump. So upstream master at this
+base has a broken F16 `MUL_MAT_ID` duplicate-ids path (and a page fault) — the `test_mul_mat_id_dup` test
+was added by the Vulkan fix `966baae76` and CUDA/HIP was never fixed.
+
+Our rebased tip matches upstream exactly on this gate (`-p '^(?!.*dup=1).*'` is green). **No action is
+required from the delivery for this** — but the maintainer should decide whether:
+1. ship on `097cf33d9` and document the upstream bug (recommended — it is not ours and our set is pure here), or
+2. pick a base before/after the upstream fix if one lands, or
+3. add a local CUDA/HIP dedup fix (out of the delivery's scope unless asked).
+
+This must be surfaced before any release per the "report findings" rule.
