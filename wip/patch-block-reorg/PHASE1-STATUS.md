@@ -664,16 +664,10 @@ build/bin/test-llama-archs -a deepseek2 -s 42
 cd /home/stew675/llama-base/build-base && build/bin/test-llama-archs -a deepseek2 -s 42
 ```
 
-### Ask the maintainer
+### Decision (maintainer, 2026-10-12)
 
-This is a **structural delivery finding** (a real, reproducible corruption/fault on a supported flag),
-so per `AGENTS.md` it is reported before anything is changed.  It is **orthogonal to the block plan** —
-the v2 block boundaries are correct; the bug is inside the block-09 concern.  Options:
-
-- **A (recommended):** record it as a new `TODO.md` item / known issue and continue the Phase-1 block
-  work (10/11/12) unchanged; fix the block-09 MoE-stack regression as its own campaign (it needs the
-  upstream-`moe_cache_size` + pinned-host-expert path, i.e. `--moe-cache-mib` + `--host-experts`).
-- **B:** make `test-llama-archs -a deepseek2` a release gate and fix the regression before V2.0.
-- **C:** declare the upstream `--moe-cache-mib` engine unsupported by this delivery and remove/disable
-  it (then the test config never builds it), if that is the intended product position.
+**Option A — recorded as a known issue and continue.**  The bug is logged as `TODO.md` **#56**
+(`test-llama-archs -a deepseek2` host-expert + `--moe-cache-mib` fault); it does **not** change the block
+plan and is **not** a Phase-1 blocker.  Block 10 proceeds unchanged.  Fixing it is its own campaign
+(the upstream-`moe_cache_size` + pinned-host-expert path).
 

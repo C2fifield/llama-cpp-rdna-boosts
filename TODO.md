@@ -47,6 +47,36 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 56. `test-llama-archs -a deepseek2` GPU memory fault with host experts + `--moe-cache-mib` — CORRECTNESS
+
+**Opened 2026-10-12 (found during the `patch-block-reorg` Phase-1 block-09 gate; recorded as a known
+issue, maintainer decision 2026-10-12).**  `test-llama-archs -a deepseek2` (the only arch the upstream
+test gives a host-expert / MoE-cache config) aborts with a GPU memory access fault during the
+`deepseek2 / MoE cache` config's first decode:
+
+```
+kernel: void mul_mat_vec_f<float, float, 1, 64, false, true>(...)   # multi-token MUL_MAT_ID
+Memory access fault ... faulting addr: 0x7f…  (a HOST/pinned range)
+```
+
+The MUL_MAT_ID kernel reads the pinned host expert table (`ROCm_Host`) past its mapping.  Bisected with
+fixed seed `-s 42`: upstream base `097cf33d9` **PASS 7/7**; v2 reorg block 08 `a32c95a6e` **PASS**;
+v2 reorg block 09 `4463f18c7` (`slab-moe`) **FAULT**; the **published reference tip `84058162b` also
+FAULTS** with the identical signature.  So it is a **pre-existing delivery defect inside the block-09
+MoE stack** (pinned host-expert loader / Meta / scheduler / cache hooks), **not** a reorg or block-10
+artifact; it escaped the release gates because none runs `test-llama-archs`.
+
+The test's cache is the **upstream** engine (`ctx_params.moe_cache_size` / `--moe-cache-mib`), not the
+delivery's `MOE_EXPERT_CACHE_MIB` engine — which is why `GGML_CUDA_SLAB=0`, `MOE_EXPERT_CACHE_MIB=0`,
+`MOE_EXPERT_CACHE_FILL=0`, `GGML_CUDA_DISABLE_FUSION=1` and `GGML_CUDA_GRID_STALL_PAD=0` are all inert
+here (the grid-pad / `nrows`-guard and `batched_reduce` hypotheses are excluded).
+
+**Fix direction:** root-cause the delivery's backend plumbing that the upstream `llama_moe_cache` engine
+rides on (scheduler routed-expert rebalance / merged per-layer MoE split, Meta delegation, the pinned
+`ROCm_Host` loader, `stage_*`/preflight), under the `--moe-cache-mib` + `--host-experts` path.
+Reproduce: `build/bin/test-llama-archs -a deepseek2 -s 42` vs the upstream base (passes).
+Full diagnosis: `wip/patch-block-reorg/PHASE1-STATUS.md` §15.
+
 ### 55. Remove the full pinned `ROCm_Host` master when `--host-experts pool` is on
 
 **Opened 2026-10-11; scoping.**  The r49 mmap reclaim (block 06) removed the mmap half of the `-ncmoe`
