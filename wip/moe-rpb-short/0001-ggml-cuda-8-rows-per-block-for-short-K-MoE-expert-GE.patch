@@ -1,0 +1,47 @@
+From 8264f6ee6b00d782e67754cd7648fd781cb42b7c Mon Sep 17 00:00:00 2001
+From: briansp2020 <bsp2020@gmail.com>
+Date: Sat, 10 Oct 2026 17:21:13 +0000
+Subject: [PATCH] ggml-cuda: 8 rows per block for short-K MoE expert GEMMs on
+ RDNA4
+
+The Flash-Next down projection under -sm tensor has K = 320 per GPU (5 q2_0 blocks per row); at the ceil(8/5) = 2
+rows per block every lane does at most one dot product and the warp ends.  8 rows: q2_0 4-token verify call
+43.0 -> 29.8 us (gfx1201; 16 / 32 rows slower, one full-warp reduction per row), same greedy output.  (An
+iq4_nl down projection, 12 K-blocks and so unaffected, re-measured 44.0 vs 42.9 us as a control.)  GGML_CUDA_MOE_RPB_SHORT=0 restores the old rule.
+
+Stock r48 + this patch, 2x R9700, Flash-Next GSQ-RCO IQ3_XXS + MTP, -sm tensor, all experts in VRAM: greedy
+c39d78416cd1 either way, 129.1-130.6 -> 130.8-131.9 t/s (2 runs each, alternated); test-backend-ops -o MUL_MAT_ID
+931/931 on both GPUs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cuda/mmvq.cu | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index e58abb923..343891711 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -1779,6 +1779,19 @@ static void mul_mat_vec_q_moe_launch(
+     if (rpb != 4 && rpb != 8) {
+         rpb = 2;
+     }
++    // RDNA4: a short-K expert GEMM (fewer than 8 K-blocks per row, e.g. the Flash-Next down projection split under
++    // -sm tensor, K = 320) gives each lane at most one dot product at 2 rows per block, so the warps are too short
++    // to stream: 8 rows per block measured q2_0 43.0 -> 29.8 us per 4-token verify call (gfx1201, 16/32 rows were
++    // slower again: one full-warp reduction per row), same greedy output.  GGML_CUDA_MOE_RPB_SHORT=0 restores the
++    // ceil(8 / K-blocks) rule; 2/4/8 force a value.
++    if (blocks_per_row_x > 0 && blocks_per_row_x < 8) {
++        static const int rpb_env = getenv("GGML_CUDA_MOE_RPB_SHORT") ? atoi(getenv("GGML_CUDA_MOE_RPB_SHORT")) : -1;
++        if (rpb_env == 2 || rpb_env == 4 || rpb_env == 8) {
++            rpb = rpb_env;
++        } else if (rpb_env != 0 && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
++            rpb = 8;
++        }
++    }
+     const int64_t nblocks_rows = (nrows_x + rpb - 1) / rpb;
+     // Upstream's fused shared-expert lane is the last blockIdx.y column.
+     dim3 block_nums(nblocks_rows, nchannels_dst + (fusion.shared_up != nullptr));
+-- 
+2.53.0
+
