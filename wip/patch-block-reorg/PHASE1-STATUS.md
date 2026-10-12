@@ -216,3 +216,69 @@ self-contained direction. It does renumber again, so confirm before I rebuild.
 
 **Requested:** confirm the `mem-infra` block (or an alternative: stub the slab/graph calls in `05-fa`
 and re-add them later — more layering, less desirable).
+
+## 8. Update — mem-infra scoped; the reorg is a multi-session refactor (2026-10-12)
+
+`mem-infra` is confirmed. Scoping it:
+
+- The generic infra lives in **old-06** and **old-15**: `old-06`'s `ggml-cuda.cu` hunk
+  `@@ -408,9 +488,906` is ~897 added lines that are almost entirely the movable-boundary slab
+  (`ggml_cuda_slab_*`, `g_slabs`, `ggml_cuda_device_malloc` OOM path, `ggml_cuda_vmm_map_phys`, the
+  pool-floor) with only **2** `moe_cache` references; the graph-memory generation
+  (`ggml_cuda_graph_mem_gen`/`_freed`) is **old-15**; `get_compute_margin_pct`,
+  `ggml_gallocr_drop_buffers` and the `GGML_COMPUTE_BUFFER_*` plumbing are `old-06`.
+- **Entanglement (deeper than arming):** the slab implementation **calls the MoE cache directly** at
+  ~10 sites in old-06's hunk [6] (`moe_cache_validate`, `moe_cache_shrink_step`,
+  `moe_cache_release_arena`, `moe_cache_evict_slab_range`, `moe_cache_floor_active`,
+  `moe_cache_disable_streaming`, `moe_cache_is_sized`), so the slab **cannot compile without the cache
+  engine**. A standalone `mem-infra` before FA is therefore not viable as-is. (Tried it: the selected
+  11-hunk patch applies cleanly but does not link without `moe-expert-cache.cu`.)
+
+The pattern is now clear and consistent across the hard blocks: the delivery's 50 revisions have
+interleaved generic infrastructure with feature policy at the function level (slab↔MoE arming,
+FA kernels band↔native↔derived, `try_fuse` arms). **A fundamental orthogonal reorg of this set is a
+code refactor (Phase 2 fused with Phase 1), not a commit-boundary redistribution.** It is a multi-session
+effort that needs a fresh build + the relevant gates at each intermediate step.
+
+### Staged execution runbook (for the next session)
+
+1. **Checkpoint** — `v2-phase1` at `pin/v2-phase1-00-04` (`2a1502311`): blocks 00-04 rebuilt and clean.
+2. **`01 mem-infra`** — extract the generic infra as a self-contained module set:
+   `slab.cu`/`slab.cuh` (slab + vmm + device_malloc OOM + optional-alloc cap), `graph-mem` helpers in
+   `common.cuh`, `ggml-alloc.c` `drop_buffers`/compute-margin. Arm the slab from the env in the dense
+   path; `moe-cache` later narrows it. Build + `GGML_CUDA_SLAB=0`/`--fit off`/dense coherence gates.
+3. **Rebase 02-05** (allreduce, mtp, gdn, bf16-kv) onto `mem-infra` (cherry-pick; expected conflict only
+   in `ggml-cuda.cu`/`common.cuh`).
+4. **`06 fa`** — the three modules (`fattn-band.cuh`, `fattn-native-kv.cuh`, `fattn-derived-mask.cuh`) +
+   the stage arena (now that slab/graph-mem exist). Full FA gates + prefill-logit + width purity.
+5. **07 mmb, 08 kquant, 09 fused-prefill, 10 fused-moe** — file-level splits with `try_fuse`/dispatch
+   arms extracted to self-contained functions; adjacent (mmvq dispatch) done together.
+6. **11 qwen4exp, 12 qsa** — model/HC/lazy vs QSA/indexer; the HC matchers go to `qwen4exp`.
+7. **13 moe-iface, 14 moe-cache, 15 mmap-reclaim** — the remaining cache-specific iface/scheduler/Meta,
+   the engine/hooks/arena, and the reclaim.
+8. At every step: `scripts/gate-per-block-build.sh` (fresh `all`), then the release gates; the final tree
+   is the new V2.0 baseline (`release.json` via `make-release.sh`).
+
+### Recommended correction: keep the `fattn_stage` arena OUT of the FA block
+
+The only reason FA needs the slab is the `fattn_stage` prefill arena (a **memory optimisation** added for
+issue #30), not the native-KV feature itself. The native read works with the pre-arena mechanism (staging
+into the compute-graph reserve). Therefore:
+
+- **`06 fa`** ships band + native-KV + derived-mask **without** the `fattn_stage` arena; prefill stages
+  into the reserved scratch (the pre-arena behaviour). No slab/graph dependency.
+- The `fattn_stage` arena + slab + cache land later in the memory/MoE blocks (`moe-cache` /
+  `mmap-reclaim`), where the slab already lives.
+- **`mem-infra` is then unnecessary** (or shrinks to the small self-contained `ggml_cuda_graph_mem_gen`
+  helper, if FA wants it).
+
+This avoids the slab↔cache entanglement entirely and is far less work than either merging the whole
+host-MoE stack early or refactoring the slab behind an interface. It is another small, deliberate code
+layer (the arena appears in a later block), which is exactly the Phase-2 pattern.
+
+### Honest status
+
+The **audit is complete** and the **method is proven** (00-04 rebuilt, tooling written, three structural
+findings recorded with decisions). The remaining execution is a genuine refactor of the hub files; I
+recommend it be done as a focused multi-step effort with builds between steps, not squeezed into the tail
+of this session, where a broken intermediate would be hard to verify.
