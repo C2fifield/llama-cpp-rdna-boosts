@@ -162,7 +162,7 @@ quantized GEMM → kernel fusions → **qwen4exp → host-resident MoE** → mem
 
 | new | alias | name | absorbs |
 |---|---|---|---|
-| 00 | `foundation` | Foundation: band-uniformity, Meta-wrapper, allocator & base correctness | 00, 05, 07, 09a, 06-logits-order, 15-W4, 15-cpy-batch |
+| 00 | `foundation` | Foundation: band-uniformity, Meta-wrapper, allocator & base correctness | 00, 05, 07, 09a, 06-logits-order, 15-W4 |
 | 01 | `allreduce` | Hybrid HIP all-reduce | 12 |
 | 02 | `mtp-adaptive` | Adaptive MTP draft depth | 01 |
 | 03 | `gdn` | Chunked gated-delta-net prefill | 02 |

@@ -1,5 +1,27 @@
 # WORKLOG - dated delivery records
 
+## 261012.006 (wip, Phase 1) -- patch-block-reorg: Phase 1 started; blocks 00-04 rebuilt; FA-stack split blocked
+
+**No delivery change** (`patches/`, `release.json` untouched).  Phase 1 of the V2.0 re-org has begun on a
+dedicated worktree `~/llama-v2` (branch `v2-phase1`, base `097cf33d9`, tree ref
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`).
+
+**Done (committed on `v2-phase1`):** target blocks **00-04** rebuilt from base by replaying the union of
+their source hunks with `git apply -3` (zero conflicts; per-target file/line counts match the sources):
+00 foundation (old 00+05+07+09a+06-readback+15-W4), 01 all-reduce (old 12), 02 adaptive MTP (old 01),
+03 chunked GDN (old 02), 04 BF16 KV (old 03).  New campaign tooling:`tools/select_hunks.py` and
+`tools/hunk_summary.py`.  Correction recorded: `cpy-batch.*` is a block-15 introduction, not a target-00
+idiom.
+
+**BLOCKING FINDING (report per `AGENTS.md`).**  The flash-attention stack (targets 05 fa-band,
+06 fa-native-kv, 07 kq-derived) **cannot be split by hunk**: old-15's FA diffs were authored as one
+evolution and squashed, and individual hunks mix concerns (e.g. `fattn-mma-f16.cuh` has 44 hunks, many
+mixing `band`+`native`+`derived`; `tools/select_hunks.py` can only select whole hunks).  The intermediate
+states exist only as archive patches against older bases (`rdna4-fa-band`, `rdna4-fa-band-wide`,
+`arch-independent-memory/0006-0007`, `kq-derived-tile`), missing the later amendments.  Options and the
+recommendation (**B: split the FA stack as a Phase-2 self-contained refactor, consistent with Q7/G8**) are
+in `wip/patch-block-reorg/PHASE1-STATUS.md`.  **Awaiting the maintainer's decision before continuing.**
+
 ## 261012.005 (docs, wip decisions) -- patch-block-reorg: Q4/Q7/Q8 decided; V2.0 = Phase 1 + Phase 2
 
 **No delivery change.**  Final decisions on the `wip/patch-block-reorg/` questions:

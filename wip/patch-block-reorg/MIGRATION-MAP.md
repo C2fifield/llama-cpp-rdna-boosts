@@ -143,7 +143,7 @@ blocks.
 | HC16 / hc_mix BF16 / `hc_gate_mix` | 12 |
 | build-time: tile per-type instance generation, `-Wno-pass-failed`, tile `type_KV` axis | 04/05/06 |
 | r49 Q1_0 `__byte_perm` port | 09 |
-| r49 `cpy-batch.cu` device idiom | 00 |
+| r49 `cpy-batch.cu` device idiom (the whole `cpy-batch.*` file is a block-15 introduction, not a target-00 idiom) | 15 |
 | r49 mmap reclaim | 17 |
 | #124 GDN state-gather skip | 03 (or 10) |
 | #125 S2 exact top-k AVX2 prefilter | 09 (or 10) |
@@ -158,7 +158,7 @@ blocks.
 
 | target | old contributors | rough added lines |
 |---|---|---:|
-| 00 foundation | 00,05,07,09a,06part,15part | ~0.6k |
+| 00 foundation | 00,05,07,09a,06part,15part(W4) | ~0.6k |
 | 01 allreduce | 12 | 2.2k |
 | 02 mtp-adaptive | 01 | 1.0k |
 | 03 gdn | 02 | 3.1k |

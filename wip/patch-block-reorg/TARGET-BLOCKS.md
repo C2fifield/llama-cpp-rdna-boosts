@@ -25,7 +25,7 @@ allowed here (it is the groundwork block).
 old-05 (CPU `llamafile_sgemm` `n <= 8`); old-07 (single-device Meta wrapper skip); old-09a
 (`compute_headroom 16 -> 128`); old-06-part (multi-ubatch logits readback ordering; the generic Meta
 `host_buffer`/`events` upload fix if it must precede qwen4exp); old-15.W4 (`ggml-alloc` view-source
-release); old-15.r49 `cpy-batch.cu` device idiom.
+release). (`cpy-batch.*` is a block-15 introduction and belongs to target 15, not here.)
 
 **Owner files.** `common/speculative.cpp`; `ggml/src/ggml-cuda/fattn-common.cuh`;
 `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn{,_cm1}.comp`; `ggml/src/ggml-cpu/llamafile/sgemm.cpp`;
