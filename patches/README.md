@@ -1,9 +1,22 @@
 # rdna-boosts patch set (delivery)
 
-16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
-(re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
+16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`097cf33d9`**
+(re-based 2026-10-12 from `a55e952b8`; `a55e952b8` was re-based 2026-10-05 from `84e76d8a2`).
 
-> **Current release `v16-a55e952b8-r49` (2026-10-11) -- the mmap host-memory reclaim + two AMD consistency fixes:**
+> **Current release `v16-097cf33d9-r50` (2026-10-12) -- re-base (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted:**
+> canonical block-15 tip `9a9e6aa6c`, net tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`; strict **16/16**
+> `git am` (`validate-set.sh` green).  Upstream's `llama_moe_cache` (#29887/#30112) is kept but inert
+> (`--moe-cache-mib` defaults 0; the scheduler does not call the #29943 `callback_copy`), so the
+> `MOE_EXPERT_CACHE_MIB` expert cache remains the default path.  The #29953 MMQ rework is adopted and our
+> J selection moved into `ggml_cuda_mmq_select_J`; the #30103 FA race guard is the union with ours.
+> qwen4exp is rebuilt from our coherent file + the upstream U0->U1 delta.  Gates: `all` green,
+> `gate-prefill-logits.sh` PASS (KLD 0.000707 / same-top-p 98.755 %), `gate-qwen4exp-quant-coherence.sh`
+> PASS, coherence + 35B draft-mtp coherent.  An upstream F16 `MUL_MAT_ID` `dup=1` bug (reproduces on
+> unpatched `097cf33d9`; `quantize_mmq_q8_1` page fault) is documented and tracked in
+> `wip/upstream-mul-mat-id-dup/`.  **Open:** the r2 per-block fresh-`all` sweep has not yet been re-run
+> (the merge build fixes are folded into block 15).  See `WORKLOG.md` 261012.001 (r50).
+>
+> **Previous release `v16-a55e952b8-r49` (2026-10-11) -- the mmap host-memory reclaim + two AMD consistency fixes:**
 > canonical block-15 tip `f0a74f4cc`, net tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`; strict **16/16**
 > `git am` (`validate-set.sh` green).  **Block 06** takes the loader reclaim: the loader no longer
 > prefetches the whole file and unmaps each tensor's mapping range right after its device upload

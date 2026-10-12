@@ -173,3 +173,26 @@ required from the delivery for this** — but the maintainer should decide wheth
 3. add a local CUDA/HIP dedup fix (out of the delivery's scope unless asked).
 
 This must be surfaced before any release per the "report findings" rule.
+
+---
+
+## Session 2 final status — release cut, gates green, one open item
+
+- **Delivery re-cut and committed** (commit `4627631`): `release.json` = `v16-097cf33d9-r50`, base
+  `097cf33d9` (base tree `30c400cc...`), canonical tip `9a9e6aa6c`, net tree
+  `f102245dfb116f02f6b3f572df7fb413a5c65cf8`.  `validate-set.sh` **green** (strict 16/16 `git am`).
+- **Gates (gfx1201 / ROCm 7.14):** `all` target green; same-seed coherence coherent;
+  `gate-prefill-logits.sh` **PASS** (KLD 0.000707 / same-top-p 98.755 %); `gate-qwen4exp-quant-coherence.sh`
+  **PASS** (0 `////`); 35B-A3B `--spec-type draft-mtp` decode coherent (36.9 t/s); `MUL_MAT_ID` green for
+  the non-`dup` matrix.
+- The unfixed tip did **not** build: the block-15 commit carries the merge build fixes (block 06 `input_id`;
+  block 13/15 MMQ arity + duplicate template; block 15 ssm-fusion restore / fattn `get_swizzled` dedup /
+  `sched_new` / meta host branch).
+- **OPEN — the r2 "every block builds" standard is not met.**  The fixes are folded into block 15, not
+  distributed to the owning blocks; a fresh per-commit `all` sweep (the reliable `rm -rf` per commit —
+  the incremental one is misleading, see the r2 doc) has not been re-run.  The next session should
+  distribute the fixes (block 06 `input_id` already done; move the meta `+` `warp_size` fixes to block 14,
+  the `h2d_stage_budget_explicit` declaration earlier if real, etc.) and run the sweep.  This is a
+  repeat of `archive/work/rebase-merge-hygiene/`.
+- Not done: fork `rdna-boosts` refresh (`git push --force-with-lease origin rdna-boosts` to
+  `git@github.com:stew675/llama.cpp.git`) and `scripts/build-containers.sh --rocm "7.14.1 10.1" --push`.

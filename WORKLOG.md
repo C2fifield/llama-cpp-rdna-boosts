@@ -1,5 +1,47 @@
 # WORKLOG - dated delivery records
 
+## 261012.001 (r50) -- re-base onto upstream `097cf33d9` (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted
+
+**Delivery change.**  `release.json` is now `v16-097cf33d9-r50` (base `097cf33d9`, base tree
+`30c400ccea2e2fb47b663036a6cee08a4dc542d8`; canonical block-15 tip `9a9e6aa6c`, net tree
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`; `validate-set.sh` green, 16/16 strict `git am`).  16 blocks;
+no block added or removed.  Handover/resolution record: `wip/r50-rebase/README.md`.
+
+**Key upstream collisions absorbed.**
+- **MoE cache (#29887 `d6cf9acb2` + #30112 `c811cb8f0`)**: kept present but **dormant** (`--moe-cache-mib`
+defaults 0; the delivery's scheduler copy path does not call the #29943 `callback_copy`), so our
+`MOE_EXPERT_CACHE_MIB` path stays default.  We do not delete upstream's `src/llama-moe-cache.*`.
+- **#29943 `6753a033f`** moved selective expert copying into `llama_context::sched_copy_experts`
+(callback).  Block 06 keeps its own scheduler copy logic inside upstream's `ggml_backend_sched_copy_input`
+helper (staging + `moe_cache_take_over/gather/update` + pruning) and does not invoke the callback.
+- **#29953 `fc9ce6b9d`** removed `ggml_cuda_mmq_get_J_max` and `ncols_opt`, replacing them with `J_best` +
+`needs_fallback`.  Adopted; our J selection (block 04 `GGML_CUDA_MMQ_J_MAX`, block 13 RDNA3.5 routed
+widths + fused-gate `J_max_gate`) moved into a shared `ggml_cuda_mmq_select_J` (mmq.cu).
+- **#30103 `1bb2b9fcb`** FA `__syncthreads` when `nbatch_combine != DKQ/2`: kept as the **union** with our
+`k00 + nbatch_combine < DV/2` (neither subsumes the other).
+- **#14891 `050439614`** `params.load_mtp`: `mparams.load_mtp = params.load_mtp || params.speculative.has_mtp()`.
+- **#29633 `9d3aba6b5`** added `warp_size` to `ggml_cuda_should_use_mmvf`; our MMB/verify-clamp call
+passes it.  **qwen4exp** rebuilt from our coherent block-14 file + the upstream U0->U1 delta
+(`nextn_flags`, #30160 ple/embd adjacency, `llm_graph_input_embd_h(n_embd_inp, n_embd_out)` + raw-token,
+PLE `is_mixed()`; our QSA/`mtp_export_defer` design kept, upstream's kpool hunks skipped).
+
+**Gates (gfx1201 / ROCm 7.14, `~/llama-rebase/build-r50`).**  `all` target green.  Same-seed coherence
+(4B Q8_0, 3-GPU `-sm tensor`) coherent.  **`gate-prefill-logits.sh` PASS** (Qwen3.8-27B-Q8_0): mean KLD
+**0.000707** (limit 0.005), same-top-p **98.755 %** (floor 98.0).  **`gate-qwen4exp-quant-coherence.sh`
+PASS** (IQ3_XXS / IQ4_NL / Q4_K_M, 0 `////`).  35B-A3B draft-mtp decode coherent (36.9 t/s).
+`MUL_MAT_ID` green for the non-`dup` matrix.
+
+**Finding (upstream, documented).**  `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` fails the F16 cases and
+page-faults `quantize_mmq_q8_1`; an **unpatched `097cf33d9`** build reproduces it identically, so it is
+upstream's CUDA/HIP gap (the test was added by the Vulkan fix `966baae76`).  The delivery ships pure here;
+fix tracked in `wip/upstream-mul-mat-id-dup/` (candidate for `upstream/`).
+
+**Open (merge hygiene).**  The fixes needed to build the rebased tip (block 06 `input_id`, block 13/15 MMQ
+arity + duplicate template, block 15 ssm-fusion restore / fattn `get_swizzled` dedup / `sched_new` / meta
+host branch) are folded into block 15; blocks 06-14 have **not** yet been re-validated with a fresh
+per-commit `all` sweep (the r2 "every block builds" standard).  Distribution is a follow-up (r2-style);
+the final tip builds and all release gates above pass.
+
 ## 261011.018 (r49, containers) -- r49 release-container images built and pushed locally; ccache ~52 %
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; the fork tree is
