@@ -1,4 +1,4 @@
-From cf413efb51d694f080d53972e664abb47f47406c Mon Sep 17 00:00:00 2001
+From c9235f829a49f60e3b4e7d313de2bb88082cc947 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 13:14:24 +0000
 Subject: [PATCH 03/15] rdna-boosts: block 03: BF16 KV cache and native-BF16
@@ -80,10 +80,10 @@ index 928607c41..257de1158 100644
  #ifdef FAST_FP16_AVAILABLE
      acc += v*u;
 diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 26ce46e97..28dbd3e62 100644
+index 296aa2b34..0572b2bd6 100644
 --- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 +++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-@@ -1023,6 +1023,36 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -1012,6 +1012,36 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
                      cp_async_wait_all();
                  }
                  __syncthreads();
@@ -119,7 +119,7 @@ index 26ce46e97..28dbd3e62 100644
 +                }
              }
          }
-         const half2 * tile_V_i = !V_is_K_view || i0_stop > 2*nbatch_K2 ? tile_V : tile_V + i0_start/2;
+         const int tile_V_offset_i = !V_is_K_view || i0_stop > 2*nbatch_K2 ? 0 : i0_start/2;
 diff --git a/ggml/src/ggml-cuda/fattn-tile.cu b/ggml/src/ggml-cuda/fattn-tile.cu
 index e563729a2..037b19258 100644
 --- a/ggml/src/ggml-cuda/fattn-tile.cu
@@ -1190,10 +1190,10 @@ index bb34e01f3..aefc67522 100644
              need_f16_K = true;
              need_f16_V = true;
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 303c9f463..e8a85904d 100644
+index 957908f65..751b9b913 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -2730,7 +2730,7 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
+@@ -2761,7 +2761,7 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
          return false;
      }
  
@@ -1202,7 +1202,7 @@ index 303c9f463..e8a85904d 100644
          return false;
      }
  
-@@ -2743,9 +2743,9 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
+@@ -2774,9 +2774,9 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
          return false;
      }
  
@@ -1215,7 +1215,7 @@ index 303c9f463..e8a85904d 100644
      }
  
 diff --git a/ggml/src/ggml-cuda/rope.cu b/ggml/src/ggml-cuda/rope.cu
-index e546fb655..76ff68450 100644
+index b4fca778f..20c2c3d4d 100644
 --- a/ggml/src/ggml-cuda/rope.cu
 +++ b/ggml/src/ggml-cuda/rope.cu
 @@ -196,9 +196,9 @@ static __global__ void rope_neox(const T *            x,
@@ -1367,10 +1367,10 @@ index e546fb655..76ff68450 100644
              GGML_ABORT("fatal error");
          }
 diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
-index 8f6deea8a..ed0889396 100644
+index 47590db11..20ffe8b8d 100644
 --- a/tests/test-backend-ops.cpp
 +++ b/tests/test-backend-ops.cpp
-@@ -11185,8 +11185,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+@@ -11688,8 +11688,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
          }
      }
  
@@ -1381,7 +1381,7 @@ index 8f6deea8a..ed0889396 100644
              if (hsk != 96 && hsk != 192 && hsk != 320 && hsk != 576 && hsk != hsv) continue;
              if (hsk ==  96 && (hsv !=  64 && hsv !=  96)) continue; // MiniCPM3
              if (hsk == 192 && (hsv != 128 && hsv != 192)) continue;
-@@ -11216,7 +11216,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+@@ -11719,7 +11719,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                                  for (ggml_prec prec : {GGML_PREC_F32, GGML_PREC_DEFAULT}) {
                                                      if (hsk != 128 && prec == GGML_PREC_DEFAULT) continue;
                                                      for (ggml_type type_KV : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_1, GGML_TYPE_Q5_0, GGML_TYPE_Q4_1, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL}) {

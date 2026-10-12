@@ -1,4 +1,4 @@
-From 278f51d17aa9d1a282e3d222a1af255224e1c70e Mon Sep 17 00:00:00 2001
+From 85965d91276db430c7e366ba2ae438b33d1032fb Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 13:14:24 +0000
 Subject: [PATCH 05/15] rdna-boosts: block 05: CPU bit-identical decode/verify
@@ -9,10 +9,10 @@ Subject: [PATCH 05/15] rdna-boosts: block 05: CPU bit-identical decode/verify
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-cpu/llamafile/sgemm.cpp b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
-index 258bc9e2e..7cca7bd1f 100644
+index d28840a91..39e98f5fe 100644
 --- a/ggml/src/ggml-cpu/llamafile/sgemm.cpp
 +++ b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
-@@ -3816,8 +3816,14 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
+@@ -3907,8 +3907,14 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
      assert(params->ith < params->nth);
  
      // only enable sgemm for prompt processing
