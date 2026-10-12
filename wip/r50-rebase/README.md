@@ -111,3 +111,49 @@ from inspection:
   default — any 3-arg call added by our patches must pass it.
 - `mmq_args` aggregate initializers must now end with `J_best` (a missing trailing value silently
   zero-inits `J_best`, which aborts in `switch_J`).
+
+---
+
+## Session 2 update — rebase complete and building
+
+- The rebase is **complete**: 16 commits on `097cf33d9`, tip `29d75f0970b69c76aea33e7377f6bf8030dcea20`,
+  tree `9c6eeb3c4dccd774afa669de3cc3e86c875099c2`. Backups: `wip-r50-blocks-12`, `wip-r50-blocks-14`,
+  `wip-r50-rebased-tip`.
+- **Block 15 is resolved.** The merges, beyond the "keep both" cases:
+  - `mmq.cuh` — dropped the duplicate `get_J_max`; kept the `mmq_routed_src` struct + upstream
+    `launch_mul_mat_q` template (with `prec_src1`); `switch(args.J_best)`.
+  - `mmq.cu`/`mmq-vec-dot.cuh` — added the missing `prec_src1`/`GGML_PREC_Q8` args to
+    `get_nthreads`/`get_I`/`get_occupancy`/`get_stream_k` calls.
+  - `fattn-mma-f16.cuh` — removed the duplicated `get_swizzled` (kept our `ncols2`-aware one) and the
+    duplicated `load_tile` template; updated the `get_swizzled` call sites to `ncols1,ncols2`.
+  - `norm.cu` — upstream's clamped-grid loop + our `dst16`/`store_f32` merged into one kernel.
+  - `unary.cu` — upstream's contiguous/strided dispatch + our `dst16`/`store_f32`.
+  - `ggml-backend.cpp` / `ggml-backend-meta.cpp` — fixed brace-count artifacts from the block-06/14
+    merges (the `copy_input` helper's outer-else close, the two-pass loop, and the meta host-tensor
+    branch body).
+  - `llama-context.cpp` — restored upstream's `sched_new()` definition (the block-15 conflict had
+    replaced it with `kq_mask_packed_reachable`), and used it in the retry path.
+  - `ggml-cuda.cu` — restored upstream's `ggml_cuda_try_ssm_scan_cache_fusion` (dropped when the block-15
+    conflict kept our `ggml_cuda_gdn_state_gather_deferrable`) and fixed the `should_use_mmvf` arity.
+- **Build is green**: `~/bin/build-llama-rocm-714` configure, then `cmake --build build-r50 -j16` →
+  `llama-cli`, `llama-server`, `llama`, `llama-app` all built (100%).
+- Coherence smoke (4B Q8_0, 3-GPU `-sm tensor`, seed 42, temp 0): coherent text.
+
+### OPEN regression — `test_mul_mat_id_dup` (new upstream test)
+
+`test-backend-ops -o MUL_MAT_ID -p '^(?!.*dup=1).*'` is **green** (0 fails, no fault). The new
+`test_mul_mat_id_dup` cases (added upstream by `966baae76`, the Vulkan dup fix; only Vulkan was fixed)
+fail and then fault:
+
+- `type_a=f16`, `n_mats=28, n_used=10, b=0, m=1024, n=9/16/33/64, k=256, dup=1` → `ERR ~1.5-1.9`.
+- `q8_0` / `q4_0` `dup=1` cases pass.
+- Later a `quantize_mmq_q8_1<...,false,false>` page fault (grid 42240).
+
+Ownership is **not yet confirmed**: the F16 `MUL_MAT_ID` dup path is not touched by our MMQ patches
+(f16 is not quantized), so this is plausibly upstream's CUDA/HIP dup gap. To confirm, build a plain
+`097cf33d9` `test-backend-ops` and run the same cases. Do that before treating it as ours.
+
+### Not yet done
+Per-block fresh-configure `all` sweep, the full gate suite (coherence vs a known-good, `-n 2000/3000`
+MTP, `scripts/gate-prefill-logits.sh`, `scripts/gate-qwen4exp-quant-coherence.sh`), `make-patches.sh` +
+`make-release.sh` + `validate-set.sh`, and the fork/container publish (after maintainer sign-off).
