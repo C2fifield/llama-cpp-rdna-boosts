@@ -11,7 +11,8 @@ applied to the fork without the maintainer's explicit go-ahead (see the WIP and 
 > the taxonomy, the ordering, or the hub-file coupling. This campaign does. Its success criterion is
 > **the next re-base being cheap**, not merely the current one fitting.
 
-> **Cold start.** Read this file, then `REBASE-RESILIENCE.md`, `PHASE2-REFACTOR.md`, `TARGET-BLOCKS.md`,
+> **Cold start.** Read `HANDOFF.md` first (the live execution state and next steps), then this file,
+> `REBASE-RESILIENCE.md`, `PHASE2-REFACTOR.md`, `PHASE1-STATUS.md`, `TARGET-BLOCKS.md`,
 > `MIGRATION-MAP.md`, `FILE-OWNERSHIP.md` and `OPEN-QUESTIONS.md`. Then read `AGENTS.md` ("Report findings
 > before shipping", "WIP and promotion rules"), `archive/work/r50-merge-hygiene/README.md` + `REDISTRIBUTION.md`,
 > and `scripts/gate-per-block-build.sh`. All Q1–Q8 decisions are recorded; the remaining work is execution.
@@ -156,7 +157,8 @@ touched by 10/16 blocks, and nine other files by 4–8 blocks.
 
 ## 4. Target organisation (summary)
 
-Full spec: `TARGET-BLOCKS.md`. Recommended: **18 blocks (00–17)** (getenv folded into owners; a
+Full spec: `TARGET-BLOCKS.md`. **The final approved target is 14 blocks — see `HANDOFF.md` §4; the
+16/18-block tables below are the earlier drafts and are superseded.** Recommended: **18 blocks (00–17)** (getenv folded into owners; a
 sweep block would make 19), grouped foundation → multi-GPU → decode/speculation → flash attention →
 quantized GEMM → kernel fusions → **qwen4exp → host-resident MoE** → memory → host hot-path.
 
@@ -278,6 +280,9 @@ records all answers.
 | file | contents |
 |---|---|
 | `README.md` | this handover: problem, design goals, audit, target, order, method, DoD |
+| `HANDOFF.md` | **cold-start execution state: refs, done blocks, final 14-block order, next steps** |
+| `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session |
+| `PHASE1-STATUS.md` | dated Phase-1 findings log and decisions |
 | `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |
 | `PHASE2-REFACTOR.md` | Phase-2 work plan: per-concern extraction targets and their call points (Q7/G8) |
 | `TARGET-BLOCKS.md` | per-target-block spec (concern, sources, owner files, deps, gates) |

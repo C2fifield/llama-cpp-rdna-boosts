@@ -1,5 +1,21 @@
 # WORKLOG - dated delivery records
 
+## 261012.007 (wip, handoff) -- patch-block-reorg: cold-start handover + next-session prompt; 14-block plan approved
+
+**No delivery change.**  Phase 1 of the V2.0 re-org is checkpointed and handed off for a fresh session:
+
+- `wip/patch-block-reorg/HANDOFF.md` -- the cold-start execution state: exact refs, the done blocks
+  00-04, the **final approved 14-block order** (slab-moe grouped ahead of qwen4exp; FA ships without the
+  `fattn_stage` arena), the `05 fa` next-step commands (with the two known conflicts and the arena
+  exclusion), build/apply commands, per-region gates, method/pitfalls and the DoD.
+- `wip/patch-block-reorg/NEXT-SESSION-PROMPT.md` -- a self-contained copy-paste prompt for the next session.
+- README/campaign docs updated to point at the handover and to mark the 16/18-block drafts as superseded.
+
+**State:** `~/llama-v2` branch `v2-phase1` at `pin/v2-phase1-00-04` (`2a1502311`), base `097cf33d9`,
+reference tip `84058162b` (tree `f102245...`); delivery `patches/`/`release.json` untouched. Four
+structural findings (FA hunk interleaving; slab<->MoE call entanglement; forward deps) and all Q1-Q8
+decisions are recorded in `wip/patch-block-reorg/PHASE1-STATUS.md`.
+
 ## 261012.006 (wip, Phase 1) -- patch-block-reorg: Phase 1 started; blocks 00-04 rebuilt; FA-stack split blocked
 
 **No delivery change** (`patches/`, `release.json` untouched).  Phase 1 of the V2.0 re-org has begun on a
