@@ -1,5 +1,44 @@
 # WORKLOG - dated delivery records
 
+## 261011.016 (docs, campaign closure) -- close `strata-amd-kernels` as refuted; seed `q1-0-byte-perm` (#54)
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; `~/llama.cpp` tree clean).
+The maintainer's call on the `strata-amd-kernels` (TODO #35) review: *"Close as refuted"*, don't keep the THP
+probes (*"no point adding something that provides no benefit"*), and re-seed the one residual as a new campaign.
+
+**K0 — full source diff against Strata's AMD decode kernels (r48).**  Six candidates, classified:
+
+- **`#262` packed byte ops — already delivered.**  Strata's `#262` (`__byte_perm` → `v_perm_b32`; SWAR
+  `__vsub4`/`__vsubss4`/`__vcmpne4`; Strata `87fbc000`, `600d7307`) is already in our tree from two sources:
+  upstream base `a55e952b8` ships the AMD `__builtin_amdgcn_perm` arm in `vecdotq.cuh::get_int_from_table_16`
+  and `vec_dot_q2_0_q8_1`, and the SWAR packed-byte helpers in `vendors/hip.h`; our blocks add
+  `apply_ksigns` (`vecdotq.cuh:119`) and `mmb.cu`'s `mmb_pack2`/`mmb_pack2_so`.
+- **`router_top10` — no delta.**  Our MoE router is upstream's fused `topk_moe_cuda`: warp-shuffle, float,
+  no FP64 and no per-selection barrier.  Strata's win was removing *their* serial FP64/barrier router.
+- **`fused_gr` LDS carveout — RDNA-inapplicable.**  Strata only added a `hip_compat` `#define`; AMD LDS is
+  dedicated, so `hipFuncAttributePreferredSharedMemoryCarveout` is an ignored hint.
+- **arena THP — the one survivor; measured and refuted (K1).**  The pinned host arena *is* a host-side
+  gap: ROCr backs `hipHostMalloc`/`cudaHostAlloc` with a **shmem** mapping and, with this host's
+  `shmem_enabled=never`, it lands on **4 KiB pages** (`ShmemPmdMapped 0` of 4 GiB); `MADV_COLLAPSE`
+  collapses it to 100 % 2 MiB.  But the GPU never sees it: a bench reading the same buffer over UVA gives
+  **identical** bandwidth with the buffer 4 KiB-backed vs 100 % 2 MiB-backed (sequential 2048 MiB =
+  **13.49 GiB/s both**; random-page scatter 1024 MiB = **0.85 GiB/s both**; `PmdMapped` verified 0 % vs
+  100 % per run).  The amdgpu GMMU page tables for a KFD userptr mapping are built at registration (ROCr
+  pins inside `hipHostMalloc`), so a later host-side collapse cannot change what the GPU walks.
+- **`#646` IQ-grid staging — no actionable delta.**  Strata's finding is that *staging* the IQ grids is
+  slower for the single-matrix mmvq; we never stage them (`static const __device__` grids, `ggml-common.h:493`).
+- **`verify` zero-doorbell / sub-warp packing — not a kernel candidate.**  `cfd3b722` is a CUDA commit in
+  Strata's own host↔GPU window protocol; our blocks 11/06/13 solve it independently.
+
+**Closed as refuted.**  `wip/strata-amd-kernels/` moved to `archive/work/strata-amd-kernels/` (resolution
+banner; the two probes were discarded, their method and numbers recorded in the archive), the `wip/` entry
+deleted with no stub, `TODO #35` removed, and `wip/CAMPAIGNS.md` updated.  Nothing was ported; no delivery
+change.  The only residual — `Q1_0` still calling HIP's private-memory `__byte_perm`
+(`vecdotq.cuh:833-844`, `mmq-load-tiles.cuh:50-61`) while every other i-quant lookup uses
+`__builtin_amdgcn_perm` — was **re-seeded as the new campaign `wip/q1-0-byte-perm/` (TODO #54): small,
+mechanical, bit-identical by construction, no speed claim (no Q1_0 model locally; the gate is the
+`test-backend-ops -o MUL_MAT` CPU oracle), and `upstream/`-shaped.**
+
 ## 261011.015 (docs, TODO closures) -- close #29, drop #33, close LFRU + patch hygiene; re-scope #51
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Maintainer decisions

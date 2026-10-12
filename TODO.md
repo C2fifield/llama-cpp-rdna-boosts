@@ -37,9 +37,19 @@ patches into blocks 06/08/14/15 plus `TODO #45` (patch 0002, the data-pointer gr
 #46).  The release-by-release record (r24's cache-floor fix + repack, r22's movable-boundary slab,
 movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r18/r17, ...) is in
 `WORKLOG.md` and the campaign records under `archive/work/`; the closed tracker items (#37/#40/#41/#43,
-#42, and this session's #44/#39/#38) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
+#42, #44/#39/#38, and now #35) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
 
 ## Active (kept compact: only what this repo will work on next)
+
+### 54. Finish the AMD `v_perm_b32` port for Q1_0 (the last un-ported i-quant table lookup)
+
+**Opened 2026-10-11; small, and no speed claim.**  Seeded from the K0 of the closed
+`strata-amd-kernels` campaign (#35) and **replaces** it.  Two sites still call HIP's private-memory
+`__byte_perm` while every other i-quant lookup already uses `__builtin_amdgcn_perm`: `vec_dot_q1_0_q8_1`
+(`vecdotq.cuh:833-844`) and `ggml_cuda_mmq_load_tiles_q1_0` (`mmq-load-tiles.cuh:50-61`) — ~24 call
+sites, a mechanical mirror of the existing Q2_0 HIP arms.  **Bit-identical by construction**, and there
+is **no Q1_0 model locally**, so the gate is the `test-backend-ops -o MUL_MAT` CPU oracle (Q1_0 is in
+`all_types`), not a benchmark.  Also an `upstream/` candidate.  Record: `wip/q1-0-byte-perm/README.md`.
 
 ### 50. The cache-aware fusion guard is global while the slab's eviction is per-table (code `OPEN 2`)
 
@@ -299,15 +309,6 @@ CPU compute; see `archive/work/moe-expert-cache/WORKLOG.md`).  Strata's custom e
 *because* it is not under llama.cpp's serial scheduler.  **Next:** O0 - measure how much of a 52 t/s
 token is the UVA cold fraction at 43 % residency; if it is <20 %, park it.  Design space and gates:
 `wip/moe-cpu-overlap/README.md`.
-
-### 35. Audit Strata's AMD decode kernels against our block-10/13/15 kernels
-
-**Opened 2026-10-05; scoping only.**  Candidates: #262 packed-byte IQ dequant (Strata measured R9700
-decode +15 %), `router_top10` fast FP32 router (62.4 -> 70), `fused_gr` LDS carveout, arena transparent
-huge pages, and the #646 IQ-grid-staging choice.  Our decode is partly UVA-bound at 43 % residency, so
-the honest end-to-end targets are the fully-resident and multi-GPU cases; the kernels are still in
-scope (RDNA4 HIP) and several are upstream-PR shaped.  **Next:** K0 - line-by-line kernel diff and a
-shortlist with expected deltas.  Record: `wip/strata-amd-kernels/README.md`.
 
 ### 32. `gdn-conv.cu` device idiom (block 15; found in the PR #102 review)
 

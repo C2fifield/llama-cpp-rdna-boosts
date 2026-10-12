@@ -27,7 +27,7 @@ is the signature of a stub, not of a campaign.
 | [`mmvq-rpb-retune/`](mmvq-rpb-retune/README.md) | retune the RDNA4 mmvq `calc_rows_per_block_weight()` table for `q5_1` / `iq4_xs` on ROCm 7.14 — the small residual of the **integrated** PR #57 work | **OPEN (seeded 2026-10-11), small** — `-3..-4 %` at n=2/3 (both `+10..12 %` at n=8); candidate per-type n-dependent rows (TODO #28) |
 | [`moe-cpu-overlap/`](moe-cpu-overlap/README.md) | genuine CPU/GPU overlap for the expert misses (the Strata shape) | OPEN / scoping (TODO #36) — **work in flight**: the note refutes the earlier "cannot be done" verdict for the interleaved shape and sets out the pipeline to try |
 | [`nwarps/`](nwarps/README.md) | per-M `nwarps` MoE candidate — the one deliberate width-purity impurity | ACTIVE (env-OFF) |
-| [`strata-amd-kernels/`](strata-amd-kernels/README.md) | compare Strata's AMD decode kernels against block-10/13/15 (TODO #35) | **scoping note — not yet started**: no implementation yet, just the candidate list and the comparison method |
+| [`q1-0-byte-perm/`](q1-0-byte-perm/README.md) | finish the AMD `v_perm_b32` port for **Q1_0**: `vec_dot_q1_0_q8_1` (`vecdotq.cuh:833-844`) and `ggml_cuda_mmq_load_tiles_q1_0` (`mmq-load-tiles.cuh:50-61`) still call HIP's private-memory `__byte_perm` while every other i-quant lookup uses `__builtin_amdgcn_perm` | **OPEN (seeded 2026-10-11), small** — the K0 residual of the closed `strata-amd-kernels` campaign; ~24 call sites, mechanical, bit-identical, **no speed claim** (no Q1_0 model locally — the gate is the `test-backend-ops -o MUL_MAT` CPU oracle); also an `upstream/` candidate |
 | [`mtp-3gpu-decode/`](mtp-3gpu-decode/README.md) | 3-GPU MTP decode is slower than plain decode (TODO #51): quantify the current gap on r48, then profile the 3-device internal all-reduce (the fast paths are 2-device-only), the tensor-split verify gather, and graph recapture | **OPEN (seeded 2026-10-11)** — re-seeded from the archived `slab-ring-region` finding; has never had a live campaign |
 | [`fa-band-2byte-row/`](fa-band-2byte-row/README.md) | extend the RDNA4 GQA band's 64-wide K/V config row to the 2-byte f16/bf16 arm (`ncols == 16`; TODO #27) | **OPEN (seeded 2026-10-11), small tuning** |
 | [`gdn-conv-device-idiom/`](gdn-conv-device-idiom/README.md) | unify the device idiom in `gdn-conv.cu` vs `cpy-batch.cu` (TODO #32) | **OPEN (seeded 2026-10-11), cosmetic** — one-line fix at the next block-15 touch |
@@ -60,3 +60,9 @@ block-10 + block-13; only the `q5_1`/`iq4_xs` retune remains, now `mmvq-rpb-retu
 `-sm tensor` device-policy/remap family, so `MOE_EXPERT_CACHE_DEVPOLICY_SPLIT` no longer exists), and
 `host-memory-footprint/` (partially overtaken by r33/r35; remainder re-seeded as `host-memory-reclaim/`).
 All three now live under `archive/work/`.
+
+**Closed as refuted (2026-10-11).**  `strata-amd-kernels/` (TODO #35) — K0 (six-candidate source diff +
+K1 measurement) found nothing to port: `#262` is already delivered, the router / carveout /
+IQ-grid-staging / verify items are no-deltas, and the one survivor (arena THP) was measured and refuted.
+The record moved to `archive/work/strata-amd-kernels/` (with a resolution banner) and the `wip/` entry was
+deleted with no stub; its lone residual was re-seeded as [`q1-0-byte-perm/`](q1-0-byte-perm/README.md).
