@@ -166,3 +166,53 @@ renumber of the same set.
 
 **Requested:** confirm this refinement (one FA block + module extraction) or insist on the full 3-way
 kernel layering (B, larger/riskier).
+
+## 7. Update — confirmed refinement, then a second structural finding (2026-10-12)
+
+The refinement is **confirmed**: one `05-fa` block with the band/native/derived modules inside it.
+
+Building `05-fa` then hit a **forward-dependency**, saved on scratch branch `v2-fa-wip` (`116ff4ccf`;
+`v2-phase1` is restored to the clean `00-04` tag `pin/v2-phase1-00-04` = `2a1502311`):
+
+- The `fattn_stage` prefill arena (native-KV, old-15 hunk in `common.cuh`) calls
+  `optional_alloc_within_free_cap(...)` (slab, target `moe-iface`) and `ggml_cuda_graph_mem_freed(...)`
+  (graph, target `graph-offload`). Both are owned by **later** targets, so `05-fa` cannot build before
+  them.
+- Re-applying old-15's FA core files succeeded (110 files; the two conflicts in `fattn.cu` /
+  `fattn-tile.cuh` were the band/verify additions and resolved by taking them). But the shared-file
+  hunks are not cleanly FA: e.g. `common.cuh` hunk [9] that a "band" keyword matches is actually the
+  **GLU->Q8_1 verify-band fusion** (target `fused-moe`), not the FA band. **Keyword triage over the
+  squashed old-15 is unreliable**; only file ownership or function-level extraction is.
+
+### Recommendation — an early "memory infrastructure" block
+
+The root cause is that generic plumbing (the movable-boundary slab, the graph-memory generation, the
+optional-allocation cap, the compute-margin helpers) is currently owned by the late MoE/graph blocks,
+but the FA (and dense) paths need it much earlier. Move that generic plumbing into an **early block**
+right after foundation:
+
+| new | alias | contents | sources |
+|---|---|---|---|
+| 00 | `foundation` | as now | 00,05,07,09a,06-readback,15-W4 |
+| 01 | `mem-infra` | movable-boundary slab + `optional_alloc_within_free_cap` + `ggml_cuda_graph_mem_freed`/graph-mem generation + `GGML_COMPUTE_BUFFER_*` helpers | split out of old-06/15 (the generic allocation/graph-memory half) |
+| 02 | `allreduce` | old 12 | |
+| 03 | `mtp-adaptive` | old 01 | |
+| 04 | `gdn` | old 02 | |
+| 05 | `bf16-kv` | old 03 | |
+| 06 | `fa` | old-04 FA + old-15 band/native/derived (modules inside) | |
+| 07 | `mmb` | old-08 MMB | |
+| 08 | `kquant` | old 10 + old-04 MMQ + old-15 Q1_0/grid/PR57 | |
+| 09 | `fused-prefill` | old-08 fusions + PR #63 | |
+| 10 | `fused-moe` | old 13 + old-08 mmID + PR #114 | |
+| 11 | `qwen4exp` | old-14 model/HC/lazy + old-15 HC16 | |
+| 12 | `qsa` | old-14 QSA + old-15 W1-W3 | |
+| 13 | `moe-iface` | the remaining (cache-specific) iface/scheduler/Meta + loader host-expert policy | old-06 remainder, 09b |
+| 14 | `moe-cache` | engine + hooks + arena | old-06 engine, 13 engine, 15 hooks | |
+| 15 | `mmap-reclaim` | old-06/15 r49 reclaim | |
+
+(`graph-offload` mostly folds into `mem-infra`; its remaining cache-arm half stays in `moe-cache`.)
+This removes the forward dependency, gives the FA/dense/MoE paths one infra owner, and keeps the
+self-contained direction. It does renumber again, so confirm before I rebuild.
+
+**Requested:** confirm the `mem-infra` block (or an alternative: stub the slab/graph calls in `05-fa`
+and re-add them later — more layering, less desirable).
