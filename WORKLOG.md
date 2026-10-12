@@ -1,5 +1,27 @@
 # WORKLOG - dated delivery records
 
+## 261012.005 (docs, wip decisions) -- patch-block-reorg: Q4/Q7/Q8 decided; V2.0 = Phase 1 + Phase 2
+
+**No delivery change.**  Final decisions on the `wip/patch-block-reorg/` questions:
+
+- **Q4 (fold confirmed):** every hot-path `getenv` is folded into the block that owns the flag.  Multiple
+  blocks may touch the same file; accepted because the concern stays with its owner and env-var
+  collisions are the cheapest class to resolve at rebase time.  No sweep block; target stays **18 blocks
+  (00-17)**.
+- **Q7 (self-contained functions/files):** the general Phase-2 approach is to extract each concern into a
+  self-contained function (ideally its own file) and leave only the call point; interleave into
+  upstream/churning files as little as possible.  Recorded as design goal **G8**.  The literal
+  second-integration-block scheme is not adopted.
+- **Q8 (Phase 2 now):** **V2.0 = Phase 1 + Phase 2.**  Phase 1 (block-boundary re-org) is the intermediate
+  gated checkpoint; Phase 2 (self-contained refactor) is part of the deliverable; a Phase 3 may catch
+  residual stragglers (e.g. a leftover `try_fuse` one-liner).
+
+**New file:** `wip/patch-block-reorg/PHASE2-REFACTOR.md` -- the Phase-2 work plan (per-concern extraction
+site -> self-contained function/file + single call point + gate), the `ggml_cuda_try_fuse` arm table, and
+the Phase-1/Phase-2/Final validation checkpoints.  `README.md` now carries the three-phase V2.0 plan;
+`REBASE-RESILIENCE.md` §5/§6 and `OPEN-QUESTIONS.md` are updated; `wip/CAMPAIGNS.md` status reflects "in
+execution".  All Q1-Q8 decisions are now recorded; remaining work is execution.
+
 ## 261012.004 (docs, wip decisions) -- patch-block-reorg: maintainer decisions recorded; target renumbered to 18 blocks
 
 **No delivery change.**  Recorded the maintainer's answers to the `wip/patch-block-reorg/` questions and

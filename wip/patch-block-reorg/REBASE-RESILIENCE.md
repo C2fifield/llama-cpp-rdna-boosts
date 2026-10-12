@@ -117,10 +117,13 @@ For each hub file, name the owner and keep later blocks append-only / additive. 
    block; the `18` getenv sweep is the only block allowed to touch all of them, and it is last and
    droppable.
 
-## 5. Phase-2 candidates (optional, needs maintainer go-ahead)
+## 5. Phase-2 candidates — **IN SCOPE** (see `PHASE2-REFACTOR.md`)
 
-Phase 2 extracts feature logic from actively-churning upstream functions into feature-local code, so the
-upstream-file hunk becomes small. Ranked by rebase-pain relief per unit of risk:
+Phase 2 is now part of V2.0 (Q8); the working list with call points is `PHASE2-REFACTOR.md`. This section
+keeps the ranking rationale. The general principle is **G8** (self-contained functions/files; interleave
+only the call point), decided in Q7.
+
+Ranked by rebase-pain relief per unit of risk:
 
 | rank | candidate | current home | proposed shape | risk |
 |---|---|---|---|---|
@@ -134,18 +137,16 @@ upstream-file hunk becomes small. Ranked by rebase-pain relief per unit of risk:
 **Recommendation:** do Phase 1 first; then re-measure the rebase cost (the modified-file count per target
 block) and only do the Phase-2 items that still dominate. Item 1 is the cheapest and highest-value.
 
-## 6. Would a "feature + integration" block split help?
+## 6. Feature/functions + call-point, not a second block
 
-One tempting end-state is: every feature block is **new files only** (feature-local), and a companion
+A tempting end-state is: every feature block is **new files only** (feature-local), and a companion
 **integration block** holds all dispatch/registration edits. On a rebase, only the few integration blocks
 can conflict; features are free.
 
-- **Pro:** the best possible F1/F2 relief; features become fully droppable (G4).
-- **Con:** it breaks the per-block build gate unless the feature block is reachable without the
-  integration block; and the integration block depends on all feature blocks, so ordering becomes
-  features-then-integration per subsystem. It also splits each concern across two blocks (violates G1).
-- **Verdict:** not the default, but keep the *spirit* — one-line arms calling feature-local functions
-  (§5.1) gives most of the benefit without a second block per feature. Flagged as Q7.
+The maintainer chose the **functions + call-point** form (Q7/G8) instead of a second block per feature:
+each concern is a self-contained function (ideally its own file) and the shared file keeps only the
+`#include` + the call. This gets the rebase-resilience benefit without splitting one concern across two
+blocks (G1) or breaking the per-block build gate, and it is what `PHASE2-REFACTOR.md` executes.
 
 ## 7. What to measure after Phase 1
 

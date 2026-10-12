@@ -49,60 +49,46 @@ Block-15 alone had ~1132 references across 303 markdown files, so the doc pass i
 
 ---
 
-## Q4 — getenv hot-path caching: sweep block vs. folded — **OPEN (recommended: fold)**
+## Q4 — getenv hot-path caching: folded into owning blocks — **DECIDED (fold)**
 
-**What the choice actually is.** Old-15's issue-#65 amendment caches ~25 `getenv()` reads that sit on
-per-op / per-graph / per-tensor hot paths (`LLAMA_HC_CN_DEBUG`, `GGML_CUDA_DISABLE_CONV_FUSION`,
-`GGML_CUDA_GCDBG`, `GGML_CUDA_OP_TIMING`, `GGML_STREAMDBG`, `GGML_META_*`, `GGML_SCHED_*`,
-`GGML_CUDA_MMQ_J_MAX`, `GGML_CUDA_GDN_CHUNKED(_BF16)`, …). Each cached read is one or two lines in the
-file that *owns the flag*.
+**Decision (maintainer):** fold every cached `getenv` into the block that owns the flag. The maintainer
+explicitly accepted that this means multiple blocks touch the same file; keeping the concern aligned
+with its owner is worth it, and env-var reads are the easiest class to resolve at rebase time. Target is
+**18 blocks (00–17)**; there is no sweep block.
 
-- **Fold (recommended):** each cache-the-getenv line goes into the block that introduced the flag. No
-  block touches ~40 files; the change is invisible as a concern; perfectly orthogonal (G2). The new
-  total is **18 blocks (00–17)**.
-- **Sweep block (18):** keep them as one trailing block. Easier to revert as a unit, but it is the most
-  coupled block in the set (touches ~40 files owned by others) and can only be last.
+**Consequence applied:** each cached read rides in `TARGET-BLOCKS.md`'s owning block; the `MIGRATION-MAP.md`
+old-15 entry marks the issue-#65 sweep as "folded".
 
-**Recommendation: fold.** This is consistent with the Q2 V2.0/orthogonality direction. This is not about
-`ENVIRONMENT.md` (which already groups variables by feature) — it is purely about the **patch-block**
-structure.
+## Q5 — `release.json` / per-block gate flow — **RESOLVED (procedure, no decision)**
 
-**Decision:** _pending (fold assumed in the docs)._
+No choice exists. The re-org changes `n_blocks` and the tip, so `release.json` is regenerated with
+`scripts/make-release.sh` (never hand-edited) and `scripts/gate-per-block-build.sh` then reads the new
+`base..tip`. Downstream this now applies at two checkpoints: the end of Phase 1 and the end of Phase 2.
 
-## Q5 — `release.json` / per-block gate flow — **NOT A DECISION (procedure)**
+## Q7 — Self-contained functions/files, call-point-only interleaving — **DECIDED**
 
-There is no real choice here; I should not have listed it as one. It is procedure: the re-org changes
-`n_blocks` and the tip, so `release.json` must be regenerated with `scripts/make-release.sh` (never
-hand-edited) and `scripts/gate-per-block-build.sh` then reads the new `base..tip`. No action required.
+**Decision (maintainer):** the general Phase-2 approach is to extract each concern into **self-contained
+functions, ideally its own file**, and interleave into upstream/churning files as little as possible —
+only the call point. Interleaving should be minimised everywhere; where a concern can live entirely in
+its own file with a single plug-in call site, do that. Some cases will not allow it, but it is the default.
 
-## Q7 — Feature-block + integration-block split — **OPEN (clarified)**
+**Consequence applied:** this is now a first-class design principle (G8) in `README.md` and the drive of
+`PHASE2-REFACTOR.md`, which lists the per-concern extraction targets and their (single) call points.
+The literal "second integration block per feature" scheme is **not** adopted; the self-contained-function
+form gives the benefit without splitting one concern across two blocks (G1) or complicating the per-block
+build gate.
 
-**What the choice is.** A *code-structure* change (Phase 2), not a Phase-1 taxonomy choice: for the
-features whose logic is interleaved into an actively-churning upstream function (`ggml_cuda_try_fuse`,
-the mmvq dispatch, `fattn.cu`), extract the feature's logic into a feature-local function/file and reduce
-the block's upstream-file hunk to a **one-line call**. The alternative is a literal second "integration
-block" per feature holding all dispatch edits.
+## Q8 — Phase 2 is in scope now; V2.0 = Phase 1 + Phase 2 — **DECIDED**
 
-- **Recommended:** the one-line-call extraction, **not** a second block per feature. It gets most of the
-  rebase-resilience benefit without splitting one concern across two blocks (G1) or breaking the
-  per-block build gate.
-- **Decision needed only if** you want the literal integration-block scheme.
+**Decision (maintainer):** do Phase 2 now. **V2.0 is Phase 1 and Phase 2 together**; Phase 1 is simply the
+intermediate checkpoint (block-boundary re-org, validated, tree-invariant where practical). Phase 2 is
+the self-contained refactor (Q7). A cheap straggler that does not fit the Phase-2 pass (e.g. a residual
+`try_fuse` one-liner) can be picked up in a **Phase 3**, if needed.
 
-**Decision:** _pending._
-
-## Q8 — Is Phase 2 in scope for this campaign? — **OPEN (clarified)**
-
-**What the choice is.** Phase 1 = move hunks between blocks (no code change). Phase 2 = refactor the code
-so feature logic is local to feature files (`REBASE-RESILIENCE.md` §5). Phase 2 is delivery-affecting and
-needs its own gates (it can change the net tree from the Phase-1 baseline).
-
-- **Recommended:** finish **Phase 1** (and re-measure the modified-file count per block), then open a
-  **separate campaign** for the Phase-2 items that still dominate. The cheap item (one-line `try_fuse`
-  arms) can be pulled into the V2.0 effort if you want.
-- Given the Q2 V2.0 framing you may prefer Phase 2 to be part of V2.0. Either is fine; the only thing to
-  avoid is doing a code refactor inside the boundary move and losing the tree-invariant proof.
-
-**Decision:** _pending._
+**Consequence applied:** `README.md` §6 is now a three-phase V2.0 plan; `PHASE2-REFACTOR.md` is the
+Phase-2 work plan; the DoD requires the Phase-1 checkpoint to be gated before Phase 2 begins, and the
+final V2.0 tree to be re-baselined (`release.json`) and gated again. Phase 2 changes the net tree from the
+Phase-1 baseline, so the tree-invariance proof applies to Phase 1 only.
 
 ---
 

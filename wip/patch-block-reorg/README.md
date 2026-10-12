@@ -11,12 +11,10 @@ applied to the fork without the maintainer's explicit go-ahead (see the WIP and 
 > the taxonomy, the ordering, or the hub-file coupling. This campaign does. Its success criterion is
 > **the next re-base being cheap**, not merely the current one fitting.
 
-> **Cold start.** Read this file, then `REBASE-RESILIENCE.md`, `TARGET-BLOCKS.md`, `MIGRATION-MAP.md`,
-> `FILE-OWNERSHIP.md` and `OPEN-QUESTIONS.md`. Then read `AGENTS.md` ("Report findings before shipping",
-> "WIP and promotion rules"), `archive/work/r50-merge-hygiene/README.md` + `REDISTRIBUTION.md`, and
-> `scripts/gate-per-block-build.sh`. **Report the open questions to the maintainer and wait for decisions
-> before moving any commit.** Do not restructure the `patches/` set until the maintainer picks the target
-> and the granularity.
+> **Cold start.** Read this file, then `REBASE-RESILIENCE.md`, `PHASE2-REFACTOR.md`, `TARGET-BLOCKS.md`,
+> `MIGRATION-MAP.md`, `FILE-OWNERSHIP.md` and `OPEN-QUESTIONS.md`. Then read `AGENTS.md` ("Report findings
+> before shipping", "WIP and promotion rules"), `archive/work/r50-merge-hygiene/README.md` + `REDISTRIBUTION.md`,
+> and `scripts/gate-per-block-build.sh`. All Q1–Q8 decisions are recorded; the remaining work is execution.
 
 ## Decisions recorded (2026-10-12, maintainer)
 
@@ -33,11 +31,15 @@ applied to the fork without the maintainer's explicit go-ahead (see the WIP and 
   item.** Not a hard invariant if a genuine cleanup is needed, but never silently folded.
 - **Q6 — new numbers plus mnemonic aliases** (`00-foundation`, `09-kquant`, …); current-state docs use
   the aliases, dated records keep their historical numbers, and an old→new map is published.
-- **Q4 (recommended, confirm):** fold the getenv hot-path caching into the block that owns each flag
-  rather than keep a ~40-file sweep block. Default target is therefore **18 blocks (00–17)**; a trailing
-  sweep block is 18 if preferred.
-- **Q5** is procedure, not a decision (see `OPEN-QUESTIONS.md`). **Q7/Q8** (Phase-2 code structure and
-  scope) are clarified in `OPEN-QUESTIONS.md`.
+- **Q4 — confirmed: fold every hot-path `getenv` into the block that owns the flag.** Multiple blocks may
+  touch the same file to do so; that is accepted because the concern stays aligned with its owner and
+  env-var collisions are the cheapest class to resolve at rebase time. Target is **18 blocks (00–17)**;
+  there is no sweep block.
+- **Q7 — confirmed: self-contained functions/files, call-point-only interleaving** (new design goal G8).
+  The literal two-block-per-feature integration scheme is not adopted.
+- **Q8 — confirmed: Phase 2 is in scope now. V2.0 = Phase 1 + Phase 2.** Phase 1 is the intermediate
+  checkpoint; a Phase 3 may catch residual stragglers (e.g. a leftover `try_fuse` one-liner).
+- **Q5** is procedure, not a decision. Phase 2 has its own work plan: `PHASE2-REFACTOR.md`.
 
 ---
 
@@ -86,10 +88,14 @@ design goals that drive the target taxonomy:
   dispatch case that selects it (it breaks G3).
 - **G7 — A stable, mnemonic taxonomy.** Names should survive renumbering so docs and `WORKLOG` history
   remain intelligible (see Q6).
+- **G8 — Self-contained concerns, call-point-only interleaving (Q7).** Phase 2 extracts each concern into
+  its own function (ideally its own file) and leaves behind only the call point. Interleave into an
+  upstream/churning file as little as possible; never inline a feature's setup into a shared dispatch
+  function. Where a concern cannot be fully separated, minimise and localise the remaining touch.
 
 The tension between orthogonality (G2) and hub-file reality is the central design problem; §"Hub-file
-strategy" of `REBASE-RESILIENCE.md` proposes the split into a *feature* half and a small *integration*
-half where the churn can be isolated.
+strategy" of `REBASE-RESILIENCE.md` proposes the feature/functions + call-point form for the churn, and
+`PHASE2-REFACTOR.md` is the concrete extraction plan.
 
 ## 2. Audit method and evidence
 
@@ -204,21 +210,24 @@ host-MoE matchers consume `ggml_cuda_hc_mix_args` from 12; old-13's Fused MoE fu
 and stay in 11; 15 needs 14's iface and 11's kernels; 16 needs 15's arming; 17 needs 14/15; the getenv
 caching is folded into the flag's owning block.
 
-## 6. Two-phase plan
+## 6. V2.0 plan — Phase 1 (boundary re-org) + Phase 2 (self-contained refactor)
 
-**Phase 1 — taxonomy re-org (this campaign's first deliverable).** Redistribute the existing hunks into
-the 18-block target, reorder, absorb the tiny blocks, and split the super-blocks — **as far as possible a
-pure commit-boundary move keeping the net tree `f102245…` invariant.** Validate with a fresh per-commit
-`all` build + `validate-set.sh` + the release gates. This alone removes the forward deps and the giant
-blocks.
+V2.0 is both phases together (Q8). Phase 1 is an intermediate, gated checkpoint, not the deliverable.
 
-**Phase 2 — rebase-resilience refactor (optional, decided after Phase 1).** Where a feature's code is
-interleaved into an actively-churning upstream function (`ggml_cuda_try_fuse`, the mmvq dispatch,
-`llama-context.cpp` glue), extract the feature's logic into a **feature-local file/function** and reduce
-the block's upstream-file footprint to a small, contiguous insertion. `REBASE-RESILIENCE.md` ranks the
-candidates. Phase 2 is allowed to change the code (not just the boundaries); it must re-run the net tree
-comparison against its own new baseline and the relevant gates. **Do not start Phase 2 until the
-maintainer agrees** — it is a larger change than a re-org.
+**Phase 1 — block-boundary re-org (tree-invariant where practical).** Redistribute the existing hunks
+into the 18-block target, reorder, absorb the tiny blocks, split the super-blocks, and fold the getenv
+caching into its owners — without changing the code. Keep the net tree
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8` wherever practical (Q3); record every exception as a Phase-2
+`CONTENT-CLEANUP` item. Validate with a fresh per-commit `all` build + `validate-set.sh` + the release
+gates, then re-baseline a scratch `release.json` — this is the Phase-1 checkpoint.
+
+**Phase 2 — self-contained refactor (Q7/G8).** Extract each concern's logic out of the shared/churning
+functions into its own function (ideally its own file), leaving only the call point. This changes the net
+tree from the Phase-1 baseline, so Phase 2 has its own new baseline + gates. Work plan:
+`PHASE2-REFACTOR.md`.
+
+**Phase 3 — stragglers (optional).** Any residual interleave that did not fit Phase 2 (e.g. one last
+`ggml_cuda_try_fuse` arm) is a small follow-up rather than a V2.0 blocker.
 
 ## 7. Migration method
 
@@ -259,16 +268,18 @@ Do not start the renumber until the maintainer picks.
 
 ## 10. Open decisions
 
-Q1, Q2, Q3 and Q6 are **decided** (see "Decisions recorded" above). Still open: **Q4** (getenv sweep vs
-fold — folded recommended), **Q5** (procedure, not a decision), **Q7/Q8** (Phase-2 code structure and
-scope). See `OPEN-QUESTIONS.md` for the clarified statements. `REBASE-RESILIENCE.md` §5 scopes Phase 2.
+Q1, Q2, Q3, Q4, Q6, Q7 and Q8 are **decided** (see "Decisions recorded" above). Q5 is procedure, not a
+decision. Nothing blocks Phase 1: the order is 18 blocks (00–17), getenv folded, V2.0 = Phase 1 + Phase 2.
+The remaining work is execution, not choice. `PHASE2-REFACTOR.md` is the Phase-2 plan; `OPEN-QUESTIONS.md`
+records all answers.
 
 ## 11. Files in this campaign
 
 | file | contents |
 |---|---|
 | `README.md` | this handover: problem, design goals, audit, target, order, method, DoD |
-| `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy, Phase-2 candidates |
+| `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |
+| `PHASE2-REFACTOR.md` | Phase-2 work plan: per-concern extraction targets and their call points (Q7/G8) |
 | `TARGET-BLOCKS.md` | per-target-block spec (concern, sources, owner files, deps, gates) |
 | `MIGRATION-MAP.md` | old→new mapping, file/hunk level, incl. the r50 hygiene moves |
 | `FILE-OWNERSHIP.md` | coupling matrix, hub-file region map, generated-instance rule |
