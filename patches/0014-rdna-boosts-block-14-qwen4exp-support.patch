@@ -1,4 +1,4 @@
-From f50bf1377119e0674632678ab8417c776cb70fc0 Mon Sep 17 00:00:00 2001
+From 25f552044b09ecbc8bb44dae7a4369dc72adc1ad Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 8 Sep 2026 01:30:06 +0000
 Subject: [PATCH 14/15] rdna-boosts: block 14: qwen4exp support
@@ -786,7 +786,7 @@ index df4d0b5f9..6c9ba6027 100644
      /* .moe_cache_take_over     = */ ggml_backend_meta_moe_cache_take_over,
      /* .moe_cache_band          = */ ggml_backend_meta_moe_cache_band,
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index ad2643a54..114fb7c02 100644
+index d41461683..4bc72af0b 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -1247,6 +1247,15 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
@@ -861,7 +861,7 @@ index ad2643a54..114fb7c02 100644
          }
          if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
              GGML_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-@@ -3230,6 +3273,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
+@@ -3233,6 +3276,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
  bool ggml_op_alloc_size_may_expand(enum ggml_op op) {
      switch (op) {
          case GGML_OP_FLASH_ATTN_EXT:
@@ -5014,7 +5014,7 @@ index f6381ac78..ef7a1443b 100644
              (const char *) src0_i->data, src0_i->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), (float *) dst_i->data,
              nullptr,
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
-index 928dca538..93a6e4f0e 100644
+index f193f6855..1fd0bb39d 100644
 --- a/ggml/src/ggml-cuda/mmq.cuh
 +++ b/ggml/src/ggml-cuda/mmq.cuh
 @@ -1472,7 +1472,7 @@ static size_t mmq_get_nbytes_shared(const ggml_cuda_mmq_config & config, const i
@@ -5070,7 +5070,7 @@ index 928dca538..93a6e4f0e 100644
      // in mul_mat_q_switch_J stays; both are part of the same port).
 -    const bool use_compact_routed = args.ids_dst != nullptr && mmq_rdna3_5_id_n_experts_ok(args.nchannels_y) && GGML_CUDA_CC_IS_RDNA3_5(cc) &&
 +    const bool use_compact_routed = args.ids_dst != nullptr && mmq_rdna3_5_id_n_experts_ok(args.nchannels_y) && mmq_routed_compact_arch_ok(cc) &&
-         !has_gate && !ggml_cuda_mmq_get_stream_k(type, J, fallback, cc) && mmq_rdna3_5_id_use_compact(type, J) &&
+         !has_gate && !ggml_cuda_mmq_get_stream_k(type, J, fallback, cc, prec_src1) && mmq_rdna3_5_id_use_compact(type, J) &&
          getenv("GGML_CUDA_DISABLE_MMQ_ROUTED") == nullptr;
      if (use_compact_routed) {
 diff --git a/ggml/src/ggml-cuda/mmvf.cu b/ggml/src/ggml-cuda/mmvf.cu

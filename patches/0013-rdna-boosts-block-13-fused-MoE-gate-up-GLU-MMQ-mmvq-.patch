@@ -1,4 +1,4 @@
-From 48872e9fd446b21a19e7d43d7c72a16488857d64 Mon Sep 17 00:00:00 2001
+From bd6d545951bce739761b657aace9442ff15871df Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 1 Sep 2026 11:50:35 +0000
 Subject: [PATCH 13/15] rdna-boosts: block 13: fused MoE gate+up+GLU MMQ + mmvq
@@ -482,18 +482,18 @@ index 180b2d937..8ec1794e2 100644
  // ---------------------------------------------------------------------------------------------
  
 diff --git a/ggml/src/ggml-cuda/mmq-vec-dot.cuh b/ggml/src/ggml-cuda/mmq-vec-dot.cuh
-index 07a33b923..f6340f255 100644
+index 07a33b923..1b29f62f1 100644
 --- a/ggml/src/ggml-cuda/mmq-vec-dot.cuh
 +++ b/ggml/src/ggml-cuda/mmq-vec-dot.cuh
 @@ -151,8 +151,18 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma(
      constexpr int sram_stride   = ggml_cuda_mmq_get_sram_stride(type, J, fallback, GGML_PREC_Q8);
      constexpr int rows_per_warp = ggml_cuda_mmq_get_rows_per_warp(type, J, fallback, GGML_PREC_Q8);
      constexpr int ntx           = rows_per_warp/tile_C::I; // Number of x minitiles per warp.
-+    constexpr int nwarps        = ggml_cuda_mmq_get_nthreads(type, J, fallback) / ggml_cuda_get_physical_warp_size();
++    constexpr int nwarps        = ggml_cuda_mmq_get_nthreads(type, J, fallback, GGML_PREC_Q8) / ggml_cuda_get_physical_warp_size();
 +    // halo-box: J/2 row split for Q8_0 J=128 at I=64/256thr (4 row-warps x 2 j-groups) so each warp
 +    // covers rows within I and only J/2 columns -> the per-thread sum[] stays in bounds. Inert for the
 +    // upstream geometries (I == nwarps*16 -> split_j false).
-+    constexpr int  I        = ggml_cuda_mmq_get_I(type, J, fallback);
++    constexpr int  I        = ggml_cuda_mmq_get_I(type, J, fallback, GGML_PREC_Q8);
 +    constexpr bool split_j  = type == GGML_TYPE_Q8_0 && J == 128 && !fallback && I == 64 && nwarps == 8;
 +    constexpr int  j_group  = split_j ? J/2 : J;
  
@@ -981,7 +981,7 @@ index 356917850..f6381ac78 100644
  #ifdef GGML_CUDA_FORCE_CUBLAS
      return false;
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
-index d3e7b75ea..928dca538 100644
+index d3e7b75ea..f193f6855 100644
 --- a/ggml/src/ggml-cuda/mmq.cuh
 +++ b/ggml/src/ggml-cuda/mmq.cuh
 @@ -1,6 +1,7 @@
@@ -1371,7 +1371,7 @@ index d3e7b75ea..928dca538 100644
 +    // GGML_CUDA_DISABLE_MMQ_ROUTED=1 disables ONLY this compact dispatch (the per-expert J selection
 +    // in mul_mat_q_switch_J stays; both are part of the same port).
 +    const bool use_compact_routed = args.ids_dst != nullptr && mmq_rdna3_5_id_n_experts_ok(args.nchannels_y) && GGML_CUDA_CC_IS_RDNA3_5(cc) &&
-+        !has_gate && !ggml_cuda_mmq_get_stream_k(type, J, fallback, cc) && mmq_rdna3_5_id_use_compact(type, J) &&
++        !has_gate && !ggml_cuda_mmq_get_stream_k(type, J, fallback, cc, prec_src1) && mmq_rdna3_5_id_use_compact(type, J) &&
 +        getenv("GGML_CUDA_DISABLE_MMQ_ROUTED") == nullptr;
 +    if (use_compact_routed) {
 +        const int max_descriptors = (args.ncols_dst + J - 1) / J + args.nchannels_y;
@@ -1388,7 +1388,7 @@ index d3e7b75ea..928dca538 100644
 +        return;
 +    }
 +
-+    if (!ggml_cuda_mmq_get_stream_k(type, J, fallback, cc)) {
++    if (!ggml_cuda_mmq_get_stream_k(type, J, fallback, cc, prec_src1)) {
 +        mul_mat_q<type, J, fallback, prec_src1, has_gate><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
              (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr, args.y_scale,
               blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
