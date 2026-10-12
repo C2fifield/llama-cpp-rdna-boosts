@@ -14,6 +14,7 @@ problem that needs the maintainer's decision (per `AGENTS.md` "Report findings b
 | branch | `v2-phase1` |
 | base | `097cf33d9` (tree `30c400ccea2e2fb47b663036a6cee08a4dc542d8`) |
 | reference tip | `84058162b` (pin `pin/r50-tip`, tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
+| partial-safe tag | `pin/v2-phase1-00-04` = `2a1502311` (the 00–04 checkpoint) |
 
 Phase-1 tooling (in this campaign): `tools/select_hunks.py` (extract hunks from a source-block diff by
 regex) and `tools/hunk_summary.py` (tag every hunk with the concerns its added lines mention, for
