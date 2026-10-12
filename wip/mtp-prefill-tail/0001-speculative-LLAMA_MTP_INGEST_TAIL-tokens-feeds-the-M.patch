@@ -1,0 +1,142 @@
+From fce4360ba370dc441db64e5b6fa349161fa72a18 Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Mon, 12 Oct 2026 16:29:49 +0000
+Subject: [PATCH 1/2] speculative: LLAMA_MTP_INGEST_TAIL=<tokens> feeds the MTP
+ draft only the tail of each prompt
+
+The MTP draft has its own KV cache, so every prompt row also went through the draft layer during prefill.  The
+server now tells the speculative state where a new prompt ends (common_speculative_set_prompt_end, called when a
+slot starts processing a prompt; a virtual no-op except for draft_mtp), and with LLAMA_MTP_INGEST_TAIL the
+draft_mtp process() skips the prompt rows before n_prompt - tail.  The first kept row still pairs with the target
+hidden state of the row before it, and pending_h is updated for fully skipped batches.  The prompt phase ends
+at the first generation row, so a later context shift cannot make the draft skip generation rows.  The draft only
+loses look-back over the skipped prefix; the target verifies every drafted token, so output is unchanged.
+
+31.5k-token prefill (Flash-Next IQ3_XXS + MTP, -sm tensor, 2 x R9700): 2623-2644 -> 2886-2892 t/s with 4096
+(+9.6 %), same greedy output; draft acceptance 0.763 -> 0.739 (9.4k prompt), 0.626 -> 0.626 (32.6k).  Unset/0: unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ common/speculative.cpp          | 46 ++++++++++++++++++++++++++++++++-
+ common/speculative.h            |  4 +++
+ tools/server/server-context.cpp |  4 +++
+ 3 files changed, 53 insertions(+), 1 deletion(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index fc76acfa3..e2725931e 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -208,6 +208,9 @@ struct common_speculative_impl {
+ 
+     virtual bool process(const common_batch & batch) = 0;
+ 
++    // optional: the prompt of `seq_id` about to be processed ends at position `n_prompt` (exclusive)
++    virtual void set_prompt_end(llama_seq_id /*seq_id*/, llama_pos /*n_prompt*/) {}
++
+     virtual void draft(common_speculative_draft_params_vec & dparams) = 0;
+ 
+     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
+@@ -1668,6 +1671,28 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         }
+     }
+ 
++    // LLAMA_MTP_INGEST_TAIL=<tokens>: feed the draft only the last <tokens> positions of each prompt.  The draft
++    // attends over its own KV, so the skipped prefix only narrows what it can look back on when drafting; the target
++    // verifies every drafted token, so output is unchanged.  Generation positions are always fed.  0/unset: every row.
++    std::vector<llama_pos> ingest_from;
++    std::vector<llama_pos> ingest_prompt_end;   // prompt phase of each seq: -1 once its first generation row is seen
++
++    void set_prompt_end(llama_seq_id seq_id, llama_pos n_prompt) override {
++        static const int32_t tail = [] {
++            const char * e = getenv("LLAMA_MTP_INGEST_TAIL");
++            return e != nullptr ? atoi(e) : 0;
++        }();
++        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
++            return;
++        }
++        if (ingest_from.size() < (size_t) n_seq) {
++            ingest_from.assign(n_seq, 0);
++            ingest_prompt_end.assign(n_seq, -1);
++        }
++        ingest_from[seq_id]       = tail > 0 ? std::max<llama_pos>(0, n_prompt - tail) : 0;
++        ingest_prompt_end[seq_id] = n_prompt;
++    }
++
+     bool process(const common_batch & batch_in) override {
+         if (batch_in.size() <= 0) {
+             return true;
+@@ -1716,6 +1741,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+ 
+                 const llama_seq_id seq_id = t.seq_id;
+ 
++                if ((size_t) seq_id < ingest_prompt_end.size() && ingest_prompt_end[seq_id] >= 0) {
++                    if (t.pos[0] >= ingest_prompt_end[seq_id]) {
++                        // generation reached: the prompt phase is over, so later position shifts never skip rows
++                        ingest_from[seq_id]       = 0;
++                        ingest_prompt_end[seq_id] = -1;
++                    } else if (t.pos[0] < ingest_from[seq_id]) {
++                        continue;   // LLAMA_MTP_INGEST_TAIL: a prompt row before the ingested tail
++                    }
++                }
++
+                 // vision tokens carry an embedding instead of an id
+                 const int32_t idx = t.id != LLAMA_TOKEN_NULL
+                     ? batch.add(t.id, t.pos[0], seq_id, false)
+@@ -1731,7 +1766,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+             auto * mem_dft = llama_get_memory(ctx_dft);
+ 
+             bool ok = true;
+-            for (int head = 0; head < n_mtp_layers; ++head) {
++            for (int head = 0; head < n_mtp_layers && batch.size() > 0; ++head) {
+                 if (chain_heads) {
+                     // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
+                     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+@@ -3097,6 +3132,15 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
+     }
+ }
+ 
++void common_speculative_set_prompt_end(common_speculative * spec, llama_seq_id seq_id, llama_pos n_prompt) {
++    if (spec == nullptr) {
++        return;
++    }
++    for (auto & impl : spec->impls) {
++        impl->set_prompt_end(seq_id, n_prompt);
++    }
++}
++
+ bool common_speculative_process(common_speculative * spec, const common_batch & batch) {
+     bool result = true;
+ 
+diff --git a/common/speculative.h b/common/speculative.h
+index e2ccb10dd..2eaa1d744 100644
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -89,6 +89,10 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
+ // process the batch and update the internal state of the speculative context
+ bool common_speculative_process(common_speculative * spec, const common_batch & batch);
+ 
++// the prompt of `seq_id` about to be processed ends at position `n_prompt` (exclusive); lets the MTP draft limit its
++// prompt ingestion (LLAMA_MTP_INGEST_TAIL)
++void common_speculative_set_prompt_end(common_speculative * spec, llama_seq_id seq_id, llama_pos n_prompt);
++
+ // generate drafts for the sequences specified with `common_speculative_get_draft_params`
+ void common_speculative_draft(common_speculative * spec);
+ 
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a121a5aa7..32765716b 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3533,6 +3533,10 @@ private:
+ 
+                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
+ 
++                        if (spec) {
++                            common_speculative_set_prompt_end(spec.get(), slot.id, slot.task->tokens.pos_next());
++                        }
++
+                         SLT_TRC(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
+                                 slot.n_ctx, slot.task->params.n_keep, slot.task->n_tokens());
+ 
+-- 
+2.53.0
+
