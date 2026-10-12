@@ -1,6 +1,15 @@
 # `rdna-boosts-all-patch-hygiene` — the net-patch artifact's git cost (TODO, "Parked (not planned now)")
 
-**Status: PARKED (seeded 2026-10-11).** Not part of the delivery; nothing here may be applied to the fork
+> **CLOSED 2026-10-11 — already resolved.**  The maintainer confirmed this item is done; no further action is
+> needed and the `rdna-boosts-all.patch` artifact stays as the documented tracked convenience.  The `TODO.md`
+> parked entry was removed and `wip/CAMPAIGNS.md` no longer lists it.  The text below is the original
+> (unstarted) scoping note, kept for context; **do not act on it.**
+
+The original scoping note follows.
+
+---
+
+**Status: PARKED (seeded 2026-10-11), now CLOSED.** Not part of the delivery; nothing here may be applied to the fork
 without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). This is the parked
 TODO item *"`rdna-boosts-all.patch` hygiene (raised 2026-09-15)"*. It is a **decision item**, not a
 kernel/test campaign.

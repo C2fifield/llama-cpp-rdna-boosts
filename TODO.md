@@ -79,13 +79,17 @@ the fused and non-fused paths bit-identical.
 pre-existing property of the arena, not of the ring, and disabling the fusions would cost more than it
 fixes — see the measured cost and the re-enable recipe in `ENVIRONMENT.md` §7.
 
-### 51. 3-GPU MTP decode is 2.6x SLOWER than plain decode (pre-existing)
+### 51. 3-GPU MTP decode is slower than plain decode (pre-existing)
 
-**Working home: `archive/work/moe-verify-fusions/`** (tracked together with #50 — the maintainer suspects a shared root cause on the cache-band routed-MMVQ verify path).
+**Working home: `wip/mtp-3gpu-decode/`.**  (Originally tracked with #50; re-seeded as its own campaign 2026-10-11.)
 
 **Opened 2026-10-10 (found during the `archive/work/slab-ring-region/` 3-GPU gate).**  On 3 GPUs MTP is a *loss*,
 not a win — and it hits the production config (AGENTS.md: servers run unpinned, 3-GPU,
 `HIP_VISIBLE_DEVICES=0,1,2`, hybrid default).
+
+**Maintainer note (2026-10-11):** 3-GPU MTP is **still a bit slower** than plain decode, but **no longer
+2.6x slower**.  Re-measure the current gap on r48 first; the table below is the r38 anchor (several AR/
+slab/scheduler changes landed after it).
 
 Field config, Qwen3.8-Flash-Next IQ4_NL + the shared Q8_0 MTP head, 32 358-token prompt, 1000 generated,
 `--spec-draft-n-max 3`, same tree:
@@ -107,9 +111,12 @@ anyway, ENVIRONMENT §6).  Also orthogonal to the cache residency (3-GPU logs 99
 **Reproducer:**
 
 ```bash
-cd /tmp/srr   # field.sh; field3.sh = same without the forced GGML_CUDA_ALLREDUCE=ce;
-              # field_nospec.sh = field3.sh with --spec-type none and no --spec-draft-model
-PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field3.sh      ~/llama.cpp/build-rocm-hybrid t3 run30kfit
+# the harness is preserved in the repo (the /tmp/srr copies are transient):
+#   archive/work/moe-verify-fusions/tools/field3.sh       (MTP arm)
+#   archive/work/moe-verify-fusions/tools/field_nospec.sh (plain arm)
+# prompt: wip/kv-cell-offset-nondeterminism/prompts/mixed30k.txt
+cd archive/work/moe-verify-fusions/tools
+PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field3.sh      ~/llama.cpp/build-rocm-hybrid t3  run30kfit
 PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field_nospec.sh ~/llama.cpp/build-rocm-hybrid t3n run30kfit
 ```
 
@@ -302,19 +309,6 @@ the honest end-to-end targets are the fully-resident and multi-GPU cases; the ke
 scope (RDNA4 HIP) and several are upstream-PR shaped.  **Next:** K0 - line-by-line kernel diff and a
 shortlist with expected deltas.  Record: `wip/strata-amd-kernels/README.md`.
 
-### 33. PR #104 follow-ups: cross-backend event wait and per-change kill-switches
-
-**Opened 2026-10-05; both landed in `v16-a55e952b8-r12`, non-blocking.**  The block-06 fix adds a
-`ggml_backend_event_wait(input_backend, event)` where the event was created on `split_backend`, the
-scheduler's first cross-backend event wait.  Several backends implement `event_wait` assuming their
-own event object (`ggml_backend_sycl_event_wait` does a `static_cast<sycl::event*>`, Vulkan casts to
-`vk_event*`, Metal to `ggml_metal_event_t`); on a scheduler that mixes device backends this is at
-best a host block and at worst an abort.  The delivery is CUDA/meta/CPU only today, so it is not hit
-now.  **Next:** add a same-family guard (or a per-backend foreign-event capability).  Separately,
-neither block-06 nor block-13 change has a per-change env kill-switch (the WIP promotion rule);
-`GGML_SCHED_EVENTS=0` disables the block-06 fix only by turning off all per-split events, at a
-measured prefill cost.  Record: `archive/work/2gpu-sched-fixes/VERIFICATION.md`.
-
 ### 32. `gdn-conv.cu` device idiom (block 15; found in the PR #102 review)
 
 **Opened 2026-10-04; cosmetic, no correctness impact.**  `gdn_conv_check` gates the 2..255-token arm
@@ -344,21 +338,6 @@ flip is therefore lower value than the original r27 note implies; keep it for co
 warn-once-and-fall-back treatment (the host buffers are always reserved, so the fallback needs no
 extra memory) and flips F1 default-on for single-sequence DFlash, with the runtime
 `GGML_LF_DFLASH_DEV=0` kill switch.  Folded into block 15; `WORKLOG.md` 2026-10-07 (r26).
-
-### 29. The address-selected `ROPE -> VIEW -> SET_ROWS` fusion decides the W=1 decode logits (issue #58 item D)
-
-**Opened 2026-09-29** while analysing issue #58 item D (cross-start greedy nondeterminism, @DanoPTT,
-gfx1201 / Windows / ROCm 10).  `ggml_cuda_check_fusion_memory_ranges()` selects the fusion by buffer-address
-overlap; the fused path is not proven bit-transparent, so the decode logits are a function of the allocation
-plan.  Logits-level bisect on gfx1201 / ROCm 7.14 (`Qwen3.8-27B-Q6_K`, `test-logits-width-probe`, P=256,
-W=1 row-0): default `f6d62323d9339541`; `GGML_CUDA_DISABLE_FUSION=1`, all-address-gated-fusions-off, and
-`GGML_CUDA_DISABLE_ROPE_SET_ROWS=1` all give `3ab223a4f08afd6e`; `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`,
-the other per-fusion switches, graphs and `FA_KV_NATIVE` do not move it.  20/20 fresh Linux starts agree
-(the layout is stable here).  Not yet separated: whether the fused `rope_multi` kernel itself differs, or
-its elided F32 buffer re-addresses a neighbouring fusion.  **Next:** isolate the kernel (a focused
-`rope -> view -> set_rows` backend test or a forced-fire probe), then either make the fused path bit-exact
-or stop the guard deciding by raw address.  Switches shipped default-off in `v16-84e76d8a2-r24` (block 15).
-Record: `WORKLOG.md` 2026-09-29 (r24), `GREEDY-PURITY.md` §41.
 
 ### 28. Retune the RDNA4 dense mmvq rows-per-block table for `q5_1` / `iq4_xs` on ROCm 7.14
 
@@ -420,16 +399,6 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
   (cosmetic).
 
 ## Parked (not planned now)
-- **`rdna-boosts-all.patch` hygiene (raised 2026-09-15).**  The single-file net patch is a documented
-  delivery artifact (1.35 MiB) that is regenerated on every release, so each revision adds ~1.3 MiB of
-  history — the dominant `.git` cost (the raw logs trimmed 2026-09-15 compressed to only ~1.07 MiB total,
-  so history is otherwise compact).  Options when someone picks this up: (a) keep as-is (it is derivable
-  from `patches/` + `scripts/apply-all.sh`, so it is pure convenience); (b) stop tracking it and generate
-  it on demand in the release pipeline / for the GitHub Release asset (the layout table and
-  `docker-ghcr.yml` both reference it, so those pointers move); (c) a history rewrite
-  (`git filter-repo` + force-push + re-tagging every `v16-*`) — measure the real recovery first: the
-  patch is already close to incompressible text, so the win is bounded and the cost is a force-push to a
-  published repo (see the Pushing policy).  **Not today; no work started.**
 - **Restore the block-13 RDNA3_5 single-token fusion perf (item 16).**  The ~0.9 % `tg128` the purity
   skip costs; the proposed "pin `nwarps`/`rps`/item-split" fix is **invalid** (the two arms are already
   launch-identical).  Live candidates: codegen (`has_fusion` register pressure / FMA contraction) and the
@@ -443,12 +412,6 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
 - **`ssm_alpha` + `ssm_beta` single-walk fusion (item 5(b)).**  ~0.3-0.6 % prefill, blocked by the graph
   expansion order (the two MMs are non-adjacent) -> needs a graph restructure or load-time stacked
   weights.  `archive/work/wip-archive/qwen4exp/discovery/2026-09-06-strix-halo-gfx1151-cijk-dense-gemm.md`.
-
-### LFRU host→GPU slow hot-weight migration
-- Survivor of the expert-tiering experiment (dropped 2026-09-05 — most of its aims are already covered by
-  current llama.cpp options).  The one idea left: an LFRU-style very slow migration of hot weights from
-  host to GPU (persistent GPU slot cache + CPU-computed cold tail).  Design notes:
-  `archive/work/qwen4exp/LRU_EXPERTS.md`, `PHASE0_ROUTING.md`, `HANDOVER-2026-09-04-tiering.md`.
 
 ## Where the current lists live
 

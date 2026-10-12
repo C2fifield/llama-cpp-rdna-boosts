@@ -1,6 +1,17 @@
 # `lfru-host-weight-migration` — LFRU host→GPU slow migration of hot weights (TODO, parked)
 
-**Status: PARKED (seeded 2026-10-11).** Not part of the delivery; nothing here may be applied to the fork
+> **CLOSED 2026-10-11 — DELIVERED / INTEGRATED, in a different form than described here.**  The maintainer
+> confirmed the item is done: the delivery's **device-resident MoE expert cache** (`moe-expert-cache.cu` /
+> `MOE_EXPERT_CACHE_MIB`, the movable-boundary slab, the decode/verify band) plus the **bounded pinned host
+> pool** (`--host-experts pool`, r35) provide the hot-weight residency/tiering this note describes.  No
+> separate LFRU migration is needed.  The `TODO.md` parked entry was removed and `wip/CAMPAIGNS.md` no longer
+> lists it.  The text below is the original (unstarted) scoping note, kept for context; **do not act on it.**
+
+The original scoping note follows.
+
+---
+
+**Status: PARKED (seeded 2026-10-11), now CLOSED.** Not part of the delivery; nothing here may be applied to the fork
 without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). This is the parked TODO
 entry *"LFRU host→GPU slow hot-weight migration"* (the survivor of the expert-tiering experiment, dropped
 2026-09-05).
@@ -48,7 +59,7 @@ computed cold tail vs UVA miss, heat-driven weight migration) is still worth pur
 - CPU-computes-misses was measured **negative above a ~1.2 GiB arena** (the loss is scheduler dispatches +
   cross-backend copies, not CPU compute) — see `archive/work/moe-expert-cache/WORKLOG.md`.
 - Genuine CPU/GPU overlap for misses is a separate open campaign
-  ([`../moe-cpu-overlap/`](../moe-cpu-overlap/README.md), TODO #36) and is the more concrete version of the
+  ([`moe-cpu-overlap/`](../../../wip/moe-cpu-overlap/README.md), TODO #36) and is the more concrete version of the
   same "use the CPU for the cold tail" idea.
 - The delivery already has a device-resident slot cache; the LFRU idea's remaining delta is unclear.
 
@@ -61,10 +72,10 @@ computed cold tail vs UVA miss, heat-driven weight migration) is still worth pur
 
 ## 4. Pointers
 
-- `TODO.md` → "Parked (not planned now)" → "LFRU host→GPU slow hot-weight migration".
+- The removed `TODO.md` parked entry (this file is its record).
 - `archive/work/qwen4exp/LRU_EXPERTS.md`, `PHASE0_ROUTING.md`, `HANDOVER-2026-09-04-tiering.md`.
 - `archive/work/moe-expert-cache/WORKLOG.md` (why CPU-misses lost).
 - `src/llama-model-loader.cpp` (`MOE_HOST_POOL_*`), `ggml/src/ggml-cuda/moe-expert-cache.h` (the pool + slot
   cache options), `ENVIRONMENT.md` §§1.2.1/4.
-- [`../moe-cpu-overlap/README.md`](../moe-cpu-overlap/README.md) (TODO #36 — the live CPU/GPU-overlap
+- [`moe-cpu-overlap/README.md`](../../../wip/moe-cpu-overlap/README.md) (TODO #36 — the live CPU/GPU-overlap
   campaign; do not duplicate it).

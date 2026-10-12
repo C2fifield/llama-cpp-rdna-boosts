@@ -1,4 +1,4 @@
-# `mtp-3gpu-decode` — 3-GPU MTP decode is 2.6x SLOWER than plain decode (TODO #51)
+# `mtp-3gpu-decode` — 3-GPU MTP decode is slower than plain decode (TODO #51)
 
 **Status: OPEN (seeded 2026-10-11).** Not part of the delivery; nothing here may be applied to the
 fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). This is the
@@ -6,6 +6,10 @@ same item as **TODO #51**. It has no predecessor campaign of its own: it was *fo
 `archive/work/slab-ring-region/` (now archived) and `TODO.md` names the **archive** directory
 `archive/work/moe-verify-fusions/` as its "working home" — that directory is a record, not a live
 campaign. **This directory is the campaign.**
+
+> **Maintainer note (2026-10-11).**  3-GPU MTP is **still a bit slower than plain decode, but no longer
+> 2.6x slower.**  So the r38 table in §0 is a **historical anchor**: the first task is to re-measure the
+> current gap on r48 and re-scope from there.  Do not treat the 2.6x figure as the present symptom.
 
 > **Cold start.** Read this file in full, then `AGENTS.md` ("Report findings before shipping", "Pushing
 > policy", "WIP and promotion rules", "Default-on policy", "Critical facts"), the `GGML_CUDA_ALLREDUCE` /
@@ -17,10 +21,10 @@ campaign. **This directory is the campaign.**
 
 ## 0. The symptom
 
-On 3 GPUs MTP is a **loss**, not a win — and it hits the production config (`AGENTS.md`: servers run
-unpinned, 3-GPU, `HIP_VISIBLE_DEVICES=0,1,2`, hybrid all-reduce default). Measured 2026-10-10 on the
-field config (Qwen3.8-Flash-Next IQ4_NL + shared Q8_0 MTP head, ~32k-token prompt, 1000 generated,
-`--spec-draft-n-max 3`, `-sm tensor -ncmoe 48`):
+On 3 GPUs MTP was a **loss**, not a win, on clean r38 — and it hits the production config (`AGENTS.md`:
+servers run unpinned, 3-GPU, `HIP_VISIBLE_DEVICES=0,1,2`, hybrid all-reduce default). Measured
+2026-10-10 on the field config (Qwen3.8-Flash-Next IQ4_NL + shared Q8_0 MTP head, ~32k-token prompt,
+1000 generated, `--spec-draft-n-max 3`, `-sm tensor -ncmoe 48`):
 
 | config | prefill | decode | acceptance |
 |---|---:|---:|---:|

@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261011.015 (docs, TODO closures) -- close #29, drop #33, close LFRU + patch hygiene; re-scope #51
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Maintainer decisions
+on the campaign-seeding pass of `261011.014`:
+
+- **TODO #29 — CLOSED (resolved by r25).**  The address-selected `ROPE -> VIEW -> SET_ROWS` fusion has been
+  bit-transparent since the r25 `#pragma clang fp contract(off)` in `ggml/src/ggml-cuda/rope.cu`; #67's
+  residual cross-start flip is hipBLASLt (external, ROCm/rocm-libraries#12126).  The stale TODO entry is
+  removed.  Record: `GREEDY-PURITY.md` §41.
+- **TODO #33 — DROPPED.**  The PR #104 follow-ups (foreign-event guard, per-change kill-switches, reporter
+  FAIL->PASS) are retired: the reporter is a frequent contributor who files PRs, so a still-real issue would
+  already have a PR.  The `wip/sched-cross-backend-events/` campaign was deleted and the TODO entry removed.
+- **LFRU host->GPU weight migration — CLOSED, delivered/integrated in a different form.**  The device-resident
+  MoE expert cache + the bounded pinned host pool (`--host-experts pool`, r35) already provide the tiering the
+  note described.  The scoping note moved to `archive/work/lfru-host-weight-migration/` with a resolution
+  banner; the TODO parked entry is removed.
+- **`rdna-boosts-all.patch` hygiene — CLOSED, already resolved.**  No further action; the tracked convenience
+  artifact stays.  The scoping note moved to `archive/work/rdna-boosts-all-patch-hygiene/` with a resolution
+  banner; the TODO parked entry is removed.
+- **TODO #51 — re-scoped (remains open).**  The maintainer confirms 3-GPU MTP is still slightly slower than
+  plain decode but **not 2.6x** any more.  The TODO item and `wip/mtp-3gpu-decode/README.md` now say so and
+  make a fresh r48 2-vs-3-GPU measurement the first step.
+
+`wip/CAMPAIGNS.md` is updated (the three rows removed, the #29 note now records the closure).  The remaining
+open set is unchanged: `mtp-3gpu-decode`, `fa-band-2byte-row`, `gdn-conv-device-idiom` and the four PARKED
+scoping notes.
+
+
 ## 261011.014 (docs, wip seed) -- seed a campaign for every open TODO item; #29 found already resolved
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  A cold scan of
