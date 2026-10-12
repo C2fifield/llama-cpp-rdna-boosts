@@ -1,9 +1,43 @@
 # WORKLOG - dated delivery records
 
+## 261012.002 (r50) -- per-block merge hygiene: 16/16 `all` sweep; release re-cut to tip `84058162b`
+
+**Delivery change.**  `release.json` re-cut: canonical tip `9a9e6aa6c` -> **`84058162b`**; the net tree is
+**unchanged** (`f102245dfb116f02f6b3f572df7fb413a5c65cf8`), so this is commit-boundary redistribution only.
+`validate-set.sh` green (16/16 strict `git am`, applied tree == `release.json.tree`).
+
+**The r2 "every block builds" standard is met.**  A fresh-per-commit sweep (`rm -rf` + configure +
+`cmake --build --target all -k`, ccache) is **16/16**.  New reusable gate:
+`scripts/gate-per-block-build.sh` (walks `release.json`'s `base..tip`; do NOT use a reused build dir -- the
+r2 lesson).  The standard had silently regressed (r49 block 06 already failed): block 06 is a catch-all
+whose additions reference definitions that landed in later blocks.
+
+**What moved (block 06, the bulk).**  Block 06's `ggml_cuda_try_fuse` (a ~616-line addition over block 05)
+and its six matchers (`ggml_cuda_match_hc_mix`, `_hc_mix_closed`, `_hc_combine_norm_identify`,
+`_hc_combine_norm_set_bf16`, `_match_idx_relu_sum`, `_cache_blocks_fusion`) referenced types/ops owned by
+blocks 08/10/13/14/15.  Block 06 now carries the block-05 `try_fuse`; the dispatch and matchers are
+introduced by block 15 (a **lateral move**, not yet the finer per-owner split).  Hoisted to block 06 (they
+belonged there): `h2d_stage_slots()`/`h2d_stage_budget_explicit()`, `g_write_seq` + `<atomic>`,
+`MMVQ_MOE_MAX_BATCH_SIZE`, `<set>`, `ggml_gallocr_drop_buffers`, `ggml_backend_sched_drop_buffers`,
+`kq_mask_packed_reachable`, `max_host_weight_tensor_bytes`, `GGML_DROP_RESERVE_SLACK_BYTES`; the block-15
+slab-ring guard in `h2d_stage_buffer` and the `.stage_gather` iface entry stay in block 15.  The includes
+block 06 pulled from the future (`fattn-qsa`, `indexer-*`, `mmb`/`gdn-conv`/`ple-conv`/`norm-gated`,
+`cpy-batch`, `ggml-moe-weighted-reduction.h`) are re-added at their owning blocks (08/14/15).  Block 13's
+orphaned `llama-model.cpp` fragment (a rebase merge artifact) was removed.
+
+**Residual (tracked).**  Block 15 grew (~+1.4k lines) because the `try_fuse` dispatch/matchers moved
+there; the finer split into blocks 08/13/14 is a follow-up (it needs the block-14-era matcher bodies, not
+the block-15 state, and the `ggml-backend-meta.cpp` move is blocked on the block-15 iface fields).  See
+`archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
+
+**Gates.**  The net tree is byte-identical to the already-gated r50 tree, so the r50 gate results
+(prefill-logits KLD 0.000707 / 98.755 %, q4exp quant coherence, coherence, 35B draft-mtp) carry
+unchanged; re-confirmed by `validate-set.sh` and the per-block sweep.
+
 ## 261012.001 (r50) -- re-base onto upstream `097cf33d9` (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted
 
 **Delivery change.**  `release.json` is now `v16-097cf33d9-r50` (base `097cf33d9`, base tree
-`30c400ccea2e2fb47b663036a6cee08a4dc542d8`; canonical block-15 tip `9a9e6aa6c`, net tree
+`30c400ccea2e2fb47b663036a6cee08a4dc542d8`; canonical block-15 tip `9a9e6aa6c` (re-cut `84058162b`, same tree, 261012.002), net tree
 `f102245dfb116f02f6b3f572df7fb413a5c65cf8`; `validate-set.sh` green, 16/16 strict `git am`).  16 blocks;
 no block added or removed.  Handover/resolution record: `wip/r50-rebase/README.md`.
 
@@ -36,11 +70,8 @@ page-faults `quantize_mmq_q8_1`; an **unpatched `097cf33d9`** build reproduces i
 upstream's CUDA/HIP gap (the test was added by the Vulkan fix `966baae76`).  The delivery ships pure here;
 fix tracked in `wip/upstream-mul-mat-id-dup/` (candidate for `upstream/`).
 
-**Open (merge hygiene).**  The fixes needed to build the rebased tip (block 06 `input_id`, block 13/15 MMQ
-arity + duplicate template, block 15 ssm-fusion restore / fattn `get_swizzled` dedup / `sched_new` / meta
-host branch) are folded into block 15; blocks 06-14 have **not** yet been re-validated with a fresh
-per-commit `all` sweep (the r2 "every block builds" standard).  Distribution is a follow-up (r2-style);
-the final tip builds and all release gates above pass.
+**Merge hygiene (resolved).**  The fixes needed to build the rebased tip are distributed so every one of
+the 16 commits builds `all`; see `261012.002` and `archive/work/r50-merge-hygiene/`.
 
 ## 261011.018 (r49, containers) -- r49 release-container images built and pushed locally; ccache ~52 %
 

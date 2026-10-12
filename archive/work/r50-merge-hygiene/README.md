@@ -1,10 +1,11 @@
 # r50 merge hygiene — distribute the build fixes to the owning blocks
 
-**Status: OPEN, seeded 2026-10-12.** The r50 delivery tip (`9a9e6aa6c`, release
-`v16-097cf33d9-r50`) **builds and passes every release gate** (see `wip/r50-rebase/README.md`), but the
-r2 **"every one of the 16 commits builds the `all` target"** standard is **not met**: the merge build
-fixes are folded into block 15 instead of the blocks that own them. This campaign is the distribution,
-a repeat of `archive/work/rebase-merge-hygiene/`.
+**Status: DONE (r50, 2026-10-12).** The r50 delivery was re-cut to tip `84058162b` (net tree unchanged
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`) and a fresh-per-commit `all` sweep is **16/16**
+(`scripts/gate-per-block-build.sh`). The block-06 forward-dependency content was removed (its
+`ggml_cuda_try_fuse` additions + six matchers) and the block-06-owned definitions were hoisted; the
+dispatch/matchers landed in block 15 as a lateral move. The finer per-owner split (08/13/14) is a
+follow-up; see `REDISTRIBUTION.md` in this directory.
 
 ## Method (do NOT use the incremental build)
 

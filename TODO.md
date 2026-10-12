@@ -443,3 +443,13 @@ Give it a deterministic repro (e.g. `compute-sanitizer`, or the `GGML_CUDA_SPLIC
 `GGML_META_PINHOST` force-modes) before retrying.  All of it is in
 `archive/work/moe-expert-cache/item3-findings-session20.md`; the issue-#99 gate change is in
 `archive/work/issue-99/README.md`.
+
+## Merge hygiene — finer block-06 dispatch split (r50 follow-up)
+
+The r50 per-block sweep is **16/16**, but block 06's fusion dispatch (`ggml_cuda_try_fuse` additions + the
+six `ggml_cuda_match_*` matchers for hc-mix / combine-norm / idx-relu / cache-blocks) now lives in
+**block 15** as a lateral move, so block 15 grew ~+1.4k lines and the features are not dispatched at their
+owning blocks (08/13/14).  The finer split needs the **block-14-era** matcher bodies (the block-15 state
+references block-15 struct members such as `out_xn_bf16` / `store_xn_f32`), and the
+`ggml-backend-meta.cpp` move is blocked on the block-15 `ggml_backend_device_i` / `ggml_backend_i`
+fields.  Spec: `archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
