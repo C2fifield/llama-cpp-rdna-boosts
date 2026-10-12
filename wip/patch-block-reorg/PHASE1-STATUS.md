@@ -276,6 +276,34 @@ This avoids the slab↔cache entanglement entirely and is far less work than eit
 host-MoE stack early or refactoring the slab behind an interface. It is another small, deliberate code
 layer (the arena appears in a later block), which is exactly the Phase-2 pattern.
 
+### Final approved order (2026-10-12, maintainer)
+
+The maintainer approved the corrected plan and grouped **Slab + MoE together, ahead of qwen4exp**. With
+`mem-infra` dropped, the arena deferred out of FA, and graph-offload folded into the MoE block, the
+final V2.0 set is **14 blocks** (this supersedes the 16/18-block tables in `README.md` / `TARGET-BLOCKS.md`;
+those will be rewritten when the chain is rebuilt):
+
+| # | alias | contents | sources |
+|---|---|---|---|
+| 00 | `foundation` | band-uniformity, Meta-wrapper, allocator W4, logits readback | old 00,05,07,09a,06-readback,15-W4 |
+| 01 | `allreduce` | hybrid HIP all-reduce | old 12 |
+| 02 | `mtp-adaptive` | adaptive MTP | old 01 |
+| 03 | `gdn` | chunked gated-delta-net | old 02 |
+| 04 | `bf16-kv` | BF16 KV cache + native-BF16 FA | old 03 |
+| 05 | `fa` | band + native-KV + derived-mask (arena deferred) | old-04 FA, old-15 FA |
+| 06 | `mmb` | MMB quantized prefill GEMM | old-08 MMB |
+| 07 | `kquant` | mmvq VDR, Q6_K MMQ, Q1_0, grid pad | old 10, old-04 MMQ, old-15 Q1_0/grid/PR57 |
+| 08 | `fused-prefill` | conv1d/RMS/top-k MoE/verify fusions | old-08 fusions, old-15 PR63 |
+| 09 | `fused-moe` | gate+up+GLU MMQ, item-split, shared-expert, MWR | old 13, old-08 mmID, old-15 PR114 |
+| 10 | `slab-moe` | host-resident MoE (iface+scheduler+Meta+slab+cache engine+hooks) + `fattn_stage` arena + graph-offload | old-06 MoE, old-09b, old-11, old-13 engine, old-15 hooks/arena/r48, old-06 async |
+| 11 | `qwen4exp` | model/HC/lazy/MTP head + qwen4exp policy | old-14 model/HC, old-15 HC16/policy |
+| 12 | `qsa` | QSA/indexer + QSA memory wins | old-14 QSA, old-15 W1-W3 |
+| 13 | `mmap-reclaim` | host memory reclaim | old-06/15 r49 |
+
+Dependency check: 05 `fa` needs no slab (arena deferred to 10); 09 `fused-moe` precedes 10 so the cache
+hooks can reference the fusions; 10 `slab-moe` precedes 11 `qwen4exp`, which consumes it; 12 `qsa` after
+`qwen4exp`; 13 last. The getenv caching is folded into each owner.
+
 ### Honest status
 
 The **audit is complete** and the **method is proven** (00-04 rebuilt, tooling written, three structural
