@@ -671,3 +671,71 @@ cd /home/stew675/llama-base/build-base && build/bin/test-llama-archs -a deepseek
 plan and is **not** a Phase-1 blocker.  Block 10 proceeds unchanged.  Fixing it is its own campaign
 (the upstream-`moe_cache_size` + pinned-host-expert path).
 
+
+---
+
+## 16. Block 10 / 11 boundary — the QSA split is a Phase-2-class rewrite (2026-10-12, session 3)
+
+The maintainer decided (2026-10-12): **move old-14's QSA/indexer content to `11 qsa`**.  Scoping that
+split surfaced two facts that change how it can be executed, so the finding is reported before any
+block is committed.
+
+### 16.1 The block-10 WIP has no working QSA at all — it is incomplete, not merely unsplit
+
+`0d3e20323` (`v2-qwen4exp-wip`) adds the QSA/indexer **kernels and op definitions** but **never
+dispatches them**:
+
+- `ggml_cuda_flash_attn_qsa` (`fattn-qsa.cu`), `ggml_cuda_indexer_score` / `_fill` (`indexer-score.cu`)
+  and the `indexer-topk.cu` kernel have **zero callers** anywhere in the tree.
+- `ggml/src/ggml-cuda/ggml-cuda.cu` has **no** `GGML_OP_FLASH_ATTN_QSA` / `GGML_OP_INDEXER_*` case (it
+  gains only 19 lines: the `cpy-batch.cuh`/`hc-mix.cuh` includes and the HC + `cpy_batch` fusions).
+  `ggml_cuda_flash_attn_qsa_supported` is never referenced either.
+- The CPU backend (`ggml-cpu/ggml-cpu.c`) and `ggml-backend.cpp`/`ggml-backend-meta.cpp` list the ops
+  only as **unsupported** (their `case` labels return false / gate the split).
+
+So the WIP's QSA graph is **dead**: for the tiny arch-test models `n_kv` is below the selection width,
+`build_layer_attn` takes the shortcut (`build_qsa_store_k`) and never builds an indexer node; any run
+that reaches `build_qsa_top_k` would build `ggml_indexer_*` nodes no backend supports and abort.  The
+WIP thus passes its gates only because the QSA path is never taken.  The **CUDA dispatch is part of
+`11 qsa`'s work**, not something to move — it has to be written.
+
+(The HC/indexer `try_fuse` matchers are also missing, as the WIP commit message records; those belong to
+`10 qwen4exp`.)
+
+### 16.2 The QSA graph is not separable from the qwen4exp model by files
+
+`src/models/qwen4exp.cpp` is a **modification of an upstream file that already implements QSA**
+(upstream `build_qsa_sel` uses `ggml_lightning_indexer` + `ggml_top_k`).  Old-14 **rewrites** that QSA:
+`llm_graph_input_kpool`/`build_inp_kpool`/`build_qsa_sel` are replaced by `llm_graph_input_qsa_k` +
+`build_qsa_store_k` + `llm_graph_input_qsa` + `build_qsa_top_k`, `build_attn_qsa` is rewritten
+(mask-scatter dense -> `ggml_flash_attn_qsa` sparse with a `LLAMA_QSA_SPARSE_FA` dense fallback), and
+the `graph` / `graph_mtp` ctors and `build_layer_attn` change signature and call sites.  The QSA
+removal and the **non-QSA** rework (HC fusion, MTP export rework, PLE host-gather, lazy reader) sit in
+the **same hunks and the same functions** (`build_layer_attn` is one hunk carrying both).
+
+The same interleaving holds in the shared files: `ggml.h`/`ggml.c` (QSA + HC op tables in one diff),
+`ggml-cpu/ops.cpp`, `mmvf.{cu,cuh}`, `mmq.cu`, `mmvq.cu`, `llama-memory-hybrid-idx.{cpp,h}`,
+`llama-arch.cpp`, `models.h`, `tests/test-backend-ops.cpp`, `common/arg.cpp`, `llama-context.cpp`,
+`llama-kv-cache.cpp`.
+
+Consequence: executing the plan literally (`10 qwen4exp` = model/HC/lazy **+ base's QSA**; `11 qsa` =
+the fused QSA + indexer) requires **reverting the QSA graph in `qwen4exp.cpp` to upstream's** while
+keeping the non-QSA rework, i.e. a Phase-2-class rewrite of `qwen4exp.cpp` and ~10 shared files, then
+re-applying the delivery QSA in 11.  It is the largest single split in the campaign — the handoff
+flagged exactly this and recommended confirming before doing it.
+
+### 16.3 Options (decision requested)
+
+- **B (pragmatic, recommended):** `10 qwen4exp` = the WIP **minus** the six QSA/indexer kernel files
+  (`fattn-qsa.{cu,cuh}`, `indexer-score.{cu,cuh}`, `indexer-topk.{cu,cuh}`) and their CMake entries;
+  it keeps the QSA **op API, CPU oracle and the qwen4exp QSA graph** so it builds and runs the
+  shortcut/dense arm.  `11 qsa` = those six files **plus the CUDA dispatch that must be written**
+  (`ggml-cuda.cu` cases, `supports_op`, the Meta/backend wiring), the indexer pool/cache in
+  `llama-memory-hybrid-idx`, the `LLAMA_QSA_*` policy, and old-15 W1–W3 + `qsa3` + the shadowing fix.
+  Small, build-verified, and the substantive QSA implementation does land in 11.
+- **A (plan-exact):** the full `qwen4exp.cpp` + shared-file split above.  Larger, and the intermediate
+  10 would carry upstream's QSA (a second QSA implementation) until 11 replaces it.
+- **C:** merge old-14 qwen4exp+QSA into `10` (the handoff's original recommendation); `11 qsa` =
+  old-15 W1–W3 + `qsa3` + the shadowing fix only.
+
+No block-10 commit has been made; `v2-phase1` is unchanged at `4463f18c7`.
