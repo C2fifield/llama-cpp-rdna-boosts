@@ -7,14 +7,16 @@ findings log.
 
 ## TL;DR
 
-The **audit is complete**, the **method is proven**, and **target blocks 00–05 are rebuilt and
-committed** on a dedicated branch (`v2-phase1` = `05e88da52`; block 05 gated: per-block 6/6,
-`FLASH_ATTN_EXT` 6389/6389 in all three arms, prefill-logit 0.000586 / 98.725 %, same-seed text
-identical to the r49 known-good). The remaining work is a code refactor of the interleaved hub files,
-done block by block with a fresh build between steps. Nothing is broken or half-applied.
+The **audit is complete**, the **method is proven**, and **target blocks 00–06 are rebuilt and
+committed** on a dedicated branch (`v2-phase1` = `298060c73`; block 05: per-block 6/6, FLASH_ATTN_EXT
+6389/6389 in three arms, prefill-logit 0.000586 / 98.725 %, same-seed text identical to the r49
+known-good; block 06: per-block 7/7, MUL_MAT 2444/2444). The remaining work is a code refactor of the
+interleaved hub files, done block by block with a fresh build between steps. Nothing is broken or
+half-applied.
 
-**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9 (the 05 file list is larger
-than §5 of this file; `GGML_CUDA_OP_TIMING` and two old-15 stragglers need a home decision).
+**Session 2 findings to read before continuing:** `PHASE1-STATUS.md` §9 and §10 (the 05 file list is
+larger than §5 of this file; `GGML_CUDA_OP_TIMING` needs a home decision; the `test-logits-width-probe`
+`width_purity` is a 07 gate; the MUL_MAT_ID `f16 dup=1` fault is fixed by the fused-MoE blocks).
 
 ## 1. Ref map (exact)
 
@@ -23,7 +25,7 @@ than §5 of this file; `GGML_CUDA_OP_TIMING` and two old-15 stragglers need a ho
 | delivery repo | `~/llama-cpp-rdna-boosts` (branch `main`, pushed to `origin` = `git@github.com:stew675/llama-cpp-rdna-boosts.git`) |
 | reference release | `release.json` base `097cf33d9` (tree `30c400ccea2e2fb47b663036a6cee08a4dc542d8`), tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
 | Phase-1 worktree | `~/llama-v2` (git worktree of `~/llama.cpp`), branch **`v2-phase1`** |
-| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `05e88da52` (blocks 00–05) |
+| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `298060c73` (blocks 00–06) |
 | scratch (partial FA) | branch `v2-fa-wip` = `116ff4ccf` (do **not** use; kept only as a record) |
 | other worktrees | `~/llama.cpp` (user's build), `~/llama-rebase` (canonical published chain), `~/llama-src` |
 
@@ -56,6 +58,7 @@ its source hunks with `git apply -3` (zero conflicts; file/line counts match the
 | 03 | gdn | old 02 | 22 files, +3141/−15 |
 | 04 | bf16-kv | old 03 | 8 files, +630/−214 |
 | 05 | fa | old 04-FA + 08-FA + 15-FA, minus the arena | 24 files + 286 instances, +3082/−313 |
+| 06 | mmb | old 08-MMB half | `mmb.{cu,cuh}` + 3 files, +2603/−3 |
 
 **Tooling proven:** `git show <src> --format= -- <paths> | git apply -3` for whole-file moves, and
 `tools/select_hunks.py '<regex>'` to lift hunks by content. See `PHASE1-STATUS.md` §2.
@@ -90,13 +93,14 @@ reference the fusions; 10 precedes 11 (qwen4exp consumes it); 12 after 11; 13 la
 folded into each flag's owning block. Generated `template-instances/*` travel with the type axis that
 dispatches to them.
 
-## 5. `05 fa` — DONE (`05e88da52`); next: `06 mmb`
+## 5. `05 fa` — DONE (`05e88da52`); `06 mmb` — DONE (`298060c73`); next: `07 kquant`
 
-> **Status 2026-10-12 (session 2): block 05 was built and gated — see `PHASE1-STATUS.md` §9 for the
-> actual file list (larger than the steps below), the arena decision, the two gate-found defects and the
-> open findings. The exploratory steps below are kept as the record of how the block was assembled.
-> **Next task:** `06 mmb` (old-08 MMB half: `mmb.{cu,cuh}` + `test-logits-width-probe` + the CMake/
-> `docs/build.md` MMB residue), then `07 kquant` (which also absorbs old-04's MUL_MAT Q6_K test shapes).
+> **Status 2026-10-12 (session 2):** blocks 05 and 06 are built and committed; see `PHASE1-STATUS.md`
+> §9 (block 05) and §10 (block 06 — including the **`test-logits-width-probe` gate-boundary finding:
+> its `width_purity` is a 07 kquant gate**, and the MUL_MAT_ID `f16 dup=1` fault that is fixed by the
+> fused-MoE blocks).  **Next task:** `07 kquant` (old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57; it also
+> absorbs old-04's MUL_MAT Q6_K test shapes left out of 05).  The steps below are the record of how 05
+> was assembled.
 
 Worktree `~/llama-v2`, branch `v2-phase1` at `2a1502311`.
 

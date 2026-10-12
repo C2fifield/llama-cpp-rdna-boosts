@@ -380,3 +380,42 @@ CPU oracle made all 13 `derived=1` cases fail, and the missing null-mask guard c
    perf shapes (kquant, `07`).  Both are recorded so they are not lost.
 5. **`test-backend-ops` grew 6382 → 6389** (block 04's `logit_softcap` head-gate relaxation adds 7
    cases); the FA matrix baseline for the next blocks is **6389**.
+
+---
+
+## 10. Block 06 `mmb` rebuilt (2026-10-12, execution session 2)
+
+Target **06 mmb** is committed on `v2-phase1` as **`298060c73`**.  Per-block fresh `all` build:
+**7/7**.
+
+### What moved into 06 (old-08's MMB half)
+
+- `ggml/src/ggml-cuda/mmb.{cu,cuh}` — the **old-08** state of the file (not the block-15 tip, which
+  extends it with the bf16-activation cache / HC slots / marks that belong to later blocks).
+- `ggml-cuda.cu`: the `mmb.cuh` include, `ggml_cuda_mmb_release_all()` in the destructor,
+  `ggml_cuda_mmb_begin_graph()` in `graph_compute`, the `ggml_cuda_mul_mat` /
+  `ggml_cuda_mul_mat_id` MMB dispatch guards and the fused MoE gate+up+swiglu `try_fuse` arm.
+- `tests/test-logits-width-probe.cpp` + `tests/CMakeLists.txt`.
+- The **MMVF/MMF verify-batch dispatch uniformity** (`ne11_mmvf`) for `n_q <= 8` (bundled in
+  old-08's `ggml-cuda.cu`).
+
+### Gate result and the gate-boundary finding
+
+- `test-backend-ops -o MUL_MAT` — **2444/2444**.  MMB is confirmed **prefill-only**: on both a dense
+  4B and the 35B-A3B Q4_K_M, MMB on/off produce identical *decode/verify* behaviour (the 4B has no MMB
+  shape; on the 35B the routed path is taken).
+- `test-logits-width-probe` — **`width_purity` FAILS at 06, and this is expected**: the W=1 vs W>=2
+  difference is present with `GGML_CUDA_MMB=0` too, and the full delivery (`~/llama.cpp` r49 build)
+  passes with the same probe.  **The `width_purity` check is a `07 kquant` gate** (band-uniform mmvq
+  `nwarps`/VDR + the multi-row verify blocks), not a 06 one; 06 only proves MMB adds no width
+  dependence.  Recorded as a G3 *gate*-only dependency (the per-block **build** is unaffected).
+- `test-backend-ops -o MUL_MAT_ID` — 4 `f16 / dup=1` cases fail and the run ends in
+  `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`, **identically with `GGML_CUDA_MMB=0`** and fixed in the
+  full delivery (r49: 931/931).  Not a 06 regression; the MUL_MAT_ID dispatch is owned by the fused-MoE
+  blocks (09/13).  Flagged so it is not mistaken for an MMB defect when 09/13 land.
+
+### To carry forward
+
+- **Re-run `test-logits-width-probe` at `07 kquant`; it must PASS there** (that is the checkpoint that
+  closes the 06 gate dependency).
+- The `GGML_CUDA_OP_TIMING` placement question from §9 finding 2 is still open.
