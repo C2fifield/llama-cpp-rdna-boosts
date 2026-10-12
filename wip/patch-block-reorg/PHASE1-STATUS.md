@@ -310,3 +310,73 @@ The **audit is complete** and the **method is proven** (00-04 rebuilt, tooling w
 findings recorded with decisions). The remaining execution is a genuine refactor of the hub files; I
 recommend it be done as a focused multi-step effort with builds between steps, not squeezed into the tail
 of this session, where a broken intermediate would be hard to verify.
+
+---
+
+## 9. Block 05 `fa` rebuilt and gated (2026-10-12, execution session 2)
+
+Target **05 fa** is committed on `v2-phase1` as **`05e88da52`** (checkpoint parent
+`pin/v2-phase1-00-04` = `2a1502311`; base `097cf33d9`).  Per-block fresh `all` build: **6/6**.
+The delivery `patches/` and `release.json` are untouched.
+
+### What actually moved into 05 (HANDOFF §5's list was incomplete)
+
+- **FA-owned kernels** (reconstructed at the reference tip, minus the arena):
+  `fattn-common.cuh`, `fattn-mma-f16.cuh`, `fattn-tile.{cu,cuh}`, `fattn-vec.cuh`, `fattn.cu`, and all
+  **286** `template-instances/fattn-*` (the per-type TILE/MMA/VEC axis; `generate_cu_files.py` follows).
+- **V3 derived kq-mask** (a *graph/infrastructure* concern, not just the kernel):
+  `ggml.h`/`ggml.c` (`ggml_flash_attn_ext_add_kq_derived`), `llama-cparams.h` (`kq_mask_derived`),
+  `llama-kv-cache.{cpp,h}` (`kq_mask_derivable` / `set_input_kq_derived`),
+  `llama-graph.{cpp,h}` (`llm_graph_input_kq_derived`, `build_attn_inp_kq_mask`, the
+  `build_attn_inp_*_impl` method refactor, the `kq_derived` map, the **null-mask guards**),
+  `llama-context.{cpp,h}` (the CUDA/HIP probe + `kq_mask_packed_reachable` +
+  `graph_reserve(packed_kq_mask)` reserve sizing), and the **CPU oracle** in
+  `ggml-cpu/ops.cpp` (`kq_derived_mask_value`).
+- **Band** (old-04 FA): the band/`ncols2=8` additions in `fattn.cu`/`fattn-mma-f16.cuh`, the
+  `ggml_set_fa_tensor_parallel`/`ggml_get_fa_tensor_parallel` hint, the `src/llama-context.cpp` hint,
+  and the `GGML_CUDA_OP_TIMING` diagnostic (see finding 2).
+- **FA quants enablement** (old-08, beyond its `fattn*` files): `ggml/CMakeLists.txt` +
+  `ggml/cmake/common.cmake` (`GGML_CUDA_FA_QUANTS` full type list), `convert.cu` + `dequantize.cuh`
+  (the `iq4_nl` `to_*_nc_cuda` arms and `dequantize_q4_nl`), `docs/build.md`, and the
+  `ggml-hip/CMakeLists.txt` `-Wno-pass-failed` build-time fix.
+
+### Arena deferred to 10 (as approved)
+
+`launch_fattn` ships the **pre-arena** behaviour: a native-capable operand is read natively at every
+width and a non-native operand is converted into the node's reserved scratch
+(`ggml_cuda_flash_attn_ext_get_f16_extra_data`); `ggml_cuda_flash_attn_ext_get_alloc_size` keeps its tip
+arm.  The prefill band split + the `fattn_stage` arena + `GGML_CUDA_FA_STAGE_MAX_MB` land with
+`10 slab-moe`.  This is the actual git-recorded pre-arena state (the arena patch's `-` side), not the
+node-scratch intermediate measured in the issue-30 session.
+
+### Gates (block 05) — all green
+
+| gate | result |
+|---|---|
+| per-block fresh `all` build (`gate-per-block-build.sh`) | **6/6** |
+| `test-backend-ops -o FLASH_ATTN_EXT` (default) | **6389/6389** |
+| `test-backend-ops -o FLASH_ATTN_EXT` `GGML_CUDA_FA_KV_NATIVE=0` (staged arm) | **6389/6389** |
+| `test-backend-ops -o FLASH_ATTN_EXT` `GGML_HIP_FA_BAND_WMMA=0` | **6389/6389** |
+| `gate-prefill-logits.sh` | mean KLD **0.000586**, same-top-p **98.725 %** (lim 0.005 / 98.0 %) PASS |
+| same-seed coherence vs r49 known-good `f0a74f4cc` (`-sm tensor` 3-GPU and 1-GPU) | greedy text identical |
+
+Two defects found and fixed *inside* 05 by these gates (both invisible to the build gate): the missing
+CPU oracle made all 13 `derived=1` cases fail, and the missing null-mask guard crashed the first decode
+(`GGML_ASSERT(buffer)` in `set_input_kq_mask`).
+
+### Findings for the maintainer
+
+1. **HANDOFF §5's file list understates 05.**  The derived kq-mask is a graph/context/cparams/kv-cache
+   concern with a CPU oracle, and the FA-quants enablement is CMake + `convert.cu`/`dequantize.cuh` +
+   docs — neither is in the §5 list.  Recorded here so the doc pass and the later blocks know.
+2. **`GGML_CUDA_OP_TIMING`** (`ggml/src/ggml-cuda/ggml-cuda.cu`) is old-04's only content in that file
+   and is a *generic* per-op timing diagnostic, not FA.  It is in 05 per HANDOFF §5.1; **decision
+   wanted**: move it to `00 foundation` (amend the 00 commit) or leave it.  It does not change the plan.
+3. **`kq_mask_packed_reachable` / `graph_reserve(packed_kq_mask)`** is introduced by old-14 in the
+   canonical chain, but it is a V3-derived-reserve concern; it now lives in 05 and is reused by qwen4exp
+   (11).  No action needed unless the maintainer wants it in 11.
+4. **Unmapped old-15 stragglers** left out of 05 (they are not FA): `inp->s_copy`'s
+   `ggml_set_output` (#124 GDN state gather — `03 gdn` or `10`) and old-04's MUL_MAT Q6_K/Q8_0 test
+   perf shapes (kquant, `07`).  Both are recorded so they are not lost.
+5. **`test-backend-ops` grew 6382 → 6389** (block 04's `logit_softcap` head-gate relaxation adds 7
+   cases); the FA matrix baseline for the next blocks is **6389**.
