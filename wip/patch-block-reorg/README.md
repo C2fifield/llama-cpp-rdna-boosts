@@ -281,6 +281,7 @@ records all answers.
 |---|---|
 | `README.md` | this handover: problem, design goals, audit, target, order, method, DoD |
 | `HANDOFF.md` | **cold-start execution state: refs, done blocks, final 14-block order, next steps** |
+| `HANDOFF-SESSION3.md` | **session-3 cold start: blocks 00–09 done/gated, block 10 WIP + the `test-llama-archs` fault, remaining work, method notes** |
 | `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session |
 | `PHASE1-STATUS.md` | dated Phase-1 findings log and decisions |
 | `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |

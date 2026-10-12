@@ -7,15 +7,11 @@ findings log.
 
 ## TL;DR
 
-The **audit is complete**, the **method is proven**, and **target blocks 00–09 are rebuilt and
-committed** on a dedicated branch (`v2-phase1` = `4463f18c7`).  Per-block fresh builds are green
-(10/10).  Block 05: FLASH_ATTN_EXT 6389/6389 ×3, prefill-logit 0.000586 / 98.725 %.  Blocks 06–09:
-MUL_MAT 2444/2444, width_purity PASS, fusion on == off, 35B-A3B `-ncmoe` cache off == on.  Nothing is
-broken or half-applied.
+**Session 3 handover: see `HANDOFF-SESSION3.md` (blocks 00–09 committed and gated 10/10; block 10
+`qwen4exp` is WIP on `v2-qwen4exp-wip` with one `test-llama-archs` GPU fault to diagnose).**  Read
+that file first, then the sections below for the design and the original 05 execution steps.
 
-**Remaining:** `10 qwen4exp`, `11 qsa`, `12 mmap-reclaim`.  See `PHASE1-STATUS.md` §9–§14.  `GGML_CUDA_OP_TIMING`
-still needs a home decision; the old-15 qwen4exp/HC and cache-blocks `ggml-cuda.cu` arms stripped from
-08/09 are re-added with `10 qwen4exp`.
+The **audit is complete** and the **method is proven**.  `v2-phase1` = `4463f18c7` (blocks 00–09).
 
 ## 1. Ref map (exact)
 
@@ -26,7 +22,8 @@ still needs a home decision; the old-15 qwen4exp/HC and cache-blocks `ggml-cuda.
 | Phase-1 worktree | `~/llama-v2` (git worktree of `~/llama.cpp`), branch **`v2-phase1`** |
 | clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `4463f18c7` (blocks 00–09) |
 | scratch (partial FA) | branch `v2-fa-wip` = `116ff4ccf` (do **not** use; kept only as a record) |
-| scratch (08 build) | branch `v2-prefill-wip` = `5f11da3ce` (the merged-block source; block 08 `a32c95a6e` is the squashed version) |
+| block-10 WIP | branch `v2-qwen4exp-wip` = `0d3e20323` (block 10 WIP; **not** for delivery) |
+| scratch (08 build) | branch `v2-prefill-wip` = `5f11da3ce` |
 | other worktrees | `~/llama.cpp` (user's build), `~/llama-rebase` (canonical published chain), `~/llama-src` |
 
 `~/llama-v2` shares the `~/llama.cpp` git object store. The delivery patches (`~/llama-cpp-rdna-boosts/patches`)
