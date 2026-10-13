@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`a17d86773`** (block 11 rebased) |
-| block 10 (amended) | **`1d4a7e983`** |
+| Phase-2 branch | `v2-phase2` = **`e0fc448a6`** (block 11 rebased) |
+| block 10 (amended) | **`b22ab141f`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -65,7 +65,26 @@ unchanged-path coherence.  The move is a pure relocation.
 | per-block fresh `all` build | **12/12** |
 | `gate-prefill-logits.sh` | mean KLD **0.000707**, same-top-p **98.755 %** PASS |
 
-## 4. Next (remaining `try_fuse` arms, highest value next)
+## 4. Extraction 3 — HC_MIX arm + matchers → `hyperconn.cu` (owner block 10)
+
+`ggml_cuda_match_hc_mix` + `ggml_cuda_hc_mix_closed` (previously `static` in `ggml-cuda.cu`) and the
+`hc_mix_on` prefill arm moved into `hyperconn.cu` (`ggml_cuda_hc_mix_try_fuse()`; the kill-switch
+`GGML_CUDA_DISABLE_HC_FUSION`/`GGML_CUDA_DISABLE_HC_MIX` semantics are reproduced exactly).  The
+matchers are declared in `hyperconn.cuh` (the gate-mix arm in `ggml-cuda.cu` still calls
+`ggml_cuda_hc_mix_closed`).  `try_fuse`'s `hc_mix_on` block is now a single guarded call; the
+`hc_comb_on` block follows it in the same order.
+
+| gate | result |
+|---|---|
+| fresh `all` build (tip) | OK |
+| `test-backend-ops -o HC_MIX` | **30/30** |
+| qwen4exp dense + sparse vs r50 | **identical** |
+| `GGML_CUDA_DISABLE_HC_MIX=1` vs default (dense) | **identical** |
+| 4B Q8_0 same-seed greedy vs r50 | **identical** |
+| per-block fresh `all` build | **12/12** |
+| `gate-prefill-logits.sh` | mean KLD **0.000707**, same-top-p **98.755 %** PASS |
+
+## 5. Next (remaining `try_fuse` arms, highest value next)
 
 The big remaining interleaves, in rough value order:
 
@@ -82,7 +101,7 @@ The big remaining interleaves, in rough value order:
 Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 `-moe-cache-hooks.cu`, `-arena.cu`).
 
-## 5. Open question for the maintainer
+## 6. Open question for the maintainer
 
 Block-10-owned extractions re-home cheaply (amend block 10, rebase block 11).  Block-08/09-owned
 extractions will conflict in `ggml-cuda.cu` when rebasing blocks 09/10/11.  Confirm the amend+rebase
