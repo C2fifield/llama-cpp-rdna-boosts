@@ -1000,3 +1000,41 @@ The functional drop (§20.2 A) is repaired and the chain re-verified.
 Rebased onto `0a5d26280`; the qwen4exp **dense arm still diverges from r50** ("question" vs "query"), i.e.
 the cause is the WIP's missing **old-15 qwen4exp** content, not the block-08 fusions.  Scratch
 `v2-block10` = `2890c1864`.
+
+---
+
+## 22. QSA ⊂ qwen4exp — the planned 10/11 split is not real (2026-10-12, session 3)
+
+Maintainer guidance: *"QSA + qwen4exp pretty much go together … QSA is technically part of the qwen4exp
+architecture."*  Verified directly:
+
+- **The delivery's QSA/HC dispatch is old-15, not old-14.**  `GGML_OP_FLASH_ATTN_QSA` / `GGML_OP_INDEXER_*`
+  and `GGML_OP_HC_MIX` / `HC_COMBINE` dispatch cases first appear in old-15 (`af0595360`); old-14 has
+  none.  So old-14 alone ships a qwen4exp model whose QSA/HC ops are never dispatched (§16.1, §19.1).
+- **r50's `src/models/qwen4exp.cpp` cannot be compiled on the block-10 tree** without old-15's QSA
+  memory wins: it needs `ggml_flash_attn_qsa_set_packed` (qsa3), the extended `ggml_flash_attn_qsa` /
+  `ggml_indexer_score` / `ggml_indexer_fill` signatures, `ggml_hc_mix_set_planar` (HC16),
+  `qsa_score_key_limits` / `qsa_n_kv_window`, and `llama_model_loader::lazy_read::managed_budget`.
+  i.e. the QSA W1–W3, `qsa3` and HC16 changes are **load-bearing for the qwen4exp graph**, not an
+  independent feature.
+- The block-10 dense/sparse coherence divergence ("question" vs "query", deterministic, present with
+  `LLAMA_QSA_OFF=1` too) traces to the WIP's missing old-15 `build_hc_mix` / `build_hc_combine` changes
+  (the HC16 planar layout, `*inject = planar`, the combine view ordering) — not to the block-08 fusions
+  or the GDN beta-sigmoid fusion (both pulled in and verified).
+
+### Decision (following the maintainer's guidance)
+
+**Merge the planned `10 qwen4exp` + `11 qsa` into one `10 qwen4exp` block** = all of old-14 + old-15's
+qwen4exp / QSA / HC16 content (i.e. r50's qwen4exp-side tree).  The remaining v2 blocks then become
+`11 mmap-reclaim` (old-06/15 r49) plus a home for the old-15 CPU/campaign wins still unassigned (§20.2 D).
+
+### Work done on the scratch this session
+
+- Restored the six QSA/indexer kernel files + the QSA test cases to the block-10 tree (undoing the
+  option-B split), added the **QSA dispatch** (`GGML_OP_FLASH_ATTN_QSA` / `INDEXER_TOPK` / `INDEXER_SCORE`
+  / `INDEXER_FILL` compute switch + `supports_op`, plus the includes), and pulled in old-15's **GDN
+  beta-sigmoid fusion** (`gated_delta_net.cu(h)` + the `try_fuse` arm).  Tree builds;
+  `test-backend-ops -o FLASH_ATTN_QSA` **22/22**.
+- **Still not committed as block 10**: the qwen4exp coherence test fails (one token) until old-15's
+  HC16/qwen4exp/QSA-W1–W3 content is pulled in.  Scratch `v2-block10` (uncommitted working changes on
+  top of `2890c1864`) holds the QSA-dispatch + GDN work.
