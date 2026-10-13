@@ -739,3 +739,72 @@ flagged exactly this and recommended confirming before doing it.
   old-15 W1–W3 + `qsa3` + the shadowing fix only.
 
 No block-10 commit has been made; `v2-phase1` is unchanged at `4463f18c7`.
+
+---
+
+## 17. Block 09 dropped base content — the "done" chain is not trustworthy yet (2026-10-12, session 3)
+
+While finishing block 10 the qwen4exp model (`Qwen3.8-Flash-Next`) failed to **load** under `-sm tensor`,
+which exposed a reconstruction regression in an already-committed block.
+
+### 17.1 The bug: block 09 lost four base `ggml-backend-meta.cpp` split-state cases
+
+`ggml/src/ggml-backend-meta.cpp`'s `ggml_backend_meta_get_split_state` switch is missing four cases that
+exist in **base `097cf33d9` and in every original delivery block** (old-06 `873f9b24b` … old-15
+`af0595360`):
+
+```
+case GGML_OP_LIGHTNING_INDEXER
+case GGML_OP_DSV4_HC_COMB
+case GGML_OP_DSV4_HC_PRE
+case GGML_OP_DSV4_HC_POST
+```
+
+The `handle_lightning_indexer` lambda is still defined in v2-phase1 (`ggml-backend-meta.cpp:977`) but is
+**never used** — the reconstruction kept the helper and dropped the case labels (only 96 of base's 100
+switch cases survive; the four are exactly the missing ones).  Consequence: base's qwen4exp graph
+contains `GGML_OP_DSV4_HC_PRE`, the Meta splitter has no rule for it, and the process aborts at load:
+
+```
+ggml/src/ggml-backend-meta.cpp:1255: ggml op not implemented: DSV4_HC_PRE
+```
+
+`build-b09` (`4463f18c7`) reproduces this; the **reference tip `84058162b` loads the same model fine**.
+Block 09's recorded gates (35B-A3B `-ncmoe` cache coherence, prefill-logit) never exercise qwen4exp, so
+the drop was invisible — this is exactly the failure mode the per-block build gate cannot catch.
+
+### 17.2 Block 10's WIP is also missing old-15 content (a second load blocker)
+
+`v2-qwen4exp-wip` adds the four cases back (they are part of its diff), and then the same model load
+aborts **one step later**:
+
+```
+ggml/src/ggml-backend-meta.cpp:2297: GGML_ASSERT(ggml_is_contiguous(tensor)) failed
+   in ggml_backend_meta_set_tensor_async
+DIAG: name="Meta(ROCm0,ROCm1,ROCm2)# (view)#0" type=F32 ne=[2560,2,1,1] nb=[4,10256,20512,20512]
+```
+
+i.e. the loader's pinned async-upload pipeline (r48) hands a **strided view** to the meta backend.  r50
+(`84058162b`) loads the same model, and the difference is **old-15** content the WIP never carried:
+`git diff 16ef56ba9 af0595360 -- ggml/src/ggml-backend-meta.cpp` adds the
+`ggml_backend_meta_is_host_view` / `buffer_init_tensor_impl` handling (and `llama-model-loader.cpp`
+gains the matching `create_tensor`/`load_all_data` changes).  So block 10's WIP is missing its
+**non-QSA** old-15 half as well as the HC fusion matchers and the QSA dispatch (§16.1).
+
+### 17.3 Recommendation
+
+The V2 chain needs a **systematic "dropped base content" audit of blocks 00–09** before block 10 is
+built on top of it: for every file a block modified, diff the block against its source blocks and check
+that no base/source line was silently dropped (the `ggml-backend-meta.cpp` cases are one instance; the
+block-09 reconstruction's `git apply -3` was clearly lossy in places).  Suggested minimal repair:
+re-add the four cases to `ggml-backend-meta.cpp` in block 09 (amend), re-run the block-09 fresh build,
+re-run the block-09 region gates plus a qwen4exp **load** smoke test, then continue.
+
+`v2-phase1` is left unchanged at `4463f18c7`; no block-10 commit was made.  The exploratory trees
+(`v2-block10` = WIP minus the six QSA kernel files, `build-b10`) are scratch.
+
+### 17.4 Asked
+
+Confirm the audit-and-repair path (fix block 09 + sweep 00–09) — or say if the intent was to carry
+these base cases in a later block instead (in which case block 09's own base-qwen4exp build is still
+broken and should be documented as such).
