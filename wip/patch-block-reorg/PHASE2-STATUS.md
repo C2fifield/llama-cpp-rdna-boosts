@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`cf9c2e474`** (block 11) |
-| block 8/9/10 | **`8296626db` / `9cf2c7181` / `bf1fbfa55`** |
+| Phase-2 branch | `v2-phase2` = **`24ef342b3`** (block 11) |
+| block 8/9/10 | **`51bfc6c7f` / `eb2105b51` / `50f5fa1d1`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -127,11 +127,12 @@ Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 <delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
 tree delta is exactly the intended extraction.
 
-**Checkpoint 6** (`checkpoints/v2-phase2-ckpt6.bundle`, tag `pin/v2-phase2-ckpt6`): `v2-phase2` =
-`cf9c2e474`; block 08 = `8296626db`, block 09 = `9cf2c7181`, block 10 = `bf1fbfa55`.  **Checkpoint 5**:
-`8326733e1` / block 08 `8296626db` / 09 `7ffdd65e9` / 10 `11ddfb213`.  **Checkpoint 4**: `9c1ec61d6` /
-block 10 `3238b04e9`.  **Checkpoint 3**: `463c1d598` / block 10 `952aa59f7`.  **Checkpoint 2**:
-`d86bcf088` / `fbed3f4c0`.  **Checkpoint 1**: `d8ad56737` / `1fa36b3ea`.  Restore instructions in
+**Checkpoint 7** (`checkpoints/v2-phase2-ckpt7.bundle`, tag `pin/v2-phase2-ckpt7`): `v2-phase2` =
+`24ef342b3`; block 08 = `51bfc6c7f`, block 09 = `eb2105b51`, block 10 = `50f5fa1d1`.  **Checkpoint 6**:
+`cf9c2e474` / block 08 `8296626db` / 09 `9cf2c7181` / 10 `bf1fbfa55`.  **Checkpoint 5**: `8326733e1` /
+block 08 `8296626db` / 09 `7ffdd65e9` / 10 `11ddfb213`.  **Checkpoint 4**: `9c1ec61d6` / block 10
+`3238b04e9`.  **Checkpoint 3**: `463c1d598` / `952aa59f7`.  **Checkpoint 2**: `d86bcf088` /
+`fbed3f4c0`.  **Checkpoint 1**: `d8ad56737` / `1fa36b3ea`.  Restore instructions in
 `checkpoints/README.md`.
 
 ## 7b. Batching pass 1 — conv/norm, decode/norm folds, MWR (2026-10-12, session 2)
@@ -247,3 +248,38 @@ gdn_beta_sigmoid, gdn/ssm cpy, gate_beta_verify, l2_norm_pair (block 08/10); (d)
 (e) the hc_comb cluster (needs `ggml_cuda_is_view_or_noop` / `ggml_cuda_bf16_src1_cache_on` hoists);
 (f) the remaining upstream-shared arms.  Each batch still gets a fresh per-block build N/N + its
 gate(s).
+
+## 9. Item 3 — `mmvq.cu` dispatch (start, 2026-10-12)
+
+**Item 2 is confirmed done**: `ggml_cuda_mmq_select_J` (`mmq.cu`) already owns the RDNA3_5 `J`
+selection and the `GGML_CUDA_MMQ_J_MAX` cap (3 call sites); the config rows live in
+`mmq-config-rdna3-5.cuh`.
+
+**Item 3, step 1 — `calc_nwarps` override hook.**  Our band-uniform RDNA policy was a rewrite of
+`calc_nwarps`'s RDNA4/RDNA3_0 bodies; upstream also churns that function.  The refactor keeps
+**upstream's** `calc_nwarps` bodies intact and moves our policy to a new `mmvq-rdna.cuh`:
+
+```c
+// mmvq.cu, top of calc_nwarps(), before upstream's RDNA4 branch:
+const int rdna_nwarps = mmvq_rdna_nwarps(type, ncols_dst, table_id);
+if (rdna_nwarps > 0) { return rdna_nwarps; }   // 0 = not ours -> upstream logic
+```
+
+`mmvq_rdna_nwarps()` returns the whole-band policy for `RDNA4` (1), `RDNA3_0` (8 for
+Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q6_K/IQ4_NL, else 1) and `RDNA3_5` (2 for Q8_0, else 1), and 0 for every
+other table id.  It is included after `enum mmvq_parameter_table_id` (so it can name the table ids)
+and before `calc_nwarps`.
+
+Re-homed in **block 08** (the block that introduced the band-uniform policy); the rebase of
+09/10/11 was clean, and the tip's `mmvq.cu`/`mmvq-rdna.cuh`/`mmvq.cuh` are byte-identical to the
+validated working tree.
+
+Gates: `test-logits-width-probe` **width_purity=PASS (worst maxdiff 0)** on 4B and 35B-A3B; 4B +
+qwen4exp dense/sparse identical to r50; per-block `all` **12/12**; prefill-logit **0.000707 /
+98.755 %**.
+
+**Item 3, step 2 (next):** move the remaining RDNA launch-policy helpers out of `mmvq.cu`
+(`calc_nwarps_weight`, `calc_rows_per_block_override`, `calc_rows_per_block_weight`,
+`mmvq_decode_grid_loop_type`, the `GGML_MMVQ_RDNA4_*` macros) into `mmvq-rdna.cuh` (they must be
+defined after `calc_nwarps`, so they need a second include point or a forward declaration), and
+consider moving the `mul_mat_vec_q_moe` / item-split kernels to `mmvq-moe.cu`.

@@ -4,6 +4,18 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt7 — `v2-phase2-ckpt7.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt7` = `24ef342b3` |
+| branch tip | `v2-phase2` = `24ef342b3` |
+| block 8 / 9 / 10 | `51bfc6c7f` / `eb2105b51` / `50f5fa1d1` |
+
+Item 3 step 1: the band-uniform `calc_nwarps` policy moved to `mmvq-rdna.cuh` via an override hook
+(upstream branches restored), re-homed in block 08.  `width_purity` PASS.  See
+`../PHASE2-STATUS.md` §9.
+
 ## ckpt6 — `v2-phase2-ckpt6.bundle`
 
 | | |
