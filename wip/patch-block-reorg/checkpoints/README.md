@@ -4,6 +4,18 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt6 — `v2-phase2-ckpt6.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt6` = `cf9c2e474` |
+| branch tip | `v2-phase2` = `cf9c2e474` |
+| block 8 / 9 / 10 | `8296626db` / `9cf2c7181` / `bf1fbfa55` |
+
+**`ggml_cuda_try_fuse` extraction complete** (`try_fuse` 2244 → 1064 lines): the last hoist arms
+(`glu_q8_1`, `shared_expert`) are in block 09 with their helpers (`topk_moe` is upstream, skipped).
+See `../PHASE2-STATUS.md` §7b (cluster G).
+
 ## ckpt5 — `v2-phase2-ckpt5.bundle`
 
 | | |

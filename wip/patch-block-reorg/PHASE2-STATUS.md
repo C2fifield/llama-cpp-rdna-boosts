@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`8326733e1`** (block 11) |
-| block 8/9/10 | **`8296626db` / `7ffdd65e9` / `11ddfb213`** |
+| Phase-2 branch | `v2-phase2` = **`cf9c2e474`** (block 11) |
+| block 8/9/10 | **`8296626db` / `9cf2c7181` / `bf1fbfa55`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -127,11 +127,11 @@ Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 <delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
 tree delta is exactly the intended extraction.
 
-**Checkpoint 5** (`checkpoints/v2-phase2-ckpt5.bundle`, tag `pin/v2-phase2-ckpt5`): `v2-phase2` =
-`8326733e1`; block 08 = `8296626db`, block 09 = `7ffdd65e9`, block 10 = `11ddfb213`.  **Checkpoint 4**
-(`checkpoints/v2-phase2-ckpt4.bundle`, tag `pin/v2-phase2-ckpt4`): `v2-phase2` = `9c1ec61d6`, block 10 =
-`3238b04e9`.  **Checkpoint 3**: `463c1d598` / block 10 `952aa59f7`.  **Checkpoint 2**: `d86bcf088` /
-`fbed3f4c0`.  **Checkpoint 1**: `d8ad56737` / `1fa36b3ea`.  Restore instructions in
+**Checkpoint 6** (`checkpoints/v2-phase2-ckpt6.bundle`, tag `pin/v2-phase2-ckpt6`): `v2-phase2` =
+`cf9c2e474`; block 08 = `8296626db`, block 09 = `9cf2c7181`, block 10 = `bf1fbfa55`.  **Checkpoint 5**:
+`8326733e1` / block 08 `8296626db` / 09 `7ffdd65e9` / 10 `11ddfb213`.  **Checkpoint 4**: `9c1ec61d6` /
+block 10 `3238b04e9`.  **Checkpoint 3**: `463c1d598` / block 10 `952aa59f7`.  **Checkpoint 2**:
+`d86bcf088` / `fbed3f4c0`.  **Checkpoint 1**: `d8ad56737` / `1fa36b3ea`.  Restore instructions in
 `checkpoints/README.md`.
 
 ## 7b. Batching pass 1 — conv/norm, decode/norm folds, MWR (2026-10-12, session 2)
@@ -209,6 +209,25 @@ extraction.
 Remaining: `glu_q8_1` + `shared_expert` (block 09) and `topk_moe` (block 08), which need
 `ggml_cuda_should_fuse_mul_mat_vec_q`, `ggml_cuda_check_fusion_memory_ranges` and
 `ggml_cuda_match_shared_expert` moved from block 10 into block 08/09 first.
+
+### Cluster G — the hoist arms, and `try_fuse` COMPLETE (try_fuse 1102 → 1064 lines)
+
+- **`topk_moe` skipped**: the `ggml_cuda_topk_moe_fusion` matcher and the `//topk-moe` arm are
+  **upstream-unchanged** (the only delivery edit is the two-line `!ggml_cuda_topk_moe_fusion_disabled()`
+  guard).  Moving upstream code would not improve rebase resilience, so it is left alone.
+- **`glu_q8_1` + `shared_expert` (block 09)** re-homed, together with the helper hoists they need,
+  moved from block 10 to block 09: `ggml_cuda_should_fuse_mul_mat_vec_q` → `mmvq.cu`,
+  `ggml_cuda_match_shared_expert` → `mmvq.cu`, `ggml_cuda_should_fuse_mul_mat` exposed,
+  `ggml_cuda_check_fusion_memory_ranges` exposed.  New wrappers: `ggml_cuda_glu_q8_1_mark` (a void
+  marking call) and `ggml_cuda_match_shared_expert_try_fuse`.
+- Rebase procedure: amend block 09 with the moves + extraction, rebase 10/11, and on the single
+  `ggml-cuda.cu` conflict restore the validated final files (the tip tree was recorded first and the
+  rebased tip's tree is **identical**).  `ggml-cuda.cu` auto-merged the rest.
+
+**`ggml_cuda_try_fuse` = 1064 lines** (Phase-2 start 2244, upstream base 792); `ggml-cuda.cu`
+11307 → **9819**.  The only remaining arms in `try_fuse` are upstream's own.
+
+The `ggml_cuda_try_fuse` extraction (Phase-2 work item 1) is therefore **complete**.
 
 ## 8. Scale of the remaining work
 
