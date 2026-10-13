@@ -10,13 +10,14 @@ Read this first, then `PHASE2-STATUS.md` (the dated Phase-2 log — it has the p
 
 - **Phase 1 is complete** at tag `v2-phase1` = `a40841e1e` (12 blocks 00–11; tree byte-identical to the
   published delivery `af0595360`).
-- **Phase 2 is in progress** on branch **`v2-phase2`** = **`9d6730dc8`** (a re-cut of Phase 1 with the
+- **Phase 2 is in progress** on branch **`v2-phase2`** = **`18a2fd0f8`** (a re-cut of Phase 1 with the
   Phase-2 refactors folded into the owning blocks).
 - **Done:** the whole `ggml_cuda_try_fuse` extraction (work item 1 — `try_fuse` 2244 → **1064** lines,
-  the rest being upstream arms); work item 2 (MMQ `J` selection was already self-contained); work item 3,
-  steps 1–2 (the RDNA `nwarps`/rpb policy moved out of `mmvq.cu`).
-- **Remaining:** work item 3 step 3 (optional MoE-kernel file split), item 4 (FA chooser), item 5
-  (context/loader glue), item 6 (the maintainer's `ggml-cuda.cu` split), then the **V2.0 release cut**.
+  the rest being upstream arms); work item 2 (MMQ `J` selection was already self-contained); work item 3
+  (steps 1–2 the RDNA `nwarps`/rpb policy; **step 3 the MoE kernel file split** `mmvq-moe.cu` +
+  `mmvq-vecdot.cuh`, re-homed in block 10).
+- **Remaining:** item 4 (FA chooser), item 5 (context/loader glue), item 6 (the maintainer's
+  `ggml-cuda.cu` split), then the **V2.0 release cut**.
 - **The delivery `patches/` and `release.json` are untouched**; nothing has been pushed to the fork.
 - Checkpoints 1–8 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
 
@@ -32,11 +33,11 @@ collides with a small call point, not a rewritten shared function. The authorita
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (tree == `af0595360`, the delivery) |
-| **Phase-2 branch** | **`v2-phase2` = `9d6730dc8`** |
+| **Phase-2 branch** | **`v2-phase2` = `18a2fd0f8`** |
 | block 08 (amended) | `fcce5864e` |
 | block 09 (amended) | `96a7d0d16` |
-| block 10 (amended) | `5d472a3eb` |
-| block 11 (amended) | `9d6730dc8` |
+| block 10 (amended) | `fdd20f2c6` |
+| block 11 (amended) | `18a2fd0f8` |
 | base | `097cf33d9` (tree `30c400cc…`) |
 | delivery tip (r50) | `af0595360` / `84058162b` (tree `f102245d…`) |
 | reference build r50 | `~/llama-rebase/build-r50` |
@@ -56,7 +57,8 @@ Checkpoints (annotated tags in `~/llama.cpp`) — each also has a bundle in
 | `pin/v2-phase2-ckpt5` | `8326733e1` | + block-08/09 clean arms |
 | `pin/v2-phase2-ckpt6` | `cf9c2e474` | + glu_q8_1/shared_expert; try_fuse COMPLETE |
 | `pin/v2-phase2-ckpt7` | `24ef342b3` | item 3 s1: `calc_nwarps` → `mmvq-rdna.cuh` |
-| **`pin/v2-phase2-ckpt8`** | **`9d6730dc8`** | **item 3 s2: launch-param helpers → `mmvq-rdna-params.cuh`** |
+| `pin/v2-phase2-ckpt8` | `9d6730dc8` | item 3 s2: launch-param helpers → `mmvq-rdna-params.cuh` |
+| **`pin/v2-phase2-ckpt9`** | **`18a2fd0f8`** | **item 3 s3: MoE kernel → `mmvq-moe.cu` + shared selectors → `mmvq-vecdot.cuh`** |
 
 ## 3. Done (do not redo)
 
@@ -116,29 +118,15 @@ code would not help.
 > `git apply -3` + `commit --amend` + `git rebase --onto` (§5). Run the mandatory full per-block build
 > gate after each re-home (§6).
 
-### 4.1 Item 3 step 3 — MoE kernel file split (OPTIONAL, do last of item 3)
+### 4.1 Item 3 step 3 — MoE kernel file split — **DONE (ckpt9)**
 
-Target: move `mul_mat_vec_q_moe` + `mul_mat_vec_q_moe_launch` from `mmvq.cu` to `mmvq-moe.cu`.
-**Not cleanly separable as-is.** The kernel needs module-local declarations shared with the dense
-dispatch:
-- the `vec_dot_q_cuda_t` typedef (defined in `mmvq.cu`, line ~39),
-- the `GGML_CUDA_MMVQ_MOE_DENSE` guard,
-- `get_vec_dot_q_cuda(ggml_type, bool moe)` and `get_vdr_mmvq(ggml_type, bool moe)`.
-
-**First lift those into a new `mmvq-vecdot.cuh`** (`#pragma once`, `#include "common.cuh"` +
-`#include "vecdotq.cuh"`, the typedef, the guard and the two selectors), include it from `mmvq.cu` and
-the new `mmvq-moe.cu`, then move the kernel + launch. Add `mmvq-moe.cuh` declaring the launch template:
-```c
-template <ggml_type type>
-void mul_mat_vec_q_moe_launch(/* exact parameter list from mmvq.cu */);
-```
-`mmvq-moe.cu` includes `mmvq-moe.cuh`, `mmvq-vecdot.cuh`, `mmvq.cuh`, `moe-expert-cache.h`,
-`vecdotq.cuh`, `<algorithm>`, `<cstdint>`. The CUDA sources are `file(GLOB "*.cu")`, so the new file is
-picked up automatically (no CMake edit). **Warning:** a first cut compiled `mmvq-moe.cu` but broke
-`mmvq.cu`'s template structure — delete the moved regions by exact text markers (comment line →
-closing `}`), verify the file still has `mul_mat_vec_q_switch_fusion`, `calc_launch_params`,
-`mul_mat_vec_q_switch_ncols_dst`, and rebuild before gating. If it resists, it is acceptable to leave it
-inline (the policy extraction of steps 1–2 is the substantive part).
+`mul_mat_vec_q_moe` + `mul_mat_vec_q_moe_launch` now live in `mmvq-moe.cu` (with `mmvq-moe.cuh`
+declaring the launch template and **explicit instantiation for the 23 dispatch types**); the shared
+selectors (`vec_dot_q_cuda_t`, the `GGML_CUDA_MMVQ_MOE_DENSE` guard, `get_vec_dot_q_cuda`,
+`get_vdr_mmvq`) moved to `mmvq-vecdot.cuh`.  `mmvq.cu` 3745 → 3368 lines.  Re-homed in **block 10**
+(the last editor of the launch) — the tip diff applies cleanly there and only block 11 replays (it does
+not touch `mmvq*`).  Gates: 4B/qwen4exp dense+sparse/35B identical to r50, width purity PASS, prefill-logit
+0.000707 / 98.755 %, per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §9.
 
 ### 4.2 Item 4 — FA `type_KV` / band / native chooser → `fattn-rdna.cuh`
 

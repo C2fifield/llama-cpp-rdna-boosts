@@ -4,6 +4,19 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt9 — `v2-phase2-ckpt9.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt9` = `18a2fd0f8` |
+| branch tip | `v2-phase2` = `18a2fd0f8` |
+| block 8 / 9 / 10 | `fcce5864e` / `96a7d0d16` / `fdd20f2c6` |
+
+Item 3 step 3: the shared MMVQ vec-dot/VDR selectors moved to `mmvq-vecdot.cuh` and the dedicated
+MoE kernel `mul_mat_vec_q_moe` + its launch moved to `mmvq-moe.cu` / `mmvq-moe.cuh` (re-homed in
+block 10; 23 explicit launch instantiations).  `mmvq.cu` 3745 → 3368 lines.  `width_purity` PASS,
+prefill-logit 0.000707 / 98.755 %, per-block `all` 12/12.  See `../PHASE2-STATUS.md` §9.
+
 ## ckpt8 — `v2-phase2-ckpt8.bundle`
 
 | | |

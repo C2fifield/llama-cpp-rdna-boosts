@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`9d6730dc8`** (block 11) |
-| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `5d472a3eb`** |
+| Phase-2 branch | `v2-phase2` = **`18a2fd0f8`** (block 11) |
+| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `fdd20f2c6`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -290,12 +290,24 @@ and the four `mmvq*` files are byte-identical to the validated tree.
 Gates: `test-logits-width-probe` **PASS** (4B + 35B, worst maxdiff 0); 4B + qwen4exp dense/sparse
 identical; per-block `all` **12/12**; prefill-logit **0.000707 / 98.755 %**.
 
-**Item 3, step 3 (attempted, deferred):** move the MoE item-split kernel `mul_mat_vec_q_moe` (+ its
-launch) to `mmvq-moe.cu`.  It is **not cleanly separable as-is**: the kernel needs the module-local
-`vec_dot_q_cuda_t` typedef, the `GGML_CUDA_MMVQ_MOE_DENSE` guard and the `get_vec_dot_q_cuda`/
-`get_vdr_mmvq` selectors shared with the dense dispatch.  A first cut moved them and compiled
-`mmvq-moe.cu` but broke `mmvq.cu`'s template structure (the kernel-template line was left behind after
-the line-range delete), so it was **cleanly reverted** and the tip left green.  Prerequisite for a retry:
-lift the shared selectors into a `mmvq-vecdot.cuh`, then delete the moved regions by exact text markers
-(not line ranges) and rebuild before gating.  It is acceptable to leave the kernel inline (steps 1–2 are
-the substantive part).  See `HANDOFF-PHASE2-REMAINING.md` §4.1.
+**Item 3, step 3 — MoE kernel file split: DONE (2026-10-13).**  The shared selectors
+(`vec_dot_q_cuda_t`, the `GGML_CUDA_MMVQ_MOE_DENSE` guard, `get_vec_dot_q_cuda`, `get_vdr_mmvq`) were
+lifted into a new `mmvq-vecdot.cuh` (included by `mmvq.cu` at the old line 39); `mul_mat_vec_q_moe`
+(the dedicated multi-token MUL_MAT_ID kernel) and `mul_mat_vec_q_moe_launch` then moved to a new
+`mmvq-moe.cu` with a `mmvq-moe.cuh` template declaration.  The kernel is file-local (`static`); the
+launch is non-static and **explicitly instantiated for the 23 types the dense dispatch can reach**
+(the surrounding `mul_mat_vec_q_switch_type` instantiates the per-type caller, so a declaration-only
+header would otherwise leave the specialization undefined at link).  `mmvq.cu` 3745 → **3368** lines;
+`mmvq-moe.cu` 346.  The regions were removed by exact text markers (the earlier line-range attempt had
+left the kernel-template line behind), and the file set is picked up by the `.cu` glob (no CMake edit).
+
+**Re-home:** applied to **block 10** (the last block to edit the MoE launch — it widened
+`MMVQ_MOE_MAX_BATCH_SIZE` and dropped a cold-seam comment); the tip diff applies there cleanly and only
+block 11 (which does not touch `mmvq*`) replays, so the rebase is conflict-free.  Block 09 was the
+alternative owner but the tip diff conflicts there (the kernel still carries block 09's `MMVQ_MAX_BATCH_SIZE`
+and cold-seam comment), so the split would have had to be re-cut against the block-09 form.  The rebased
+tip's four `mmvq*` files are byte-identical to the validated tree.
+
+Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; `test-logits-width-probe`
+**width_purity=PASS (worst maxdiff 0)** on 4B and 35B; `gate-prefill-logits.sh` mean KLD **0.000707**,
+same-top-p **98.755 %** PASS; full per-block `all` build **12/12**.  **Item 3 is complete.**
