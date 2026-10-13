@@ -4,6 +4,18 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt12 — `v2-phase2-ckpt12.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt12` = `f52f3288f` |
+| branch tip | `v2-phase2` = `f52f3288f` |
+| block 5 / 8 / 9 / 10 | `6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `318fec62f` |
+
+Item 6a: the fusion dispatcher moved to `ggml-cuda-try-fuse.cu` / `.cuh` (block 10).
+`ggml-cuda.cu` 9819 → 7722 lines.  Same-seed 4B/qwen4exp/35B identical; per-block `all` 12/12.
+See `../PHASE2-STATUS.md` §12.
+
 ## ckpt11 — `v2-phase2-ckpt11.bundle`
 
 | | |

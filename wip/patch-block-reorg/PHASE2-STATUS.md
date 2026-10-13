@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`ea547cb4d`** (block 11) |
-| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `65c266b5e`** |
+| Phase-2 branch | `v2-phase2` = **`f52f3288f`** (block 11) |
+| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `318fec62f`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -369,3 +369,29 @@ release is already `llama_load_release_mmap()` (block 09) — both are small sta
 Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
 (`-t 8`) host-expert run **identical to r50**; the rebased tip's `llama-context.cpp` and
 `llama-model-loader.cpp` are byte-identical to the validated tree; full per-block `all` build **12/12**.
+
+## 12. Item 6a — `ggml-cuda.cu` → `ggml-cuda-try-fuse.cu` (2026-10-13)
+
+The fusion dispatcher moved out of `ggml-cuda.cu` into `ggml-cuda-try-fuse.cu` (2209 lines), with
+`ggml-cuda-try-fuse.cuh` declaring the entry point.  Moved as two contiguous regions:
+
+- the RDNA3_5 single-token GLU-fusion gate (`ggml_cuda_rdna3_5_dense_glu_disabled`) and
+  `ggml_cuda_should_fuse_mul_mat_vec_f` — both used only by the fusion arms;
+- the whole fusion block from `ggml_cuda_should_fuse_rope_set_rows` through `ggml_cuda_try_fuse`
+  (`ggml_cuda_can_fuse`, `ggml_cuda_check_fusion_memory_ranges`, `ggml_cuda_topk_moe_fusion`,
+  `ggml_cuda_match_moe_weighted_reduction`, `ggml_cuda_cache_blocks_fusion`, all `should_fuse_*` /
+  `find_*` helpers).  `ggml_cuda_check_fusion_memory_ranges` keeps its `common.cuh` declaration; the
+  other shared symbols (`ggml_cuda_should_fuse_mul_mat`, `ggml_cuda_mul_mat_takes_mmq`,
+  `ggml_cuda_compute_forward`) were already declared there.
+
+`ggml-cuda.cu` **9819 → 7722** lines.  Two fusion helpers are also called by the graph optimizer in
+`ggml-cuda.cu`, so they were made non-static and declared in the new header:
+`ggml_cuda_gdn_state_gather_deferrable` and `ggml_cuda_topk_moe_fusion` (the latter forward-declares
+`struct ggml_cuda_topk_moe_args` — `topk-moe.cuh` has no include guard, so it must not be included from
+the header).  The new TU is picked up by the `.cu` glob (no CMake edit).
+
+**Re-homed in block 10** (the last editor of the fusion region); the tip diff applies there cleanly and
+only block 11 replays.  The rebased tip's three files are byte-identical to the validated tree.
+
+Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; full per-block `all`
+build **12/12**.

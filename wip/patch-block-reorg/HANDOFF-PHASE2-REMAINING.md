@@ -10,16 +10,18 @@ Read this first, then `PHASE2-STATUS.md` (the dated Phase-2 log — it has the p
 
 - **Phase 1 is complete** at tag `v2-phase1` = `a40841e1e` (12 blocks 00–11; tree byte-identical to the
   published delivery `af0595360`).
-- **Phase 2 is in progress** on branch **`v2-phase2`** = **`ea547cb4d`** (a re-cut of Phase 1 with the
+- **Phase 2 is in progress** on branch **`v2-phase2`** = **`f52f3288f`** (a re-cut of Phase 1 with the
   Phase-2 refactors folded into the owning blocks).
 - **Done:** the whole `ggml_cuda_try_fuse` extraction (work item 1 — `try_fuse` 2244 → **1064** lines,
   the rest being upstream arms); work item 2 (MMQ `J` selection was already self-contained); work item 3
   (steps 1–2 the RDNA `nwarps`/rpb policy; **step 3 the MoE kernel file split** `mmvq-moe.cu` +
   `mmvq-vecdot.cuh`); item 4 (**the FA native-KV/band predicates → `fattn-rdna.cuh`**, block 05);
-  item 5 (**the FA tensor-parallel hint and the host-expert policy → named helpers**).
-- **Remaining:** item 6 (the maintainer's `ggml-cuda.cu` split), then the **V2.0 release cut**.
+  item 5 (**the FA tensor-parallel hint and the host-expert policy → named helpers**); item 6a
+  (**`ggml-cuda.cu` → `ggml-cuda-try-fuse.cu`**).
+- **Remaining:** item 6b–d (the `ggml-cuda.cu` slab / moe-cache-hooks / arena splits), then the **V2.0
+  release cut**.
 - **The delivery `patches/` and `release.json` are untouched**; nothing has been pushed to the fork.
-- Checkpoints 1–11 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
+- Checkpoints 1–12 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
 
 ## 1. What this work is
 
@@ -154,8 +156,13 @@ to r50; per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §11.
 
 ### 4.4 Item 6 — the maintainer's `ggml-cuda.cu` split (CAPSTONE)
 
-`ggml-cuda.cu` is still **9819 lines**. Split whole function groups into their own TUs:
-- `ggml-cuda-try-fuse.cu` — `ggml_cuda_try_fuse` (+ `ggml_cuda_can_fuse` and the fusion-range helpers);
+`ggml-cuda.cu` is still **7722 lines** (was 9819; `ggml-cuda-try-fuse.cu` split landed at ckpt12).
+Split whole function groups into their own TUs:
+- ~~`ggml-cuda-try-fuse.cu`~~ — **DONE (ckpt12)**: `ggml_cuda_try_fuse` (+ `ggml_cuda_can_fuse`,
+  the fusion matchers/range helpers, and `ggml_cuda_{rdna3_5_dense_glu_disabled,should_fuse_mul_mat_vec_f}`)
+  moved out; `ggml_cuda_gdn_state_gather_deferrable` + `ggml_cuda_topk_moe_fusion` exposed for the graph
+  optimizer.  Re-homed in block 10; tip files byte-identical to the validated tree; same-seed
+  4B/qwen4exp/35B identical; per-block `all` 12/12.  See `PHASE2-STATUS.md` §12.
 - `ggml-cuda-slab.cu` — the movable-boundary slab (`ggml_cuda_vmm_map_phys` ~516, `struct
   ggml_cuda_slab` ~599, `g_slabs` ~648, `ggml_cuda_slab_*` ~670–1208, `ggml_cuda_slab_work_alloc`,
   `ggml_cuda_device_malloc`, the pool cap);
