@@ -1,0 +1,44 @@
+From 1ce7a4a690950dbdd472a52f2406c18594ff3b57 Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Tue, 13 Oct 2026 01:34:25 +0000
+Subject: [PATCH] ggml-cuda: routed MMQ tile widths for RDNA4 again (r50
+ select_J port limited them to RDNA3.5)
+
+r49's mul_mat_q_switch_J applied the rows-per-expert J bands when mmq_routed_compact_arch_ok(cc) (RDNA3.5 or RDNA4)
+and passed GGML_CUDA_CC_IS_RDNA4(cc) to mmq_rdna3_5_id_get_J.  The r50 move into ggml_cuda_mmq_select_J tested
+GGML_CUDA_CC_IS_RDNA3_5(cc) only and dropped the rdna4 argument, so on gfx1201 the IQ expert types at ~40 rows per
+expert (ubatch 2048, 512 experts, 10 used) fell to the generic loop's J=48 instead of MMQ_IQ_ID_J_MID=64, and gfx1151
+got RDNA4 bands for the IQ2/Q2_0 types that r49 kept on the generic path.  Both restored.  Prefill compact MMQ
+2192 -> 2043 ms per 32k-token prompt on one GPU; output identical (longsha, greedy).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cuda/mmq.cu | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index eb5d9fcd1..831fea945 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -190,7 +190,8 @@ static void ggml_cuda_mmq_select_J(const ggml_type type, const bool fallback, co
+     nthreads_best = 0;
+     int ntiles_J_best = INT_MAX;
+ 
+-    if (!has_gate && has_ids && mmq_rdna3_5_id_n_experts_ok(nchannels_y) && GGML_CUDA_CC_IS_RDNA3_5(cc) && !fallback) {
++    // RDNA3.5 and RDNA4 (as in r49's mul_mat_q_switch_J: mmq_routed_compact_arch_ok); RDNA4 gets the IQ-type bands
++    if (!has_gate && has_ids && mmq_rdna3_5_id_n_experts_ok(nchannels_y) && mmq_routed_compact_arch_ok(cc) && !fallback) {
+         // RDNA3.5 mul_mat_id: pick the J width from the rows-per-expert range instead of the generic
+         // tile-count loop (which sizes J to the flattened row count and leaves every per-expert tile
+         // mostly empty). Mirrors halo-box/strix-llama.cpp mmq_rdna3_5_id_get_J (gfx1151-measured).
+@@ -206,7 +207,7 @@ static void ggml_cuda_mmq_select_J(const ggml_type type, const bool fallback, co
+         } else {
+             const int64_t rows_per_expert = (ncols_dst + nchannels_y - 1) / nchannels_y;
+             const bool use_j48_128e = mmq_rdna3_5_id_use_j48_128e(type, nchannels_y, rows_per_expert);
+-            int J_rdna3_5 = use_j48_128e ? 48 : mmq_rdna3_5_id_get_J(type, rows_per_expert);
++            int J_rdna3_5 = use_j48_128e ? 48 : mmq_rdna3_5_id_get_J(type, rows_per_expert, GGML_CUDA_CC_IS_RDNA4(cc));
+             if (type == GGML_TYPE_Q6_K) {
+                 const char * env = getenv("GGML_Q6_COMPACT_J");
+                 if (env != nullptr) {
+-- 
+2.53.0
+
