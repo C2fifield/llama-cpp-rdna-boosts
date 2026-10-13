@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`f52f3288f`** (block 11) |
-| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `318fec62f`** |
+| Phase-2 branch | `v2-phase2` = **`94f73ef44`** (block 11) |
+| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `408d8fd1a`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -395,3 +395,22 @@ only block 11 replays.  The rebased tip's three files are byte-identical to the 
 
 Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; full per-block `all`
 build **12/12**; `gate-prefill-logits.sh` mean KLD **0.000707**, same-top-p **98.755 %** PASS.
+
+## 13. Item 6b — `ggml-cuda.cu` → `ggml-cuda-slab.cu` (2026-10-13)
+
+The movable-boundary slab moved out of `ggml-cuda.cu` into `ggml-cuda-slab.cu` (1114 lines): the VMM
+map helper, `ggml_cuda_slab` + `g_slabs`/`g_slab_mutex`/`g_slab_armed`/`g_slab_compute_enabled`/
+`g_slab_compute_narrow2`, every `ggml_cuda_slab_*` function (create/extend/work/arena/ring/narrow2).
+`ggml-cuda.cu` **7722 → 6640** lines.  The API was already declared in `ggml-cuda-vmm.h`; the few
+module-local symbols the remaining wrappers touch were exposed there as accessors
+(`ggml_cuda_slab_arm`, `ggml_cuda_slab_compute_enabled`, `ggml_cuda_slab_set_compute_narrow2`,
+`ggml_cuda_slab_headroom_bytes`, `ggml_cuda_slab_set_narrow_floor`), and `ggml_cuda_get_physical_device`
+is now non-static, declared in `common.cuh`.  `ggml_backend_cuda_device_slab_compute_narrow2` keeps its
+iface slot in `ggml-cuda.cu` and forwards to the accessor.  `pool_floor_refuses` and the pool stats
+stay in `ggml-cuda.cu` (not slab state).
+
+**Re-homed in block 10**; tip diff applies there cleanly, only block 11 replays; the four touched files
+are byte-identical to the validated tree.
+
+Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
+**identical to r50**; `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS; per-block `all` **12/12**.

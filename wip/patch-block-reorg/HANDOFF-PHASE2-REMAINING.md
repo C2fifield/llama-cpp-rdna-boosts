@@ -163,9 +163,9 @@ Split whole function groups into their own TUs:
   moved out; `ggml_cuda_gdn_state_gather_deferrable` + `ggml_cuda_topk_moe_fusion` exposed for the graph
   optimizer.  Re-homed in block 10; tip files byte-identical to the validated tree; same-seed
   4B/qwen4exp/35B identical; per-block `all` 12/12.  See `PHASE2-STATUS.md` §12.
-- `ggml-cuda-slab.cu` — the movable-boundary slab (`ggml_cuda_vmm_map_phys` ~516, `struct
-  ggml_cuda_slab` ~599, `g_slabs` ~648, `ggml_cuda_slab_*` ~670–1208, `ggml_cuda_slab_work_alloc`,
-  `ggml_cuda_device_malloc`, the pool cap);
+- ~~`ggml-cuda-slab.cu`~~ — **DONE (ckpt13)**: the movable-boundary slab moved out (accessors added
+  to `ggml-cuda-vmm.h`); `ggml-cuda.cu` 7722 → 6640 lines.  `ggml_cuda_device_malloc` and the pool cap
+  stay in `ggml-cuda.cu` (not slab state).  See `PHASE2-STATUS.md` §13;
 - `ggml-cuda-moe-cache-hooks.cu` — `ggml_backend_cuda_moe_cache_*` (~8507–8526), the `stage_*` hooks,
   `ggml_backend_cuda_device_moe_cache_*` (~9414–9470), `fattn_stage`/`h2d_stage` accounting (~9650–9681);
 - `ggml-cuda-arena.cu` — the expert-cache arena / `optional_alloc_within_free_cap` / compute-margin
