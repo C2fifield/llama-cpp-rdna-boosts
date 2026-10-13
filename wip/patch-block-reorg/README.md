@@ -285,6 +285,7 @@ records all answers.
 | `HANDOFF-PHASE2.md` | **Phase-2 cold start: Phase-1 state (12 blocks, tree == delivery), extraction list, method/pitfalls, DoD** |
 | `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session (Phase 2) |
 | `PHASE1-STATUS.md` | dated Phase-1 findings log and decisions |
+| `PHASE2-STATUS.md` | **Phase-2 execution log: per-extraction moves, refs, gate results** |
 | `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |
 | `PHASE2-REFACTOR.md` | Phase-2 work plan: per-concern extraction targets and their call points (Q7/G8) |
 | `TARGET-BLOCKS.md` | per-target-block spec (concern, sources, owner files, deps, gates) |
