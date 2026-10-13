@@ -283,7 +283,9 @@ records all answers.
 | `HANDOFF.md` | **cold-start execution state: refs, done blocks, final 14-block order, next steps** |
 | `HANDOFF-SESSION3.md` | session-3 cold start (Phase 1): the blocks 00–09 done/gated state, the `test-llama-archs` fault, remaining work, method notes — **historical** after Phase 1 completed |
 | `HANDOFF-PHASE2.md` | **Phase-2 cold start: Phase-1 state (12 blocks, tree == delivery), extraction list, method/pitfalls, DoD** |
+| `HANDOFF-PHASE2-REMAINING.md` | **Phase-2 remaining-work cold start: exact refs/checkpoints, what is done (try_fuse complete, items 2/3.1/3.2), the remaining items, re-home method, gates, pitfalls, V2.0 DoD** |
 | `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session (Phase 2) |
+| `NEXT-SESSION-PROMPT-PHASE2-REMAINING.md` | **copy-paste prompt to drive the remaining Phase-2 work to completion** |
 | `PHASE1-STATUS.md` | dated Phase-1 findings log and decisions |
 | `PHASE2-STATUS.md` | **Phase-2 execution log: per-extraction moves, refs, gate results** |
 | `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |

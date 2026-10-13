@@ -290,5 +290,12 @@ and the four `mmvq*` files are byte-identical to the validated tree.
 Gates: `test-logits-width-probe` **PASS** (4B + 35B, worst maxdiff 0); 4B + qwen4exp dense/sparse
 identical; per-block `all` **12/12**; prefill-logit **0.000707 / 98.755 %**.
 
-**Item 3, step 3 (next):** the MoE item-split kernel `mul_mat_vec_q_moe` (+ its launch) → a separate
-`mmvq-moe.cu`; then the `llama-batched-bench -npl 1,4,8` stock-relative perf gate.
+**Item 3, step 3 (attempted, deferred):** move the MoE item-split kernel `mul_mat_vec_q_moe` (+ its
+launch) to `mmvq-moe.cu`.  It is **not cleanly separable as-is**: the kernel needs the module-local
+`vec_dot_q_cuda_t` typedef, the `GGML_CUDA_MMVQ_MOE_DENSE` guard and the `get_vec_dot_q_cuda`/
+`get_vdr_mmvq` selectors shared with the dense dispatch.  A first cut moved them and compiled
+`mmvq-moe.cu` but broke `mmvq.cu`'s template structure (the kernel-template line was left behind after
+the line-range delete), so it was **cleanly reverted** and the tip left green.  Prerequisite for a retry:
+lift the shared selectors into a `mmvq-vecdot.cuh`, then delete the moved regions by exact text markers
+(not line ranges) and rebuild before gating.  It is acceptable to leave the kernel inline (steps 1–2 are
+the substantive part).  See `HANDOFF-PHASE2-REMAINING.md` §4.1.
