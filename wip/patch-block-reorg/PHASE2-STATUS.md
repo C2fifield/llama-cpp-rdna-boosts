@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`e0fc448a6`** (block 11 rebased) |
-| block 10 (amended) | **`b22ab141f`** |
+| Phase-2 branch | `v2-phase2` = **`d8ad56737`** (block 11 rebased) |
+| block 10 (amended) | **`1fa36b3ea`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -84,14 +84,33 @@ matchers are declared in `hyperconn.cuh` (the gate-mix arm in `ggml-cuda.cu` sti
 | per-block fresh `all` build | **12/12** |
 | `gate-prefill-logits.sh` | mean KLD **0.000707**, same-top-p **98.755 %** PASS |
 
-## 5. Next (remaining `try_fuse` arms, highest value next)
+## 5. Extraction 4 — sigmoid-mul-add arm → `unary.cu` (owner block 10)
+
+The `UNARY(sigmoid) -> MUL -> ADD` per-row-gate arm moved into
+`ggml_cuda_sigmoid_mul_add_try_fuse()` in `unary.cu` (declared in `unary.cuh`); the matcher and op
+were already there.  `try_fuse` is a single guarded call.
+
+| gate | result |
+|---|---|
+| fresh `all` build (tip) | OK |
+| qwen4exp dense + sparse vs r50 | **identical** |
+| `GGML_CUDA_FUSE_SIGMOID_MUL_ADD=0` vs default (dense) | **identical** |
+| 4B Q8_0 same-seed greedy vs r50 | **identical** |
+| per-block fresh `all` build | **12/12** |
+| `gate-prefill-logits.sh` | mean KLD **0.000707**, same-top-p **98.755 %** PASS |
+
+## 6. Next (remaining `try_fuse` arms, highest value next)
 
 The big remaining interleaves, in rough value order:
 
-- **hc-mix / hc-comb cluster** (`hc_mix_on` / `hc_comb gate` / `hc_comb` repeat + A-chain, ~600 lines
-  incl. the matchers `ggml_cuda_match_hc_mix`, `ggml_cuda_hc_mix_closed`,
-  `ggml_cuda_hc_combine_norm_*`) → `hc-mix.cu`.  Owner block 10 (cheap rebase), but numerics/aliasing
-  heavy.
+- **hc-comb cluster** (`hc_comb_on`: the REPEAT-anchored combine+norm matcher and the SCALE A-chain,
+  plus `ggml_cuda_hc_combine_norm_identify` and the `set_bf16`/`set_bf16_src1` helpers) →
+  `hyperconn.cu`.  Owner block 10, the largest remaining piece (~480 lines), but it needs two
+  `ggml-cuda.cu` statics hoisted first: `ggml_cuda_is_view_or_noop` and `ggml_cuda_bf16_src1_cache_on`
+  (both used widely in `ggml-cuda.cu`), and `hyperconn.cu` must include `mmb.cuh`.  Deferred to a
+  focused step.
+- **hc gate-mix arm** → `hyperconn.cu` (needs `mmb.cuh` for `ggml_cuda_hc_gate_mix` /
+  `ggml_cuda_mmb_gatemix`).
 - **conv1d** (`ple_conv`, `gdn_conv`) → `ple-conv.cu` / `gdn-conv.cu`.  Owner block 08 (needs rebasing
   09/10/11; expect `ggml-cuda.cu` conflicts).
 - **cpy_batch** → `cpy-batch.cu`.  Owner block 09 (rebase 10/11).
@@ -101,7 +120,7 @@ The big remaining interleaves, in rough value order:
 Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 `-moe-cache-hooks.cu`, `-arena.cu`).
 
-## 6. Open question for the maintainer
+## 7. Open question for the maintainer
 
 Block-10-owned extractions re-home cheaply (amend block 10, rebase block 11).  Block-08/09-owned
 extractions will conflict in `ggml-cuda.cu` when rebasing blocks 09/10/11.  Confirm the amend+rebase
