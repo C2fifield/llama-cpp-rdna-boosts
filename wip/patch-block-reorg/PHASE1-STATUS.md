@@ -886,3 +886,85 @@ Bring the rest of old-15's **non-QSA** qwen4exp/HC content into block 10 (HC mat
 re-run the qwen4exp dense coherence against r50.  This is the same keyword-triage problem the WIP hit;
 a tree-vs-r50 reduction over the touched files is the reliable method.  Scratch state: `v2-block10`
 (rebased onto `6d675ee23`, QSA kernel files removed, HC dispatch added, builds, loads).
+
+---
+
+## 20. Blocks 00–09 dropped-content sweep (2026-10-12, session 3 — maintainer requested)
+
+### 20.1 Method
+
+Two independent detectors, run over the 400 files the v2 chain touches:
+
+1. **Exact-line / token preservation.**  For every touched file, report any line/token that is present in
+   **base (`097cf33d9`) and in the reference tip (`af0595360`, tree == `release.json.tree`)** but **absent
+   from `v2-phase1`** (base content the delivery kept but the reconstruction lost), and separately any line
+   present in the **old-13 checkpoint `b1af91db8`** (base + old 00–13) *and* the tip but absent from v2
+   (earlier-block content dropped).  Rationale: content that survives to the tip should be in the v2 chain;
+   content only old-14/15 adds is expected to be missing (it is `10 qwen4exp` / `11 qsa` / `12 mmap-reclaim`).
+2. **Whole-file coverage.**  Files the delivery changed but no v2 block touches at all, classified by the
+   original block that changed them.
+
+The single block-09 `ggml-backend-meta.cpp` drop fixed in §17/§18 was the *only* base-content loss found by
+(1); the rest is earlier-block and old-15 content.
+
+### 20.2 Findings — content missing from the v2 chain
+
+**A. Functional drop from old-08 — block `08 fused-kernels` (`ggml/src/ggml-cuda/ggml-cuda.cu`).**
+The GDN-gate / SSM-pre-scan / Q8_1-verify fusion **matcher call sites** were dropped while their kernels
+survived, so the fusions never fire:
+
+| region | evidence |
+|---|---|
+| GDN gate chain (`fuse_gdn_gate`, `ggml_cuda_op_add_softplus_mul`) | absent from v2 `try_fuse`; present at old-08/old-13/tip |
+| SSM pre-scan (`disable_ssm_prescan`, `ggml_cuda_op_ssm_conv_l2_gatebeta`, the 16-node matcher) | absent |
+| `ggml_cuda_find_mul_q8_1_matmul` | **defined at v2 `ggml-cuda.cu:5005` but never called** (the call + `ggml_cuda_op_unary_mul_q8_1` arm are gone) |
+| `q8_1_arena` / `q8_1_arena_retired` (destructor free + retire) | absent |
+
+The kernels (`unary.cu`, `mmvq.cu`) are present; only the `ggml-cuda.cu` matchers/arm are missing.  This is
+invisible to the block-08 gates (they test fusion *on == off*, not that a fusion is active).
+
+**B. Build-time drop from old-06 — block `05 fa` (`template-instances/generate_cu_files.py`).**
+v2 has the pre-old-06 grouping (`fattn-mma-f16-instance-ncols1_X-ncols2_Y.cu`); the tip groups one TU per
+`(ncols1, ncols2, head size)` (`…-dkq{head}-dv{head}.cu`).  The emitted instantiation set is the same (the
+tip comment says so) — build-time only.
+
+**C. Test-case drops.**
+- `tests/test-backend-ops.cpp`: the old-04 Q6_K/Q8_0 `test_mul_mat` shapes (noted as deferred to `07 kquant`
+  in §9 but never added), the old-08 `test_argsort` `ties` cases and the `iq4_nl` sub-block `test_get_rows`
+  shapes.
+
+**D. old-15 content the 14-block plan never assigned.**
+Changed by old-15, untouched by any v2 block, and not qwen4exp/QSA:
+`common/sampling.cpp` (AVX2 top-k block prefilter, +224), `ggml/src/ggml-cpu/arch/x86/quants.c` (+68),
+`ggml/src/ggml-cpu/repack.cpp` (+3), `ggml/src/ggml-cpu/arch-fallback.h` (−1),
+`ggml/src/ggml-cuda/gated_delta_net.cuh` (+4), `src/models/dflash.cpp` (+68, the DFlash "F1" feature).
+`common/speculative.cpp` also carries old-15's F1 DFlash device-resident draft (50 lines) which the v2
+`02 mtp-adaptive` block does not have.
+
+**E. Interface-fill consistency (harmless).**  `/* .stage_gather = */ NULL` and the `moe_cache_set_host_*` /
+`slab_*` NULL fills in `ggml-cpu.cpp` / `ggml-blas.cpp` / `ggml-cann.cpp` are absent in v2.  The iface uses
+designated initializers, so the members zero-fill — no functional effect, but it breaks the "keep the shared
+dispatch tables mutually consistent" rule and should be restored with the owning block.
+
+### 20.3 Non-issues (verified intentional)
+
+- 24 base `fattn-*` template instances deleted by v2 are **also absent from the tip** (block 05 regenerated
+  them) — intentional.
+- `GGML_META_DEBUG` / `GGML_LOG_DEBUG` removed from `ggml-backend-meta.cpp` — **also removed at the tip**.
+- The `/* A transposed vector can still use MMVQ */` comment is reformatted onto its closing brace — benign.
+- `ggml_gallocr_drop_buffers`, `layout_valid`, `buffers_grown`, `moe_cache_set_host_*`, `slab_compute_narrow2`
+  all exist in v2 (comment/line differences only).
+
+### 20.4 Recommended repair
+
+1. **Block 08 (A)** — restore the old-08 `ggml-cuda.cu` matcher arms + the `q8_1_arena` machinery (amend
+   08, rebase 09/10).  Functional; do first.
+2. **Block 05 (B)** — carry old-06's `generate_cu_files.py` grouping (amend 05; rebuild the FA instance set).
+3. **Blocks 07/08 (C)** — add the dropped test cases to their owning blocks.
+4. **(D)** needs a **decision**: there is no v2 block that owns old-15's CPU-sampling / DFlash / CPU-quant
+   wins.  Either add a `campaign-memory` block, or fold each into its natural owner (`common/sampling.cpp`
+   → a CPU block; `src/models/dflash.cpp` + `common/speculative.cpp` F1 → `02 mtp-adaptive`; `x86/quants.c` /
+   `repack.cpp` → `07 kquant`).
+5. **(E)** restore the NULL fills with the owning block.
+
+Steps 1–2 and 5 are mechanical; 3 is trivial; 4 is a taxonomy decision.  No delivery files touched.
