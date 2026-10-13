@@ -1168,7 +1168,7 @@ index 000000000..1f8e8a6b5
 +    }
 +};
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index c5043a4a8..fc76acfa3 100644
+index c5043a4a8..3d188b866 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -9,6 +9,7 @@
@@ -1187,7 +1187,14 @@ index c5043a4a8..fc76acfa3 100644
      {"draft-dflash",  COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH},
      {"draft-dspark",  COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK},
      {"ngram-simple",  COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE},
-@@ -210,6 +212,10 @@ struct common_speculative_impl {
+@@ -206,10 +208,17 @@ struct common_speculative_impl {
+ 
+     virtual bool process(const common_batch & batch) = 0;
+ 
++    // optional: the prompt of `seq_id` about to be processed ends at position `n_prompt` (exclusive)
++    virtual void set_prompt_end(llama_seq_id /*seq_id*/, llama_pos /*n_prompt*/) {}
++
+     virtual void draft(common_speculative_draft_params_vec & dparams) = 0;
  
      virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
  
@@ -1198,7 +1205,7 @@ index c5043a4a8..fc76acfa3 100644
      // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
      virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
      virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
-@@ -987,6 +993,12 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -987,6 +996,12 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
  
      std::vector<float> features_buf; // [n_chunk, n_embd_enc] gathered target features
  
@@ -1211,7 +1218,7 @@ index c5043a4a8..fc76acfa3 100644
      std::vector<common_sampler_ptr> smpls;
  
      // backend sampler chain per seq, attached to ctx_dft
-@@ -1117,6 +1129,23 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1117,6 +1132,23 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
          }
  
@@ -1235,7 +1242,7 @@ index c5043a4a8..fc76acfa3 100644
          // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
          llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2);
          llama_set_causal_attn(ctx_dft, causal_attn); // DFlash needs non-causal attention unless the model says otherwise
-@@ -1134,6 +1163,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1134,6 +1166,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              llama_sampler_free(backend_chains[seq_id]);
          }
          backend_chains.clear();
@@ -1246,7 +1253,7 @@ index c5043a4a8..fc76acfa3 100644
      }
  
      void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
-@@ -1190,12 +1223,50 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1190,12 +1226,50 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
  
          const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
  
@@ -1297,7 +1304,7 @@ index c5043a4a8..fc76acfa3 100644
              // an M-RoPE image pins all its rows to one position, so a windowed draft
              // cache cannot free cells for it - skip it, the draft can jump over the gap
              const bool pos_pinned = batch_in.tokens[i_batch_beg[seq_id]].pos[0] == batch_in.tokens[i_batch_end[seq_id]].pos[0];
-@@ -1236,6 +1307,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1236,6 +1310,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              }
          }
  
@@ -1308,7 +1315,7 @@ index c5043a4a8..fc76acfa3 100644
          return true;
      }
  
-@@ -1425,8 +1500,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1425,8 +1503,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
      std::vector<int>                i_last;
      std::vector<std::vector<float>> chain_h;
  
@@ -1325,7 +1332,7 @@ index c5043a4a8..fc76acfa3 100644
          , params(params.draft)
      {
          auto * ctx_tgt = this->params.ctx_tgt;
-@@ -1438,6 +1519,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1438,6 +1522,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                  "MTP input row width must match the target h_nextn width");
          n_mtp_layers = std::max(1, (int) llama_model_n_layer_nextn(llama_get_model(ctx_dft)));
  
@@ -1337,7 +1344,7 @@ index c5043a4a8..fc76acfa3 100644
          SPC_TRC("%s", "adding speculative implementation 'draft-mtp'\n");
          SPC_TRC("- n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
          SPC_TRC("- gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n",
-@@ -1478,9 +1564,20 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1478,9 +1567,20 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
          llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
  
@@ -1359,7 +1366,7 @@ index c5043a4a8..fc76acfa3 100644
          if (chain_heads) {
              this->params.n_max = std::min(this->params.n_max, n_mtp_layers);
  
-@@ -1491,6 +1588,34 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1491,6 +1591,34 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          }
          this->n_max = this->params.n_max;
  
@@ -1394,7 +1401,7 @@ index c5043a4a8..fc76acfa3 100644
          pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
  
          i_last.assign(n_seq, -1);
-@@ -1519,6 +1644,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1519,6 +1647,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          // reset here rather than per round, or two identical requests differ
          common_sampler_reset(smpls[seq_id].get());
  
@@ -1408,7 +1415,91 @@ index c5043a4a8..fc76acfa3 100644
          const int32_t N = (int32_t) prompt.size();
          if (N <= 0) {
              return;
-@@ -1667,6 +1799,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1536,6 +1671,28 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         }
+     }
+ 
++    // LLAMA_MTP_INGEST_TAIL=<tokens>: feed the draft only the last <tokens> positions of each prompt.  The draft
++    // attends over its own KV, so the skipped prefix only narrows what it can look back on when drafting; the target
++    // verifies every drafted token, so output is unchanged.  Generation positions are always fed.  0/unset: every row.
++    std::vector<llama_pos> ingest_from;
++    std::vector<llama_pos> ingest_prompt_end;   // prompt phase of each seq: -1 once its first generation row is seen
++
++    void set_prompt_end(llama_seq_id seq_id, llama_pos n_prompt) override {
++        static const int32_t tail = [] {
++            const char * e = getenv("LLAMA_MTP_INGEST_TAIL");
++            return e != nullptr ? atoi(e) : 0;
++        }();
++        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
++            return;
++        }
++        if (ingest_from.size() < (size_t) n_seq) {
++            ingest_from.assign(n_seq, 0);
++            ingest_prompt_end.assign(n_seq, -1);
++        }
++        ingest_from[seq_id]       = tail > 0 ? std::max<llama_pos>(0, n_prompt - tail) : 0;
++        ingest_prompt_end[seq_id] = n_prompt;
++    }
++
+     bool process(const common_batch & batch_in) override {
+         if (batch_in.size() <= 0) {
+             return true;
+@@ -1584,6 +1741,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+ 
+                 const llama_seq_id seq_id = t.seq_id;
+ 
++                if ((size_t) seq_id < ingest_prompt_end.size() && ingest_prompt_end[seq_id] >= 0) {
++                    if (t.pos[0] >= ingest_prompt_end[seq_id]) {
++                        // generation reached: the prompt phase is over, so later position shifts never skip rows
++                        ingest_from[seq_id]       = 0;
++                        ingest_prompt_end[seq_id] = -1;
++                    } else if (t.pos[0] < ingest_from[seq_id]) {
++                        continue;   // LLAMA_MTP_INGEST_TAIL: a prompt row before the ingested tail
++                    }
++                }
++
+                 // vision tokens carry an embedding instead of an id
+                 const int32_t idx = t.id != LLAMA_TOKEN_NULL
+                     ? batch.add(t.id, t.pos[0], seq_id, false)
+@@ -1599,7 +1766,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+             auto * mem_dft = llama_get_memory(ctx_dft);
+ 
+             bool ok = true;
+-            for (int head = 0; head < n_mtp_layers; ++head) {
++            for (int head = 0; head < n_mtp_layers && batch.size() > 0; ++head) {
+                 if (chain_heads) {
+                     // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
+                     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+@@ -1633,12 +1800,26 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 continue;
+             }
+ 
+-            const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
++            int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
++            int32_t i_row0 = i_batch_beg[seq_id];
++            // A prompt batch (still inside the prompt reported by set_prompt_end): accept() only ever follows a verify
++            // batch, whose own process() refills verify_h, so only the last row (the next pending_h) is needed (a
++            // 2048-row prompt ubatch copied ~84 MB here).  Verify batches, of any length, keep every row.  The prompt
++            // phase also ends here, so the shared-memory path (which skips the ingest loop above) ends it too.
++            const llama_pos pos_end  = batch_in.tokens[i_batch_end[seq_id]].pos[0];
++            const bool      have_end = (size_t) seq_id < ingest_prompt_end.size() && ingest_prompt_end[seq_id] >= 0;
++            if (have_end && pos_end >= ingest_prompt_end[seq_id]) {
++                ingest_from[seq_id]       = 0;   // generation reached
++                ingest_prompt_end[seq_id] = -1;
++            } else if (n_rows > 1 && have_end) {
++                i_row0 += n_rows - 1;
++                n_rows  = 1;
++            }
+             verify_h_rows[seq_id] = n_rows;
+             verify_h[seq_id].resize((size_t) n_rows * n_embd);
+ 
+             for (int32_t i = 0; i < n_rows; ++i) {
+-                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
++                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_row0 + i);
+                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
+             }
+ 
+@@ -1667,6 +1848,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
  
              n_drafting++;
              drafting[seq_id] = true;
@@ -1423,7 +1514,7 @@ index c5043a4a8..fc76acfa3 100644
              // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
              if (!params.probabilistic) {
                  dp.result_q = nullptr;
-@@ -1762,7 +1902,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1762,7 +1951,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                      dp.result_q->emplace_back(cur_p->data, cur_p->data + cur_p->size);
                  }
  
@@ -1432,7 +1523,7 @@ index c5043a4a8..fc76acfa3 100644
                      drafting[seq_id] = false;
                      n_drafting--;
                      continue;
-@@ -1809,17 +1949,52 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1809,17 +1998,52 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                  continue;
              }
  
@@ -1487,7 +1578,7 @@ index c5043a4a8..fc76acfa3 100644
          const int32_t n_rows = verify_h_rows[seq_id];
          if (n_rows <= 0) {
              return;
-@@ -1829,6 +2004,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1829,6 +2053,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          const size_t row_bytes = (size_t) n_embd * sizeof(float);
          std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
      }
@@ -1505,7 +1596,7 @@ index c5043a4a8..fc76acfa3 100644
  };
  
  // state of self-speculation (simple implementation, not ngram-map)
-@@ -2314,6 +2500,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
+@@ -2314,6 +2549,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
          case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:  return "draft-simple";
          case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:  return "draft-eagle3";
          case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:     return "draft-mtp";
@@ -1513,7 +1604,7 @@ index c5043a4a8..fc76acfa3 100644
          case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:  return "draft-dflash";
          case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:  return "draft-dspark";
          case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE:  return "ngram-simple";
-@@ -2405,6 +2592,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
+@@ -2405,6 +2641,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
              case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:
              case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:
              case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:
@@ -1521,7 +1612,7 @@ index c5043a4a8..fc76acfa3 100644
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:
              case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:
                  n_max = std::max(n_max, std::max(0, spec->draft.n_max));
-@@ -2603,23 +2791,47 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2603,23 +2840,47 @@ common_speculative_init_result::common_speculative_init_result(
      llama_context * ctx_tgt) :
      pimpl(new impl{}) {
      const bool has_draft = params.speculative.has_dft();
@@ -1572,7 +1663,7 @@ index c5043a4a8..fc76acfa3 100644
      cparams.ctx_other = ctx_tgt;
  
      std::string model_path;
-@@ -2627,6 +2839,12 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2627,6 +2888,12 @@ common_speculative_init_result::common_speculative_init_result(
          model_path = params.speculative.draft.mparams.path;
          LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
  
@@ -1585,7 +1676,7 @@ index c5043a4a8..fc76acfa3 100644
          llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
          if (model_dft == NULL) {
              LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
-@@ -2655,6 +2873,15 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2655,6 +2922,15 @@ common_speculative_init_result::common_speculative_init_result(
  
          pimpl->context.reset(ctx_dft);
      }
@@ -1601,7 +1692,7 @@ index c5043a4a8..fc76acfa3 100644
  }
  
  common_speculative_init_result::~common_speculative_init_result() = default;
-@@ -2697,7 +2924,14 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2697,7 +2973,14 @@ common_speculative * common_speculative_init(common_params_speculative & params,
          };
  
          // when adding a new type - update here the logic above
@@ -1617,7 +1708,7 @@ index c5043a4a8..fc76acfa3 100644
  
          // this list here defines the priority of the speculators
          // the one with highest priority are listed first
-@@ -2710,6 +2944,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2710,6 +2993,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, params.draft.ctx_dft != nullptr);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_MTP,    params.draft.ctx_dft != nullptr);
@@ -1625,7 +1716,7 @@ index c5043a4a8..fc76acfa3 100644
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, params.draft.ctx_dft != nullptr);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, params.draft.ctx_dft != nullptr);
      }
-@@ -2729,7 +2964,11 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2729,7 +3013,11 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_MTP: {
@@ -1638,7 +1729,23 @@ index c5043a4a8..fc76acfa3 100644
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH: {
-@@ -2998,6 +3237,17 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
+@@ -2858,6 +3146,15 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
+     }
+ }
+ 
++void common_speculative_set_prompt_end(common_speculative * spec, llama_seq_id seq_id, llama_pos n_prompt) {
++    if (spec == nullptr) {
++        return;
++    }
++    for (auto & impl : spec->impls) {
++        impl->set_prompt_end(seq_id, n_prompt);
++    }
++}
++
+ bool common_speculative_process(common_speculative * spec, const common_batch & batch) {
+     bool result = true;
+ 
+@@ -2998,6 +3295,17 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
      }
  }
  
@@ -1657,10 +1764,20 @@ index c5043a4a8..fc76acfa3 100644
  bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data) {
      if (spec == nullptr) {
 diff --git a/common/speculative.h b/common/speculative.h
-index a59846829..e2ccb10dd 100644
+index a59846829..2eaa1d744 100644
 --- a/common/speculative.h
 +++ b/common/speculative.h
-@@ -95,6 +95,11 @@ void common_speculative_draft(common_speculative * spec);
+@@ -89,12 +89,21 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
+ // process the batch and update the internal state of the speculative context
+ bool common_speculative_process(common_speculative * spec, const common_batch & batch);
+ 
++// the prompt of `seq_id` about to be processed ends at position `n_prompt` (exclusive); lets the MTP draft limit its
++// prompt ingestion (LLAMA_MTP_INGEST_TAIL)
++void common_speculative_set_prompt_end(common_speculative * spec, llama_seq_id seq_id, llama_pos n_prompt);
++
+ // generate drafts for the sequences specified with `common_speculative_get_draft_params`
+ void common_speculative_draft(common_speculative * spec);
+ 
  // informs the speculative context that n_accepted tokens were accepted by the target model
  void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted);
  
@@ -6815,10 +6932,10 @@ index 297d9ffc9..01737d1b7 100644
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 new file mode 100644
-index 000000000..d956c71d0
+index 000000000..895c0f45d
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/allreduce-hip.cu
-@@ -0,0 +1,1662 @@
+@@ -0,0 +1,1724 @@
 +#include "allreduce.cuh"
 +
 +#if defined(GGML_USE_HIP)
@@ -7426,6 +7543,15 @@ index 000000000..d956c71d0
 +    char *                    dev_tmp[GGML_CUDA_MAX_DEVICES];    // device scratch for copy-engine path
 +    hipStream_t              streams[GGML_CUDA_MAX_DEVICES];   // non-blocking
 +    ggml_cuda_ar_event_slot  ev_pool[GGML_CUDA_MAX_DEVICES][GGML_CUDA_AR_POOL_SIZE];
++    // Whether the slot's last user recorded ev_pool[*][slot].ker (acquire_slot syncs only then).  The chunked kernel
++    // path records it only with ker_events (GGML_CUDA_AR_KER_EVENTS=1) or pacing: its slot reuse is already
++    // ordered on the GPUs (a device enters AR N only after its peer arrived at N-1, i.e. finished N-2), and each
++    // record is a marker packet the GPU processes after every AR.
++    bool                     ker_recorded[GGML_CUDA_AR_POOL_SIZE];
++    bool                     ker_events;
++    // GGML_CUDA_AR_P2P_LARGE: the copy-engine path pulls the peer's contribution straight into dev_tmp with
++    // hipMemcpyPeerAsync instead of bouncing both halves through host_large (one PCIe crossing instead of two).
++    bool                     p2p_large;
 +
 +    // Copy-engine: per-device "I finished reading my peer's host_large"
 +    // event.  Indexed by RECORDER device.  Recorded same-device on streams[i]
@@ -7572,7 +7698,7 @@ index 000000000..d956c71d0
 +    const bool pool_lapped = p->call_count >= GGML_CUDA_AR_POOL_SIZE;
 +    p->call_count++;
 +
-+    if (pool_lapped) {
++    if (pool_lapped && p->ker_recorded[slot]) {
 +        for (int i = 0; i < p->n_devices; ++i) {
 +            ggml_cuda_set_device(p->devices[i]);
 +            CUDA_CHECK(hipEventSynchronize(p->ev_pool[i][slot].ker));
@@ -7667,6 +7793,11 @@ index 000000000..d956c71d0
 +                      "stage kernel is captured into subgraph graphs (WIP)\n", __func__);
 +    }
 +    p->pace             = ggml_cuda_ar_env_u64("GGML_CUDA_AR_PACE", 0) != 0;
++    p->ker_events       = ggml_cuda_ar_env_u64("GGML_CUDA_AR_KER_EVENTS", 0) != 0 || p->pace;
++    p->p2p_large        = ggml_cuda_ar_env_u64("GGML_CUDA_AR_P2P_LARGE", 0) != 0;
++    for (int s = 0; s < GGML_CUDA_AR_POOL_SIZE; ++s) {
++        p->ker_recorded[s] = true;   // pre-recorded at init
++    }
 +    if (p->pace) {
 +        GGML_LOG_WARN("%s: host-side lockstep pacing enabled (GGML_CUDA_AR_PACE=1); "
 +                      "poll peers' prev AR before enqueueing (WIP)\n", __func__);
@@ -8069,6 +8200,52 @@ index 000000000..d956c71d0
 +
 +    ggml_backend_cuda_context * cuda_ctx[2] = {};
 +
++    if (p->p2p_large) {
++        // 1. Each device's contribution is ready on its AR stream (after its compute, and zeroed if inactive).
++        for (int i = 0; i < 2; ++i) {
++            ggml_cuda_set_device(p->devices[i]);
++            cuda_ctx[i] = static_cast<ggml_backend_cuda_context *>(backends[i]->context);
++            GGML_ASSERT(cuda_ctx[i]->device == p->devices[i]);
++            ggml_cuda_ar_wait_for_compute(p, cuda_ctx[i], i, slot);
++            if (!compute[i]) {
++                CUDA_CHECK(hipMemsetAsync(src_buf[i], 0, nbytes, p->streams[i]));
++            }
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].cpy[0], p->streams[i]));
++        }
++        // 2. Each device pulls the peer's contribution into its dev_tmp (after the previous add read dev_tmp).
++        for (int i = 0; i < 2; ++i) {
++            const int peer = 1 - i;
++            ggml_cuda_set_device(p->devices[i]);
++            if (p->dev_tmp_kernel_done_valid) {
++                CUDA_CHECK(hipStreamWaitEvent(p->streams[i], p->dev_tmp_kernel_done[i]));
++            }
++            CUDA_CHECK(hipStreamWaitEvent(p->streams[i], p->ev_pool[peer][slot].cpy[0]));
++            CUDA_CHECK(hipMemcpyPeerAsync(p->dev_tmp[i], p->devices[i], src_buf[peer], p->devices[peer], nbytes, p->streams[i]));
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].h2d, p->streams[i]));
++        }
++        // 3. Each compute stream waits for its own pull (the peer data) and the peer's pull (which reads this device's
++        //    contribution, so it must finish before this device's add or later work overwrites it), then adds.
++        for (int i = 0; i < 2; ++i) {
++            const int peer = 1 - i;
++            ggml_cuda_set_device(p->devices[i]);
++            CUDA_CHECK(hipStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[i][slot].h2d));
++            CUDA_CHECK(hipStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[peer][slot].h2d));
++            const int block_size = 256;
++            int n_blocks = (int) ((ne + block_size - 1) / block_size);
++            if (n_blocks > 1024) {
++                n_blocks = 1024;
++            }
++            ggml_cuda_ar_add_kernel<T_dst, T_src><<<n_blocks, block_size, 0, cuda_ctx[i]->stream()>>>(
++                dst_buf[i], reinterpret_cast<const T_src *>(p->dev_tmp[i]), (int) ne);
++            CUDA_CHECK(hipGetLastError());
++            CUDA_CHECK(hipEventRecord(p->dev_tmp_kernel_done[i], cuda_ctx[i]->stream()));
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, cuda_ctx[i]->stream()));
++        }
++        p->ker_recorded[slot] = true;
++        p->dev_tmp_kernel_done_valid = true;
++        return true;
++    }
++
 +    // Stage 1: both GPUs copy their local contribution to pinned host memory.
 +    for (int i = 0; i < 2; ++i) {
 +        ggml_cuda_set_device(p->devices[i]);
@@ -8157,6 +8334,7 @@ index 000000000..d956c71d0
 +        CUDA_CHECK(hipEventRecord(p->dev_tmp_kernel_done[i], cuda_ctx[i]->stream()));
 +        CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, cuda_ctx[i]->stream()));
 +    }
++    p->ker_recorded[slot] = true;
 +    p->host_large_read_done_valid = true;
 +    p->dev_tmp_kernel_done_valid = true;
 +
@@ -8464,10 +8642,11 @@ index 000000000..d956c71d0
 +#undef LAUNCH_AR_KERNEL
 +                CUDA_CHECK(hipGetLastError());
 +
-+                if (last_chunk) {
++                if (last_chunk && p->ker_events) {
 +                    CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, stream));
 +                }
 +            }
++            p->ker_recorded[slot] = last_chunk && p->ker_events;
 +        }
 +    }
 +
@@ -37252,10 +37431,10 @@ index 350b5cc06..a34456fc5 100644
      const ggml_cuda_mm_fusion_args_host * fusion = nullptr);
 diff --git a/ggml/src/ggml-cuda/mmvq-moe.cu b/ggml/src/ggml-cuda/mmvq-moe.cu
 new file mode 100644
-index 000000000..3590ed4ca
+index 000000000..50a9c0370
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-moe.cu
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,359 @@
 +#include "mmvq-moe.cuh"
 +#include "mmvq-vecdot.cuh"
 +#include "mmvq.cuh"
@@ -37531,6 +37710,19 @@ index 000000000..3590ed4ca
 +    // supported value before sizing the grid.
 +    if (rpb != 4 && rpb != 8) {
 +        rpb = 2;
++    }
++    // RDNA4: a short-K expert GEMM (fewer than 8 K-blocks per row, e.g. the Flash-Next down projection split under
++    // -sm tensor, K = 320) gives each lane at most one dot product at 2 rows per block, so the warps are too short
++    // to stream: 8 rows per block measured q2_0 43.0 -> 29.8 us per 4-token verify call (gfx1201, 16/32 rows were
++    // slower again: one full-warp reduction per row), same greedy output.  GGML_CUDA_MOE_RPB_SHORT=0 restores the
++    // ceil(8 / K-blocks) rule; 2/4/8 force a value.
++    if (blocks_per_row_x > 0 && blocks_per_row_x < 8) {
++        static const int rpb_env = getenv("GGML_CUDA_MOE_RPB_SHORT") ? atoi(getenv("GGML_CUDA_MOE_RPB_SHORT")) : -1;
++        if (rpb_env == 2 || rpb_env == 4 || rpb_env == 8) {
++            rpb = rpb_env;
++        } else if (rpb_env != 0 && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
++            rpb = 8;
++        }
 +    }
 +    const int64_t nblocks_rows = (nrows_x + rpb - 1) / rpb;
 +    // Upstream's fused shared-expert lane is the last blockIdx.y column.
@@ -50415,10 +50607,14 @@ index 974477bbb..7c2a01d8c 100644
  DECL_MMQ_CASE(GGML_TYPE_Q8_0);
 +DECL_MMQ_CASE_GATE(GGML_TYPE_Q8_0);
 diff --git a/ggml/src/ggml-cuda/topk-moe.cu b/ggml/src/ggml-cuda/topk-moe.cu
-index ee903bf21..13bef9a9a 100644
+index ee903bf21..bddddab8b 100644
 --- a/ggml/src/ggml-cuda/topk-moe.cu
 +++ b/ggml/src/ggml-cuda/topk-moe.cu
-@@ -14,6 +14,14 @@ struct topk_moe_config {
+@@ -11,9 +11,18 @@ struct topk_moe_config {
+     bool use_sqrt_softplus;
+     bool with_norm;
+     bool delayed_softmax;
++    bool sorted;            // per-lane sorted candidates (see topk_moe_sort_lane); set by the launcher
  };
  
  // Warp-local softmax used for both the pre-top-k logits and the post-top-k delayed path.
@@ -50433,7 +50629,7 @@ index ee903bf21..13bef9a9a 100644
  template <int experts_per_thread, bool use_limit>
  __device__ void softmax_warp_inplace(float (&vals)[experts_per_thread], const int limit, const int lane) {
      float max_val = -INFINITY;
-@@ -27,25 +35,37 @@ __device__ void softmax_warp_inplace(float (&vals)[experts_per_thread], const in
+@@ -27,25 +36,37 @@ __device__ void softmax_warp_inplace(float (&vals)[experts_per_thread], const in
          }
      }
  
@@ -50482,7 +50678,203 @@ index ee903bf21..13bef9a9a 100644
      const float inv_sum = 1.0f / sum;
  
  #pragma unroll
-@@ -255,13 +275,15 @@ __global__ void topk_moe_cuda(const float *         logits,
+@@ -78,6 +99,93 @@ __device__ void sqrt_softplus_warp_inplace(float (&vals)[experts_per_thread], co
+     }
+ }
+ 
++// Lane exchange of the top-k argmax butterfly.  On RDNA (GGML_CUDA_DPP_XOR) a DPP / permlanex16 move instead of
++// __shfl_xor_sync, which lowers to ds_bpermute through LDS: the argmax runs n_expert_used rounds of 5 dependent
++// stages with two exchanges each, so the LDS round trip was most of the kernel.  Same values, so the same result.
++template <int mask, typename T>
++static __device__ __forceinline__ T topk_moe_xor(const T x) {
++#if defined(GGML_CUDA_DPP_XOR)
++    return ggml_cuda_xor_lane<mask>(x);
++#else
++    return __shfl_xor_sync(0xFFFFFFFF, x, mask, WARP_SIZE);
++#endif // defined(GGML_CUDA_DPP_XOR)
++}
++
++template <int mask>
++static __device__ __forceinline__ void topk_moe_argmax_stage(float & max_val, int & max_expert) {
++    const float val    = topk_moe_xor<mask>(max_val);
++    const int   expert = topk_moe_xor<mask>(max_expert);
++    if (val > max_val || (val == max_val && expert < max_expert)) {
++        max_val    = val;
++        max_expert = expert;
++    }
++}
++
++template <int mask>
++static __device__ __forceinline__ void topk_moe_argmax_stage_bias(float & max_val, float & max_val_s, int & max_expert) {
++    const float val    = topk_moe_xor<mask>(max_val);
++    const float val_s  = topk_moe_xor<mask>(max_val_s);
++    const int   expert = topk_moe_xor<mask>(max_expert);
++    if (val_s > max_val_s || (val_s == max_val_s && expert < max_expert)) {
++        max_val    = val;
++        max_val_s  = val_s;
++        max_expert = expert;
++    }
++}
++
++// The argmax rounds pick experts in the order (value descending, lower expert index first on ties).  With `sorted`,
++// each candidate becomes one 64-bit key that orders the same way: the float's order-preserving bit pattern above the
++// inverted expert index (unique, so no two keys are equal), and each lane sorts its keys once (bitonic network, E a
++// power of 2).  A round is then a 5-stage max over the lane heads and a shift on the winning lane, with one unsigned
++// compare per step instead of the float/index tie logic.  The keys order exactly as the float compare does for any
++// non-NaN value except -0.0 vs +0.0, so the path is limited to the gating outputs (softmax, sigmoid, sqrt-softplus:
++// never -0.0; NaN is already sanitized), and recovers the float bit-exactly from the key.
++static __device__ __forceinline__ uint64_t topk_moe_key(const float v, const int expert) {
++    const uint32_t u = __float_as_uint(v);
++    const uint32_t o = (u & 0x80000000u) ? ~u : (u | 0x80000000u);
++    return ((uint64_t) o << 32) | (uint32_t) ~(uint32_t) expert;
++}
++
++static __device__ __forceinline__ float topk_moe_key_val(const uint64_t key) {
++    const uint32_t o = (uint32_t) (key >> 32);
++    return __uint_as_float((o & 0x80000000u) ? (o & 0x7FFFFFFFu) : ~o);
++}
++
++static __device__ __forceinline__ int topk_moe_key_expert(const uint64_t key) {
++    return (int) ~(uint32_t) key;
++}
++
++template <int mask>
++static __device__ __forceinline__ uint64_t topk_moe_key_max_stage(const uint64_t key) {
++    const uint32_t lo = topk_moe_xor<mask>((int) (uint32_t) key);
++    const uint32_t hi = topk_moe_xor<mask>((int) (uint32_t) (key >> 32));
++    const uint64_t other = ((uint64_t) hi << 32) | lo;
++    return other > key ? other : key;
++}
++
++template <int E>
++static __device__ __forceinline__ void topk_moe_sort_keys(uint64_t (&key)[E]) {
++    static_assert((E & (E - 1)) == 0, "bitonic network needs a power of 2");
++#pragma unroll
++    for (int k = 2; k <= E; k <<= 1) {
++#pragma unroll
++        for (int j = k >> 1; j > 0; j >>= 1) {
++#pragma unroll
++            for (int i = 0; i < E; ++i) {
++                const int l = i ^ j;
++                if (l > i) {
++                    // descending within (i & k) == 0 blocks, ascending in the others: a descending sort overall
++                    const uint64_t a = key[i];
++                    const uint64_t b = key[l];
++                    const bool swap = (i & k) == 0 ? b > a : a > b;
++                    key[i] = swap ? b : a;
++                    key[l] = swap ? a : b;
++                }
++            }
++        }
++    }
++}
++
+ /*
+     This kernel does the following:
+     1. optionally softmax over the logits per token [n_experts, n_tokens]
+@@ -185,7 +293,54 @@ __global__ void topk_moe_cuda(const float *         logits,
+     }
+ 
+     ggml_cuda_pdl_lc();
+-    for (int k = 0; k < n_expert_used; k++) {
++
++    constexpr bool sorted_ok = !has_bias && experts_per_thread >= 2 && n_experts % WARP_SIZE == 0 &&
++                               (experts_per_thread & (experts_per_thread - 1)) == 0;
++    const bool use_sorted = sorted_ok && config.sorted && !config.delayed_softmax;
++    if constexpr (sorted_ok) {
++        if (use_sorted) {
++            uint64_t key[experts_per_thread];
++#pragma unroll
++            for (int i = 0; i < experts_per_thread; i++) {
++                key[i] = topk_moe_key(wt[i], threadIdx.x + i * WARP_SIZE);
++            }
++            topk_moe_sort_keys<experts_per_thread>(key);
++
++            for (int k = 0; k < n_expert_used; k++) {
++                static_assert(WARP_SIZE == 32, "five butterfly stages");
++                uint64_t best = key[0];
++                best = topk_moe_key_max_stage<16>(best);
++                best = topk_moe_key_max_stage<8>(best);
++                best = topk_moe_key_max_stage<4>(best);
++                best = topk_moe_key_max_stage<2>(best);
++                best = topk_moe_key_max_stage<1>(best);
++
++                if (key[0] == best) {
++#pragma unroll
++                    for (int i = 0; i < experts_per_thread - 1; i++) {
++                        key[i] = key[i + 1];
++                    }
++                    key[experts_per_thread - 1] = 0;   // below every candidate key
++                }
++
++                const float max_val    = topk_moe_key_val(best);
++                const int   max_expert = topk_moe_key_expert(best);
++
++                if ((k & (WARP_SIZE - 1)) == threadIdx.x) {
++                    output_weights[k / WARP_SIZE] = max_val;
++                }
++
++                if ((max_expert & (WARP_SIZE - 1)) == threadIdx.x) {
++                    ids[k] = max_expert;
++                    if (config.with_norm) {
++                        wt_sum += max_val;
++                    }
++                }
++            }
++        }
++    }
++
++    for (int k = 0; k < (use_sorted ? 0 : n_expert_used); k++) {
+         float max_val    = wt[0];
+         int   max_expert = threadIdx.x;
+ 
+@@ -202,17 +357,12 @@ __global__ void topk_moe_cuda(const float *         logits,
+                 }
+             }
+ 
+-#pragma unroll
+-            for (int mask = WARP_SIZE / 2; mask > 0; mask /= 2) {
+-                const float val    = __shfl_xor_sync(0xFFFFFFFF, max_val, mask, WARP_SIZE);
+-                const float val_s  = __shfl_xor_sync(0xFFFFFFFF, max_val_s, mask, WARP_SIZE);
+-                const int   expert = __shfl_xor_sync(0xFFFFFFFF, max_expert, mask, WARP_SIZE);
+-                if (val_s > max_val_s || (val_s == max_val_s && expert < max_expert)) {
+-                    max_val    = val;
+-                    max_val_s  = val_s;
+-                    max_expert = expert;
+-                }
+-            }
++            static_assert(WARP_SIZE == 32, "five butterfly stages");
++            topk_moe_argmax_stage_bias<16>(max_val, max_val_s, max_expert);
++            topk_moe_argmax_stage_bias<8>(max_val, max_val_s, max_expert);
++            topk_moe_argmax_stage_bias<4>(max_val, max_val_s, max_expert);
++            topk_moe_argmax_stage_bias<2>(max_val, max_val_s, max_expert);
++            topk_moe_argmax_stage_bias<1>(max_val, max_val_s, max_expert);
+ 
+             if ((max_expert & (WARP_SIZE - 1)) == threadIdx.x) {
+                 selection_wt[max_expert / WARP_SIZE] = -INFINITY;
+@@ -227,15 +377,12 @@ __global__ void topk_moe_cuda(const float *         logits,
+                 }
+             }
+ 
+-#pragma unroll
+-            for (int mask = WARP_SIZE / 2; mask > 0; mask /= 2) {
+-                const float val    = __shfl_xor_sync(0xFFFFFFFF, max_val, mask, WARP_SIZE);
+-                const int   expert = __shfl_xor_sync(0xFFFFFFFF, max_expert, mask, WARP_SIZE);
+-                if (val > max_val || (val == max_val && expert < max_expert)) {
+-                    max_val    = val;
+-                    max_expert = expert;
+-                }
+-            }
++            static_assert(WARP_SIZE == 32, "five butterfly stages");
++            topk_moe_argmax_stage<16>(max_val, max_expert);
++            topk_moe_argmax_stage<8>(max_val, max_expert);
++            topk_moe_argmax_stage<4>(max_val, max_expert);
++            topk_moe_argmax_stage<2>(max_val, max_expert);
++            topk_moe_argmax_stage<1>(max_val, max_expert);
+ 
+             if ((max_expert & (WARP_SIZE - 1)) == threadIdx.x) {
+                 wt[max_expert / WARP_SIZE] = -INFINITY;
+@@ -255,13 +402,15 @@ __global__ void topk_moe_cuda(const float *         logits,
      }
  
      if (config.with_norm) {
@@ -50504,7 +50896,7 @@ index ee903bf21..13bef9a9a 100644
      }
  
      if (config.delayed_softmax) {
-@@ -272,7 +294,11 @@ __global__ void topk_moe_cuda(const float *         logits,
+@@ -272,7 +421,11 @@ __global__ void topk_moe_cuda(const float *         logits,
      for (int i = 0; i < experts_per_thread; i++) {
          const int idx = i * WARP_SIZE + threadIdx.x;
          if (idx < n_expert_used) {
@@ -50517,6 +50909,16 @@ index ee903bf21..13bef9a9a 100644
          }
      }
  }
+@@ -390,6 +543,9 @@ void ggml_cuda_op_topk_moe(ggml_backend_cuda_context &     ctx,
+     config.use_sqrt_softplus = args.sqrt_softplus;
+     config.with_norm         = with_norm;
+     config.delayed_softmax   = args.delayed_softmax;
++    // GGML_CUDA_TOPK_SORTED=0: the per-round scan of every candidate (same result)
++    static const bool sorted = !getenv("GGML_CUDA_TOPK_SORTED") || atoi(getenv("GGML_CUDA_TOPK_SORTED")) != 0;
++    config.sorted            = sorted;
+ 
+     if (bias) {
+         launch_topk_moe_cuda<true>(ctx, logits_d, weights_d, ids_d, bias_d, n_rows, n_experts, n_expert_used, clamp_val,
 diff --git a/ggml/src/ggml-cuda/unary.cu b/ggml/src/ggml-cuda/unary.cu
 index af839acd7..681a30487 100644
 --- a/ggml/src/ggml-cuda/unary.cu
@@ -63434,7 +63836,7 @@ index c7cf50d5a..70988f563 100644
  | `--spec-ngram-mod-n-max N` | maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64) |
  | `--spec-ngram-mod-n-match N` | ngram-mod lookup length (default: 24) |
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 3014f52cf..a121a5aa7 100644
+index 3014f52cf..32765716b 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -368,6 +368,11 @@ struct server_slot {
@@ -63486,7 +63888,18 @@ index 3014f52cf..a121a5aa7 100644
          const bool has_spec = has_draft || spec_mtp;
  
          if (callback_state) {
-@@ -4455,7 +4477,12 @@ private:
+@@ -3511,6 +3533,10 @@ private:
+ 
+                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
+ 
++                        if (spec) {
++                            common_speculative_set_prompt_end(spec.get(), slot.id, slot.task->tokens.pos_next());
++                        }
++
+                         SLT_TRC(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
+                                 slot.n_ctx, slot.task->params.n_keep, slot.task->n_tokens());
+ 
+@@ -4455,7 +4481,12 @@ private:
                              SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
                          }
  

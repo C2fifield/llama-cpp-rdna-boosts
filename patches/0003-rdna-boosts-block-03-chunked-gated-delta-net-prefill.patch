@@ -1,4 +1,4 @@
-From 8f244219d251d1cf65e7eb95a45911784402fc2e Mon Sep 17 00:00:00 2001
+From fba47a514d8ad9ae1e1ee79c33f627f2bf23bacf Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 03/11] rdna-boosts: block 03: chunked gated-delta-net prefill
@@ -48,10 +48,10 @@ index ce6fa0a11..eb1091108 100644
      cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
      cparams.n_batch           = params.n_batch;
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 6c95f4bb0..bd95ebe91 100644
+index 8b8ce907d..8951f3d09 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
-@@ -2748,6 +2748,7 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2797,6 +2797,7 @@ common_speculative_init_result::common_speculative_init_result(
      // note: for small models maybe we can set this to the maximum possible draft from all speculative types
      //       the extra memory for small models is likely negligible?
      cparams.n_rs_seq  = 0;

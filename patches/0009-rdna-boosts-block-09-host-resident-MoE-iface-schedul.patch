@@ -1,4 +1,4 @@
-From 7a1bbfcbbecd78474575448028af832369717363 Mon Sep 17 00:00:00 2001
+From 847596940b46f4a564c7e5ed3472e1e2fe5644ec Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -576,10 +576,10 @@ index 7a0300829..e27677e16 100644
      {
          dev_names.reserve(nd);
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index bd95ebe91..d6a80d978 100644
+index 8951f3d09..d48c71a2e 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
-@@ -2756,6 +2756,12 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2805,6 +2805,12 @@ common_speculative_init_result::common_speculative_init_result(
          model_path = params.speculative.draft.mparams.path;
          LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
  
@@ -592,7 +592,7 @@ index bd95ebe91..d6a80d978 100644
          llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
          if (model_dft == NULL) {
              LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
-@@ -2784,6 +2790,15 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2833,6 +2839,15 @@ common_speculative_init_result::common_speculative_init_result(
  
          pimpl->context.reset(ctx_dft);
      }

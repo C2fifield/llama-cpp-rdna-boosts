@@ -2,10 +2,11 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r51`** (canonical tip `15d62da2f`, net tree
-`48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`).  The applied tree is behaviour-preserving but not
-tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each into a
-self-contained function/file).  See `WORKLOG.md` 261013.001 (r51).  The entries below are the **pre-V2.0
+**`v12-097cf33d9-r52`** (canonical tip `2f3349306`, net tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`).  r52 folds four contributor PRs (#140-#143) into
+blocks 01/02/08/10.  The applied tree is not tree-identical to the 16-block r50 set (Phase 1
+redistributed the concerns; Phase 2 moved each into a self-contained function/file).  See
+`WORKLOG.md` 261013.002 (r52) and 261013.001 (r51).  The entries below are the **pre-V2.0
 (16-block) provenance history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

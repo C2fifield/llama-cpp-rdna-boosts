@@ -16,7 +16,9 @@ self-contained `git am` commit, so you can apply the whole set or pick the ones
 you want.  **V2.0 (`r51`)** re-organized the former 16-block set so every
 concern lives in its owning block and every delivery concern is a self-contained
 function/file; the applied tree is behaviour-preserving (all same-seed gates are
-byte-identical to r50).
+byte-identical to r50).  **`r52`** folds four contributor WIP PRs (#140-#143) into
+blocks 01/02/08/10 (all-reduce events/P2P, MTP prompt-tail ingest, `topk_moe` sorted
+keys, short-K MoE rows-per-block).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -45,7 +47,7 @@ bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts (
 ## Releases
 
 Frozen deliveries are published as GitHub Releases and tagged in this repo
-(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r51`**; the `v16-*`
+(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r52`**; the `v16-*`
 tags are the historical 16-block set.  `r1` is the
 re-base of the set onto that fork point and every later `rN` is a dated change recorded in
 [`WORKLOG.md`](WORKLOG.md), newest first).
@@ -128,21 +130,21 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 
 ## The 12 blocks (V2.0)
 
-`v12-097cf33d9-r51` (net tree `48cf3e81…`).  Each row is one `git am` commit.
+`v12-097cf33d9-r52` (net tree `8b177a7b…`).  Each row is one `git am` commit.
 
 | patch | subject | concern |
 |-------|---------|---------|
 | `0000` | **foundation** — band-uniformity, Meta-wrapper, allocator fixes | old-00 + old-05 + old-07 + old-09a + the multi-ubatch logits readback + the `ggml-alloc` view release |
-| `0001` | **hybrid HIP all-reduce** (RDNA4-gated) | the old block 12 |
-| `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01 |
+| `0001` | **hybrid HIP all-reduce** (RDNA4-gated) | the old block 12; + no per-AR `ev.ker` and the opt-in P2P-large path (r52) |
+| `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01; + opt-in MTP prompt-tail ingest and the last-row prompt copy (r52) |
 | `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02 |
 | `0004` | **BF16 KV cache + native-BF16 flash attention** | old-03 |
 | `0005` | **flash-attention band / native quantized K-V / derived kq mask** | old-04 FA + the old-15 FA work |
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
-| `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114 |
+| `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
 | `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the

@@ -11,6 +11,18 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r52` (2026-10-13) -- four contributor WIP PRs folded into their owning blocks:**
+> canonical tip `2f3349306`, net tree `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`; strict **12/12**
+> `git am` (`validate-set.sh` green), per-block `all` build 12/12, `gate-prefill-logits.sh` 0.000707 /
+> 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, width-purity PASS, `TOPK_MOE` 448/448,
+> `MUL_MAT_ID` mmvq 166/166, dense batched B=1/4/8 no worse than r50, 35B-A3B draft-MTP acceptance
+> 0.733 (160.4 vs plain 106.5 t/s).  **#140 -> block 10** (`mmvq-moe.cu`, short-K RDNA4 rows-per-block,
+> `GGML_CUDA_MOE_RPB_SHORT`), **#141 -> block 08** (`topk-moe.cu` sorted-key argmax,
+> `GGML_CUDA_TOPK_SORTED`), **#142 -> block 01** (`allreduce-hip.cu`, no per-AR `ev.ker` +
+> `GGML_CUDA_AR_KER_EVENTS` / opt-in `GGML_CUDA_AR_P2P_LARGE`), **#143 -> block 02**
+> (`speculative.cpp`/`.h`, `server-context.cpp`, opt-in `LLAMA_MTP_INGEST_TAIL` + always-on last-row
+> prompt copy).  See `../WORKLOG.md` 261013.002 (r52).
+>
 > **Current release `v12-097cf33d9-r51` (2026-10-13) -- V2.0 block re-org + self-contained refactor:**
 > canonical tip `15d62da2f`, net tree `48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`; strict **12/12**
 > `git am` (`validate-set.sh` green).  The applied tree is behaviour-preserving but not tree-identical

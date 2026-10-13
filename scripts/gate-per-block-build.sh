@@ -32,6 +32,12 @@
 #   --rocm DIR       ROCM_714    ROCm install (default /opt/rocm-7.14.1-gfx120X)
 #   --gpu-target T   GPU_TARGETS (default gfx1201)
 #   --keep-going                 continue past the first failure (default: stop)
+#   --changed-from REV           only build commits in BASE..TIP whose own delta
+#                                (patch-id) differs from the commit with the same
+#                                subject in BASE..REV (release speedup: pass the
+#                                previous release tip); the tip is always built so
+#                                the final combination stays compiler-verified
+#   --list-only                  print the commits that would be built, then exit
 #
 # Exit: 0 = every commit built, 1 = at least one failed, 2 = usage/prereq error.
 #
@@ -48,10 +54,12 @@ JOBS="${JOBS:-16}"
 ROCM_714="${ROCM_714:-/opt/rocm-7.14.1-gfx120X}"
 GPU_TARGETS="${GPU_TARGETS:-gfx1201}"
 KEEP_GOING=0
+LIST_ONLY=0
+CHANGED_FROM=""
 BASE=""
 TIP=""
 
-usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit "${1:-0}"; }
+usage() { sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//; /^set -uo/d'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -63,6 +71,8 @@ while [ $# -gt 0 ]; do
         --rocm)       ROCM_714="$2"; shift 2 ;;
         --gpu-target) GPU_TARGETS="$2"; shift 2 ;;
         --keep-going) KEEP_GOING=1; shift ;;
+        --changed-from) CHANGED_FROM="$2"; shift 2 ;;
+        --list-only)  LIST_ONLY=1; shift ;;
         -h|--help)    usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 2 ;;
     esac
@@ -81,6 +91,10 @@ case "$BUILD_DIR" in /*|..*|*..) echo "ERROR: --build-dir must be a plain relati
 command -v git >/dev/null || { echo "ERROR: git is required" >&2; exit 2; }
 git -C "$REPO" cat-file -e "$BASE^{commit}" 2>/dev/null || { echo "ERROR: base $BASE not in $REPO" >&2; exit 2; }
 git -C "$REPO" cat-file -e "$TIP^{commit}"  2>/dev/null || { echo "ERROR: tip $TIP not in $REPO" >&2; exit 2; }
+if [ -n "$CHANGED_FROM" ]; then
+    git -C "$REPO" cat-file -e "$CHANGED_FROM^{commit}" 2>/dev/null \
+        || { echo "ERROR: --changed-from $CHANGED_FROM not in $REPO" >&2; exit 2; }
+fi
 
 CCACHE_LAUNCHERS=()
 if [ "${CCACHE:-1}" != 0 ] && command -v ccache >/dev/null 2>&1; then
@@ -93,9 +107,49 @@ LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rboosts-per-block.XXXXXX")"
 ORIG_REF="$(git -C "$REPO" symbolic-ref -q --short HEAD || git -C "$REPO" rev-parse HEAD)"
 echo "==> per-block build gate: $BASE..$TIP in $REPO"
 echo "    logs: $LOG_DIR   build dir: $REPO/$BUILD_DIR   jobs: $JOBS"
+[ -n "$CHANGED_FROM" ] && echo "    changed-from: $CHANGED_FROM (blocks whose own delta is unchanged are skipped; the tip is always built)"
+
+# --changed-from: map subject -> patch-id for the reference chain.  Block subjects are
+# stable, so a commit is "changed" when its own delta (patch-id, i.e. the diff to its
+# parent) differs from the commit with the same subject in the reference (normally the
+# previous release tip).  Comparing the tree instead would select every descendant of
+# the first edited block; comparing the delta selects only the edited blocks.  The tip
+# is always built so the final combination is always compiler-verified.
+patch_id() { git -C "$REPO" show "$1" | git patch-id --stable | awk '{print $1}' | head -1; }
+declare -A REF_PID=()
+if [ -n "$CHANGED_FROM" ]; then
+    while IFS= read -r rc; do
+        REF_PID["$(git -C "$REPO" log -1 --format=%s "$rc")"]="$(patch_id "$rc")"
+    done < <(git -C "$REPO" rev-list --reverse "$BASE..$CHANGED_FROM")
+fi
+
+TIP_REV="$(git -C "$REPO" rev-parse "$TIP")"
+selected=()
+for c in $(git -C "$REPO" rev-list --reverse "$BASE..$TIP"); do
+    subj="$(git -C "$REPO" log -1 --format=%s "$c")"
+    is_tip=0
+    [ "$(git -C "$REPO" rev-parse "$c")" = "$TIP_REV" ] && is_tip=1
+    if [ -n "$CHANGED_FROM" ] && [ "$is_tip" = 0 ]; then
+        ref_pid="${REF_PID[$subj]:-}"
+        if [ -n "$ref_pid" ] && [ "$ref_pid" = "$(patch_id "$c")" ]; then
+            echo "==> [skip] ${c:0:9} $subj (delta unchanged from $CHANGED_FROM)"
+            continue
+        fi
+    fi
+    selected+=("$c")
+done
+
+if [ "$LIST_ONLY" = 1 ]; then
+    echo "==> selected ${#selected[@]} commit(s):"
+    for c in "${selected[@]}"; do
+        printf '    %s %s\n' "${c:0:9}" "$(git -C "$REPO" log -1 --format=%s "$c")"
+    done
+    rm -rf "$LOG_DIR"
+    exit 0
+fi
 
 total=0; ok=0; failed=0; declare -a fail_list=()
-for c in $(git -C "$REPO" rev-list --reverse "$BASE..$TIP"); do
+for c in "${selected[@]}"; do
     total=$((total+1))
     subj="$(git -C "$REPO" log -1 --format=%s "$c")"
     printf '==> [%2d] %s %s\n' "$total" "${c:0:9}" "$subj"

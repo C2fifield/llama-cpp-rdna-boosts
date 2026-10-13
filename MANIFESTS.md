@@ -5,13 +5,14 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r51`** (canonical tip `15d62da2f`, net tree
-`48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r52`** (canonical tip `2f3349306`, net tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green), per-block `all` build **12/12**, prefill-logit 0.000707 / 98.755 % PASS, qwen4exp quant-coherence
-PASS, 35B draft-MTP acceptance 0.646 (+41 % over plain), width-purity PASS, same-seed identical to r50.
-V2.0 re-organized the former 16-block set by concern and moved each concern into a self-contained
-function/file (Phase 2); the applied tree is behaviour-preserving but not tree-identical.  See
-`WORKLOG.md` 261013.001 (r51); the execution record is archived at `archive/work/patch-block-reorg/`.
+PASS, width-purity PASS, `TOPK_MOE` 448/448, `MUL_MAT_ID` mmvq 166/166, dense batched B=1/4/8 no worse
+than r50, 35B-A3B draft-MTP acceptance 0.733 (160.4 vs plain 106.5 t/s).  r52 folds four contributor
+PRs (#140-#143) into blocks 01/02/08/10; the applied tree is not tree-identical.  The V2.0 re-org and its
+r51 validation are `WORKLOG.md` 261013.001 (r51), archived at `archive/work/patch-block-reorg/`; the r52
+record is `WORKLOG.md` 261013.002.
 The entries below are the **pre-V2.0 (16-block) verification history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

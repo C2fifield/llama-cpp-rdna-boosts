@@ -1,5 +1,67 @@
 # WORKLOG - dated delivery records
 
+## 261013.002 (r52) -- four contributor WIP PRs folded into their owning blocks (#140, #141, #142, #143)
+
+**Release `v12-097cf33d9-r52`** (base `097cf33d9`, canonical tip `2f3349306`, net tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); block count stays **12** (00-11).  Four
+`wip/` PRs from @briansp2020, each folded into the block that owns its concern (the r51 clean-separation
+goal), then archived under `archive/work/`:
+
+- **#140 `wip/moe-rpb-short` -> block 10** (`mmvq-moe.cu`): for RDNA4 `MUL_MAT_ID` expert matrices with
+  fewer than 8 K-blocks per row (the Flash-Next q2_0 down under `-sm tensor`), use 8 rows per block
+  instead of `ceil(8 / K-blocks)`.  Default-on; `GGML_CUDA_MOE_RPB_SHORT=0` restores the old rule,
+  `2`/`4`/`8` force a value.
+- **#141 `wip/topk-moe-sorted-keys` -> block 08** (`topk-moe.cu`): `topk_moe`'s argmax butterfly uses
+  `ggml_cuda_xor_lane` (DPP) and per-lane sorted 64-bit keys for the gating outputs.  Same ids, weights
+  and order.  Default-on; `GGML_CUDA_TOPK_SORTED=0` restores the scan.
+- **#142 `wip/allreduce-events-p2p` -> block 01** (`allreduce-hip.cu`): `0001` stops recording
+  `ev_pool[*][slot].ker` on the chunked kernel path (`GGML_CUDA_AR_KER_EVENTS=1` restores it); `0002` is
+  the opt-in `GGML_CUDA_AR_P2P_LARGE=1` peer-pull copy-engine path (`hipMemcpyPeerAsync` instead of two
+  host bounces).
+- **#143 `wip/mtp-prefill-tail` -> block 02** (`speculative.cpp`, `speculative.h`,
+  `server-context.cpp`): `0001` opt-in `LLAMA_MTP_INGEST_TAIL=<tokens>` feeds the MTP draft only the
+  prompt tail (new `common_speculative_set_prompt_end()`); `0002` (always on) copies only the last
+  target hidden-state row for prompt batches.
+
+The PR patches were cut against r48-r50; #140's hunk moved with the Phase-2 extraction
+(`mmvq.cu` -> `mmvq-moe.cu`).  The fork chain was rebuilt with `git rebase -i` (blocks 01/02/08/10
+amended, no message change), then `make-patches.sh` / `make-release.sh` regenerated `patches/` and
+`release.json`.
+
+**Validation (gfx1201, 3x R9700).**
+- per-block fresh `all` build: **12/12** (the other 8 block deltas are byte-identical to r51; the new
+  `--changed-from` mode would select only the 4 edited blocks + the tip);
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `8b177a7b...`);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS;
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (GSQ-IQ3_XXS coherent, 0 `////`; the gather on/off
+  hash WARN is the documented qwen4exp `-sm tensor` run-to-run nondeterminism);
+- `Qwen3.5-4B-Q8_0` same-seed greedy identical to r51; MoE greedy text varies run-to-run (allowed;
+  MTP acceptance is the bar);
+- 35B-A3B draft-MTP (`-sm tensor -c 16384 -n 3000`, bf16 KV, prose): acceptance **0.733** identical to
+  r51, **160.4** vs **159.2 t/s**, plain **106.5 t/s** (MTP +50 %);
+- 35B-A3B long prompt (prose x6, ~31k tokens) default: acceptance **0.82081** identical to r51, prefill
+  2933 vs 2915 t/s; `LLAMA_MTP_INGEST_TAIL=4096`: prefill **+4.8 %** but acceptance **0.821 -> 0.715**
+  and decode **-4.4 %** (the PR's documented trade-off, so it stays opt-in);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B-A3B;
+- `test-backend-ops -o TOPK_MOE` **448/448**; `-o MUL_MAT_ID -p 'n=1,'` **166/166** (the mmvq path);
+- stock-relative `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (dense 27B Q4_K_XL, q8_0 KV): B=1
+  **28.68**, B=4 **103.13**, B=8 **180.78** t/s, no worse than the r50 reference (27.62 / 102.60 /
+  177.56);
+- benefit: Flash-Next GSQ-IQ3_XXS 3-GPU all-resident greedy (code, 400 tokens) PR140 on **63.6** vs off
+  **63.15 t/s**.
+
+**Tooling.**  `scripts/gate-per-block-build.sh` gains `--changed-from <prev-tip>` (build only the
+blocks whose own patch-id differs, plus the tip) and `--list-only`; the per-block release sweep now
+compiles the changed blocks instead of all 12.
+
+**Known open defects (pre-existing, unchanged):** `TODO.md` #56/#57; the upstream `MUL_MAT_ID` `dup=1`
+F16 failures in `test-backend-ops`.
+
+**Release artifacts.**  Delivery `main` + tag `v12-097cf33d9-r52`; the personal fork's `rdna-boosts`
+branch is refreshed to `2f3349306` / tree `8b177a7b...` (`--force-with-lease`).  Container images are
+**not** rebuilt for this tag (deferred to a later release, per the maintainer).
+
 ## 261013.001 (r51) -- V2.0: the 16-block set re-cut as a 12-block set (block-boundary re-org + self-contained refactor)
 
 **Delivery change: `release.json` now names a 12-block set at base `097cf33d9`, release

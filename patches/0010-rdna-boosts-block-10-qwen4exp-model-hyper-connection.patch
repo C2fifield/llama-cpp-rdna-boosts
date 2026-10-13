@@ -1,4 +1,4 @@
-From 1024268b0427971d7a0e00a58958deb7ae009228 Mon Sep 17 00:00:00 2001
+From 63ef4dce6fad4051168b7a37ec1ff38268fc2c5c Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -74,7 +74,7 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml-cuda/mmq.cuh                    |    6 +
  ggml/src/ggml-cuda/mmvf.cu                    |  168 +
  ggml/src/ggml-cuda/mmvf.cuh                   |    6 +
- ggml/src/ggml-cuda/mmvq-moe.cu                |  346 ++
+ ggml/src/ggml-cuda/mmvq-moe.cu                |  359 ++
  ggml/src/ggml-cuda/mmvq-moe.cuh               |   14 +
  ggml/src/ggml-cuda/mmvq-vecdot.cuh            |   85 +
  ggml/src/ggml-cuda/mmvq.cu                    |  817 ++-
@@ -122,7 +122,7 @@ QSA/HC op dispatch is old-15):
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 18902 insertions(+), 4842 deletions(-)
+ 99 files changed, 18915 insertions(+), 4842 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -18154,10 +18154,10 @@ index 350b5cc06..a34456fc5 100644
      const ggml_cuda_mm_fusion_args_host * fusion = nullptr);
 diff --git a/ggml/src/ggml-cuda/mmvq-moe.cu b/ggml/src/ggml-cuda/mmvq-moe.cu
 new file mode 100644
-index 000000000..3590ed4ca
+index 000000000..50a9c0370
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-moe.cu
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,359 @@
 +#include "mmvq-moe.cuh"
 +#include "mmvq-vecdot.cuh"
 +#include "mmvq.cuh"
@@ -18433,6 +18433,19 @@ index 000000000..3590ed4ca
 +    // supported value before sizing the grid.
 +    if (rpb != 4 && rpb != 8) {
 +        rpb = 2;
++    }
++    // RDNA4: a short-K expert GEMM (fewer than 8 K-blocks per row, e.g. the Flash-Next down projection split under
++    // -sm tensor, K = 320) gives each lane at most one dot product at 2 rows per block, so the warps are too short
++    // to stream: 8 rows per block measured q2_0 43.0 -> 29.8 us per 4-token verify call (gfx1201, 16/32 rows were
++    // slower again: one full-warp reduction per row), same greedy output.  GGML_CUDA_MOE_RPB_SHORT=0 restores the
++    // ceil(8 / K-blocks) rule; 2/4/8 force a value.
++    if (blocks_per_row_x > 0 && blocks_per_row_x < 8) {
++        static const int rpb_env = getenv("GGML_CUDA_MOE_RPB_SHORT") ? atoi(getenv("GGML_CUDA_MOE_RPB_SHORT")) : -1;
++        if (rpb_env == 2 || rpb_env == 4 || rpb_env == 8) {
++            rpb = rpb_env;
++        } else if (rpb_env != 0 && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
++            rpb = 8;
++        }
 +    }
 +    const int64_t nblocks_rows = (nrows_x + rpb - 1) / rpb;
 +    // Upstream's fused shared-expert lane is the last blockIdx.y column.
@@ -27168,7 +27181,7 @@ index 9b6066f4f..5dae7df4f 100644
          }
          if (wmax != 0.0f) bad++;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 9ecc1684b..a121a5aa7 100644
+index 58b0c89f6..32765716b 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -368,6 +368,11 @@ struct server_slot {

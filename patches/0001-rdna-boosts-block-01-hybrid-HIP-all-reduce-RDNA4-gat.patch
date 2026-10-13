@@ -1,4 +1,4 @@
-From 320fecf0d0ba2229c908a946c2210d2ba3276f60 Mon Sep 17 00:00:00 2001
+From 38f72ad98c50e961ff6bacf90d399c24e251d731 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:47 -0500
 Subject: [PATCH 01/11] rdna-boosts: block 01: hybrid HIP all-reduce
@@ -6,19 +6,19 @@ Subject: [PATCH 01/11] rdna-boosts: block 01: hybrid HIP all-reduce
 
 Sources: old 12 (whole block).
 ---
- ggml/src/ggml-cuda/allreduce-hip.cu | 1662 +++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/allreduce-hip.cu | 1724 +++++++++++++++++++++++++++
  ggml/src/ggml-cuda/allreduce.cu     |   27 +-
  ggml/src/ggml-cuda/allreduce.cuh    |   21 +
  ggml/src/ggml-cuda/ggml-cuda.cu     |  565 ++++++++-
- 4 files changed, 2231 insertions(+), 44 deletions(-)
+ 4 files changed, 2293 insertions(+), 44 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/allreduce-hip.cu
 
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 new file mode 100644
-index 000000000..d956c71d0
+index 000000000..895c0f45d
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/allreduce-hip.cu
-@@ -0,0 +1,1662 @@
+@@ -0,0 +1,1724 @@
 +#include "allreduce.cuh"
 +
 +#if defined(GGML_USE_HIP)
@@ -626,6 +626,15 @@ index 000000000..d956c71d0
 +    char *                    dev_tmp[GGML_CUDA_MAX_DEVICES];    // device scratch for copy-engine path
 +    hipStream_t              streams[GGML_CUDA_MAX_DEVICES];   // non-blocking
 +    ggml_cuda_ar_event_slot  ev_pool[GGML_CUDA_MAX_DEVICES][GGML_CUDA_AR_POOL_SIZE];
++    // Whether the slot's last user recorded ev_pool[*][slot].ker (acquire_slot syncs only then).  The chunked kernel
++    // path records it only with ker_events (GGML_CUDA_AR_KER_EVENTS=1) or pacing: its slot reuse is already
++    // ordered on the GPUs (a device enters AR N only after its peer arrived at N-1, i.e. finished N-2), and each
++    // record is a marker packet the GPU processes after every AR.
++    bool                     ker_recorded[GGML_CUDA_AR_POOL_SIZE];
++    bool                     ker_events;
++    // GGML_CUDA_AR_P2P_LARGE: the copy-engine path pulls the peer's contribution straight into dev_tmp with
++    // hipMemcpyPeerAsync instead of bouncing both halves through host_large (one PCIe crossing instead of two).
++    bool                     p2p_large;
 +
 +    // Copy-engine: per-device "I finished reading my peer's host_large"
 +    // event.  Indexed by RECORDER device.  Recorded same-device on streams[i]
@@ -772,7 +781,7 @@ index 000000000..d956c71d0
 +    const bool pool_lapped = p->call_count >= GGML_CUDA_AR_POOL_SIZE;
 +    p->call_count++;
 +
-+    if (pool_lapped) {
++    if (pool_lapped && p->ker_recorded[slot]) {
 +        for (int i = 0; i < p->n_devices; ++i) {
 +            ggml_cuda_set_device(p->devices[i]);
 +            CUDA_CHECK(hipEventSynchronize(p->ev_pool[i][slot].ker));
@@ -867,6 +876,11 @@ index 000000000..d956c71d0
 +                      "stage kernel is captured into subgraph graphs (WIP)\n", __func__);
 +    }
 +    p->pace             = ggml_cuda_ar_env_u64("GGML_CUDA_AR_PACE", 0) != 0;
++    p->ker_events       = ggml_cuda_ar_env_u64("GGML_CUDA_AR_KER_EVENTS", 0) != 0 || p->pace;
++    p->p2p_large        = ggml_cuda_ar_env_u64("GGML_CUDA_AR_P2P_LARGE", 0) != 0;
++    for (int s = 0; s < GGML_CUDA_AR_POOL_SIZE; ++s) {
++        p->ker_recorded[s] = true;   // pre-recorded at init
++    }
 +    if (p->pace) {
 +        GGML_LOG_WARN("%s: host-side lockstep pacing enabled (GGML_CUDA_AR_PACE=1); "
 +                      "poll peers' prev AR before enqueueing (WIP)\n", __func__);
@@ -1269,6 +1283,52 @@ index 000000000..d956c71d0
 +
 +    ggml_backend_cuda_context * cuda_ctx[2] = {};
 +
++    if (p->p2p_large) {
++        // 1. Each device's contribution is ready on its AR stream (after its compute, and zeroed if inactive).
++        for (int i = 0; i < 2; ++i) {
++            ggml_cuda_set_device(p->devices[i]);
++            cuda_ctx[i] = static_cast<ggml_backend_cuda_context *>(backends[i]->context);
++            GGML_ASSERT(cuda_ctx[i]->device == p->devices[i]);
++            ggml_cuda_ar_wait_for_compute(p, cuda_ctx[i], i, slot);
++            if (!compute[i]) {
++                CUDA_CHECK(hipMemsetAsync(src_buf[i], 0, nbytes, p->streams[i]));
++            }
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].cpy[0], p->streams[i]));
++        }
++        // 2. Each device pulls the peer's contribution into its dev_tmp (after the previous add read dev_tmp).
++        for (int i = 0; i < 2; ++i) {
++            const int peer = 1 - i;
++            ggml_cuda_set_device(p->devices[i]);
++            if (p->dev_tmp_kernel_done_valid) {
++                CUDA_CHECK(hipStreamWaitEvent(p->streams[i], p->dev_tmp_kernel_done[i]));
++            }
++            CUDA_CHECK(hipStreamWaitEvent(p->streams[i], p->ev_pool[peer][slot].cpy[0]));
++            CUDA_CHECK(hipMemcpyPeerAsync(p->dev_tmp[i], p->devices[i], src_buf[peer], p->devices[peer], nbytes, p->streams[i]));
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].h2d, p->streams[i]));
++        }
++        // 3. Each compute stream waits for its own pull (the peer data) and the peer's pull (which reads this device's
++        //    contribution, so it must finish before this device's add or later work overwrites it), then adds.
++        for (int i = 0; i < 2; ++i) {
++            const int peer = 1 - i;
++            ggml_cuda_set_device(p->devices[i]);
++            CUDA_CHECK(hipStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[i][slot].h2d));
++            CUDA_CHECK(hipStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[peer][slot].h2d));
++            const int block_size = 256;
++            int n_blocks = (int) ((ne + block_size - 1) / block_size);
++            if (n_blocks > 1024) {
++                n_blocks = 1024;
++            }
++            ggml_cuda_ar_add_kernel<T_dst, T_src><<<n_blocks, block_size, 0, cuda_ctx[i]->stream()>>>(
++                dst_buf[i], reinterpret_cast<const T_src *>(p->dev_tmp[i]), (int) ne);
++            CUDA_CHECK(hipGetLastError());
++            CUDA_CHECK(hipEventRecord(p->dev_tmp_kernel_done[i], cuda_ctx[i]->stream()));
++            CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, cuda_ctx[i]->stream()));
++        }
++        p->ker_recorded[slot] = true;
++        p->dev_tmp_kernel_done_valid = true;
++        return true;
++    }
++
 +    // Stage 1: both GPUs copy their local contribution to pinned host memory.
 +    for (int i = 0; i < 2; ++i) {
 +        ggml_cuda_set_device(p->devices[i]);
@@ -1357,6 +1417,7 @@ index 000000000..d956c71d0
 +        CUDA_CHECK(hipEventRecord(p->dev_tmp_kernel_done[i], cuda_ctx[i]->stream()));
 +        CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, cuda_ctx[i]->stream()));
 +    }
++    p->ker_recorded[slot] = true;
 +    p->host_large_read_done_valid = true;
 +    p->dev_tmp_kernel_done_valid = true;
 +
@@ -1664,10 +1725,11 @@ index 000000000..d956c71d0
 +#undef LAUNCH_AR_KERNEL
 +                CUDA_CHECK(hipGetLastError());
 +
-+                if (last_chunk) {
++                if (last_chunk && p->ker_events) {
 +                    CUDA_CHECK(hipEventRecord(p->ev_pool[i][slot].ker, stream));
 +                }
 +            }
++            p->ker_recorded[slot] = last_chunk && p->ker_events;
 +        }
 +    }
 +
