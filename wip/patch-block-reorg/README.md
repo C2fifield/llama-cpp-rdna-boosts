@@ -1,6 +1,6 @@
 # `patch-block-reorg` — fundamental re-organisation of the block taxonomy
 
-**Status: OPEN / scoping + plan (seeded 2026-10-12).** Not part of the delivery; nothing here may be
+**Status: PHASE 1 COMPLETE / PHASE 2 ACTIVE (2026-10-12).** Not part of the delivery; nothing here may be
 applied to the fork without the maintainer's explicit go-ahead (see the WIP and promotion rules in
 `AGENTS.md`).
 
@@ -281,8 +281,9 @@ records all answers.
 |---|---|
 | `README.md` | this handover: problem, design goals, audit, target, order, method, DoD |
 | `HANDOFF.md` | **cold-start execution state: refs, done blocks, final 14-block order, next steps** |
-| `HANDOFF-SESSION3.md` | **session-3 cold start: blocks 00–09 done/gated, block 10 WIP + the `test-llama-archs` fault, remaining work, method notes** |
-| `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session |
+| `HANDOFF-SESSION3.md` | session-3 cold start (Phase 1): the blocks 00–09 done/gated state, the `test-llama-archs` fault, remaining work, method notes — **historical** after Phase 1 completed |
+| `HANDOFF-PHASE2.md` | **Phase-2 cold start: Phase-1 state (12 blocks, tree == delivery), extraction list, method/pitfalls, DoD** |
+| `NEXT-SESSION-PROMPT.md` | copy-paste prompt for the next session (Phase 2) |
 | `PHASE1-STATUS.md` | dated Phase-1 findings log and decisions |
 | `REBASE-RESILIENCE.md` | why re-bases hurt, per-block rebase-cost ranking, hub-file strategy |
 | `PHASE2-REFACTOR.md` | Phase-2 work plan: per-concern extraction targets and their call points (Q7/G8) |

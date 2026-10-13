@@ -1,54 +1,60 @@
-# Next-session prompt (copy-paste)
+# Next-session prompt (copy-paste) — Phase 2
 
 Paste the block below as the first message of a fresh session. It is self-contained; the session should
-read `HANDOFF.md` and continue the Phase-1 execution.
+read `HANDOFF-PHASE2.md` first and execute Phase 2.
 
 ---
 
-We are in `/home/stew675/llama-cpp-rdna-boosts` working the `wip/patch-block-reorg/` campaign: a
-fundamental re-organisation of the 16-patch delivery into an orthogonal, rebase-resilient block set
-(V2.0 = Phase 1 boundary re-org + Phase 2 self-contained refactor).
+We are in `/home/stew675/llama-cpp-rdna-boosts` working the `wip/patch-block-reorg/` campaign.  **Phase 1
+is complete**; this session is **Phase 2** — the self-contained refactor that makes the block set
+rebase-resilient (V2.0 = Phase 1 + Phase 2).
 
 **Read first, in this order:**
-`wip/patch-block-reorg/HANDOFF.md` (cold-start execution state and next steps),
-`wip/patch-block-reorg/PHASE1-STATUS.md` (findings + decisions),
-`wip/patch-block-reorg/README.md`, `REBASE-RESILIENCE.md`, `FILE-OWNERSHIP.md`,
-`wip/patch-block-reorg/tools/`, `AGENTS.md` ("Report findings before shipping", "WIP and promotion
-rules", "Critical facts"), and `archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
+1. `wip/patch-block-reorg/HANDOFF-PHASE2.md`  ← the cold-start state, refs, block map, extraction list, method/pitfalls
+2. `wip/patch-block-reorg/PHASE2-REFACTOR.md` ← the Phase-2 work plan (per-concern extraction targets + gates)
+3. `wip/patch-block-reorg/PHASE1-STATUS.md` §18–§23 ← this session's findings/decisions (block 08/09 fixes, the QSA⊂qwen4exp merge, the dropped-content sweep, the completed chain)
+4. `wip/patch-block-reorg/REBASE-RESILIENCE.md`, `FILE-OWNERSHIP.md`, `README.md`
+5. `AGENTS.md` ("Report findings before shipping", "WIP and promotion rules", "Critical facts")
+6. `TODO.md` #56/#57 (known *delivery* defects, NOT reorg artifacts — do not "fix" them here).
 
-**Current state.** Target blocks **00–04** are rebuilt and committed on the Phase-1 worktree
-`~/llama-v2`, branch `v2-phase1`, clean checkpoint tag `pin/v2-phase1-00-04` (`2a1502311`), base
-`097cf33d9`, reference tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`). The delivery
-`patches/` are untouched. All Q1–Q8 decisions are recorded. A partial FA attempt is on scratch branch
-`v2-fa-wip` (`116ff4ccf`) — reference only.
+**State (exact).**  `~/llama-v2` (worktree of `~/llama.cpp`), branch **`v2-phase1` = `a40841e1e`**:
+**12 blocks (00–11)**, per-block fresh `all` build **12/12**, and the tree is **byte-identical to the
+published delivery** (`git diff a40841e1e af0595360` empty; `release.json.tree`).  Prefill-logit
+**0.000707 / 98.755 %**, 4B same-seed and qwen4exp dense+sparse coherence == r50 (`~/llama-rebase/build-r50`).
+The delivery `patches/` and `release.json` are **untouched**.  Block 10 = `qwen4exp` (merged with QSA —
+QSA is intrinsic to the arch); block 11 is a catch-all `campaign-remainder`.
 
-**Final approved target: 14 blocks** (00 foundation, 01 allreduce, 02 mtp-adaptive, 03 gdn, 04 bf16-kv,
-05 fa, 06 mmb, 07 kquant, 08 fused-prefill, 09 fused-moe, 10 slab-moe, 11 qwen4exp, 12 qsa,
-13 mmap-reclaim). Slab+MoE is grouped ahead of qwen4exp; the `fattn_stage` arena is deferred out of `05 fa`
-into `10 slab-moe`.
+**Your task: do Phase 2.**  Following `PHASE2-REFACTOR.md` §0 (one concern per function/file; only the
+call point stays in the shared file; preserve arm order; no forward deps; one extraction per commit),
+start with the highest-value/lowest-risk item:
 
-**Your task: continue Phase 1.** Start with `05 fa` (see HANDOFF.md §5 for the exact apply commands and
-the two known conflicts; exclude the `fattn_stage` arena and reconstruct the pre-arena staging in
-`launch_fattn`). Then proceed through `06 mmb`, `07 kquant`, `08 fused-prefill`, `09 fused-moe`,
-`10 slab-moe`, `11 qwen4exp`, `12 qsa`, `13 mmap-reclaim`, one block per commit on `v2-phase1`.
-
-**Git checkpointing:** after each block, commit on `v2-phase1`; do **not** push anything to the fork
-without an explicit instruction. The `~/llama-cpp-rdna-boosts` repo (`main`) is the place for campaign
-docs; commit + push those as you go.
+1. **`ggml_cuda_try_fuse` arms** (`ggml/src/ggml-cuda/ggml-cuda.cu`) — move each feature's matcher body
+   into the concern's file (`gdn-conv.cu`, `norm.cu`, `mmvq.cu`, `mmb.cu`, `hc-mix.cu`, `indexer-score.cu`,
+   `moe-expert-cache.cu`, `cpy-batch.cu`, …) and reduce `try_fuse` to an ordered list of guarded one-line
+   calls.  Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
+   `-moe-cache-hooks.cu`, `-arena.cu`).
+2. Then `mmvq.cu` dispatch / MMQ `J` selection / FA chooser / context+loader glue, per the plan.
 
 **Mandatory:**
-- Every block must build on its own with a **fresh** `all` build:
+- Every block must build on its own with a **fresh `all`** build:
   `~/llama-cpp-rdna-boosts/scripts/gate-per-block-build.sh --repo ~/llama-v2 --base 097cf33d9 --tip "$(git -C ~/llama-v2 rev-parse v2-phase1)" --build-dir build-per-block`.
-- Run the owning region's gates (HANDOFF.md §7) and the release gates
-  (`scripts/gate-prefill-logits.sh`, `scripts/gate-qwen4exp-quant-coherence.sh`, same-seed coherence,
-  35B-A3B `--spec-type draft-mtp`).
-- The delivery `patches/`/`release.json` are **not** modified until the full 14-block chain is built and
-  gated; then regenerate with `scripts/make-patches.sh` / `scripts/make-release.sh` and `validate-set.sh`.
-- Surface any new structural finding to the maintainer and wait before changing the plan (AGENTS.md).
+- Run the extracted feature's gate (`PHASE2-REFACTOR.md` §1 table) + a same-seed / byte-identity check;
+  for any prefill-kernel change also run `LLAMA_PPL=~/llama-v2/build-per-block/bin/llama-perplexity
+  ./scripts/gate-prefill-logits.sh`.
+- Disable fusion for the fusion A/B: `GGML_CUDA_DISABLE_FUSION=1`.
+- **One extraction per commit inside the owning block** (amend + rebase the later blocks; expect
+  `ggml-cuda.cu` conflicts).  After any amend, verify the committed tree (`git diff <commit> af0595360`
+  must be empty at the tip — a silent non-commit bit once this session).
+- The delivery `patches/`/`release.json` are **not** modified until V2.0 is done and gated.
+- Commit + push the campaign docs in `~/llama-cpp-rdna-boosts` (`main`) as you go; do **not** push
+  anything to the fork without an explicit instruction.
+- Surface any new structural finding to the maintainer and wait before changing the plan.
 
-**Pitfalls:** use `git apply -3` and `tools/select_hunks.py`; never `--autosquash`; do not keyword-triage
-the squashed old-15/old-06 without reading each hunk (a `band` keyword matches the GLU→Q8_1 fusion). See
-HANDOFF.md §8.
+**Pitfalls:** run builds in the FOREGROUND with a generous `timeout` and grep the log (ccache makes warm
+builds fast); never keyword-triage the squashed old-06/13/15 diffs — read every hunk; `git checkout
+--theirs -- <file>` takes the whole file; `llama-cli` needs `--single-turn` (+ `--no-display-prompt`);
+compare against **both** r50 (`~/llama-rebase/build-r50`, the delivery) and the base
+(`~/llama-base/build-base`, upstream) to tell a delivery defect from a reorg one.
 
-Report progress after each block (what moved, the gate result), and ask the maintainer before any
+Report progress after each extraction (what moved + the gate result) and ask before any
 delivery-affecting commit.
