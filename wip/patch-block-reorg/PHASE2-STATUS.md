@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`3802688c1`** (block 11) |
-| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `6d6f9692e`** |
+| Phase-2 branch | `v2-phase2` = **`ea547cb4d`** (block 11) |
+| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `65c266b5e`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -343,3 +343,29 @@ Gates: `test-backend-ops -o FLASH_ATTN_EXT` **6389/6389** in all three arms (def
 greedy **identical to r50**; q8_0-KV native-vs-staging same-seed **identical**;
 `test-logits-width-probe` **PASS (worst maxdiff 0)** on 4B and 35B; `gate-prefill-logits.sh` mean KLD
 **0.000707**, same-top-p **98.755 %** PASS; full per-block `all` build **12/12**.
+
+## 11. Item 5 — context/loader glue (2026-10-13)
+
+Two constructor-inline blocks were extracted into named file-scope helpers, leaving one-line calls:
+
+- **`src/llama-context.cpp`** — the FA tensor-parallel hint (the `n_cuda_dev` scan +
+  `ggml_set_fa_tensor_parallel(...)` call) became `llama_context_set_fa_tensor_parallel_hint(model)`,
+  placed after the file's `ggml_backend_dev_is_cuda()` helper it depends on (a first placement before
+  that helper did not compile — the dependency was not declaration-visible).  Owner **block 05**; the
+  tip diff applies there cleanly and the 06–11 replay is conflict-free.
+- **`src/llama-model-loader.cpp`** — the host-expert policy (the MMAP-unsupported warning and the POOL
+  enable) became `llama_host_experts_mode_apply(host_experts_mode, __func__)`; the caller's `__func__` is
+  passed so the log lines (`%s: host_experts_mode=…`) are byte-for-byte unchanged.  Owner **block 10** —
+  block 10 is the last editor of that region (it replaced the block-09 `moe_cache_set_host_pool(true)`
+  call with the issue-#130 device-API loop), so the tip diff applies there cleanly and only block 11
+  replays.  (A block-09 re-home conflicts on exactly that line and would need block 10's change replayed
+  into the helper.)
+
+**Deliberately not moved (already localized / would change log text):** the logits readback ordering is
+already a single `sync_readback` lambda plus one `GGML_READBACK_SYNC` guard (block 00), and the mmap
+release is already `llama_load_release_mmap()` (block 09) — both are small standalone blocks already, per
+`REBASE-RESILIENCE.md` §5 ("do not refactor for its own sake").
+
+Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
+(`-t 8`) host-expert run **identical to r50**; the rebased tip's `llama-context.cpp` and
+`llama-model-loader.cpp` are byte-identical to the validated tree; full per-block `all` build **12/12**.

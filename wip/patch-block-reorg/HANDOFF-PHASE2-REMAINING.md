@@ -10,16 +10,16 @@ Read this first, then `PHASE2-STATUS.md` (the dated Phase-2 log — it has the p
 
 - **Phase 1 is complete** at tag `v2-phase1` = `a40841e1e` (12 blocks 00–11; tree byte-identical to the
   published delivery `af0595360`).
-- **Phase 2 is in progress** on branch **`v2-phase2`** = **`3802688c1`** (a re-cut of Phase 1 with the
+- **Phase 2 is in progress** on branch **`v2-phase2`** = **`ea547cb4d`** (a re-cut of Phase 1 with the
   Phase-2 refactors folded into the owning blocks).
 - **Done:** the whole `ggml_cuda_try_fuse` extraction (work item 1 — `try_fuse` 2244 → **1064** lines,
   the rest being upstream arms); work item 2 (MMQ `J` selection was already self-contained); work item 3
   (steps 1–2 the RDNA `nwarps`/rpb policy; **step 3 the MoE kernel file split** `mmvq-moe.cu` +
-  `mmvq-vecdot.cuh`); item 4 (**the FA native-KV/band predicates → `fattn-rdna.cuh`**, block 05).
-- **Remaining:** item 5 (context/loader glue), item 6 (the maintainer's `ggml-cuda.cu` split), then the
-  **V2.0 release cut**.
+  `mmvq-vecdot.cuh`); item 4 (**the FA native-KV/band predicates → `fattn-rdna.cuh`**, block 05);
+  item 5 (**the FA tensor-parallel hint and the host-expert policy → named helpers**).
+- **Remaining:** item 6 (the maintainer's `ggml-cuda.cu` split), then the **V2.0 release cut**.
 - **The delivery `patches/` and `release.json` are untouched**; nothing has been pushed to the fork.
-- Checkpoints 1–10 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
+- Checkpoints 1–11 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
 
 ## 1. What this work is
 
@@ -33,12 +33,12 @@ collides with a small call point, not a rewritten shared function. The authorita
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (tree == `af0595360`, the delivery) |
-| **Phase-2 branch** | **`v2-phase2` = `3802688c1`** |
-| block 05 (amended) | `75cb9c0b1` |
-| block 08 (amended) | `fcce5864e` |
-| block 09 (amended) | `96a7d0d16` |
-| block 10 (amended) | `6d6f9692e` |
-| block 11 (amended) | `3802688c1` |
+| **Phase-2 branch** | **`v2-phase2` = `ea547cb4d`** |
+| block 05 (amended) | `6097ad7d5` |
+| block 08 (amended) | `134f545fd` |
+| block 09 (amended) | `7a1bbfcbb` |
+| block 10 (amended) | `65c266b5e` |
+| block 11 (amended) | `ea547cb4d` |
 | base | `097cf33d9` (tree `30c400cc…`) |
 | delivery tip (r50) | `af0595360` / `84058162b` (tree `f102245d…`) |
 | reference build r50 | `~/llama-rebase/build-r50` |
@@ -60,7 +60,8 @@ Checkpoints (annotated tags in `~/llama.cpp`) — each also has a bundle in
 | `pin/v2-phase2-ckpt7` | `24ef342b3` | item 3 s1: `calc_nwarps` → `mmvq-rdna.cuh` |
 | `pin/v2-phase2-ckpt8` | `9d6730dc8` | item 3 s2: launch-param helpers → `mmvq-rdna-params.cuh` |
 | `pin/v2-phase2-ckpt9` | `18a2fd0f8` | item 3 s3: MoE kernel → `mmvq-moe.cu` + shared selectors → `mmvq-vecdot.cuh` |
-| **`pin/v2-phase2-ckpt10`** | **`3802688c1`** | **item 4: FA predicates → `fattn-rdna.cuh` (block 05)** |
+| `pin/v2-phase2-ckpt10` | `3802688c1` | item 4: FA predicates → `fattn-rdna.cuh` (block 05) |
+| **`pin/v2-phase2-ckpt11`** | **`ea547cb4d`** | **item 5: FA hint + host-expert policy → named helpers** |
 
 ## 3. Done (do not redo)
 
@@ -142,14 +143,14 @@ Gates (all green): `test-backend-ops -o FLASH_ATTN_EXT` 6389/6389 default + `GGM
 + `GGML_HIP_FA_BAND_WMMA=0`; width purity; prefill-logit 0.000707 / 98.755 %; native-vs-staging same-seed
 identical; per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §10.
 
-### 4.3 Item 5 — `llama-context.cpp` / `llama-model-loader.cpp` glue
+### 4.3 Item 5 — `llama-context.cpp` / `llama-model-loader.cpp` glue — **DONE (ckpt11)**
 
-Small, low-risk. Move each concern's setup into a named helper in its owner file, leaving a one-line
-call. Concrete sites seen: `llama-context.cpp`'s FA tensor-parallel hint
-(`ggml_set_fa_tensor_parallel(...)` at ~line 271), the logits readback ordering, the GDN/MoE/qwen4exp
-setup; `llama-model-loader.cpp`'s host-expert policy (`host_experts_mode`, ~line 547) and the mmap
-release (`LLAMA_LOAD_RELEASE_MMAP`, ~line 1566). Gate: per-block build, same-seed coherence, the
-mmap-VmRSS measurement from the block that owns it.
+The FA tensor-parallel hint → `llama_context_set_fa_tensor_parallel_hint()` (block 05) and the
+host-expert policy → `llama_host_experts_mode_apply(host_experts_mode, __func__)` (block 10; the caller's
+`__func__` preserves the log text).  The logits readback ordering (block 00) and the mmap release
+(`llama_load_release_mmap()`, block 09) are already small localized blocks/helpers — left as-is per
+`REBASE-RESILIENCE.md` §5.  Gates: same-seed 4B/qwen4exp/35B identical to r50; 35B `-ncmoe 40` identical
+to r50; per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §11.
 
 ### 4.4 Item 6 — the maintainer's `ggml-cuda.cu` split (CAPSTONE)
 

@@ -4,6 +4,19 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt11 — `v2-phase2-ckpt11.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt11` = `ea547cb4d` |
+| branch tip | `v2-phase2` = `ea547cb4d` |
+| block 5 / 8 / 9 / 10 | `6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `65c266b5e` |
+
+Item 5: the FA tensor-parallel hint (`llama-context.cpp`, block 05) and the host-expert policy
+(`llama-model-loader.cpp`, block 10) extracted to named file-scope helpers with one-line calls.  Log
+lines preserved by passing the caller's `__func__`.  Per-block `all` 12/12; same-seed gates green.
+See `../PHASE2-STATUS.md` §11.
+
 ## ckpt10 — `v2-phase2-ckpt10.bundle`
 
 | | |
