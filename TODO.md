@@ -6,10 +6,21 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r48`, 2026-10-11):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
-**`3b9f403544169544f312bd24e4de31a554bf189d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
+**Current state (release `v12-097cf33d9-r53`, 2026-10-13):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `4b27ac644`, net tree
+**`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r53 folds PR #144 (DFlash F1 for several sequences + the readback wait, blocks
+00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the upstream `MUL_MAT_ID` duplicate-ids
+fix is an `upstream/` candidate only.  V2.0 re-organized the former 16-block set by concern and moved each
+concern into a self-contained function/file; the applied tree is behaviour-preserving (all same-seed gates
+byte-identical to r50).  See `WORKLOG.md` 261013.003 (r53).  **Previous (16-block) state:** r49 added the mmap
+host-memory reclaim (block 06): the loader no longer faults the
+whole model file in up front and it unmaps each tensor's mapping range right after the copy to its device
+buffer, so a `-ncmoe` load never holds the full mapping and the pinned host master at once
+(`LLAMA_LOAD_RELEASE_MMAP=0` is the kill-switch; peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL `-ncmoe 40`,
+2 GPUs: 122.5 -> 55.4 GiB, equal to `--load-mode none`), and folds two AMD consistency fixes into block
+15 (the Q1_0 `__byte_perm` -> `v_perm_b32` port and the `cpy-batch.cu` device idiom; both bit-identical
+or no-ops -- TODO #54 and #32 closed).  Before it, r48 fixes **issue #137** (the `--load-mode none` + `-sm tensor` + `-ncmoe` startup
 GPU page fault): the Meta device now reports `host_buffer`/`events` and proxies its event iface, so the
 loader's pinned async-upload pipeline engages and the pageable `read_buf` SDMA path is gone; adapted from
 upstream PR #22466 and folded into **block 06** (see `WORKLOG.md` 261011.006 (r48)).  Before it, r46
@@ -41,15 +52,82 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
-### 54. Finish the AMD `v_perm_b32` port for Q1_0 (the last un-ported i-quant table lookup)
+### 58. `-sm tensor` + DFlash aborts in the Meta split-state build — CORRECTNESS
 
-**Opened 2026-10-11; small, and no speed claim.**  Seeded from the K0 of the closed
-`strata-amd-kernels` campaign (#35) and **replaces** it.  Two sites still call HIP's private-memory
-`__byte_perm` while every other i-quant lookup already uses `__builtin_amdgcn_perm`: `vec_dot_q1_0_q8_1`
-(`vecdotq.cuh:833-844`) and `ggml_cuda_mmq_load_tiles_q1_0` (`mmq-load-tiles.cuh:50-61`) — ~24 call
-sites, a mechanical mirror of the existing Q2_0 HIP arms.  **Bit-identical by construction**, and there
-is **no Q1_0 model locally**, so the gate is the `test-backend-ops -o MUL_MAT` CPU oracle (Q1_0 is in
-`all_types`), not a benchmark.  Also an `upstream/` candidate.  Record: `wip/q1-0-byte-perm/README.md`.
+**Opened 2026-10-13 (found while validating PR #144's multi-sequence DFlash on 2x R9700).**  A DFlash
+target plus drafter (`-md`, `--spec-type draft-dflash`) under `-sm tensor` aborts at model load:
+
+```
+ggml/src/ggml-backend-meta.cpp:707: GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0) failed
+```
+
+after the (normal-during-fitting) `dflash requires ctx_other to be set` warning.  It reproduces on r52
+and r53 (the assert and the DFlash graph are unchanged by r53), so it is **pre-existing**, not a PR #144
+regression.  `-sm layer` works and is what the r53 DFlash gates used; the older 3-GPU DFlash records
+used `-sm tensor`, so this is the current blocker for a multi-GPU tensor-split DFlash run.
+
+**Fix direction:** the draft context is a second `llama_context` over the target model; while the Meta
+backend builds the draft's graph it reaches a tensor whose split state has `axis == SPLIT_AXIS_0`, which
+the `ggml-backend-meta.cpp:707` guard rejects.  Track which tensor/op introduces that state on the
+draft graph and whether the draft's per-context split state needs its own builder path.  Reproduce:
+`llama-cli -m <27B target> -md <DFlash2 drafter> --spec-type draft-dflash -sm tensor ...` (2 GPUs).
+Campaign: `wip/dflash-meta-split/`.
+
+### 57. `test-llama-archs` CPU mixed-batch FAIL is a delivery regression — CORRECTNESS
+
+**Opened 2026-10-12 (found during the `patch-block-reorg` Phase-1 block-10 gate; recorded as a known
+issue).**  `test-llama-archs`'s **CPU** row (`AMD Ryzen … | MoE | ... | Mixed batch`) FAILs for the
+published delivery but **passes at the upstream base `097cf33d9`**:
+
+| build | `qwen4exp` CPU Mixed batch | `deepseek2` CPU Mixed batch |
+|---|---|---|
+| base `097cf33d9` | **OK (3.32e-14)** | **OK (6.28e-10)** |
+| reference tip `84058162b` (r50) | **FAIL (3.52e-01)** | **FAIL (9.37e-01)** |
+| v2 block 10 `27f159a7a` | **FAIL (3.52e-01)** (bit-identical to r50) | (same) |
+
+So it is a **pre-existing delivery defect in the published tip**, not a reorg artifact — the same class
+as #56.  It was missed because the release gates do not run `test-llama-archs`.  Reproduce:
+`build/bin/test-llama-archs -a qwen4exp -s 42` (CPU row) vs the upstream base (passes).
+
+### 56. `test-llama-archs -a deepseek2` GPU memory fault with host experts + `--moe-cache-mib` — CORRECTNESS
+
+**Opened 2026-10-12 (found during the `patch-block-reorg` Phase-1 block-09 gate; recorded as a known
+issue, maintainer decision 2026-10-12).**  `test-llama-archs -a deepseek2` (the only arch the upstream
+test gives a host-expert / MoE-cache config) aborts with a GPU memory access fault during the
+`deepseek2 / MoE cache` config's first decode:
+
+```
+kernel: void mul_mat_vec_f<float, float, 1, 64, false, true>(...)   # multi-token MUL_MAT_ID
+Memory access fault ... faulting addr: 0x7f…  (a HOST/pinned range)
+```
+
+The MUL_MAT_ID kernel reads the pinned host expert table (`ROCm_Host`) past its mapping.  Bisected with
+fixed seed `-s 42`: upstream base `097cf33d9` **PASS 7/7**; v2 reorg block 08 `a32c95a6e` **PASS**;
+v2 reorg block 09 `4463f18c7` (`slab-moe`) **FAULT**; the **published reference tip `84058162b` also
+FAULTS** with the identical signature.  So it is a **pre-existing delivery defect inside the block-09
+MoE stack** (pinned host-expert loader / Meta / scheduler / cache hooks), **not** a reorg or block-10
+artifact; it escaped the release gates because none runs `test-llama-archs`.
+
+The test's cache is the **upstream** engine (`ctx_params.moe_cache_size` / `--moe-cache-mib`), not the
+delivery's `MOE_EXPERT_CACHE_MIB` engine — which is why `GGML_CUDA_SLAB=0`, `MOE_EXPERT_CACHE_MIB=0`,
+`MOE_EXPERT_CACHE_FILL=0`, `GGML_CUDA_DISABLE_FUSION=1` and `GGML_CUDA_GRID_STALL_PAD=0` are all inert
+here (the grid-pad / `nrows`-guard and `batched_reduce` hypotheses are excluded).
+
+**Fix direction:** root-cause the delivery's backend plumbing that the upstream `llama_moe_cache` engine
+rides on (scheduler routed-expert rebalance / merged per-layer MoE split, Meta delegation, the pinned
+`ROCm_Host` loader, `stage_*`/preflight), under the `--moe-cache-mib` + `--host-experts` path.
+Reproduce: `build/bin/test-llama-archs -a deepseek2 -s 42` vs the upstream base (passes).
+Full diagnosis: `archive/work/patch-block-reorg/PHASE1-STATUS.md` §15.
+
+### 55. Remove the full pinned `ROCm_Host` master when `--host-experts pool` is on
+
+**Opened 2026-10-11; scoping.**  The r49 mmap reclaim (block 06) removed the mmap half of the `-ncmoe`
+host peak, but `--host-experts pool` still keeps the **full pinned master** (r35 shipped the pool as a
+bounce tier; the source logs "Phase 2b; full pinned master kept").  `RssShmem` is identical with and
+without the pool: 18.7 GiB on 35B-A3B `-ncmoe 40`, 54.1 GiB on Flash-Next IQ4_NL `-ncmoe 40`.
+Dropping the master is the strongest lever for issue #139 (the amdgpu driver stops all of a process's
+GPU queues when the kernel migrates a GPU-mapped host page).  **Working home:
+`wip/host-expert-master-drop/`.**  Gates and the reader enumeration are in that README.
 
 ### 50. The cache-aware fusion guard is global while the slab's eviction is per-table (code `OPEN 2`)
 
@@ -310,15 +388,6 @@ CPU compute; see `archive/work/moe-expert-cache/WORKLOG.md`).  Strata's custom e
 token is the UVA cold fraction at 43 % residency; if it is <20 %, park it.  Design space and gates:
 `wip/moe-cpu-overlap/README.md`.
 
-### 32. `gdn-conv.cu` device idiom (block 15; found in the PR #102 review)
-
-**Opened 2026-10-04; cosmetic, no correctness impact.**  `gdn_conv_check` gates the 2..255-token arm
-on `ggml_cuda_info().devices[ggml_cuda_get_device()].cc`, while the batched-copy path added by PR #102
-uses `ggml_cuda_info().devices[ctx.device].cc`.  They agree on every current graph because the device
-is set before `ggml_cuda_try_fuse` runs, so it is two idioms for the same thing.  **Next:** pick one
-(pass the context device into the check, or use `ggml_cuda_get_device()` consistently) at the next
-block-15 touch.  Record: `archive/work/rdna4-verify-fusions-lf/VERIFICATION-r10.md` (review notes).
-
 ### 30. Default-flip the DFlash device-resident layer features (PR #73) — **CLOSED 2026-10-07 (r26)**
 
 **Opened 2026-09-30** with r27.  PR #73's device path (`GGML_LF_DFLASH_DEV=1`) is now validated on
@@ -446,3 +515,19 @@ Give it a deterministic repro (e.g. `compute-sanitizer`, or the `GGML_CUDA_SPLIC
 `GGML_META_PINHOST` force-modes) before retrying.  All of it is in
 `archive/work/moe-expert-cache/item3-findings-session20.md`; the issue-#99 gate change is in
 `archive/work/issue-99/README.md`.
+
+## Merge hygiene — finer block-06 dispatch split (r50 follow-up)
+
+**SUPERSEDED by `archive/work/patch-block-reorg/` (seeded 2026-10-12).**  The r50 finer split is now one part of a
+larger, fundamental re-organisation of the whole block taxonomy (the r50 lateral move into block 15 is
+reversed by the target map in `MIGRATION-MAP.md`).  The spec below is retained as the hunk-level detail
+for the `ggml_cuda_try_fuse` / `ggml-backend-meta.cpp` moves; the live campaign and the decisions it
+needs are in that directory (`OPEN-QUESTIONS.md`).
+
+The r50 per-block sweep is **16/16**, but block 06's fusion dispatch (`ggml_cuda_try_fuse` additions + the
+six `ggml_cuda_match_*` matchers for hc-mix / combine-norm / idx-relu / cache-blocks) now lives in
+**block 15** as a lateral move, so block 15 grew ~+1.4k lines and the features are not dispatched at their
+owning blocks (08/13/14).  The finer split needs the **block-14-era** matcher bodies (the block-15 state
+references block-15 struct members such as `out_xn_bf16` / `store_xn_f32`), and the
+`ggml-backend-meta.cpp` move is blocked on the block-15 `ggml_backend_device_i` / `ggml_backend_i`
+fields.  Spec: `archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.

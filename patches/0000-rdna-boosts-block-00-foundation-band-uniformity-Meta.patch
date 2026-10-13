@@ -1,0 +1,453 @@
+From b1a2290501e7a7d0e087b3bc117ce5a05feedce0 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Mon, 12 Oct 2026 14:21:38 -0500
+Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
+ Meta-wrapper and allocator fixes
+
+Groundwork block (multiple base-level concerns, by design):
+- FA KV-split width invariance (launch_fattn, n_q <= 8)
+- shared-NextN MTP heads keep their own KV (is_mem_shared gate)
+- CPU llamafile_sgemm routes n <= 8 to vec_dot (decode/verify band unity)
+- single-device -sm tensor skips the Meta wrapper
+- meta-buffer compute-container headroom 16 -> 128 (recurrent snapshot views)
+- multi-ubatch logits readback ordering (async D2H race)
+- ggml-alloc: release view sources whose views are never consumed (W4)
+
+Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
+---
+ common/speculative.cpp                        | 10 +++-
+ ggml/src/ggml-alloc.c                         | 35 +++++++++++++
+ ggml/src/ggml-backend-meta.cpp                |  7 ++-
+ ggml/src/ggml-cpu/llamafile/sgemm.cpp         |  8 ++-
+ ggml/src/ggml-cuda/fattn-common.cuh           | 10 +++-
+ .../vulkan-shaders/flash_attn.comp            | 29 ++++++++++-
+ .../vulkan-shaders/flash_attn_cm1.comp        | 49 +++++++++++++++++--
+ src/llama-context.cpp                         | 47 +++++++++++++++++-
+ src/llama.cpp                                 | 40 +++++++++------
+ 9 files changed, 209 insertions(+), 26 deletions(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index c5043a4a8..226473421 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1478,7 +1478,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
+         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
+ 
+-        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
++        // ctx_other is set for two different reasons: gemma4 assistants share the target KV, while
++        // shared-NextN MTP heads (nextn_shared_target_tensors, e.g. the qwen4exp shared sidecar,
++        // eagle3, dflash) only borrow the target's token_embd/output and keep their own KV.  Only
++        // the former may reuse the target position for every draft token and skip the catch-up
++        // decode; without the arch guard a shared-NextN head takes that arm and every draft round
++        // past the first dies on the M-RoPE X < Y check.  Upstream bug (04eb4c446, #23398).
++        char arch[64] = {0};
++        llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch, sizeof(arch));
++        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt && std::strcmp(arch, "gemma4-assistant") == 0;
+         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
+ 
+         if (chain_heads) {
+diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
+index b0c067b49..cfe0b113c 100644
+--- a/ggml/src/ggml-alloc.c
++++ b/ggml/src/ggml-alloc.c
+@@ -760,6 +760,41 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
+         }
+     }
+ 
++    // a view node that is never used as a source keeps its view source's n_views count elevated
++    // forever: the free pass below only decrements that count when the view itself is released, which
++    // never happens for a node with no consumers (e.g. a ggml_cpy expanded into the graph purely for
++    // its side effect - the "copy into a view of preallocated memory" idiom). The inflated count
++    // blocks both the view source's release and its in-place reuse, so the buffer grows by the size of
++    // every such view source. Fold those contributions in here, while the child counts are final.
++    // Graph outputs are exempt: they are never freed and may alias the view source, which must stay
++    // allocated for the application to read it.
++    for (int i = 0; i < graph->n_nodes; i++) {
++        struct ggml_tensor * node = graph->nodes[i];
++
++        if (!ggml_impl_is_view(node) || node->op == GGML_OP_NONE) {
++            continue;
++        }
++        if (node->flags & GGML_TENSOR_FLAG_OUTPUT) {
++            continue;
++        }
++
++        struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
++        if (hn->n_children != 0) {
++            continue;
++        }
++
++        struct ggml_tensor * view_src = node->view_src;
++        struct hash_node * view_src_hn = ggml_gallocr_hash_get(galloc, view_src);
++        view_src_hn->n_views -= 1;
++
++        AT_PRINTF("unused view %s: view_src %s: %d children, %d views\n",
++            node->name, view_src->name, view_src_hn->n_children, view_src_hn->n_views);
++
++        if (view_src_hn->n_views == 0 && view_src_hn->n_children == 0 && view_src_hn->allocated) {
++            ggml_gallocr_free_node(galloc, view_src);
++        }
++    }
++
+     // allocate tensors
+     for (int i = 0; i < graph->n_nodes; i++) {
+         struct ggml_tensor * node = graph->nodes[i];
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 86748b689..0d130fcd2 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -1742,7 +1742,12 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_backend_buffer_type_t buft, ggml_tensor ** tensors, int n_tensors) {
+     const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
+ 
+-    constexpr size_t compute_headroom = 16; // Maximum number of views per statically allocated tensor that can be created between evals.
++    // Views of the static tensors that are created between graph evals are stored in the compute
++    // containers. The number of such views is proportional to the number of tensors in the graph
++    // that share the buffer, which for hybrid recurrent models with n_rs_seq snapshotting can be
++    // much larger than 16 per static tensor (e.g. Qwen35: ~2*(n_rs_seq+1) views per recurrent
++    // layer are created for the conv-state snapshot copies). Size the headroom accordingly.
++    constexpr size_t compute_headroom = 128;
+     const ggml_init_params params_static = {
+         /*.mem_size   =*/ n_tensors * ggml_tensor_overhead(),
+         /*.mem_buffer =*/ nullptr,
+diff --git a/ggml/src/ggml-cpu/llamafile/sgemm.cpp b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
+index d28840a91..39e98f5fe 100644
+--- a/ggml/src/ggml-cpu/llamafile/sgemm.cpp
++++ b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
+@@ -3907,8 +3907,14 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
+     assert(params->ith < params->nth);
+ 
+     // only enable sgemm for prompt processing
++    // decode (n_q = 1) and speculative verify batches (n_q = n_draft+1) must run the
++    // same kernels: llamafile rejects n < 2, so verify batches (n_q >= 2) ran tinyBLAS
++    // while decode ran vec_dot, accumulating differently and breaking the
++    // batch-vs-seq bit-identity that speculative acceptance checks rely on.
++    // Route every decode-scale batch through the plain vec_dot path and use
++    // llamafile only for prefill (n_q > 8, i.e. beyond the speculative batch range).
+ #if !defined(__MMA__)
+-    if (n < 2)
++    if (n <= 8)
+         return false;
+ #endif
+ 
+diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
+index 41d948335..2ea7cac83 100644
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -1192,13 +1192,21 @@ void launch_fattn(
+         // parallel_blocks must not be larger than what the tensor size allows:
+         parallel_blocks = std::min(parallel_blocks, ntiles_KV);
+ 
++        // Decode and speculative verify batches (n_q <= 8) must use a query-width-
++        // independent KV split: ntiles_dst is a function of Q->ne[1]
++        // (ntiles_x = ceil(Q->ne[1]/ncols1)), so n_q=3 and n_q=5 would otherwise
++        // feed different partial sums into the online-softmax/PV combine, drift the
++        // logits in the last bits and flip greedy near-ties (issue #25).  Evaluate
++        // the heuristic as if n_q == 1 so every small batch agrees.
++        const int ntiles_dst_eff = Q->ne[1] <= 8 ? (ntiles_z_gqa * K->ne[2] * Q->ne[3]) : ntiles_dst;
++
+         // If ntiles_total % blocks_per_wave != 0 then some efficiency is lost due to tail effects.
+         // Test whether parallel_blocks can be set to a higher value for better efficiency.
+         const int blocks_per_wave = nsm * max_blocks_per_sm;
+         int nwaves_best = 0;
+         int efficiency_percent_best = 0;
+         for (int parallel_blocks_test = parallel_blocks; parallel_blocks_test <= ntiles_KV; ++parallel_blocks_test) {
+-            const int nblocks_total = ntiles_dst * parallel_blocks_test;
++            const int nblocks_total = ntiles_dst_eff * parallel_blocks_test;
+             const int nwaves = (nblocks_total + blocks_per_wave - 1) / blocks_per_wave;
+             const int efficiency_percent = 100 * nblocks_total / (nwaves*blocks_per_wave);
+ 
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
+index 2c5e85908..479dd90b2 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
+@@ -519,9 +519,26 @@ void main() {
+             }
+ 
+             FLOAT_TYPE Pf[rows_per_thread];
++            bool any_live = false;   // any row of this thread that attends to column c
++            bool any_mask = false;   // any row masked out at column c (P == +0.0)
+             [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+                 Pf[r] = FLOAT_TYPE(exp(float(Sf[r][c]) - Mf[r]));
+                 Lf[r] += Pf[r];
++                if (Pf[r] != FLOAT_TYPE(0.0)) {
++                    any_live = true;
++                } else {
++                    any_mask = true;
++                }
++            }
++
++            // Masked cells (P == +0.0) must not read V at all: on some targets
++            // (e.g. gfx1151 f16 WMMA / matrix units) accumulating +-0.0 products
++            // is inexact, so a fully masked column would leak the sign of whatever
++            // V the cell last held (e.g. a freed KV cell) into the output. A fully
++            // masked column contributes exactly +0.0, so it can be skipped outright;
++            // partially masked columns skip the masked rows below.
++            if (!any_live) {
++                continue;
+             }
+ 
+             [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+@@ -536,8 +553,16 @@ void main() {
+                 } else {
+                     Vf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + vcol * v_stride / 4 + d * D_split + d_tid]);
+                 }
+-                [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+-                    Of[r][d] += FLOAT_TYPEV4(Pf[r] * Vf);
++                if (any_mask) {
++                    [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
++                        if (Pf[r] != FLOAT_TYPE(0.0)) {
++                            Of[r][d] += FLOAT_TYPEV4(Pf[r] * Vf);
++                        }
++                    }
++                } else {
++                    [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
++                        Of[r][d] += FLOAT_TYPEV4(Pf[r] * Vf);
++                    }
+                 }
+             }
+         }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+index aa9dd624b..143a25b0f 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -62,6 +62,11 @@ shared O_TYPEV4 pvsh[MatBc * osh_stride];
+ 
+ shared ACC_TYPE slope[Br];
+ 
++// Per-column liveness for the current KV tile: col_live[c] is set when at least one
++// real query row has a nonzero softmax weight (P) for KV column c of this tile. A
++// column with no live row is fully masked and must never read V (see below).
++shared uint32_t col_live[Bc];
++
+ void main() {
+ #ifdef NEEDS_INIT_IQ_SHMEM
+     if (fa_type_needs_shmem(FaTypeK) || fa_type_needs_shmem(FaTypeV)) {
+@@ -157,6 +162,10 @@ void main() {
+             mask_cache[idx] = f16vec4(0);
+         }
+ 
++        if (tid < Bc) {
++            col_live[tid] = 0;
++        }
++
+         if (MASK_ENABLE) {
+             if (USE_MASK_OPT && mask_opt_idx != j / 16) {
+                 mask_opt_idx = j / 16;
+@@ -402,6 +411,9 @@ void main() {
+                     const FLOAT_TYPEV4 Pf = FLOAT_TYPEV4(exp(vec4(sfsh[row / 4 + col * sfshstride]) - mfvec));
+                     [[unroll]] for (uint32_t vec_idx = 0; vec_idx < 4; ++vec_idx) {
+                         Lf[r + vec_idx] += Pf[vec_idx];
++                        if (i * Br + row + vec_idx < N && float(Pf[vec_idx]) != 0.0f) {
++                            col_live[col] = 1;
++                        }
+                     }
+                     Psh[col * psh_stride + row / 4] = Pf;
+                 }
+@@ -409,6 +421,8 @@ void main() {
+         }
+ 
+         if (SHMEM_STAGING != 0) {
++            // col_live is written by the Pf loop above; make it visible before zeroing
++            barrier();
+             [[unroll]] for (uint32_t idx = 0; idx < Bc * HSV_pad / 4; idx += gl_WorkGroupSize.x) {
+                 uint32_t d = (idx + tid) % (HSV_pad / 4);
+                 uint32_t c = (idx + tid) / (HSV_pad / 4);
+@@ -416,7 +430,7 @@ void main() {
+                     FLOAT_TYPEV4 V_Tf = FLOAT_TYPEV4(0);
+                     uint32_t v_row;
+                     bool kv_active = fa_kv_index(j * Bc + c, v_row);
+-                    if (kv_active && (HSV == HSV_pad || d < HSV / 4)) {
++                    if (kv_active && col_live[c] != 0 && (HSV == HSV_pad || d < HSV / 4)) {
+ #if !defined(BFLOAT16)
+                         if (USE_DECODE_V) {
+                             uint coord = v_row * v_stride * BLOCK_SIZE_V + 4 * d;
+@@ -436,6 +450,27 @@ void main() {
+         }
+         barrier();
+ 
++        // A tile that applied a mask can contain fully masked columns (no live query
++        // row, col_live == 0). Those columns must not read V (see the stage_v comment).
++        // The test is workgroup-uniform and only runs for tiles that may have masked
++        // cells, so fully-live tiles keep the direct path untouched.
++        bool tile_has_dead = false;
++        if (MASK_ENABLE && (!USE_MASK_OPT || (mask_opt_bits != MASK_OPT_ALL_ZERO && mask_opt_bits != MASK_OPT_ALL_NEG_INF))) {
++            if (tid < Bc && col_live[tid] == 0) {
++                tile_has_dead = true;
++            }
++            tile_has_dead = subgroupOr(tile_has_dead);
++            barrier();
++            if (gl_SubgroupInvocationID == 0) {
++                tmpsh[gl_SubgroupID] = tile_has_dead ? 1.0f : 0.0f;
++            }
++            barrier();
++            tile_has_dead = false;
++            [[unroll]] for (uint s = 0; s < gl_NumSubgroups; ++s) {
++                tile_has_dead = tile_has_dead || (tmpsh[s] != 0.0f);
++            }
++        }
++
+         const uint num_hsv_tiles = (HSV + MatBc * row_split - 1) / (MatBc * row_split); // round up
+ 
+         // Each subgroup handles HSV/4 columns
+@@ -456,7 +491,12 @@ void main() {
+             if (SHMEM_STAGING == 0) {
+             // For quants we always preload via kvsh. For f16/bf16 we only preload when
+             // alignment / bounds force it (otherwise we coopMatLoad direct from data_vv4).
+-            const bool stage_v = USE_DECODE_V || KV_bounds_check || USE_SPARSE;
++            // A fully masked column (col_live[c] == 0) must never read V: masked cells
++            // would accumulate +-0.0 x V inexactly on gfx11 f16 WMMA and leak the sign
++            // of whatever V the cell last held. Such columns are staged through kvsh
++            // with their V zeroed instead of being loaded direct. The same applies to
++            // sparse-inactive slots (USE_SPARSE), which stage_v already forced.
++            const bool stage_v = USE_DECODE_V || KV_bounds_check || USE_SPARSE || tile_has_dead;
+             if (stage_v) {
+                 [[unroll]] for (uint32_t i = 0; i < v_loads_per_thread; ++i) {
+                     const uint idx = i * gl_WorkGroupSize.x + tid;
+@@ -471,7 +511,8 @@ void main() {
+                     const uint ib = coord / BLOCK_SIZE_V;
+                     const uint iqs = coord % BLOCK_SIZE_V;
+ 
+-                    if (USE_SPARSE ? (kv_active && v_col < HSV) : (!KV_bounds_check || (v_row < KV && v_col < HSV))) {
++                    if (USE_SPARSE ? (kv_active && col_live[row] != 0 && v_col < HSV)
++                                   : (col_live[row] != 0 && (!KV_bounds_check || (v_row < KV && v_col < HSV)))) {
+ #if !defined(BFLOAT16)
+                         if (USE_DECODE_V) {
+                             kvsh[row * vsh_stride + col] = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+@@ -495,7 +536,7 @@ void main() {
+                     coopMatLoad(KMat, Psh, bc_chunk * MatBc * psh_stride, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
+ 
+                     if (SHMEM_STAGING == 0) {
+-                    if (!USE_DECODE_V && !KV_bounds_check && !USE_SPARSE) {
++                    if (!USE_DECODE_V && !KV_bounds_check && !USE_SPARSE && !tile_has_dead) {
+                         // F16/BF16 values can be loaded directly from global memory
+                         const uint v_tile_row = j * Bc + bc_chunk * MatBc;
+                         const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 23170d8a3..7da192d67 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1972,6 +1972,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+     int64_t n_outputs_prev = 0;
+     int64_t n_tokens_prev  = 0;
+ 
++    // complete the async device->host readbacks issued for one ubatch
++    auto sync_readback = [&](ggml_tensor * t) {
++        if (t == nullptr) {
++            return;
++        }
++        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
++        if (backend != nullptr) {
++            ggml_backend_synchronize(backend);
++        }
++    };
++
+     do {
+         const auto & ubatch = mctx->get_ubatch();
+ 
+@@ -2156,7 +2167,41 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+         n_outputs_prev += n_outputs;
+         n_tokens_prev  += ubatch.n_tokens;
+-    } while (mctx->next());
++
++        if (!mctx->next()) {
++            break;
++        }
++
++        // Another ubatch follows and will reuse this graph's output tensors.  The readbacks above
++        // copied them into the persistent host output buffers asynchronously, so make sure those
++        // copies have completed before the next graph overwrites the source.  On backends whose
++        // pinned async device->host copy is not ordered against the compute stream (observed on
++        // ROCm) the next ubatch otherwise overwrites the source before an earlier copy reads it,
++        // and the host rows end up holding a later ubatch's data (multi-ubatch per-token outputs:
++        // perplexity / KLD, and the server's multi-sequence batches).  A single-ubatch decode has
++        // nothing to order against and pays nothing.
++        // The per-token readbacks (the DFlash layer inputs, the unmasked nextn embeddings) also run in a ubatch without
++        // outputs (a prompt chunk that does not end its prompt), so they need the same wait there: the next ubatch's input
++        // upload waits only for this graph's compute, not for the copies queued after it, and was observed (Windows, ROCm)
++        // to overwrite a layer input before its copy had read it.
++        static const bool readback_sync = getenv("GGML_READBACK_SYNC") == nullptr || atoi(getenv("GGML_READBACK_SYNC")) != 0;
++        if (readback_sync && (n_outputs > 0 || extract_all_idxs)) {
++            sync_readback(t_logits);
++            sync_readback(t_embd);
++            sync_readback(t_h_nextn);
++            for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
++                if (cparams.embeddings_layer_inp[il]) {
++                    sync_readback(res->get_layer_inp((int) il));
++                }
++            }
++            if (has_samplers) {
++                for (ggml_tensor * t : res->t_sampled)        { sync_readback(t); }
++                for (ggml_tensor * t : res->t_sampled_logits) { sync_readback(t); }
++                for (ggml_tensor * t : res->t_sampled_probs)  { sync_readback(t); }
++                for (ggml_tensor * t : res->t_candidates)     { sync_readback(t); }
++            }
++        }
++    } while (true);
+ 
+     // set to total number of outputs in the batch, for use in llama_get_logits_ith
+     n_outputs = n_outputs_all;
+diff --git a/src/llama.cpp b/src/llama.cpp
+index 9beb14841..fedcabcf9 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -167,16 +167,21 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
+                 LLAMA_LOG_ERROR("%s: LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices\n", __func__);
+                 return false;
+             }
+-            LLAMA_LOG_INFO("%s: creating a Meta device with %zu devices\n", __func__, n_devs);
+-            for (size_t i = 0; i < n_devs; ++i) {
+-                LLAMA_LOG_INFO("%s: - device %zu: %s\n", __func__, i, ggml_backend_dev_name(params.devices[i]));
++            if (n_devs == 1) {
++                // single device: no tensor splitting is possible, skip the Meta wrapper
++                model->devices.push_back({false, params.devices[0]});
++            } else {
++                LLAMA_LOG_INFO("%s: creating a Meta device with %zu devices\n", __func__, n_devs);
++                for (size_t i = 0; i < n_devs; ++i) {
++                    LLAMA_LOG_INFO("%s: - device %zu: %s\n", __func__, i, ggml_backend_dev_name(params.devices[i]));
++                }
++                model->get_split_state_ud.n_devices = n_devs;
++                model->get_split_state_ud.model = model;
++                model->devices.push_back({
++                    true, ggml_backend_meta_device(
++                    params.devices, n_devs, llama_meta_device_get_split_state, &model->get_split_state_ud)
++                });
+             }
+-            model->get_split_state_ud.n_devices = n_devs;
+-            model->get_split_state_ud.model = model;
+-            model->devices.push_back({
+-                true, ggml_backend_meta_device(
+-                params.devices, n_devs, llama_meta_device_get_split_state, &model->get_split_state_ud)
+-            });
+         } else {
+             for (ggml_backend_dev_t * dev = params.devices; *dev; ++dev) {
+                 model->devices.push_back({false, *dev});
+@@ -212,12 +217,17 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
+             }
+ 
+             GGML_ASSERT(!devs.empty());
+-            model->get_split_state_ud.n_devices = devs.size();
+-            model->get_split_state_ud.model     = model;
+-            gpus.push_back({
+-                true, ggml_backend_meta_device(
+-                devs.data(), devs.size(), llama_meta_device_get_split_state, &model->get_split_state_ud)
+-            });
++            if (devs.size() == 1) {
++                // single device: no tensor splitting is possible, skip the Meta wrapper
++                gpus.push_back({false, devs[0]});
++            } else {
++                model->get_split_state_ud.n_devices = devs.size();
++                model->get_split_state_ud.model     = model;
++                gpus.push_back({
++                    true, ggml_backend_meta_device(
++                    devs.data(), devs.size(), llama_meta_device_get_split_state, &model->get_split_state_ud)
++                });
++            }
+         } else {
+             for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                 ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+-- 
+2.56.0
+

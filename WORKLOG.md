@@ -1,5 +1,498 @@
 # WORKLOG - dated delivery records
 
+## 261013.003 (r53) -- PR #144 DFlash multi-sequence F1 folded into blocks 00/10/11, #138 fa-stage-prealloc into 09/10; upstream MUL_MAT_ID dup fix published
+
+**Release `v12-097cf33d9-r53`** (base `097cf33d9`, canonical tip `4b27ac644`, net tree
+`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); block count stays **12** (00-11).  Two contributor items
+were folded into the blocks that own their concerns (the r51 clean-separation goal); the third item is
+an `upstream/` candidate and the delivery ships **pure** on it.  **No Docker build for r53** (container
+images deferred to a later tag, per the maintainer).
+
+- **PR #144 `wip/dflash-multiseq`** (@overdoingism) -> **block 11** (`common/speculative.cpp`: F1 for
+  several sequences, `llama_lf_get_dev_rows`, the host-resident-MoE-experts guard), **block 10**
+  (`src/llama-context.{cpp,h}`, `src/llama-ext.h`: `lf_dev_rows`, `get_lf_dev_rows`, the
+  `output_reorder` guard) and **block 00** (`src/llama-context.cpp`: the `GGML_READBACK_SYNC` wait for
+  a ubatch without outputs, covering the per-token DFlash layer inputs).  The guard ships as the PR
+  wrote it: with `-ncmoe`/`-cmoe` several sequences stay on the host path (issue #127 MoE form).
+- **#138 `beta/fa-stage-prealloc`** (@DanoPTT) -> **block 09** (`ggml/src/ggml-cuda/common.cuh`:
+  `fattn_stage_try_get(size_hint)`) and **block 10** (`ggml/src/ggml-cuda/fattn-common.cuh`:
+  `launch_fattn` hint).  Default-on, `GGML_CUDA_FA_STAGE_PREALLOC=0` restores the 1.25x ladder; the
+  hint is tried only while `optional_alloc_within_free_cap(...)` allows it.
+- **Upstream `MUL_MAT_ID` duplicate-ids** (`archive/work/upstream-mul-mat-id-dup/`, formerly
+  `wip/upstream-mul-mat-id-dup/`): finished and published as
+  `upstream/UPSTREAM-PR-mul-mat-id-dup.{md,patch}` (applies clean to `097cf33d9` and current master
+  `1b70350c9`).  **Not in `patches/`** -- the delivery ships pure.  The fix makes `mm_ids_helper`
+  emit every repeated `(token, iex)` occurrence, loops the MMQ/MMF column tiles over the expanded
+  expert column list (stream-k keeps the worst-case grid width), routes every `MUL_MAT_ID` through the
+  compact MMF kernel, and removes the host fallback's first-match `break`.
+
+The fork chain was rebuilt with `git rebase -i` (blocks 00/09/10/11 amended, no message change), then
+`make-patches.sh` / `make-release.sh` regenerated `patches/` and `release.json`.
+
+**Validation (gfx1201, R9700).**
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `4083fd0e...`);
+- `scripts/gate-per-block-build.sh --changed-from 2f3349306`: **4/4** changed blocks (00/09/10/11) + the
+  tip build the `all` target (the other 8 block deltas are byte-identical to r52);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS (unchanged);
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (GSQ-IQ3_XXS coherent, 0 `////`; the gather on/off
+  hash WARN is the documented qwen4exp `-sm tensor` run-to-run nondeterminism);
+- 4B `Qwen3.5-Q8_0` same-seed greedy identical to r52 (`1c5d32ac537d`); MoE greedy text varies
+  run-to-run (allowed; MTP acceptance is the bar);
+- DFlash, 27B UD-Q4_K_XL + DFlash2, 2 GPUs `-sm layer`: single sequence F1 on == off
+  (`834bfd5bf6b8`), F1 prefill 1181 vs 1099 t/s; `--parallel 2` (two pinned slots) F1 on == off
+  (slot0 `bd13536b7a7b`, slot1 `c8a25913427d`, acceptance 0.62121 / 0.48052), F1 ~5 % faster;
+  `-ncmoe 40` + `--parallel 2` logs the host-experts guard and stays coherent (**`-sm tensor` + DFlash
+  aborts on both r52 and r53 -- pre-existing, not a regression**);
+- 35B-A3B draft-MTP 2 GPUs (`-sm tensor -c 16384 -n 3000`, bf16 KV, prose): acceptance **0.77302**
+  identical to r52, **191.8** vs plain **108.9 t/s** (3-GPU acceptance **0.733** identical);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B-A3B;
+- `test-backend-ops -o TOPK_MOE` **448/448**; `-o MUL_MAT_ID -p 'n=1,'` **162/162**;
+- dense batched `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (27B Q4_K_XL, q8_0 KV, 3 GPUs):
+  B=1 28.1-28.6, B=4 103.4-104.4, B=8 180.5-181.8 t/s, within noise of r52 across interleaved rounds;
+- upstream `MUL_MAT_ID` fix (base + patch): `-o MUL_MAT_ID -p 'dup=1'` 16/16 (base 0/16), full
+  `-o MUL_MAT_ID` 947/947, `-o MUL_MAT` 2444/2444, `scripts/check-gpu-faults.sh` clean; 35B-A3B Q8_0
+  pp512/pp2048 2587/2577 vs unpatched 2588/2563 t/s (within noise).
+
+**ENVIRONMENT/docs.**  New `GGML_CUDA_FA_STAGE_PREALLOC` row (default on, kill-switch);
+`GGML_LF_DFLASH_DEV` updated for the multi-sequence F1 and the host-experts guard.  `archive/work/`
+RESOLUTIONs for `dflash-multiseq`, `fa-stage-prealloc` and `upstream-mul-mat-id-dup`; `wip/CAMPAIGNS.md`
+updated; `wip/upstream-mul-mat-id-dup/` moved to `archive/work/`.
+
+**Known open defects (pre-existing, unchanged):** `TODO.md` #56/#57; `-sm tensor` + DFlash aborts
+(`llama-model.cpp` / `ggml-backend-meta.cpp`, r52 does it too); the upstream `MUL_MAT_ID` dup bug is
+now fixed as an `upstream/` candidate only.
+
+**Release artifacts.**  Delivery `main` + tag `v12-097cf33d9-r53`; the personal fork's `rdna-boosts`
+branch is refreshed to the r53 tree (`--force-with-lease`).  Container images are **not** rebuilt for
+this tag (deferred, per the maintainer).
+
+## 261013.002 (r52) -- four contributor WIP PRs folded into their owning blocks (#140, #141, #142, #143)
+
+**Release `v12-097cf33d9-r52`** (base `097cf33d9`, canonical tip `2f3349306`, net tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); block count stays **12** (00-11).  Four
+`wip/` PRs from @briansp2020, each folded into the block that owns its concern (the r51 clean-separation
+goal), then archived under `archive/work/`:
+
+- **#140 `wip/moe-rpb-short` -> block 10** (`mmvq-moe.cu`): for RDNA4 `MUL_MAT_ID` expert matrices with
+  fewer than 8 K-blocks per row (the Flash-Next q2_0 down under `-sm tensor`), use 8 rows per block
+  instead of `ceil(8 / K-blocks)`.  Default-on; `GGML_CUDA_MOE_RPB_SHORT=0` restores the old rule,
+  `2`/`4`/`8` force a value.
+- **#141 `wip/topk-moe-sorted-keys` -> block 08** (`topk-moe.cu`): `topk_moe`'s argmax butterfly uses
+  `ggml_cuda_xor_lane` (DPP) and per-lane sorted 64-bit keys for the gating outputs.  Same ids, weights
+  and order.  Default-on; `GGML_CUDA_TOPK_SORTED=0` restores the scan.
+- **#142 `wip/allreduce-events-p2p` -> block 01** (`allreduce-hip.cu`): `0001` stops recording
+  `ev_pool[*][slot].ker` on the chunked kernel path (`GGML_CUDA_AR_KER_EVENTS=1` restores it); `0002` is
+  the opt-in `GGML_CUDA_AR_P2P_LARGE=1` peer-pull copy-engine path (`hipMemcpyPeerAsync` instead of two
+  host bounces).
+- **#143 `wip/mtp-prefill-tail` -> block 02** (`speculative.cpp`, `speculative.h`,
+  `server-context.cpp`): `0001` opt-in `LLAMA_MTP_INGEST_TAIL=<tokens>` feeds the MTP draft only the
+  prompt tail (new `common_speculative_set_prompt_end()`); `0002` (always on) copies only the last
+  target hidden-state row for prompt batches.
+
+The PR patches were cut against r48-r50; #140's hunk moved with the Phase-2 extraction
+(`mmvq.cu` -> `mmvq-moe.cu`).  The fork chain was rebuilt with `git rebase -i` (blocks 01/02/08/10
+amended, no message change), then `make-patches.sh` / `make-release.sh` regenerated `patches/` and
+`release.json`.
+
+**Validation (gfx1201, 3x R9700).**
+- per-block fresh `all` build: **12/12** (the other 8 block deltas are byte-identical to r51; the new
+  `--changed-from` mode would select only the 4 edited blocks + the tip);
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `8b177a7b...`);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS;
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (GSQ-IQ3_XXS coherent, 0 `////`; the gather on/off
+  hash WARN is the documented qwen4exp `-sm tensor` run-to-run nondeterminism);
+- `Qwen3.5-4B-Q8_0` same-seed greedy identical to r51; MoE greedy text varies run-to-run (allowed;
+  MTP acceptance is the bar);
+- 35B-A3B draft-MTP (`-sm tensor -c 16384 -n 3000`, bf16 KV, prose): acceptance **0.733** identical to
+  r51, **160.4** vs **159.2 t/s**, plain **106.5 t/s** (MTP +50 %);
+- 35B-A3B long prompt (prose x6, ~31k tokens) default: acceptance **0.82081** identical to r51, prefill
+  2933 vs 2915 t/s; `LLAMA_MTP_INGEST_TAIL=4096`: prefill **+4.8 %** but acceptance **0.821 -> 0.715**
+  and decode **-4.4 %** (the PR's documented trade-off, so it stays opt-in);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B-A3B;
+- `test-backend-ops -o TOPK_MOE` **448/448**; `-o MUL_MAT_ID -p 'n=1,'` **166/166** (the mmvq path);
+- stock-relative `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (dense 27B Q4_K_XL, q8_0 KV): B=1
+  **28.68**, B=4 **103.13**, B=8 **180.78** t/s, no worse than the r50 reference (27.62 / 102.60 /
+  177.56);
+- benefit: Flash-Next GSQ-IQ3_XXS 3-GPU all-resident greedy (code, 400 tokens) PR140 on **63.6** vs off
+  **63.15 t/s**.
+
+**Tooling.**  `scripts/gate-per-block-build.sh` gains `--changed-from <prev-tip>` (build only the
+blocks whose own patch-id differs, plus the tip) and `--list-only`; the per-block release sweep now
+compiles the changed blocks instead of all 12.
+
+**Known open defects (pre-existing, unchanged):** `TODO.md` #56/#57; the upstream `MUL_MAT_ID` `dup=1`
+F16 failures in `test-backend-ops`.
+
+**Release artifacts.**  Delivery `main` + tag `v12-097cf33d9-r52`; the personal fork's `rdna-boosts`
+branch is refreshed to `2f3349306` / tree `8b177a7b...` (`--force-with-lease`).  Container images are
+**not** rebuilt for this tag (deferred to a later release, per the maintainer).
+
+## 261013.001 (r51) -- V2.0: the 16-block set re-cut as a 12-block set (block-boundary re-org + self-contained refactor)
+
+**Delivery change: `release.json` now names a 12-block set at base `097cf33d9`, release
+`v12-097cf33d9-r51`, net tree `48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1` (the previous release was the
+16-block `v16-097cf33d9-r50`, tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`).**  The applied tree is
+**behaviour-preserving but not tree-identical**: Phase 1 redistributed each concern into its owning
+block, and Phase 2 moved each concern into a self-contained function/file so a future upstream re-base
+collides with a small call point rather than a rewritten shared function.  All same-seed gates are
+byte-identical to r50.
+
+**The 12 blocks.**  `v12` is a clean break in numbering:
+
+| # | subject | concern |
+|---|---|---|
+| 00 | foundation | band-uniformity, Meta-wrapper, allocator fixes (old-00 + old-05 + old-07 + old-09a + the old-06 readback + old-15 W4) |
+| 01 | hybrid HIP all-reduce (RDNA4-gated) | old-12 |
+| 02 | adaptive MTP draft depth | old-01 |
+| 03 | chunked gated-delta-net prefill | old-02 |
+| 04 | BF16 KV cache + native-BF16 FA | old-03 |
+| 05 | FA band / native quantized K-V / derived kq mask | old-04 FA + old-15 FA |
+| 06 | MMB quantized prefill GEMM | old-08 MMB |
+| 07 | k-quant boosts (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
+| 08 | fused kernels (old-08 fusions + old-13 fused MoE + old-15 PR57/63) | old-08 + old-13 + old-15 |
+| 09 | host-resident MoE (iface, scheduler, Meta, slab, cache engine) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena |
+| 10 | qwen4exp (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy |
+| 11 | campaign remainder (CPU wins, backend iface fills, DFlash, FA build grouping) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
+
+**Phase-2 refactor (self-contained concerns; `ggml_cuda_try_fuse` and the FA/quant hubs).**  Landed on
+the `v2-phase2` chain and folded into the owning blocks, each validated before re-homing:
+
+- the whole `ggml_cuda_try_fuse` extraction (2244 -> 1064 lines at the function; every delivery arm a
+  guarded one-line call to a concern file);
+- `mmvq-vecdot.cuh` (shared vec-dot/VDR selectors) and `mmvq-moe.cu` (the dedicated MUL_MAT_ID MoE
+  kernel + launch; `mmvq.cu` 3745 -> 3368 lines);
+- `fattn-rdna.cuh` (the FA native-KV/band predicate bodies out of `fattn-common.cuh`, which drops
+  2421 -> 2007 lines);
+- named helpers for the FA tensor-parallel hint and the host-expert policy;
+- the `ggml-cuda.cu` split: **9819 -> 6370 lines**, into `ggml-cuda-try-fuse.cu` (2209),
+  `ggml-cuda-slab.cu` (1115), `ggml-cuda-moe-cache-hooks.cu` (237) and `ggml-cuda-arena.cu` (57).
+
+The dated Phase-1/Phase-2 execution record, checkpoints 1-14 (`pin/v2-phase2-ckpt*`), the old->new
+mapping and the per-file region map are archived at `archive/work/patch-block-reorg/`.
+
+**Validation (gfx1201, 3x R9700).**
+- per-block fresh `all` build: **12/12** (`scripts/gate-per-block-build.sh`);
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `48cf3e81...`);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS;
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (every quant coherent, 0 `////`);
+- 4B / qwen4exp dense+sparse / 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
+  identical;
+- 35B-A3B draft-MTP (`-sm tensor -c 16384 -n 3000`, bf16 KV): acceptance **0.646** (758/1173, mean len
+  2.94, acc/pos 0.801/0.632/0.506), **142.1 t/s** vs plain **100.5 t/s** (+41 %);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B.
+
+**Release artifacts.**  The personal fork (`git@github.com:stew675/llama.cpp.git`) `rdna-boosts` branch
+is refreshed from a clean `097cf33d9` apply (`--force-with-lease`, tip `7b28073be`, tree verified equal
+to `release.json`).  The ROCm container images are rebuilt and pushed locally for **7.14.1** and
+**10.1** (`full`/`light`/`server`, the `-097cf33d9` immutable tags and `latest` on 10.1) via
+`scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune` (15 tags, all confirmed in GHCR).
+
+**Known open defects (pre-existing, not reorg artifacts):** `TODO.md` #56/#57; the r2-style per-block
+sweep for the upstream `MUL_MAT_ID` `dup=1` F16 bug tracked in `wip/upstream-mul-mat-id-dup/`.
+
+## 261012.007 (wip, handoff) -- patch-block-reorg: cold-start handover + next-session prompt; 14-block plan approved
+
+**No delivery change.**  Phase 1 of the V2.0 re-org is checkpointed and handed off for a fresh session:
+
+- `wip/patch-block-reorg/HANDOFF.md` -- the cold-start execution state: exact refs, the done blocks
+  00-04, the **final approved 14-block order** (slab-moe grouped ahead of qwen4exp; FA ships without the
+  `fattn_stage` arena), the `05 fa` next-step commands (with the two known conflicts and the arena
+  exclusion), build/apply commands, per-region gates, method/pitfalls and the DoD.
+- `wip/patch-block-reorg/NEXT-SESSION-PROMPT.md` -- a self-contained copy-paste prompt for the next session.
+- README/campaign docs updated to point at the handover and to mark the 16/18-block drafts as superseded.
+
+**State:** `~/llama-v2` branch `v2-phase1` at `pin/v2-phase1-00-04` (`2a1502311`), base `097cf33d9`,
+reference tip `84058162b` (tree `f102245...`); delivery `patches/`/`release.json` untouched. Four
+structural findings (FA hunk interleaving; slab<->MoE call entanglement; forward deps) and all Q1-Q8
+decisions are recorded in `wip/patch-block-reorg/PHASE1-STATUS.md`.
+
+## 261012.006 (wip, Phase 1) -- patch-block-reorg: Phase 1 started; blocks 00-04 rebuilt; FA-stack split blocked
+
+**No delivery change** (`patches/`, `release.json` untouched).  Phase 1 of the V2.0 re-org has begun on a
+dedicated worktree `~/llama-v2` (branch `v2-phase1`, base `097cf33d9`, tree ref
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`).
+
+**Done (committed on `v2-phase1`):** target blocks **00-04** rebuilt from base by replaying the union of
+their source hunks with `git apply -3` (zero conflicts; per-target file/line counts match the sources):
+00 foundation (old 00+05+07+09a+06-readback+15-W4), 01 all-reduce (old 12), 02 adaptive MTP (old 01),
+03 chunked GDN (old 02), 04 BF16 KV (old 03).  New campaign tooling:`tools/select_hunks.py` and
+`tools/hunk_summary.py`.  Correction recorded: `cpy-batch.*` is a block-15 introduction, not a target-00
+idiom.
+
+**BLOCKING FINDING (report per `AGENTS.md`).**  The flash-attention stack (targets 05 fa-band,
+06 fa-native-kv, 07 kq-derived) **cannot be split by hunk**: old-15's FA diffs were authored as one
+evolution and squashed, and individual hunks mix concerns (e.g. `fattn-mma-f16.cuh` has 44 hunks, many
+mixing `band`+`native`+`derived`; `tools/select_hunks.py` can only select whole hunks).  The intermediate
+states exist only as archive patches against older bases (`rdna4-fa-band`, `rdna4-fa-band-wide`,
+`arch-independent-memory/0006-0007`, `kq-derived-tile`), missing the later amendments.  Options and the
+recommendation (**B: split the FA stack as a Phase-2 self-contained refactor, consistent with Q7/G8**) are
+in `wip/patch-block-reorg/PHASE1-STATUS.md`.  **Awaiting the maintainer's decision before continuing.**
+
+## 261012.005 (docs, wip decisions) -- patch-block-reorg: Q4/Q7/Q8 decided; V2.0 = Phase 1 + Phase 2
+
+**No delivery change.**  Final decisions on the `wip/patch-block-reorg/` questions:
+
+- **Q4 (fold confirmed):** every hot-path `getenv` is folded into the block that owns the flag.  Multiple
+  blocks may touch the same file; accepted because the concern stays with its owner and env-var
+  collisions are the cheapest class to resolve at rebase time.  No sweep block; target stays **18 blocks
+  (00-17)**.
+- **Q7 (self-contained functions/files):** the general Phase-2 approach is to extract each concern into a
+  self-contained function (ideally its own file) and leave only the call point; interleave into
+  upstream/churning files as little as possible.  Recorded as design goal **G8**.  The literal
+  second-integration-block scheme is not adopted.
+- **Q8 (Phase 2 now):** **V2.0 = Phase 1 + Phase 2.**  Phase 1 (block-boundary re-org) is the intermediate
+  gated checkpoint; Phase 2 (self-contained refactor) is part of the deliverable; a Phase 3 may catch
+  residual stragglers (e.g. a leftover `try_fuse` one-liner).
+
+**New file:** `wip/patch-block-reorg/PHASE2-REFACTOR.md` -- the Phase-2 work plan (per-concern extraction
+site -> self-contained function/file + single call point + gate), the `ggml_cuda_try_fuse` arm table, and
+the Phase-1/Phase-2/Final validation checkpoints.  `README.md` now carries the three-phase V2.0 plan;
+`REBASE-RESILIENCE.md` §5/§6 and `OPEN-QUESTIONS.md` are updated; `wip/CAMPAIGNS.md` status reflects "in
+execution".  All Q1-Q8 decisions are now recorded; remaining work is execution.
+
+## 261012.004 (docs, wip decisions) -- patch-block-reorg: maintainer decisions recorded; target renumbered to 18 blocks
+
+**No delivery change.**  Recorded the maintainer's answers to the `wip/patch-block-reorg/` questions and
+propagated them through the campaign docs:
+
+- **Q1:** keep the MoE and qwen4exp concerns **separate**, and order **qwen4exp before host-resident
+  MoE** (qwen4exp is independent; host MoE is the broad enabler across all MoE models and lands after /
+  enabled by the model-specific work).  The r50 lateral move of the `ggml_cuda_match_hc_mix` /
+  `_hc_combine_norm_*` / `_match_idx_relu_sum` matchers into block 15 is **reversed**: those matchers need
+  `ggml_cuda_hc_mix_args` (qwen4exp) and belong to the qwen4exp block.  Verified the Fused-MoE fusions
+  (old-13) are shape-matched with no qwen4exp type dependency, so they stay before qwen4exp.
+- **Q2:** aggressive reorder; treat this as **V2.0** of the original work (archive the old block history,
+  rewrite the top-level docs, clean break-point).
+- **Q3:** tree-invariant *where practical* in Phase 1; every content exception is a documented Phase-2 item.
+- **Q6:** new numbers + mnemonic aliases; current-state docs use the aliases, dated records keep historical
+  numbers, old→new map published.
+
+**Target renumbered 19 -> 18 blocks (00-17):** `12 qwen4exp`, `13 qsa`, `14 moe-iface`, `15 moe-cache`,
+`16 graph-offload`, `17 mmap-reclaim`; the getenv hot-path caching is **folded into the owning blocks**
+(Q4 recommended; a sweep block would be 18).  Still open: Q4 (confirm fold), Q7/Q8 (Phase-2 code
+structure and scope).  Files updated: `wip/patch-block-reorg/{README,TARGET-BLOCKS,MIGRATION-MAP,FILE-OWNERSHIP,REBASE-RESILIENCE,OPEN-QUESTIONS}.md`, `wip/CAMPAIGNS.md`.
+
+## 261012.003 (docs, wip seed) -- seed `wip/patch-block-reorg/`: fundamental block-taxonomy re-org
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched).  Seeded the
+follow-up the r50 merge-hygiene note flagged as open: a **fundamental** re-organisation of the 16-block
+set into an orthogonal taxonomy, whose success criterion is the **next** re-base being cheap, not merely
+the current one fitting.  The r50 work (`archive/work/r50-merge-hygiene/`) was a narrow, tree-invariant
+"make each commit build" redistribution; it did not change the taxonomy and (by moving the
+`ggml_cuda_try_fuse` dispatch/matchers laterally into block 15) grew the block-15 super-block.  This
+campaign is the design layer above it.
+
+**Audit delivered (measured on the tree-identical re-cut chain `af0595360`):** per-block size/file
+counts, the pairwise coupling matrix, the hub-file list (`ggml-cuda.cu` is touched by 10/16 blocks), and
+the specific pathologies (block 06 bucket, block 15 super-block, block 04 FA/MMQ mix, the tiny 05/07/09/11,
+instances stranded from their type axis).  Proposed target: **19 blocks (00-18)** grouped foundation ->
+multi-GPU -> decode/speculation -> flash attention -> quantized GEMM -> kernel fusions -> host-resident
+MoE -> memory -> models -> host hot-path; the tiny blocks are absorbed (05/07/09a -> 00, 09b -> MoE,
+11 -> graph handling); block 15 is split across ~10 owners; generated template instances travel with
+their type axis (the per-block-build requirement).
+
+**Files:** `wip/patch-block-reorg/{README,REBASE-RESILIENCE,TARGET-BLOCKS,MIGRATION-MAP,FILE-OWNERSHIP,OPEN-QUESTIONS}.md`;
+`wip/CAMPAIGNS.md` updated with the row.
+
+**Awaiting the maintainer:** Q1 target count + the MoE (12/13) and qwen4exp (16/17) seams; Q2 aggressive
+vs minimal reorder; Q3 tree-invariant-only; Q4 getenv-sweep handling; Q6 renumbering/doc strategy; Q7/Q8
+whether to adopt a feature/integration split and whether Phase 2 is in scope.  **No commit may move until
+Q1-Q3 and Q6 are decided.**  `TODO.md` gets a cross-reference (this is the tracker for the re-org).
+
+## 261012.002 (r50) -- per-block merge hygiene: 16/16 `all` sweep; release re-cut to tip `84058162b`
+
+**Delivery change.**  `release.json` re-cut: canonical tip `9a9e6aa6c` -> **`84058162b`**; the net tree is
+**unchanged** (`f102245dfb116f02f6b3f572df7fb413a5c65cf8`), so this is commit-boundary redistribution only.
+`validate-set.sh` green (16/16 strict `git am`, applied tree == `release.json.tree`).
+
+**The r2 "every block builds" standard is met.**  A fresh-per-commit sweep (`rm -rf` + configure +
+`cmake --build --target all -k`, ccache) is **16/16**.  New reusable gate:
+`scripts/gate-per-block-build.sh` (walks `release.json`'s `base..tip`; do NOT use a reused build dir -- the
+r2 lesson).  The standard had silently regressed (r49 block 06 already failed): block 06 is a catch-all
+whose additions reference definitions that landed in later blocks.
+
+**What moved (block 06, the bulk).**  Block 06's `ggml_cuda_try_fuse` (a ~616-line addition over block 05)
+and its six matchers (`ggml_cuda_match_hc_mix`, `_hc_mix_closed`, `_hc_combine_norm_identify`,
+`_hc_combine_norm_set_bf16`, `_match_idx_relu_sum`, `_cache_blocks_fusion`) referenced types/ops owned by
+blocks 08/10/13/14/15.  Block 06 now carries the block-05 `try_fuse`; the dispatch and matchers are
+introduced by block 15 (a **lateral move**, not yet the finer per-owner split).  Hoisted to block 06 (they
+belonged there): `h2d_stage_slots()`/`h2d_stage_budget_explicit()`, `g_write_seq` + `<atomic>`,
+`MMVQ_MOE_MAX_BATCH_SIZE`, `<set>`, `ggml_gallocr_drop_buffers`, `ggml_backend_sched_drop_buffers`,
+`kq_mask_packed_reachable`, `max_host_weight_tensor_bytes`, `GGML_DROP_RESERVE_SLACK_BYTES`; the block-15
+slab-ring guard in `h2d_stage_buffer` and the `.stage_gather` iface entry stay in block 15.  The includes
+block 06 pulled from the future (`fattn-qsa`, `indexer-*`, `mmb`/`gdn-conv`/`ple-conv`/`norm-gated`,
+`cpy-batch`, `ggml-moe-weighted-reduction.h`) are re-added at their owning blocks (08/14/15).  Block 13's
+orphaned `llama-model.cpp` fragment (a rebase merge artifact) was removed.
+
+**Residual (tracked).**  Block 15 grew (~+1.4k lines) because the `try_fuse` dispatch/matchers moved
+there; the finer split into blocks 08/13/14 is a follow-up (it needs the block-14-era matcher bodies, not
+the block-15 state, and the `ggml-backend-meta.cpp` move is blocked on the block-15 iface fields).  See
+`archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
+
+**Gates.**  The net tree is byte-identical to the already-gated r50 tree, so the r50 gate results
+(prefill-logits KLD 0.000707 / 98.755 %, q4exp quant coherence, coherence, 35B draft-mtp) carry
+unchanged; re-confirmed by `validate-set.sh` and the per-block sweep.
+
+**Publish (2026-10-12).**  Fork `rdna-boosts` refreshed: a clean checkout at `097cf33d9` re-applied the
+16 patches (`apply-all.sh`, strict), built (`build-r50-fork`), passed same-seed coherence +
+`gate-prefill-logits.sh` (0.000707 / 98.755 %) + `gate-qwen4exp-quant-coherence.sh` (all measured quants
+coherent, 0 `////`) + 35B-A3B `--spec-type draft-mtp` (coherent), and was force-pushed to `origin`
+(`stew675/llama.cpp`): `f0a74f4cc` -> **`d5b64ece3`** (tree `f102245…`).  Container images built locally and
+pushed (`scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune`): **15** GHCR tags
+(`full`/`light`/`server` x `rocm-7.14.1`/`rocm-10.1` + the `-097cf33d9` immutable variants + `rocm-*` +
+`latest`).
+
+## 261012.001 (r50) -- re-base onto upstream `097cf33d9` (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted
+
+**Delivery change.**  `release.json` is now `v16-097cf33d9-r50` (base `097cf33d9`, base tree
+`30c400ccea2e2fb47b663036a6cee08a4dc542d8`; canonical block-15 tip `9a9e6aa6c` (re-cut `84058162b`, same tree, 261012.002), net tree
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`; `validate-set.sh` green, 16/16 strict `git am`).  16 blocks;
+no block added or removed.  Handover/resolution record: `wip/r50-rebase/README.md`.
+
+**Key upstream collisions absorbed.**
+- **MoE cache (#29887 `d6cf9acb2` + #30112 `c811cb8f0`)**: kept present but **dormant** (`--moe-cache-mib`
+defaults 0; the delivery's scheduler copy path does not call the #29943 `callback_copy`), so our
+`MOE_EXPERT_CACHE_MIB` path stays default.  We do not delete upstream's `src/llama-moe-cache.*`.
+- **#29943 `6753a033f`** moved selective expert copying into `llama_context::sched_copy_experts`
+(callback).  Block 06 keeps its own scheduler copy logic inside upstream's `ggml_backend_sched_copy_input`
+helper (staging + `moe_cache_take_over/gather/update` + pruning) and does not invoke the callback.
+- **#29953 `fc9ce6b9d`** removed `ggml_cuda_mmq_get_J_max` and `ncols_opt`, replacing them with `J_best` +
+`needs_fallback`.  Adopted; our J selection (block 04 `GGML_CUDA_MMQ_J_MAX`, block 13 RDNA3.5 routed
+widths + fused-gate `J_max_gate`) moved into a shared `ggml_cuda_mmq_select_J` (mmq.cu).
+- **#30103 `1bb2b9fcb`** FA `__syncthreads` when `nbatch_combine != DKQ/2`: kept as the **union** with our
+`k00 + nbatch_combine < DV/2` (neither subsumes the other).
+- **#14891 `050439614`** `params.load_mtp`: `mparams.load_mtp = params.load_mtp || params.speculative.has_mtp()`.
+- **#29633 `9d3aba6b5`** added `warp_size` to `ggml_cuda_should_use_mmvf`; our MMB/verify-clamp call
+passes it.  **qwen4exp** rebuilt from our coherent block-14 file + the upstream U0->U1 delta
+(`nextn_flags`, #30160 ple/embd adjacency, `llm_graph_input_embd_h(n_embd_inp, n_embd_out)` + raw-token,
+PLE `is_mixed()`; our QSA/`mtp_export_defer` design kept, upstream's kpool hunks skipped).
+
+**Gates (gfx1201 / ROCm 7.14, `~/llama-rebase/build-r50`).**  `all` target green.  Same-seed coherence
+(4B Q8_0, 3-GPU `-sm tensor`) coherent.  **`gate-prefill-logits.sh` PASS** (Qwen3.8-27B-Q8_0): mean KLD
+**0.000707** (limit 0.005), same-top-p **98.755 %** (floor 98.0).  **`gate-qwen4exp-quant-coherence.sh`
+PASS** (IQ3_XXS / IQ4_NL / Q4_K_M, 0 `////`).  35B-A3B draft-mtp decode coherent (36.9 t/s).
+`MUL_MAT_ID` green for the non-`dup` matrix.
+
+**Finding (upstream, documented).**  `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` fails the F16 cases and
+page-faults `quantize_mmq_q8_1`; an **unpatched `097cf33d9`** build reproduces it identically, so it is
+upstream's CUDA/HIP gap (the test was added by the Vulkan fix `966baae76`).  The delivery ships pure here;
+fix tracked in `wip/upstream-mul-mat-id-dup/` (candidate for `upstream/`).
+
+**Merge hygiene (resolved).**  The fixes needed to build the rebased tip are distributed so every one of
+the 16 commits builds `all`; see `261012.002` and `archive/work/r50-merge-hygiene/`.
+
+## 261011.018 (r49, containers) -- r49 release-container images built and pushed locally; ccache ~52 %
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; the fork tree is
+`f0a74f4cc`).  `scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune` built and pushed all
+**15** GHCR tags from the canonical r49 tree (tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`) and then
+pruned the locally built images (the ROCm base images and the ccache store are kept).
+
+**Wall time 67m57s** for both ROCm lines, against the old tag-push CI matrix's ~5 h (which also had a
+cold retry on failure).  **ccache** (4.12.3, wired into the Dockerfile in r48) gave `full-rocm-7.14.1`
+**1301/2508 = 51.87 %** hits and `full-rocm-10.1` **1784/3344 = 53.35 %** hits.  The ~52 % (not the ~99 %
+a same-source rebuild gets) is because r49 changed `vecdotq.cuh`, which fans out into most
+quant/MMQ/MMVQ kernel TUs, so about half are genuine misses; a release that only touches `.cu` bodies
+should hit far higher.
+
+**Tags pushed** to `ghcr.io/stew675/llama-cpp-rdna-boosts`: `full`/`light`/`server` x `rocm-7.14.1` and
+`rocm-10.1` (each with its immutable `-a55e952b8` variant), plus `rocm-7.14.1`, `rocm-10.1` and `latest`
+(now 10.1).  The `v16-a55e952b8-r49` tag was then pushed to trigger `release.yml` (the GitHub Release
+assets: `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).
+
+## 261011.017 (r49) -- mmap host-memory reclaim (block 06) + Q1_0 perm port and `cpy-batch` idiom (block 15); three campaigns promoted
+
+**Delivery change.**  `release.json` is now `v16-a55e952b8-r49` (base `a55e952b8`, canonical tip
+`f0a74f4cc`, net tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`; `validate-set.sh` green, 16/16 strict
+`git am`).  Three `wip/` campaigns were promoted and their records moved to `archive/work/` with
+resolution banners (no stubs): `host-memory-reclaim/` -> **block 06**, `q1-0-byte-perm/` and
+`gdn-conv-device-idiom/` -> **block 15**.  `TODO.md` #54 and #32 are closed.
+
+**Block 06 -- the mmap host-memory reclaim.**  The loader used to fault the whole model file in up front
+(`MAP_POPULATE` / `POSIX_MADV_WILLNEED` with `prefetch = -1`) and unmapped it only at the end of the
+load, so a `-ncmoe` load held the full model mapping **and** the pinned `ROCm_Host` expert master at the
+same time.  The reclaim skips the up-front full-file prefetch (`init_mappings`) and unmaps each tensor's
+mapping range right after `ggml_backend_tensor_set` copies it to its device buffer (`load_all_data`).
+The **exact** mmap-backed ranges (host-pointer / `buffer_from_host_ptr` buffers) are recorded before any
+load (`mark_mmap_used`, called from `llama_model_base::load_tensors`), so the release never touches a
+range a host-pointer tensor points into: a tied embedding (`token_embd` == `output`) is loaded twice
+from the same range (once mmap-backed, once copied to a device), and unmapping it left the host copy
+dangling (SIGSEGV in a CPU `GET_ROWS`).  The end-of-load cleanup now unmaps the exact **complement** of
+those ranges, and `unmap_fragment` is idempotent (it munmaps only the still-mapped intersections, so a
+per-tensor release and the final cleanup cannot double-unmap).  `madvise(MADV_DONTNEED)` is **not**
+usable here: the ROCm runtime re-faults those pages on the next pageable H2D copy (reproduced in
+isolation), so the range is munmapped.  `LLAMA_LOAD_RELEASE_MMAP=0` restores the pre-r49 behaviour; the
+release is skipped under `--load-mode mlock`/`--mlock`, `--check-tensors` and lazy tensors.
+`mmaps_used` changed from a per-file min/max pair to a list of exact ranges.
+
+Measured (gfx1201, 2x R9700, `llama-bench -p 16 -n 0`), peak `VmRSS` / `RssFile`, reclaim off -> on:
+
+| model | config | off | on |
+|---|---|---:|---:|
+| Qwen3.8-Flash-Next-IQ4_NL (100 GB, 176.9B A3B) | `-ncmoe 40` | 122.5 / 68.2 GiB | **55.4 / 0.7 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 40` | 40.7 / 21.8 GiB | **19.8 / 0.6 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 0` | 22.0 / 21.8 GiB | **0.67 / 0.40 GiB** |
+
+The on peak equals `--load-mode none` (55.8 GiB / 0.26 GiB) on the 100 GB model, so the host-memory
+reason the field preferred `--load-mode none` is gone.  Warm-load cost ~1 s (this model), ~1.2 s (warm
+35B).  Same-seed and `-sm tensor` coherence r48 == r49 byte-identical; the 35B `--spec-type draft-mtp`
+`-n 2000` text is r48 == r49 byte-identical (175.2 vs 174.9 t/s).
+
+**Finding (not fixed here): `--host-experts pool` does not reduce host RSS.**  It keeps the full pinned
+`ROCm_Host` master (the source logs *"Phase 2b; full pinned master kept"*); measured `RssShmem` is
+identical with and without the pool (18.7 GiB on 35B-A3B `-ncmoe 40`; 54.1 GiB on Flash-Next IQ4_NL
+`-ncmoe 40`).  The r49 peak is therefore dominated by that master.  Re-seeded as the separate campaign
+`wip/host-expert-master-drop/` (`TODO #55`); it is the strongest lever for issue #139.  `ENVIRONMENT.md`
+§1.2.1 now says so.
+
+**Block 15 -- Q1_0 `__byte_perm` -> `v_perm_b32` (TODO #54).**  New `ggml_cuda_byte_perm(x, y, s)` (HIP:
+expand the four selector nibbles to selector bytes and use `__builtin_amdgcn_perm`; otherwise
+`__byte_perm`) replaces HIP's private-memory `__byte_perm` at all 24 Q1_0 sites in
+`vec_dot_q1_0_q8_1` and `ggml_cuda_mmq_load_tiles_q1_0`.  Bit-identical: exact over 16.7M randomized
+GPU cases (0 mismatches; selectors with bit 3 and high bits exercised) and
+`test-backend-ops -o MUL_MAT -b ROCm0` **1304/1304** with every `q1_0` width.  No Q1_0 model locally, so
+no speed claim.  Upstream candidate `upstream/UPSTREAM-PR-q1-0-amd-perm.*` (applies clean to `a55e952b8`).
+
+**Block 15 -- `cpy-batch.cu` device idiom (TODO #32).**  `ggml_cuda_cpy_batch` now asks
+`ggml_cuda_get_device()` like `gdn-conv.cu` instead of `ctx.device`; a no-op on the current graph (the
+device is set before `ggml_cuda_try_fuse` runs).
+
+**Validation (r49, gfx1201).**  `scripts/validate-set.sh` green (fresh-tarball strict apply and tree
+match).  Prefill-logit KLD gate: mean KLD **0.000707** / same-top-p **98.755 %** (limit 0.005 / 98 %).
+`MUL_MAT_ID` **931/931**; q1_0 `MUL_MAT` **1304/1304**.  4B `-sm tensor` coherence r48 == r49
+byte-identical.  35B-A3B `--spec-type draft-mtp -n 2000 --reasoning off` text r48 == r49 byte-identical.
+
+**Issue #139 (contribution, @briansp2020).**  His field report: the amdgpu driver stops all of a
+process's GPU queues whenever the kernel migrates/reclaims a `hipHostMalloc`/`hipHostRegister` page, and
+a stop over the AR spin budget leaves a timed-out call unreduced.  The r49 reclaim gives back up to
+~67 GiB of mmap on the 100 GB model, which should lower overall memory pressure (and thus the queue
+stops) even though the pinned master is unchanged.  A reply was posted on the issue asking him to
+exercise r49 and report whether the stops/timeouts drop.
+
+**Docs.**  `ENVIRONMENT.md` gains `LLAMA_LOAD_RELEASE_MMAP` (§4) and a pool-does-not-reduce-RSS note
+(§1.2.1); `TODO.md` current state -> r49, #54/#32 closed, #55 added; `wip/CAMPAIGNS.md` rows updated
+(promoted rows removed, `host-expert-master-drop/` added); `patches/README.md` current-release blockquote
+and a dated r49 amendment; `upstream/README.md` row + `.md`/`.patch`; the three campaign records under
+`archive/work/`.
+
+**`fingon` validation (gfx1100, 30.5 GiB RAM, single RX 7900 XTX).**  The 35B-A3B Q4_K_M `-ncmoe 40`
+case, same r49 binary, reclaim on vs off (`memwatch.sh`, 2 s samples):
+
+| arm | peak `VmRSS` | peak `RssFile` | `RssShmem` | swap | wall | pp256 `avg_ts` |
+|---|---:|---:|---:|---:|---:|---:|
+| on (r49 default) | 19.6 GiB | 0.33 GiB | 18.7 GiB | 0 | 19 s | 363.2 |
+| off (`LLAMA_LOAD_RELEASE_MMAP=0`) | 29.5 GiB | 21.8 GiB | 18.7 GiB | 111 MiB | 25 s | 351.5 |
+
+The legacy arm reaches the 30.5 GiB box limit, starts swapping and churns page cache (kswapd); the r49
+arm stays at ~19.6 GiB with no swap, so the reclaim both fits the box and is faster there.  This is the
+seed phenomenon from the archived `host-memory-footprint` campaign, fixed.
+
+**Tagging.**  Container images and the `rdna-boosts` fork-branch refresh are the remaining release steps,
+per the Pushing policy.
+
 ## 261011.016 (docs, campaign closure) -- close `strata-amd-kernels` as refuted; seed `q1-0-byte-perm` (#54)
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; `~/llama.cpp` tree clean).

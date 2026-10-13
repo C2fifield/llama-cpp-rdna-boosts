@@ -1,5 +1,10 @@
 # Greedy purity, VDR, and the nature of the block 10 variance
 
+> **V2.0 numbering note (2026-10-13).**  This reference document uses the **pre-V2.0 16-block**
+> numbering (`block 10` = the k-quant/VDR umbrella, `block 13` = the fused-MoE `mmvq` block).  In the
+> current **12-block** set (release `v12-097cf33d9-r51`) the k-quant decode-numerics work lives in
+> **block 07** and the fused-MoE/`mmvq` work in **block 08**; the purity *claims* below are unchanged.
+
 Status: **reference document**. Read this if you are shipping block 10
 (`0010-rdna-boosts-block-10-k-quant-boosts-Q4_K-Q5_K-Q6_K-Q.patch`) and care about bit-exact reproduction of greedy
 decode vs a stock llama.cpp build. It explains *why* block 10 changes decode

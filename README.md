@@ -10,10 +10,17 @@ support, and an attention-memory campaign that frees several GiB of VRAM.
 [`ENVIRONMENT.md`](ENVIRONMENT.md) documents every variable the set adds or repoints: its default, and
 whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning value, or a diagnostic.
 
-It ships as **16 patches** (block 00 + blocks 01-15) for a clean llama.cpp
-checkout at the fork point **`a55e952b8`** (upstream master, 2026-10-03
-re-base).  Each block is a self-contained `git am` commit, so you can apply
-the whole set or pick the ones you want. 
+It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp
+checkout at the fork point **`097cf33d9`** (upstream master).  Each block is a
+self-contained `git am` commit, so you can apply the whole set or pick the ones
+you want.  **V2.0 (`r51`)** re-organized the former 16-block set so every
+concern lives in its owning block and every delivery concern is a self-contained
+function/file; the applied tree is behaviour-preserving (all same-seed gates are
+byte-identical to r50).  **`r52`** folds four contributor WIP PRs (#140-#143) into
+blocks 01/02/08/10 (all-reduce events/P2P, MTP prompt-tail ingest, `topk_moe` sorted
+keys, short-K MoE rows-per-block).  **`r53`** folds PR #144 (DFlash device-resident features for
+several sequences, blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10,
+default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -22,11 +29,11 @@ hashes).
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-git checkout a55e952b8
-bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts
+git checkout 097cf33d9
+bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts (12 commits)
 ```
 
-- One-line summary of each block: [The 16 blocks](#the-16-blocks)
+- One-line summary of each block: [The 12 blocks](#the-12-blocks-v20)
 - The folded `mmb`/QSA campaign: [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery)
 - Apply details, env knobs, server config: [`patches/README.md`](patches/README.md)
 - **Running a model bigger than your VRAM on one card** (`-ncmoe` + the MoE expert cache, with the
@@ -42,7 +49,8 @@ bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts
 ## Releases
 
 Frozen deliveries are published as GitHub Releases and tagged in this repo
-(the tag is the release identity: `v16-<fork-point>-r<N>`, e.g. **`v16-a55e952b8-r26`**.  `r1` is the
+(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r52`**; the `v16-*`
+tags are the historical 16-block set.  `r1` is the
 re-base of the set onto that fork point and every later `rN` is a dated change recorded in
 [`WORKLOG.md`](WORKLOG.md), newest first).
 
@@ -101,7 +109,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ├── GREEDY-PURITY.md       # purity rulebook: index, invariants, per-finding claims (read before shipping)
 │                          #   narratives/evidence for the closed cases: archive/docs/GREEDY-PURITY-FINDINGS.md
 ├── WORKLOG.md             # dated delivery records (newest first; README points here)
-├── rdna-boosts-all.patch  # convenience: the entire 16-patch net as ONE patch
+├── rdna-boosts-all.patch  # convenience: the entire 12-patch net as ONE patch
 ├── patches/               # the delivery set: 0000-0015
 │   └── README.md          # apply instructions + block-12 env knobs + server config
 ├── scripts/
@@ -122,7 +130,35 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 > in `archive/docs/` (see also `archive/work/` for the closed experiments).
 > Do not mix them with the current `patches/` files.
 
-## The 16 blocks
+## The 12 blocks (V2.0)
+
+`v12-097cf33d9-r52` (net tree `8b177a7b…`).  Each row is one `git am` commit.
+
+| patch | subject | concern |
+|-------|---------|---------|
+| `0000` | **foundation** — band-uniformity, Meta-wrapper, allocator fixes | old-00 + old-05 + old-07 + old-09a + the multi-ubatch logits readback + the `ggml-alloc` view release |
+| `0001` | **hybrid HIP all-reduce** (RDNA4-gated) | the old block 12; + no per-AR `ev.ker` and the opt-in P2P-large path (r52) |
+| `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01; + opt-in MTP prompt-tail ingest and the last-row prompt copy (r52) |
+| `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02 |
+| `0004` | **BF16 KV cache + native-BF16 flash attention** | old-03 |
+| `0005` | **flash-attention band / native quantized K-V / derived kq mask** | old-04 FA + the old-15 FA work |
+| `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
+| `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
+| `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
+| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52) |
+| `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
+
+Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the
+MMVQ vec-dot/VDR selectors + MoE kernel (`mmvq-vecdot.cuh`, `mmvq-moe.cu`), the FA native-KV/band
+predicates (`fattn-rdna.cuh`), and the four `ggml-cuda.cu` TUs (`ggml-cuda-try-fuse.cu`,
+`ggml-cuda-slab.cu`, `ggml-cuda-moe-cache-hooks.cu`, `ggml-cuda-arena.cu`; `ggml-cuda.cu` 9819 → 6370
+lines).
+
+<details>
+<summary>Historical: the pre-V2.0 16-block notes (provenance/edit history only)</summary>
+
+### The 16 blocks
 
 | patch | what |
 |-------|------|
@@ -172,6 +208,8 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 > longer reproduces stock bits exactly on those rows — see
 > GREEDY-PURITY.md §9.
 
+</details>
+
 ## Consumer workflow
 
 ```
@@ -181,9 +219,9 @@ FORK=https://github.com/ggml-org/llama.cpp
 git clone $FORK && cd llama.cpp
 git checkout "$BASE"
 
-# 2. apply the set (automated; strict 16/16 git am on the recorded base)
+# 2. apply the set (automated; strict 12/12 git am on the recorded base)
 bash <path-to-this-repo>/scripts/apply-all.sh .
-#    = git am patches/0000…0015  (one commit per block on a fresh `rdna-boosts` branch)
+#    = git am patches/0000…0011  (one commit per block on a fresh `rdna-boosts` branch)
 
 # 3. build + verify (trim -DGPU_TARGETS to your GPU arch for a faster build)
 cmake -B build -DGGML_HIP=ON -DGGML_HIP_RCCL=1 -DGPU_TARGETS="gfx1100;gfx1151;gfx1201" -DCMAKE_BUILD_TYPE=Release
@@ -214,13 +252,13 @@ cmake --build build -j
 ### Manual equivalent
 
 ```bash
-git am patches/000[1-9]-*.patch patches/001[0-5]-*.patch   # blocks 01-15
+git am patches/000[1-9]-*.patch patches/001[0-1]-*.patch   # blocks 01-11
 ```
 
 ### The `mmb` campaign is in the delivery
 
 On the **`beta-integration`** branch the `mmb` (bf16-WMMA dequant weight GEMM) / QSA / indexer
-campaign — the former 28-patch `archive/work/mmb-general/` set — is **folded directly into the 16 delivery
+campaign — the former 28-patch `archive/work/mmb-general/` set — is **folded directly into the 12 delivery
 blocks**, so the normal workflow above is all there is to apply.  There is **no separate beta layer
 any more**:
 
@@ -232,13 +270,13 @@ any more**:
 * **block 15** absorbs `qsa3`, the fused indexer top-k + prefill score fusions, HC16, `hc_gate_mix`,
   sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the meta/CPU backend fixes.
 
-Applying the 16 patches to the fork point in [`release.json`](release.json) therefore reproduces the
+Applying the 12 patches to the fork point in [`release.json`](release.json) therefore reproduces the
 **full campaign tree** in one pass:
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-git checkout a55e952b8          # the base recorded in release.json
-bash <path-to-this-repo>/scripts/apply-all.sh .   # 16/16 strict, tree checked against release.json
+git checkout 097cf33d9          # the base recorded in release.json
+bash <path-to-this-repo>/scripts/apply-all.sh .   # 12/12 strict, tree checked against release.json
 ```
 
 The per-patch fold mapping and validation record are in
@@ -410,7 +448,7 @@ unified stream, and that set is a function of allocator/scheduling history (the 
 reduces in fixed tiles anchored to the buffer base).  Identical concurrent repetitions can differ, and a
 concurrent run can differ from the same request run solo, at the rounding level (a greedy near-tie can
 flip).  **Use `--no-kv-unified` when strict reproducibility is required.**  This is inherent to
-upstream's unified-KV design — it reproduces on unmodified upstream `a55e952b8` — and not a defect
+upstream's unified-KV design — it reproduces on unmodified upstream `097cf33d9` — and not a defect
 introduced by this patch set; the analysis and reproducers are preserved (parked) at
 `wip/kv-cell-offset-nondeterminism/`.  Single-request and non-unified runs are unaffected, and the
 delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`, `native == staging`) are
@@ -423,7 +461,7 @@ drifts and hunks no longer apply, re-base the block commits (the fork checkout c
 them), regenerate the whole set with `scripts/make-patches.sh`, then refresh
 `release.json` (`scripts/make-release.sh --base … --tip … --tree …`) and update the
 current-state headers. The old `baseline/<sha>`-branch-per-upstream-range workflow
-was retired when the delivery moved to the flat 16-patch set on `main`.
+was retired when the delivery moved to the flat patch set on `main`.
 
 
 ## Upstreaming

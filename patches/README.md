@@ -1,9 +1,81 @@
 # rdna-boosts patch set (delivery)
 
-16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`a55e952b8`**
-(re-based 2026-10-05 from `84e76d8a2`; `84e76d8a2` itself re-based 2026-09-24 from `ebbb18522`).
+**12 patches** (block 00 + blocks 01-11) against upstream master **`097cf33d9`**.
+`v12` is the V2.0 clean break in numbering: the former 16-block set was re-organized so every concern
+lives in its owning block, and Phase 2 moved each concern into a self-contained function/file (see the
+r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record are archived at
+`../archive/work/patch-block-reorg/`).
 
-> **Current release `v16-a55e952b8-r48` (2026-10-11) -- the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137):**
+> The **block-by-block notes below are the historical pre-V2.0 16-block numbering** (`block 00`..`block
+> 15`), kept verbatim as the provenance/edit history.  The current patch files are `0000`..`0011`; the
+> V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
+> validation is `../MANIFESTS.md`.
+
+> **Current release `v12-097cf33d9-r53` (2026-10-13) -- PR #144 DFlash multi-sequence F1 + #138 fa-stage-prealloc:**
+> canonical tip `4b27ac644`, net tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`; strict **12/12**
+> `git am` (`validate-set.sh` green), per-block build 4/4 (blocks 00/09/10/11), `gate-prefill-logits.sh`
+> 0.000707 / 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, 4B greedy `1c5d32ac537d` unchanged,
+> DFlash 2-slot F1 on == off (same slots/acceptance, F1 faster), host-experts guard fires, 35B-A3B
+> draft-MTP acceptance 0.77302 (2 GPUs) / 0.733 (3 GPUs) unchanged, width-purity PASS, `TOPK_MOE`
+> 448/448, `MUL_MAT_ID` mmvq 162/162, dense batched B=1/4/8 within noise.  **#144 -> blocks 00/10/11**
+> (DFlash F1 for several sequences, the readback wait for a ubatch without outputs; the host-resident
+> MoE experts guard shipped as the PR wrote it), **#138 -> blocks 09/10** (`fattn_stage_try_get` hint,
+> default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).  The upstream `MUL_MAT_ID` duplicate-ids fix is an
+> `upstream/` candidate only (the delivery ships pure).  **No Docker for r53.**  See `../WORKLOG.md`
+> 261013.003 (r53).
+>
+> **Previous release `v12-097cf33d9-r52` (2026-10-13) -- four contributor WIP PRs folded into their owning blocks:**
+> canonical tip `2f3349306`, net tree `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`; strict **12/12**
+> `git am` (`validate-set.sh` green), per-block `all` build 12/12, `gate-prefill-logits.sh` 0.000707 /
+> 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, width-purity PASS, `TOPK_MOE` 448/448,
+> `MUL_MAT_ID` mmvq 166/166, dense batched B=1/4/8 no worse than r50, 35B-A3B draft-MTP acceptance
+> 0.733 (160.4 vs plain 106.5 t/s).  **#140 -> block 10** (`mmvq-moe.cu`, short-K RDNA4 rows-per-block,
+> `GGML_CUDA_MOE_RPB_SHORT`), **#141 -> block 08** (`topk-moe.cu` sorted-key argmax,
+> `GGML_CUDA_TOPK_SORTED`), **#142 -> block 01** (`allreduce-hip.cu`, no per-AR `ev.ker` +
+> `GGML_CUDA_AR_KER_EVENTS` / opt-in `GGML_CUDA_AR_P2P_LARGE`), **#143 -> block 02**
+> (`speculative.cpp`/`.h`, `server-context.cpp`, opt-in `LLAMA_MTP_INGEST_TAIL` + always-on last-row
+> prompt copy).  See `../WORKLOG.md` 261013.002 (r52).
+>
+> **Current release `v12-097cf33d9-r51` (2026-10-13) -- V2.0 block re-org + self-contained refactor:**
+> canonical tip `15d62da2f`, net tree `48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`; strict **12/12**
+> `git am` (`validate-set.sh` green).  The applied tree is behaviour-preserving but not tree-identical
+> to r50: Phase 1 redistributed each concern into its owning block; Phase 2 extracted the
+> `ggml_cuda_try_fuse` arms, the MMVQ vec-dot/VDR selectors + MoE kernel (`mmvq-vecdot.cuh`,
+> `mmvq-moe.cu`), the FA native-KV/band predicates (`fattn-rdna.cuh`), the context/loader glue helpers,
+> and split `ggml-cuda.cu` (9819 -> 6370 lines) into `ggml-cuda-try-fuse.cu`, `ggml-cuda-slab.cu`,
+> `ggml-cuda-moe-cache-hooks.cu` and `ggml-cuda-arena.cu`.  All same-seed gates byte-identical to r50;
+> `gate-prefill-logits.sh` 0.000707 / 98.755 % PASS; `gate-qwen4exp-quant-coherence.sh` PASS; 35B-A3B
+> draft-MTP acceptance 0.646, 142.1 vs 100.5 t/s (+41 %); width purity PASS; per-block `all` 12/12.
+> The fork `rdna-boosts` branch is refreshed (`7b28073be`) and the 7.14.1/10.1 container images pushed.
+> See `../WORKLOG.md` 261013.001 (r51).
+
+> **Current release `v16-097cf33d9-r50` (2026-10-12) -- re-base (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted:**
+> canonical block-15 tip `9a9e6aa6c`, net tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`; strict **16/16**
+> `git am` (`validate-set.sh` green).  Upstream's `llama_moe_cache` (#29887/#30112) is kept but inert
+> (`--moe-cache-mib` defaults 0; the scheduler does not call the #29943 `callback_copy`), so the
+> `MOE_EXPERT_CACHE_MIB` expert cache remains the default path.  The #29953 MMQ rework is adopted and our
+> J selection moved into `ggml_cuda_mmq_select_J`; the #30103 FA race guard is the union with ours.
+> qwen4exp is rebuilt from our coherent file + the upstream U0->U1 delta.  Gates: `all` green,
+> `gate-prefill-logits.sh` PASS (KLD 0.000707 / same-top-p 98.755 %), `gate-qwen4exp-quant-coherence.sh`
+> PASS, coherence + 35B draft-mtp coherent.  An upstream F16 `MUL_MAT_ID` `dup=1` bug (reproduces on
+> unpatched `097cf33d9`; `quantize_mmq_q8_1` page fault) is documented and tracked in
+> `wip/upstream-mul-mat-id-dup/`.  **Open:** the r2 per-block fresh-`all` sweep has not yet been re-run
+> (the merge build fixes are folded into block 15).  See `WORKLOG.md` 261012.001 (r50).
+>
+> **Previous release `v16-a55e952b8-r49` (2026-10-11) -- the mmap host-memory reclaim + two AMD consistency fixes:**
+> canonical block-15 tip `f0a74f4cc`, net tree `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`; strict **16/16**
+> `git am` (`validate-set.sh` green).  **Block 06** takes the loader reclaim: the loader no longer
+> prefetches the whole file and unmaps each tensor's mapping range right after its device upload
+> (`LLAMA_LOAD_RELEASE_MMAP`, default on, `=0` kill-switch; the exact host-pointer-backed ranges are
+> preserved; skipped under `--mlock`/`--check-tensors`/lazy).  Peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL
+> (100 GB, 176.9B A3B) `-ncmoe 40`, 2 GPUs: **122.5 -> 55.4 GiB** (RssFile 68.2 -> 0.7 GiB), equal to
+> `--load-mode none`; 35B-A3B `-ncmoe 40` 40.7 -> 19.8 GiB; all-GPU 22.0 -> 0.7 GiB.  **`fingon`** (gfx1100,
+> 30.5 GiB RAM) 35B-A3B `-ncmoe 40`: 29.5 -> 19.6 GiB and no swap (the legacy arm swaps).  **Block 15** takes
+> the Q1_0 `__byte_perm` -> `v_perm_b32` port (bit-identical; `MUL_MAT` 1304/1304 with every `q1_0` width)
+> and the `cpy-batch.cu` device idiom.  See `WORKLOG.md` 261011.017 (r49); campaign records now under
+> `archive/work/host-memory-reclaim/`, `archive/work/q1-0-byte-perm/`, `archive/work/gdn-conv-device-idiom/`.
+>
+> **Previous release `v16-a55e952b8-r48` (2026-10-11) -- the `--load-mode none` + `-sm tensor` startup GPU fault (issue #137):**
 > canonical block-15 tip `0bc12586413e7fe4547916dc3ed43453b3eb09b8`, net tree
 > `3b9f403544169544f312bd24e4de31a554bf189d`; strict **16/16** `git am` (`validate-set.sh` green).  The
 > fix folds into **block 06** (the loader + Meta-wrapper owner).  The Meta device now reports
@@ -1363,6 +1435,60 @@ The 2026-09-17 re-base resolved three blocks:
 
 The amendment history below is newest first.  Per-block content lives in the block notes
 (`## Block NN notes`); the dated `## YYYY-MM-DD …` sections are the amendment records.
+
+## 2026-10-11 block-06 + block-15 amendment (r49): the mmap host-memory reclaim, the Q1_0 perm port and the cpy-batch idiom
+
+**Block 06 -- mmap host-memory reclaim (TODO: the r49 `host-memory-reclaim` campaign).**  The loader
+previously faulted the whole model file in up front (MAP_POPULATE / `POSIX_MADV_WILLNEED` with
+`prefetch = -1`) and only unmapped it at the end of the load, so a `-ncmoe` load held the full model
+mapping **and** the pinned `ROCm_Host` expert master at the same time.  The reclaim:
+
+- skips the up-front full-file prefetch while enabled (`init_mappings`);
+- unmaps each tensor's mapping range right after `ggml_backend_tensor_set` copies it to its device
+  buffer (`load_all_data`);
+- records the **exact** mmap-backed ranges (host-pointer / `buffer_from_host_ptr` buffers) **before any
+  load** (`mark_mmap_used`, called from `llama_model_tensors_load`), so the release never touches a
+  range a host-pointer tensor points into.  This matters because a tied embedding (`token_embd` ==
+  `output`) is loaded twice from the same range (once mmap-backed, once copied to a device); unmapping
+  it left the host copy dangling (SIGSEGV in a CPU `GET_ROWS`).
+- the end-of-load cleanup now unmaps the exact **complement** of those ranges, and `unmap_fragment` is
+  idempotent (it munmaps only the still-mapped intersections, so a per-tensor release and the final
+  cleanup cannot double-unmap).
+
+`madvise(MADV_DONTNEED)` is **not** usable here: the ROCm runtime re-faults the pages on the next
+pageable H2D copy (reproduced in isolation), so the range is munmapped.  `LLAMA_LOAD_RELEASE_MMAP=0`
+restores the pre-r49 behaviour; the release is skipped under `--load-mode mlock`/`--mlock`,
+`--check-tensors` and lazy tensors.  `mmaps_used` changed from a per-file min/max pair to a list of
+exact ranges.
+
+Measured (gfx1201, 2x R9700, `llama-bench -p 16 -n 0`, peak `VmRSS` / `RssFile`):
+
+| model | config | off | on |
+|---|---|---:|---:|
+| Qwen3.8-Flash-Next-IQ4_NL (100 GB, 176.9B A3B) | `-ncmoe 40` | 122.5 / 68.2 GiB | **55.4 / 0.7 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 40` | 40.7 / 21.8 GiB | **19.8 / 0.6 GiB** |
+| Qwen3.6-35B-A3B-UD-Q4_K_M | `-ncmoe 0` | 22.0 / 21.8 GiB | **0.67 / 0.40 GiB** |
+
+The on peak equals `--load-mode none` (55.8 GiB / 0.26 GiB) on the 100 GB model.  Warm-load cost ~1 s
+(this model), ~1.2 s (warm 35B).  Same-seed and `-sm tensor` coherence byte-identical; `--load-mode
+none` is unaffected (reclaim is mmap-only).  The remaining peak is the full pinned `ROCm_Host` master;
+`--host-experts pool` does **not** reduce it yet (source: *"Phase 2b; full pinned master kept"*) -- that
+is the separate `wip/host-expert-master-drop/` campaign.
+
+**Block 15 -- Q1_0 `__byte_perm` -> `v_perm_b32` (TODO #54).**  New `ggml_cuda_byte_perm(x, y, s)`
+(HIP: expand the four selector nibbles to selector bytes and use `__builtin_amdgcn_perm`; otherwise
+`__byte_perm`) replaces HIP's private-memory `__byte_perm` at all 24 Q1_0 sites in `vec_dot_q1_0_q8_1`
+and `ggml_cuda_mmq_load_tiles_q1_0`.  Bit-identical: exact over 16.7M randomized GPU cases (0
+mismatches) and `test-backend-ops -o MUL_MAT -b ROCm0` **1304/1304** with every `q1_0` width.  No Q1_0
+model locally, so no speed claim.  Upstream candidate: `upstream/UPSTREAM-PR-q1-0-amd-perm.*`.
+
+**Block 15 -- `cpy-batch.cu` device idiom (TODO #32).**  `ggml_cuda_cpy_batch` now asks
+`ggml_cuda_get_device()` like `gdn-conv.cu` instead of `ctx.device`; a no-op on the current graph.
+
+**Validation:** `validate-set.sh` green (16/16 strict `git am`); prefill-logit mean KLD **0.000707** /
+same-top-p **98.755 %**; `MUL_MAT_ID` 931/931; q1_0 `MUL_MAT` 1304/1304; 4B `-sm tensor` coherence
+r48 == r49 byte-identical; 35B-A3B `--spec-type draft-mtp` `-n 2000` text r48 == r49 byte-identical
+(175.2 vs 174.9 t/s).  Full record: `WORKLOG.md` 261011.017 (r49).
 
 ## 2026-10-11 block-06 amendment (r43): the multi-ubatch logits readback is ordered (TODO #52 part B)
 

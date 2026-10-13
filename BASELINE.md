@@ -1,11 +1,26 @@
 # BASELINE - provenance and drift policy
 
-Current state: `main` is the delivery branch carrying the **16-patch set**
-(block 00 + blocks 01-15) generated against the fork
-point **llama.cpp master `a55e952b8`**; the current release is **`v16-a55e952b8-r48`** (canonical block-15
-tip `0bc12586`, net tree `3b9f403544169544f312bd24e4de31a554bf189d`): the `--load-mode none` + `-sm tensor`
-startup GPU fault (**issue #137**) is fixed in **block 06** (the Meta device reports `host_buffer`/`events`
-and proxies its event iface to the simple devices, so the loader's pinned async-upload pipeline engages;
+Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
+01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
+**`v12-097cf33d9-r53`** (canonical tip `4b27ac644`, net tree
+`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`).  r53 folds PR #144 (DFlash F1 for several sequences and
+`GGML_READBACK_SYNC` for a ubatch without outputs; blocks 00/10/11) and issue #138's
+`fa-stage-prealloc` (blocks 09/10); the upstream `MUL_MAT_ID` duplicate-ids fix is an `upstream/`
+candidate only.  The applied tree is not tree-identical to the 16-block r50 set (Phase 1
+redistributed the concerns; Phase 2 moved each into a self-contained function/file).  See
+`WORKLOG.md` 261013.003 (r53), 261013.002 (r52) and 261013.001 (r51).  The entries below are the
+**pre-V2.0 (16-block) provenance history**:
+
+**Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree
+`45ba5da24f872c5f9aa1b70b85470b5eb4d98395`): the mmap host-memory reclaim lands
+in **block 06** (the loader stops prefetching the whole file and unmaps each tensor's mapping right after
+its device upload, so a `-ncmoe` load never holds the full mapping and the pinned host master at once;
+`LLAMA_LOAD_RELEASE_MMAP=0` kill-switch) and two AMD consistency fixes land in **block 15** (the Q1_0
+`__byte_perm` -> `v_perm_b32` port and the `cpy-batch.cu` device idiom).  Before it,
+**`v16-a55e952b8-r48`** (canonical block-15 tip `0bc12586`, net tree
+`3b9f403544169544f312bd24e4de31a554bf189d`): the `--load-mode none` + `-sm tensor` startup GPU fault
+(**issue #137**) is fixed in **block 06** (the Meta device reports `host_buffer`/`events` and proxies its
+event iface to the simple devices, so the loader's pinned async-upload pipeline engages;
 `ggml_backend_meta_set_tensor_async` is generalized to the loader's chunked and segmented ranges;
 adapted from upstream PR #22466).  Before it, **`v16-a55e952b8-r47`** (canonical block-15
 tip `6daf81569`, net tree `0099dd85130db65cbfbcfd738abfc57566bffe6f`): the `--fit off` slab blackout

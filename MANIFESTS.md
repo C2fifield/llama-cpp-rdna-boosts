@@ -4,8 +4,28 @@ Squashed, standalone diff blocks of RDNA-specific performance and correctness
 work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
-The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r48`** (canonical block-15 tip `0bc12586`, net tree
+The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
+**`097cf33d9`**, released as **`v12-097cf33d9-r53`** (canonical tip `4b27ac644`, net tree
+`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green), per-block `all` build **4/4** changed blocks (00/09/10/11), prefill-logit 0.000707 / 98.755 %
+PASS, qwen4exp quant-coherence PASS, width-purity PASS, `TOPK_MOE` 448/448, `MUL_MAT_ID` mmvq
+162/162, dense batched B=1/4/8 within noise, 4B greedy `1c5d32ac537d` unchanged, DFlash 2-slot F1 on ==
+off, 35B-A3B draft-MTP acceptance 0.77302 (2 GPUs) / 0.733 (3 GPUs) unchanged.  r53 folds PR #144
+(blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the applied tree is not
+tree-identical.  **No Docker for r53.**  The r53 record is `WORKLOG.md` 261013.003; the r52 fold is
+`WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); the V2.0 re-org and its r51 validation are
+`WORKLOG.md` 261013.001, archived at `archive/work/patch-block-reorg/`.
+The entries below are the **pre-V2.0 (16-block) verification history**:
+
+**Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree
+`45ba5da24f872c5f9aa1b70b85470b5eb4d98395`): the mmap host-memory reclaim lands in **block 06** (the
+loader stops prefetching the whole file and unmaps each tensor's mapping right after its device upload,
+so a `-ncmoe` load never holds the full mapping and the pinned host master at once;
+`LLAMA_LOAD_RELEASE_MMAP=0` kill-switch; peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL `-ncmoe 40` 122.5 -> 55.4
+GiB, equal to `--load-mode none`) and two AMD consistency fixes land in **block 15** (the Q1_0
+`__byte_perm` -> `v_perm_b32` port, bit-identical, and the `cpy-batch.cu` device idiom).  Before it,
+**`v16-a55e952b8-r48`** (canonical block-15 tip `0bc12586`, net tree
 `3b9f403544169544f312bd24e4de31a554bf189d`): the `--load-mode none` + `-sm tensor` startup GPU fault
 (**issue #137**) is fixed in **block 06** (the Meta device now reports `host_buffer`/`events` and proxies
 its event iface to the simple devices, so the loader's pinned async-upload pipeline engages;

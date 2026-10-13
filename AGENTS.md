@@ -12,7 +12,7 @@ release history here — this file is the policy layer, not the log.
 ## What this repo is
 
 A **delivery repo**. It packages the RDNA/ROCm work of the [`stew675/llama.cpp`](https://github.com/stew675/llama.cpp)
-fork (`rdna-boosts` branch) as a **16-patch set** (block 00 + blocks 01-15) that applies to a clean
+fork (`rdna-boosts` branch) as a **12-block set (V2.0)** (block 00 + blocks 01-11) that applies to a clean
 llama.cpp checkout at the fork point named in `release.json`. This repo is NOT the fork: the fork
 lives at `~/llama.cpp`; its `rdna-boosts` branch is re-cut from `patches/` on every release and
 force-pushed to the personal fork so it never goes stale (see the Pushing policy). `patches/` is the
@@ -71,9 +71,9 @@ amendment, or a note in the relevant record).
 | `MANIFESTS.md` | apply order, per-block verification, validation history |
 | `BASELINE.md` | fork point, patch provenance, drift policy |
 | `GREEDY-PURITY.md` | the purity rulebook (index + invariants + per-finding claims); dated narratives/evidence are in `archive/docs/GREEDY-PURITY-FINDINGS.md` under the same `§` numbers |
-| `patches/` | **the delivery set** (0000-0015: block 00 + blocks 01-15) + apply README; block-by-block notes live in `patches/README.md` |
+| `patches/` | **the delivery set** (0000-0011: block 00 + blocks 01-11) + apply README; block-by-block notes live in `patches/README.md` (the dated notes below the V2.0 header use the pre-V2.0 16-block numbering) |
 | `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
-| `rdna-boosts-all.patch` | the entire 16-patch net as ONE patch (fork point only) |
+| `rdna-boosts-all.patch` | the entire 12-patch net as ONE patch (fork point only) |
 | `benchmarks/` | dated bench records + methodology; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) and **`prefill-logit-methodology.md` = the prefill-logit KLD gate** (run before shipping any prefill-kernel change or release) |
 | `prompts/` | versioned, hash-stable test prompts; sizes/token counts/**sha256** in `prompts/README.md`. A shipped prompt is **never edited in place** (add a new file); a result is only valid against the prompt hash it names |
 | `wip/` | **ACTIVE** exploration docs/tools — **NOT part of the delivery**; see the WIP rule. Each campaign is a self-contained handover under its own `README.md` (no `wip/README.md`); the open set is indexed in `wip/CAMPAIGNS.md` |
@@ -151,10 +151,14 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
 
 - **`llama-cli` MUST be run with `--single-turn`** (plus `--no-display-prompt` for scripted output).
   Without it, the interactive chat loop blocks forever. Wrap potentially blocking commands in `timeout`.
-- **Apply method:** all 16 blocks with **`git am`**; `scripts/apply-all.sh` is the tested path. Plain
-  `git apply` of the concatenated series **silently drops hunks**. Block 12 is a normal commit.
-- **Naming:** "block 12" in old docs can mean the former k-quant umbrella (now block 10). In the
-  current delivery **block 12 = the hybrid all-reduce, period**.
+- **Apply method:** all 12 blocks with **`git am`**; `scripts/apply-all.sh` is the tested path. Plain
+  `git apply` of the concatenated series **silently drops hunks**. Every block is a normal commit.
+- **Naming (V2.0):** the current set is **12 blocks, 00-11** (`v12-097cf33d9-r51`).  Every `block NN`
+  reference elsewhere in this file that is not one of the V2.0 numbers below is the **pre-V2.0 16-block
+  numbering** and is kept as a historical handle.  The V2.0 map: **01** all-reduce, **02** adaptive MTP,
+  **03** chunked GDN, **04** BF16 KV, **05** FA band/native/derived, **06** MMB, **07** k-quant,
+  **08** fused kernels (fused MoE), **09** host-resident MoE (slab/cache), **10** qwen4exp, **11**
+  campaign remainder.
 - **Throughput is NOT a correctness signal.** Verify coherence (same-seed `llama-cli` diff, or
   `archive/work/tools/ar_kernel_unit.cpp`). Decode perf work is validated at **depth-16384**, not
   shallow `llama-bench`. **Never run parallel/background benches.**
@@ -177,7 +181,7 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   `CPU_REPACK` (no device access, cache inert). Cost: the host expert set is non-swappable RAM (Q4_K_M
   35B-A3B `-ncmoe 40`, cache off: `ROCm_Host` 18662 MiB; peak RSS ~41.7 GB) unless the bounded `pool` is
   used. `--lazy-mode` governs the mmap *reader*, not this. `ENVIRONMENT.md` §§1.2.1/4;
-  `patches/README.md` block 06.
+  `patches/README.md` (V2.0 blocks 09-10).
 - **MTP gates must be long and reasoning-pinned.** Use `-n 3000` (`-n 2000` floor), `--reasoning on`
   for R and `--reasoning off` for P/C/K. Short runs are a correctness smoke test only. Rule 0 in
   `benchmarks/mtp-adaptive-methodology.md`.
@@ -234,7 +238,7 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   dense regression is issues #118 (slab before the weights OOMs a 48 GiB card under `--mmproj`) and #120
   (the chunk cost a dense config +739 MiB and tipped it into shared memory).  The percentage margin
   (`GGML_COMPUTE_BUFFER_MARGIN_PCT`) is deliberately *not* gated (kept for dense).
-- **The op-offload H2D staging ring (block 06, r12) has three invariants:** (1) prefill is never
+- **The op-offload H2D staging ring (V2.0 block 09; old block 06, r12) has three invariants:** (1) prefill is never
   CUDA-graph captured, so a redirected split input that reaches a copy path aborts (tripwire asserts
   this); (2) the width gate is floored at **64 tokens**; (3) the arena lives **outside** the
   compute-graph reserve, so a failed allocation disables staging instead of aborting, and a partially
@@ -244,9 +248,9 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   measured 2026-10-07), so any `-sm tensor -ncmoe` vs `-sm layer` gap is the per-op upload/pruning
   machinery, not weight duplication. (`TODO.md` #44 was closed on that finding; see
   `archive/work/expert-cache-split/`.)
-- **Cross-device split inputs (block 06, r12):** a device-to-device input copy runs on the SOURCE
+- **Cross-device split inputs (V2.0 block 09; old block 06, r12):** a device-to-device input copy runs on the SOURCE
   backend's stream, so `wait_before_overwrite` (which only orders the destination stream) is not
-  enough; block 06 records a fresh event on the destination backend and makes the source wait on it
+  enough; the block records a fresh event on the destination backend and makes the source wait on it
   before the copy. Without it, `-sm layer` on 2 GPUs with host experts (`--n-cpu-moe` >= 29) can
   overwrite an earlier split's output before its outbound copy reads it (garbage prefill);
   `GGML_SCHED_EVENTS=0` is the old workaround. Issue #103, contributor PR #104,
@@ -256,14 +260,14 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   draft and target share the defect; use the perplexity ratio vs the dense masked path
   (`LLAMA_QSA_SPARSE_FA=0`). A fused op with several heads sharing a staging buffer must keep the block
   homogeneous in every index the staging reads (QSA: the K/V head). `GREEDY-PURITY.md` §21.
-- **Block 02 (GDN):** the chunked prefill is K-independent with threshold `max(K>16?K:16, n_rs_batch)`,
+- **Block 03 (GDN; old block 02):** the chunked prefill is K-independent with threshold `max(K>16?K:16, n_rs_batch)`,
   `n_rs_batch = common_speculative_n_max()+1`; `GGML_CUDA_GDN_CHUNKED=0` forces the sequential kernel
   (correct, bit-identical, slow). The pure `none == draft-mtp` range is `n_max <= 7`.
   `GREEDY-PURITY.md` §27, `WORKLOG.md` 2026-09-12.
-- **Block 12:** the `GGML_CUDA_AR_PROFILE` device-list init fix; on the first NCCL runtime failure the
+- **Block 01 (all-reduce; old block 12):** the `GGML_CUDA_AR_PROFILE` device-list init fix; on the first NCCL runtime failure the
   comm layer warns once, disables NCCL and re-routes to the internal pipeline/butterfly.
   `GGML_CUDA_ALLREDUCE=nccl` is **NOT bit-identical** under `-sm tensor` (the internal AR BF16-round-trips).
-- **Block 13 MTP regression fixes:** the dense K-split kernel for verify batches, and the
+- **Block 08 MTP regression fixes (old block 13):** the dense K-split kernel for verify batches, and the
   rms_norm->mmvq Q8_1 fold gated to single-token MMID + plain `MUL_MAT`. **Purity ranks above raw
   non-MTP throughput.** `GREEDY-PURITY.md` §19.
 - **MoE decode/verify is byte-identical by default:** the fused shared-expert band serves
@@ -292,7 +296,7 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
 git checkout <release.json.base>
-bash <this-repo>/scripts/apply-all.sh .     # creates branch rdna-boosts, 17 commits
+bash <this-repo>/scripts/apply-all.sh .     # creates branch rdna-boosts, 12 commits
 ```
 
 ### Verify (the coherence gate — mandatory after any change)
@@ -308,7 +312,7 @@ HIP_VISIBLE_DEVICES=0,1,2 ./build/bin/llama-cli -m /llm/models/Qwen3.5/4B/Q8_0/Q
 ```
 
 Diff against a known-good build: same-seed output must be IDENTICAL. `GGML_CUDA_ALLREDUCE=nccl` is not
-a bit-identical reference under `-sm tensor` (see Block 12 above); treat it as a smoke comparison.
+a bit-identical reference under `-sm tensor` (see Block 01 above); treat it as a smoke comparison.
 
 The coherence gate is a decode/greedy check and is **blind to a uniform prefill-logit shift**. For any
 change to a prefill kernel (GDN/SSM, FA, MMQ/MMVF/MMB, MoE prefill) or a default-on approximate path,

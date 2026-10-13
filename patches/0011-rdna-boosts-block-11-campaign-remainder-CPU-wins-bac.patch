@@ -1,0 +1,1110 @@
+From 4b27ac6448ae9fe785eca0a208b3788dc501751d Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Mon, 12 Oct 2026 20:15:39 -0500
+Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
+ backend iface fills, DFlash, FA build grouping)
+
+The delivery content not owned by blocks 00-10: the CPU top-k block prefilter
+(common/sampling.cpp), the x86 quants / repack / arch-fallback campaign wins,
+the ggml-alloc compute-buffer drop/realloc plumbing, the per-backend
+stage_gather / moe_cache_* / slab_* NULL iface fills, the DFlash F1 model
+(src/models/dflash.cpp + common/speculative.cpp), and the FA per-(ncols,head)
+template-instance build grouping.  With this block the Phase-1 tree equals the
+reference tip af0595360 (release.json.tree) exactly.
+---
+ common/sampling.cpp                           | 224 +++++++++++++++++-
+ common/speculative.cpp                        |  97 ++++++++
+ ggml/include/ggml-alloc.h                     |   7 +-
+ ggml/src/ggml-alloc.c                         |  82 ++++---
+ ggml/src/ggml-blas/ggml-blas.cpp              |   1 +
+ ggml/src/ggml-cann/ggml-cann.cpp              |   1 +
+ ggml/src/ggml-cpu/arch-fallback.h             |   1 -
+ ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++++
+ ggml/src/ggml-cpu/ggml-cpu.cpp                |   7 +-
+ ggml/src/ggml-cpu/repack.cpp                  |   3 +
+ .../template-instances/generate_cu_files.py   |  46 ++--
+ ggml/src/ggml-et/ggml-et.cpp                  |   1 +
+ ggml/src/ggml-hexagon/ggml-hexagon.cpp        |   1 +
+ ggml/src/ggml-metal/ggml-metal.cpp            |   1 +
+ ggml/src/ggml-opencl/ggml-opencl.cpp          |   1 +
+ ggml/src/ggml-openvino/ggml-openvino.cpp      |   1 +
+ ggml/src/ggml-rpc/ggml-rpc.cpp                |   8 +
+ ggml/src/ggml-sycl/ggml-sycl.cpp              |   1 +
+ ggml/src/ggml-virtgpu/ggml-backend.cpp        |   1 +
+ ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   1 +
+ ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
+ ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
+ ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
+ src/models/dflash.cpp                         |  68 ++++--
+ 24 files changed, 539 insertions(+), 85 deletions(-)
+
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 564fa9c4d..da77044b7 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -109,6 +109,54 @@ struct ring_buffer {
+     std::vector<T> data;
+ };
+ 
++// S2 block prefilter, 64 logits: the block max (only a filter: any logit above the threshold makes it exceed the
++// threshold too) and whether the block holds a NaN (the caller then takes the full path).  The scalar loop is not
++// vectorized by the compiler (a float max reduction without fast-math), and it runs over the whole vocabulary for
++// every sampled position.
++#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
++#include <immintrin.h>
++__attribute__((target("avx2")))
++static void topk_block_scan_avx2(const float * p, float & bm, bool & bn) {
++    __m256 m   = _mm256_set1_ps(-INFINITY);
++    __m256 nan = _mm256_setzero_ps();
++    for (int j = 0; j < 64; j += 8) {
++        const __m256 x = _mm256_loadu_ps(p + j);
++        m   = _mm256_max_ps(m, x);
++        nan = _mm256_or_ps(nan, _mm256_cmp_ps(x, x, _CMP_UNORD_Q));
++    }
++    alignas(32) float v[8];
++    _mm256_store_ps(v, m);
++    float r = v[0];
++    for (int j = 1; j < 8; ++j) {
++        r = v[j] > r ? v[j] : r;
++    }
++    bm = r;
++    bn = _mm256_movemask_ps(nan) != 0;
++}
++#ifdef _WIN32
++// clang with the MSVC ABI does not link compiler-rt, so __builtin_cpu_supports leaves __cpu_model undefined.
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++static bool topk_block_scan_avx2_ok() {
++    static const bool ok = IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE) != 0;
++    return ok;
++}
++#else
++static bool topk_block_scan_avx2_ok() {
++    static const bool ok = __builtin_cpu_supports("avx2");
++    return ok;
++}
++#endif
++#else
++static void topk_block_scan_avx2(const float *, float &, bool &) {}
++static bool topk_block_scan_avx2_ok() { return false; }
++#endif
++
+ struct common_sampler {
+     common_params_sampling params;
+ 
+@@ -131,7 +179,102 @@ struct common_sampler {
+         llama_sampler_reset(chain);
+     }
+ 
+-    void set_logits(struct llama_context * ctx, int idx) {
++    // Llama-Frankenstein S2: exact top-k fast path.  When the samplers ahead of top-k leave the logits alone (logit bias
++    // aside) and the k largest (biased) logits are distinct and strictly above the (k+1)-th, the chain's top-k keeps
++    // exactly those k tokens in one order, whatever else is in the array; so only they are handed to the chain (with
++    // their raw logits: the chain still adds the bias) instead of the whole vocabulary.  Otherwise the full array.
++    bool set_logits_topk(const float * logits, int n_vocab) {
++        const int k  = fast_k;
++        const int nb = (int) fast_bias_ids.size();
++        if (nb > 0 && fast_bias_ids.back() >= n_vocab) {
++            return false;
++        }
++        // the raw top (k + 1 + nb) holds the top k + 1 of the tokens without a bias
++        const int m  = k + 1 + nb;
++        auto & top = fast_top; // descending by value
++        top.clear();
++        float thr = -INFINITY;
++        bool  bad = false;
++        constexpr int B = 64;
++        for (int i0 = 0; i0 < n_vocab; i0 += B) {
++            const int i1 = std::min(i0 + B, n_vocab);
++            float bm = -INFINITY;
++            bool  bn = false;
++            if (i1 - i0 == B && topk_block_scan_avx2_ok()) {
++                topk_block_scan_avx2(logits + i0, bm, bn);
++            } else {
++                for (int i = i0; i < i1; ++i) {
++                    const float x = logits[i];
++                    bm = x > bm ? x : bm;
++                    bn |= x != x;
++                }
++            }
++            bad |= bn;
++            if (!(bm > thr)) {
++                continue;
++            }
++            for (int i = i0; i < i1; ++i) {
++                const float x = logits[i];
++                if (!(x > thr)) {
++                    continue;
++                }
++                if ((int) top.size() == m) {
++                    top.pop_back();
++                }
++                int j = (int) top.size();
++                top.emplace_back(x, i);
++                for (; j > 0 && top[j - 1].first < x; --j) {
++                    top[j] = top[j - 1];
++                }
++                top[j] = { x, i };
++                if ((int) top.size() == m) {
++                    thr = top.back().first;
++                }
++            }
++        }
++        if (bad || (int) top.size() < m) {
++            return false;
++        }
++        if (nb > 0) {
++            // drop the raw values of the biased tokens, add their biased values (added in the chain's order)
++            top.erase(std::remove_if(top.begin(), top.end(), [&](const std::pair<float, llama_token> & e) {
++                return std::binary_search(fast_bias_ids.begin(), fast_bias_ids.end(), e.second);
++            }), top.end());
++            for (const llama_token id : fast_bias_ids) {
++                float x = logits[id];
++                for (const auto & b : fast_bias) {
++                    if (b.token == id) {
++                        x += b.bias;
++                    }
++                }
++                if (x != x) {
++                    return false;
++                }
++                if (x > -INFINITY) {
++                    top.emplace_back(x, id);
++                }
++            }
++            std::sort(top.begin(), top.end(), [](const std::pair<float, llama_token> & a, const std::pair<float, llama_token> & b) {
++                return a.first > b.first;
++            });
++            if ((int) top.size() < k + 1) {
++                return false;
++            }
++        }
++        for (int j = 1; j <= k; ++j) {
++            if (!(top[j - 1].first > top[j].first)) {
++                return false; // a tie among the k + 1 largest: leave the order to the full path
++            }
++        }
++        cur.resize(k);
++        for (int j = 0; j < k; ++j) {
++            const llama_token id = top[j].second;
++            cur[j] = llama_token_data{id, logits[id], 0.0f};
++        }
++        return true;
++    }
++
++    void set_logits(struct llama_context * ctx, int idx, bool allow_fast = false) {
+         const float *       sampled_probs  = llama_get_sampled_probs_ith     (ctx, idx);
+         const float *       sampled_logits = llama_get_sampled_logits_ith    (ctx, idx);
+         const llama_token * sampled_ids    = llama_get_sampled_candidates_ith(ctx, idx);
+@@ -156,9 +299,11 @@ struct common_sampler {
+         } else {
+             const auto * logits = llama_get_logits_ith(ctx, idx);
+             GGML_ASSERT(logits != nullptr);
+-            cur.resize(n_vocab);
+-            for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+-                cur[token_id] = llama_token_data{token_id, logits[token_id], 0.0f};
++            if (!(allow_fast && fast_k > 0 && fast_k < n_vocab && set_logits_topk(logits, n_vocab))) {
++                cur.resize(n_vocab);
++                for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
++                    cur[token_id] = llama_token_data{token_id, logits[token_id], 0.0f};
++                }
+             }
+         }
+ 
+@@ -170,8 +315,46 @@ struct common_sampler {
+     }
+ 
+     mutable int64_t t_total_us = 0;
++
++    int fast_k = 0;                           // S2: k of the exact top-k fast path, 0 = off
++    std::vector<llama_logit_bias> fast_bias = {};                // S2: the chain's logit biases, in the chain's order
++    std::vector<llama_token> fast_bias_ids = {};                 // S2: the biased tokens, sorted, unique
++    std::vector<std::pair<float, llama_token>> fast_top = {};    // S2: scratch
+ };
+ 
++// S2: the fast path's k when every sampler ahead of top-k is a no-op for these parameters (logit bias is handled by the
++// fast path itself), else 0.  GGML_LF_FAST_TOPK=0 turns it off.
++static int common_sampler_fast_topk_k(const common_params_sampling & p) {
++    static const bool off = [] { const char * e = getenv("GGML_LF_FAST_TOPK"); return e && atoi(e) == 0; }();
++    if (off || p.mirostat != 0 || p.top_k <= 0) {
++        return 0;
++    }
++    for (const auto s : p.samplers) {
++        switch (s) {
++            case COMMON_SAMPLER_TYPE_TOP_K:
++                return p.top_k;
++            case COMMON_SAMPLER_TYPE_PENALTIES:
++                if (!(p.penalty_last_n == 0 || (p.penalty_repeat == 1.0f && p.penalty_freq == 0.0f && p.penalty_present == 0.0f))) {
++                    return 0;
++                }
++                break;
++            case COMMON_SAMPLER_TYPE_DRY:
++                if (!(p.dry_multiplier == 0.0f || p.dry_base < 1.0f || p.dry_penalty_last_n == 0)) {
++                    return 0;
++                }
++                break;
++            case COMMON_SAMPLER_TYPE_TOP_N_SIGMA:
++                if (p.top_n_sigma > 0.0f) {
++                    return 0;
++                }
++                break;
++            default:
++                return 0;
++        }
++    }
++    return 0;
++}
++
+ std::string common_params_sampling::print() const {
+     char result[1024];
+ 
+@@ -327,9 +510,8 @@ struct common_sampler * common_sampler_init(
+     }
+ 
+     // logit bias: user biases + model suppress tokens (-INFINITY)
++    std::vector<llama_logit_bias> merged = params.logit_bias;
+     {
+-        std::vector<llama_logit_bias> merged = params.logit_bias;
+-
+         int32_t n_suppress = 0;
+         const llama_token * suppress = llama_vocab_get_suppress_tokens(vocab, &n_suppress);
+         for (int32_t i = 0; i < n_suppress; ++i) {
+@@ -443,6 +625,21 @@ struct common_sampler * common_sampler_init(
+         /* .rng     = */ std::mt19937(llama_sampler_get_seed(chain) ^ 0x9e3779b9u),
+     };
+ 
++    result->fast_k = common_sampler_fast_topk_k(params);
++    if (result->fast_k > 0) {
++        result->fast_bias = merged;
++        for (const auto & b : merged) {
++            result->fast_bias_ids.push_back(b.token);
++        }
++        std::sort(result->fast_bias_ids.begin(), result->fast_bias_ids.end());
++        result->fast_bias_ids.erase(std::unique(result->fast_bias_ids.begin(), result->fast_bias_ids.end()), result->fast_bias_ids.end());
++        // many biases, a token biased twice (the chain may add them in another order) or a negative id: the full path
++        if (result->fast_bias_ids.size() > 256 || result->fast_bias_ids.size() != merged.size() ||
++                (!result->fast_bias_ids.empty() && result->fast_bias_ids.front() < 0)) {
++            result->fast_k = 0;
++        }
++    }
++
+     return result;
+ }
+ 
+@@ -522,9 +719,13 @@ struct common_sampler * common_sampler_clone(common_sampler * gsmpl) {
+         /* .rbudget = */ llama_sampler_clone(gsmpl->rbudget),
+         /* .chain   = */ llama_sampler_clone(gsmpl->chain),
+         /* .prev    = */ gsmpl->prev,
+-        /* .cur     = */ gsmpl->cur,
+-        /* .cur_p   = */ gsmpl->cur_p,
++        /* .cur     = */ {},   // S2: scratch, rebuilt by the next sample (was a full-vocabulary copy)
++        /* .cur_p   = */ {},
+         /* .rng     = */ gsmpl->rng,
++        /* .t_total_us */ gsmpl->t_total_us,
++        /* .fast_k  */ gsmpl->fast_k,
++        /* .fast_bias */ gsmpl->fast_bias,
++        /* .fast_bias_ids */ gsmpl->fast_bias_ids,
+     };
+ }
+ 
+@@ -616,7 +817,12 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
+     auto & chain = gsmpl->chain;
+     auto & cur_p = gsmpl->cur_p; // initialized by set_logits
+ 
+-    gsmpl->set_logits(ctx, idx);
++    {
++        // S2: the fast path only where the chain is the first thing to touch the logits
++        const bool allow_fast = !(grammar_first && grammar_should_apply(gsmpl)) &&
++            (!gsmpl->rbudget || common_reasoning_budget_get_state(gsmpl->rbudget) != REASONING_BUDGET_FORCING);
++        gsmpl->set_logits(ctx, idx, allow_fast);
++    }
+ 
+     // Check if a backend sampler has already sampled a token in which case we
+     // return that token id directly.
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index d48c71a2e..83b9d8858 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -996,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+ 
+     std::vector<float> features_buf; // [n_chunk, n_embd_enc] gathered target features
+ 
++    // Llama-Frankenstein F1 (default on, GGML_LF_DFLASH_DEV=0 turns it off): the target keeps its extracted layer inputs on
++    // the device and the injection batch carries the target rows as token ids, so the features never leave the GPU. Any
++    // number of sequences: the rows are positions in the target batch, the same offsets the host path reads, and each
++    // sequence is injected with its own seq_id. If the target cannot allocate its device buffers, it keeps the host path
++    // and so does the draft.
++    bool        lf_dev = false;
++    llama_batch batch_inject_tok = {};
++
+     std::vector<common_sampler_ptr> smpls;
+ 
+     // backend sampler chain per seq, attached to ctx_dft
+@@ -1126,6 +1134,29 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+             llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
+         }
+ 
++        {
++            const char * lf_env = getenv("GGML_LF_DFLASH_DEV");
++            const bool   lf_on  = lf_env == nullptr || atoi(lf_env) != 0;
++            // several sequences keep the host path when the target has host-resident MoE experts (-ncmoe/-cmoe): the
++            // movable-boundary slab armed for them was observed to break the draft's device reads there (draft
++            // acceptance near 0 with two or more slots; one sequence, or GGML_CUDA_SLAB=0, is fine)
++            const bool host_experts = llama_model_moe_host_expert_dev_count(llama_get_model(ctx_tgt)) > 0;
++            lf_dev = lf_on && (n_seq == 1 || !host_experts);
++            if (lf_on && !lf_dev) {
++                LOG_WRN("%s: F1: %d sequences with host-resident MoE experts, using the host path\n", __func__, (int) n_seq);
++            }
++            if (lf_dev) {
++                llama_lf_set_layer_inp_dev(ctx_tgt, true);
++                batch_inject_tok = llama_batch_init(llama_n_ubatch(ctx_dft), 0, n_seq);
++                if (is_mrope) {
++                    free(batch_inject_tok.pos);
++                    batch_inject_tok.pos = (llama_pos *) malloc(sizeof(llama_pos) * 4 * llama_n_batch(ctx_dft));
++                }
++                LOG_INF("%s: F1: target features stay on the device (n_seq = %d; default on, GGML_LF_DFLASH_DEV=0 turns it off)\n",
++                        __func__, (int) n_seq);
++            }
++        }
++
+         // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
+         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2);
+         llama_set_causal_attn(ctx_dft, causal_attn); // DFlash needs non-causal attention unless the model says otherwise
+@@ -1143,6 +1174,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+             llama_sampler_free(backend_chains[seq_id]);
+         }
+         backend_chains.clear();
++
++        if (lf_dev) {
++            llama_batch_free(batch_inject_tok);
++        }
+     }
+ 
+     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
+@@ -1199,12 +1234,56 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+ 
+         const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
+ 
++        // F1: the target wrote its layer inputs to device buffers on its own stream; the draft reads them on its
++        // stream, and the target must not overwrite them before the draft is done
++        // the target falls back to the host path when its device buffers could not be allocated
++        const bool use_dev = lf_dev && has_tokens && llama_lf_get_layer_inp_dev(ctx_tgt, (uint32_t) target_layer_ids[0]) != nullptr;
++        // with several sequences the target's ubatches may have reordered the batch: its device rows are then found
++        // through the row map (nullptr = same order, always the case for one sequence)
++        int32_t         lf_n_rows = 0;
++        const int32_t * lf_rows   = nullptr;
++        if (use_dev) {
++            llama_synchronize(ctx_tgt);
++            lf_rows = llama_lf_get_dev_rows(ctx_tgt, &lf_n_rows);
++            GGML_ASSERT(lf_rows == nullptr || lf_n_rows == n_tokens);
++        }
++
+         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+             if (i_batch_beg[seq_id] < 0) {
+                 continue;
+             }
+             const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
+ 
++            if (use_dev) {
++                for (int32_t offset = 0; offset < n_rows; offset += n_ubatch) {
++                    const int32_t n_chunk = std::min(n_ubatch, n_rows - offset);
++                    batch_inject_tok.n_tokens = n_chunk;
++                    for (int32_t i = 0; i < n_chunk; ++i) {
++                        const int32_t   row = i_batch_beg[seq_id] + offset + i;
++                        const llama_pos p   = batch_in.tokens[row].pos[0];
++                        batch_inject_tok.token[i] = lf_rows ? lf_rows[row] : row; // device row (see llama_lf_set_dev_inject)
++                        batch_inject_tok.pos[i]   = p;
++                        if (is_mrope) {
++                            batch_inject_tok.pos[1 * n_chunk + i] = p;
++                            batch_inject_tok.pos[2 * n_chunk + i] = p;
++                            batch_inject_tok.pos[3 * n_chunk + i] = 0;
++                        }
++                        batch_inject_tok.n_seq_id[i]  = 1;
++                        batch_inject_tok.seq_id[i][0] = seq_id;
++                        batch_inject_tok.logits[i]    = false;
++                    }
++                    llama_lf_set_dev_inject(ctx_dft, true);
++                    const int32_t rc = llama_decode(ctx_dft, batch_inject_tok);
++                    llama_lf_set_dev_inject(ctx_dft, false);
++                    if (rc != 0) {
++                        LOG_ERR("%s: llama_decode(ctx_dft) failed rc=%d (F1, n_tokens=%d, offset=%d)\n",
++                                __func__, rc, (int) n_chunk, (int) offset);
++                        return false;
++                    }
++                }
++                continue;
++            }
++
+             // an M-RoPE image pins all its rows to one position, so a windowed draft
+             // cache cannot free cells for it - skip it, the draft can jump over the gap
+             const bool pos_pinned = batch_in.tokens[i_batch_beg[seq_id]].pos[0] == batch_in.tokens[i_batch_end[seq_id]].pos[0];
+@@ -1245,6 +1324,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+             }
+         }
+ 
++        if (use_dev) {
++            llama_lf_signal_features_consumed(ctx_dft);
++        }
++
+         return true;
+     }
+ 
+@@ -2794,6 +2877,20 @@ common_speculative_init_result::common_speculative_init_result(
+     // the draft context holds as many tokens per sequence as the target context
+     cparams.n_ctx = llama_n_ctx(ctx_tgt);
+ 
++    // MTP draft compute-buffer cap (TODO #42 / OPEN 1): the draft's encoder injection is fed in
++    // `n_ubatch` chunks, so its compute buffer during the target's first prefill is sized for that
++    // chunk (~1.6-1.7 GiB/device at the target's full `-ub`).  The draft only drafts `n_max+1` tokens
++    // and the injection is fast in small chunks, so cap it at 512 by default; the freed VRAM goes to
++    // the MoE expert arena (the `-ub 8192` decode DoD).  `MTP_DRAFT_N_UBATCH=0` restores the target's
++    // `-ub`; a positive value overrides the 512 default.
++    if (spec_mtp) {
++        const char * e = getenv("MTP_DRAFT_N_UBATCH");
++        const int64_t draft_ub = e != nullptr ? atoll(e) : 512;   // 0 = no cap (use the target's -ub)
++        if (draft_ub > 0) {
++            cparams.n_ubatch = (uint32_t) std::max<int64_t>(1, std::min<int64_t>(draft_ub, (int64_t) cparams.n_ubatch));
++        }
++    }
++
+     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
+     //       the extra memory for small models is likely negligible?
+     cparams.n_rs_seq  = 0;
+diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
+index 4a498b0c1..b7ec31448 100644
+--- a/ggml/include/ggml-alloc.h
++++ b/ggml/include/ggml-alloc.h
+@@ -67,6 +67,12 @@ GGML_API bool ggml_gallocr_reserve_n(
+     const int * node_buffer_ids,
+     const int * leaf_buffer_ids);
+ 
++// WIP r42 (TODO #42): free every compute buffer and invalidate the layout, so the next reserve/realloc
++// sizes the buffers from the *current* graph instead of the (grow-only) previous peak.  Used to release
++// the wide-prefill compute buffer before the decode MoE arena is sized.  The caller must ensure no
++// in-flight graph still reads the freed buffers (the reserve path synchronizes again before realloc).
++GGML_API void ggml_gallocr_drop_buffers(ggml_gallocr_t galloc);
++
+ // Compute and store the layout of graph without allocating or modifying the existing buffers.
+ // Returns true if the buffers would need to be grown (reallocated) to hold the graph; in that case
+ // the caller must ensure that no in-flight work is using the buffers (synchronize) and call
+@@ -83,7 +89,6 @@ GGML_API bool ggml_gallocr_reserve_n_probe(
+ // automatic reallocation if the topology changes when using a single buffer
+ // returns false if using multiple buffers and a re-allocation is needed (call ggml_gallocr_reserve_n first to set the node buffers)
+ GGML_API bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph);
+-GGML_API void ggml_gallocr_drop_buffers(ggml_gallocr_t galloc);
+ 
+ GGML_API size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id);
+ 
+diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
+index 9cac9c2c3..8d0a8249a 100644
+--- a/ggml/src/ggml-alloc.c
++++ b/ggml/src/ggml-alloc.c
+@@ -1017,15 +1017,15 @@ static bool ggml_gallocr_reserve_n_impl(
+             if (buffers_grown != NULL) {
+                 *buffers_grown = true;
+             }
+-#ifndef NDEBUG
+-            {
+-                size_t cur_size = galloc->buffers[i] ? ggml_vbuffer_size(galloc->buffers[i]) : 0;
+-                if (cur_size > 0) {
+-                    GGML_LOG_DEBUG("%s: reallocating %s buffer from size %.02f MiB to %.02f MiB\n",
+-                        __func__, ggml_backend_buft_name(galloc->bufts[i]), cur_size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
+-                }
++            const size_t cur_size = galloc->buffers[i] ? ggml_vbuffer_size(galloc->buffers[i]) : 0;
++            if (!no_alloc && cur_size > 0) {
++                // Growing an already-reserved compute buffer is rare (the reserve sizes for the
++                // worst-case graph) and is exactly what runs a nearly-full device out of memory, so
++                // keep the old size in the log at INFO level: this used to be a GGML_LOG_DEBUG inside
++                // `#ifndef NDEBUG`, so in a Release build a failed growth was unattributable.
++                GGML_LOG_INFO("%s: reallocating %s buffer from size %.02f MiB to %.02f MiB\n",
++                    __func__, ggml_backend_buft_name(galloc->bufts[i]), cur_size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
+             }
+-#endif
+             if (no_alloc) {
+                 // sizing/probe path: leave the existing buffers untouched so that the layout can be
+                 // computed (and whether a reallocation would be needed) without disturbing the memory
+@@ -1038,12 +1038,21 @@ static bool ggml_gallocr_reserve_n_impl(
+                 galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+                 if (galloc->buffers[i] == NULL) {
+                     GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), new_size);
++                    // the layout was rewritten for this (larger) graph above, but this buffer is now
++                    // gone and the not-yet-processed ones still have their old size; invalidate it so
++                    // that a later ggml_gallocr_alloc_graph() cannot hand a tensor an address that
++                    // does not even fit its buffer (or a NULL vbuffer) -- it must reserve again.
++                    galloc->layout_valid = false;
+                     return false;
+                 }
+             }
+         }
+     }
+ 
++    // the layout matches the buffers that are now allocated (for the no_alloc/probe path this is
++    // only true when nothing had to grow, which is what *buffers_grown reports)
++    galloc->layout_valid = !(buffers_grown != NULL && *buffers_grown);
++
+     return true;
+ }
+ 
+@@ -1076,6 +1085,31 @@ bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
+     return ggml_gallocr_reserve_n(galloc, graph, NULL, NULL);
+ }
+ 
++void ggml_gallocr_drop_buffers(ggml_gallocr_t galloc) {
++    // WIP r42 (TODO #42): release every compute buffer so a later reserve can size the layout DOWN,
++    // not just up (the buffers are otherwise grow-only).  Used to release a wide-prefill layout before
++    // the MoE expert cache arena is sized, so a big -ub and a big arena can coexist.  Buffer ids can
++    // alias one buffer (same pointer), so free each distinct pointer once: NULL the later aliases
++    // first, then free the first.
++    if (galloc == NULL || galloc->buffers == NULL) {
++        return;
++    }
++    for (int i = 0; i < galloc->n_buffers; i++) {
++        if (galloc->buffers[i] == NULL) {
++            continue;
++        }
++        for (int j = i + 1; j < galloc->n_buffers; j++) {
++            if (galloc->buffers[j] == galloc->buffers[i]) {
++                galloc->buffers[j] = NULL;
++            }
++        }
++        ggml_vbuffer_free(galloc->buffers[i]);
++        galloc->buffers[i] = NULL;
++    }
++    // force the next ggml_gallocr_alloc_graph() to re-reserve from the current graph
++    galloc->layout_valid = false;
++}
++
+ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor * tensor, struct tensor_alloc * tensor_alloc) {
+     int buffer_id = tensor_alloc->buffer_id;
+     assert(tensor->data || tensor->view_src || ggml_backend_buft_get_alloc_size(galloc->bufts[buffer_id], tensor) <= tensor_alloc->size_max);
+@@ -1116,6 +1150,13 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
+ }
+ 
+ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
++    if (!galloc->layout_valid) {
++#ifndef NDEBUG
++        GGML_LOG_DEBUG("%s: layout is not valid (a previous reserve failed)\n", __func__);
++#endif
++        return true;
++    }
++
+     if (galloc->n_nodes != graph->n_nodes) {
+ #ifndef NDEBUG
+         GGML_LOG_DEBUG("%s: graph has different number of nodes\n", __func__);
+@@ -1280,28 +1321,3 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx,
+ ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors(struct ggml_context * ctx, ggml_backend_t backend) {
+     return ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_get_default_buffer_type(backend));
+ }
+-
+-void ggml_gallocr_drop_buffers(ggml_gallocr_t galloc) {
+-    // WIP r42 (TODO #42): release every compute buffer so a later reserve can size the layout DOWN,
+-    // not just up (the buffers are otherwise grow-only).  Used to release a wide-prefill layout before
+-    // the MoE expert cache arena is sized, so a big -ub and a big arena can coexist.  Buffer ids can
+-    // alias one buffer (same pointer), so free each distinct pointer once: NULL the later aliases
+-    // first, then free the first.
+-    if (galloc == NULL || galloc->buffers == NULL) {
+-        return;
+-    }
+-    for (int i = 0; i < galloc->n_buffers; i++) {
+-        if (galloc->buffers[i] == NULL) {
+-            continue;
+-        }
+-        for (int j = i + 1; j < galloc->n_buffers; j++) {
+-            if (galloc->buffers[j] == galloc->buffers[i]) {
+-                galloc->buffers[j] = NULL;
+-            }
+-        }
+-        ggml_vbuffer_free(galloc->buffers[i]);
+-        galloc->buffers[i] = NULL;
+-    }
+-    // force the next ggml_gallocr_alloc_graph() to re-reserve from the current graph
+-    galloc->layout_valid = false;
+-}
+diff --git a/ggml/src/ggml-blas/ggml-blas.cpp b/ggml/src/ggml-blas/ggml-blas.cpp
+index 296f11b0c..39f67ed99 100644
+--- a/ggml/src/ggml-blas/ggml-blas.cpp
++++ b/ggml/src/ggml-blas/ggml-blas.cpp
+@@ -277,6 +277,7 @@ static struct ggml_backend_i blas_backend_i = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-cann/ggml-cann.cpp b/ggml/src/ggml-cann/ggml-cann.cpp
+index a5eb40581..7eb07d4f8 100644
+--- a/ggml/src/ggml-cann/ggml-cann.cpp
++++ b/ggml/src/ggml-cann/ggml-cann.cpp
+@@ -2770,6 +2770,7 @@ static const ggml_backend_i ggml_backend_cann_interface = {
+     /* .event_wait              = */ ggml_backend_cann_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
+index e4882984a..486e22c7e 100644
+--- a/ggml/src/ggml-cpu/arch-fallback.h
++++ b/ggml/src/ggml-cpu/arch-fallback.h
+@@ -87,7 +87,6 @@
+ #define ggml_gemm_q2_K_8x8_q8_K_generic ggml_gemm_q2_K_8x8_q8_K
+ #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
+ // quants.c
+-#define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ // repack.cpp
+ #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+ #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
+diff --git a/ggml/src/ggml-cpu/arch/x86/quants.c b/ggml/src/ggml-cpu/arch/x86/quants.c
+index ea54cfe44..a7d8182c3 100644
+--- a/ggml/src/ggml-cpu/arch/x86/quants.c
++++ b/ggml/src/ggml-cpu/arch/x86/quants.c
+@@ -698,6 +698,74 @@ void ggml_vec_dot_q1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
+ #endif
+ }
+ 
++#if defined(__AVX2__)
++// acc + a*b as two roundings, like the generic code compiles (GCC does not contract the scalar builtins), so the
++// SIMD Q2_0 dot product stays bit-identical to ggml_vec_dot_q2_0_q8_0_generic
++static inline float q2_0_mul_add(const float acc, const float a, const float b) {
++    return _mm_cvtss_f32(_mm_add_ss(_mm_set_ss(acc), _mm_mul_ss(_mm_set_ss(a), _mm_set_ss(b))));
++}
++#endif
++
++void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
++#if defined(__AVX2__)
++    const int qk = QK2_0;
++    const int nb = n / qk;
++
++    assert(n % qk == 0);
++    assert(nrc == 1);
++    UNUSED(nrc);
++    UNUSED(bx);
++    UNUSED(by);
++    UNUSED(bs);
++
++    const block_q2_0 * GGML_RESTRICT x = vx;
++    const block_q8_0 * GGML_RESTRICT y = vy;
++
++    // Each Q2_0 half block (8 bytes, 32 two-bit weights) meets one Q8_0 block. Lane l takes bytes 4l..4l+3: the
++    // 32-bit element e holds them shifted right by 2e, so after & 3 byte b of element e is field e of byte 4l+b,
++    // i.e. weight 4(4l+b)+e; the Q8_0 bytes get the same 4x4 transpose per lane. The integer sums are exact, and
++    // the float combination below is written exactly as in ggml_vec_dot_q2_0_q8_0_generic: bit-identical results.
++    const __m256i rep    = _mm256_setr_epi8(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
++                                            4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7);
++    const __m256i ytr    = _mm256_setr_epi8(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15,
++                                            0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
++    const __m256i shifts = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
++    const __m256i m3     = _mm256_set1_epi8(3);
++    const __m256i ones8  = _mm256_set1_epi8(1);
++    const __m256i ones16 = _mm256_set1_epi16(1);
++
++    float sumf = 0.0f;
++
++    for (int i = 0; i < nb; i++) {
++        const float d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
++
++        float sumi = 0.0f;
++
++        for (int k = 0; k < 2; k++) {
++            const block_q8_0 * GGML_RESTRICT yb = &y[i * 2 + k];
++            const float d1 = GGML_CPU_FP16_TO_FP32(yb->d);
++
++            int64_t q8;
++            memcpy(&q8, &x[i].qs[k * 8], sizeof(q8));
++            const __m256i qv = _mm256_and_si256(_mm256_srlv_epi32(_mm256_shuffle_epi8(_mm256_set1_epi64x(q8), rep), shifts), m3);
++            const __m256i yv = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) yb->qs), ytr);
++
++            // sum of (q - 1) * y: u8 x s8 pair sums (|.| <= 762) minus the pair sums of y
++            const __m256i p16 = _mm256_sub_epi16(_mm256_maddubs_epi16(qv, yv), _mm256_maddubs_epi16(ones8, yv));
++            const int sumi_block = hsum_i32_8(_mm256_madd_epi16(p16, ones16));
++
++            sumi = q2_0_mul_add(sumi, d1, (float) sumi_block);
++        }
++
++        sumf = q2_0_mul_add(sumf, d0, sumi);
++    }
++
++    *s = sumf;
++#else
++    ggml_vec_dot_q2_0_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
++#endif
++}
++
+ void ggml_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+     const int qk = QK8_0;
+     const int nb = n / qk;
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 05f74e0fa..c242ba6fe 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
+         def = 1;
+     }
+ 
+-    const char * env = getenv("GGML_CPU_MOE_OFFLOAD_THREADS");
++    static const char * env = getenv("GGML_CPU_MOE_OFFLOAD_THREADS");
+     if (env != nullptr) {
+         const int v = atoi(env);
+         if (v <= 0) {
+@@ -382,6 +382,7 @@ static const struct ggml_backend_i ggml_backend_cpu_i = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+@@ -699,6 +700,10 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+     /* .slab_headroom_bytes  = */ nullptr,
+     /* .slab_ring_set        = */ nullptr,
+     /* .slab_narrow_floor    = */ nullptr,
++    /* .slab_narrow2_floor   = */ nullptr,
++    /* .slab_compute_narrow2 = */ nullptr,
++    /* .moe_cache_set_host_pool   = */ nullptr,
++    /* .moe_cache_set_host_source = */ nullptr,
+ };
+ 
+ // CPU backend - backend (reg)
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index 2632ae3a0..b935bf150 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -5246,6 +5246,9 @@ ggml_backend_buffer_type_t ggml_backend_cpu_repack_buffer_type(void) {
+                            /* .get_alloc_size       = */ nullptr,  // defaults to ggml_nbytes
+                            /* .get_alloc_size_n     = */ NULL,
+                            /* .is_host              = */ nullptr,
++                           /* .get_compute_margin_pct = */ nullptr,
++                           /* .alloc_buffer_usage   = */ nullptr,
++                           /* .get_compute_chunk_bytes = */ nullptr,
+                            },
+         /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+         /* .context = */ new ggml::cpu::repack::extra_buffer_type(),
+diff --git a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
+index 8850c796e..5b2dc1e22 100755
+--- a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
++++ b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
+@@ -96,26 +96,32 @@ for ncols in [8, 16, 32, 64]:
+         if ncols2 > ncols:
+             continue
+         ncols1 = ncols // ncols2
+-        with open(f"fattn-mma-f16-instance-ncols1_{ncols1}-ncols2_{ncols2}.cu", "w") as f:
+-            f.write(SOURCE_FATTN_MMA_START)
+-
+-            for head_size_kq in HEAD_SIZES_KQ:
+-                if head_size_kq == 40:
+-                    continue
+-                if head_size_kq == 72:
+-                    continue
+-                # Skip compilation of unused ncols2 values for niche head sizes:
+-                if head_size_kq == 192 and ncols2 not in (8, 16): # MiMo-V2.5
+-                    continue
+-                if head_size_kq == 320 and ncols2 != 32: # Mistral Small 4
+-                    continue
+-                if head_size_kq == 512 and ncols2 not in (2, 4, 8): # Gemma 4 (+ MTP)
+-                    continue
+-                if head_size_kq == 576 and ncols2 not in (4, 16, 32): # Deepseek, GLM 4.7 Flash
+-                    continue
+-                if head_size_kq not in (192, 320, 576) and ncols2 in (16, 32):
+-                    continue
+-                head_size_v = HEAD_SIZES_V_OVERRIDE.get(head_size_kq, head_size_kq)
++
++        # One translation unit per (ncols1, ncols2, head size) instead of one per
++        # (ncols1, ncols2).  The set of emitted template instantiations is exactly the
++        # same; only their grouping changes, so this is build-time only (the native-KV
++        # arm chain in fattn-mma-f16.cuh duplicates the whole WMMA kernel per KV type,
++        # which made the 8-case files ~200 s each and the backend build one-file-bound).
++        # CMake globs template-instances/fattn-mma*.cu, so no CMake change is needed.
++        for head_size_kq in HEAD_SIZES_KQ:
++            if head_size_kq == 40:
++                continue
++            if head_size_kq == 72:
++                continue
++            # Skip compilation of unused ncols2 values for niche head sizes:
++            if head_size_kq == 192 and ncols2 not in (8, 16): # MiMo-V2.5
++                continue
++            if head_size_kq == 320 and ncols2 != 32: # Mistral Small 4
++                continue
++            if head_size_kq == 512 and ncols2 not in (2, 4, 8): # Gemma 4 (+ MTP)
++                continue
++            if head_size_kq == 576 and ncols2 not in (4, 16, 32): # Deepseek, GLM 4.7 Flash
++                continue
++            if head_size_kq not in (192, 320, 576) and ncols2 in (16, 32):
++                continue
++            head_size_v = HEAD_SIZES_V_OVERRIDE.get(head_size_kq, head_size_kq)
++            with open(f"fattn-mma-f16-instance-ncols1_{ncols1}-ncols2_{ncols2}-dkq{head_size_kq}-dv{head_size_v}.cu", "w") as f:
++                f.write(SOURCE_FATTN_MMA_START)
+                 f.write(SOURCE_FATTN_MMA_CASE.format(ncols1=ncols1, ncols2=ncols2, head_size_kq=head_size_kq, head_size_v=head_size_v))
+ 
+ for type in TYPES_MMQ:
+diff --git a/ggml/src/ggml-et/ggml-et.cpp b/ggml/src/ggml-et/ggml-et.cpp
+index ef5ba7a2d..e11e700cb 100644
+--- a/ggml/src/ggml-et/ggml-et.cpp
++++ b/ggml/src/ggml-et/ggml-et.cpp
+@@ -1614,6 +1614,7 @@ static const struct ggml_backend_i ggml_backend_et_i = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+index 886793f1b..177416046 100644
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -9078,6 +9078,7 @@ static struct ggml_backend_i hexagon_backend_i = {
+     /* .event_wait              = */ ggml_backend_hexagon_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index 554713a04..e9878b9e4 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -605,6 +605,7 @@ static ggml_backend_i ggml_backend_metal_i = {
+     /* .event_wait              = */ ggml_backend_metal_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-opencl/ggml-opencl.cpp b/ggml/src/ggml-opencl/ggml-opencl.cpp
+index 55ad8dd96..5d913394a 100644
+--- a/ggml/src/ggml-opencl/ggml-opencl.cpp
++++ b/ggml/src/ggml-opencl/ggml-opencl.cpp
+@@ -9536,6 +9536,7 @@ static ggml_backend_i ggml_backend_opencl_i = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-openvino/ggml-openvino.cpp b/ggml/src/ggml-openvino/ggml-openvino.cpp
+index d5106a568..7f8e826f9 100644
+--- a/ggml/src/ggml-openvino/ggml-openvino.cpp
++++ b/ggml/src/ggml-openvino/ggml-openvino.cpp
+@@ -897,6 +897,7 @@ static const ggml_backend_i ggml_backend_openvino_interface = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 80f094dab..c8d2d85dd 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -1114,6 +1114,9 @@ static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
+     /* .get_alloc_size      = */ ggml_backend_rpc_buffer_type_get_alloc_size,
+     /* .get_alloc_size_n    = */ NULL,
+     /* .is_host             = */ NULL,
++    /* .get_compute_margin_pct = */ NULL,
++    /* .alloc_buffer_usage  = */ NULL,
++    /* .get_compute_chunk_bytes = */ NULL,
+ };
+ 
+ static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
+@@ -1293,6 +1296,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
+     /* .event_wait              = */ ggml_backend_rpc_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+@@ -2918,6 +2922,10 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+     /* .slab_headroom_bytes  = */ nullptr,
+     /* .slab_ring_set        = */ nullptr,
+     /* .slab_narrow_floor    = */ nullptr,
++    /* .slab_narrow2_floor   = */ nullptr,
++    /* .slab_compute_narrow2 = */ nullptr,
++    /* .moe_cache_set_host_pool   = */ nullptr,
++    /* .moe_cache_set_host_source = */ nullptr,
+ };
+ 
+ // backend reg interface
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 1ed97e296..f476ab395 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -6578,6 +6578,7 @@ static ggml_backend_i ggml_backend_sycl_interface = {
+     /* .event_wait              = */ ggml_backend_sycl_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-virtgpu/ggml-backend.cpp b/ggml/src/ggml-virtgpu/ggml-backend.cpp
+index 50f83ef97..6b509fb1d 100644
+--- a/ggml/src/ggml-virtgpu/ggml-backend.cpp
++++ b/ggml/src/ggml-virtgpu/ggml-backend.cpp
+@@ -48,6 +48,7 @@ static ggml_backend_i ggml_backend_remoting_interface = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 370631aac..ea7d93c77 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -15154,6 +15154,7 @@ static ggml_backend_i ggml_backend_vk_interface = {
+     /* .event_wait              = */ ggml_backend_vk_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-webgpu/ggml-webgpu.cpp b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+index 5387264e1..85fb45941 100644
+--- a/ggml/src/ggml-webgpu/ggml-webgpu.cpp
++++ b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+@@ -3757,6 +3757,7 @@ static ggml_backend_i ggml_backend_webgpu_i = {
+     /* .event_wait              = */ ggml_backend_webgpu_event_wait,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-zdnn/ggml-zdnn.cpp b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
+index a1645a023..552059f7e 100644
+--- a/ggml/src/ggml-zdnn/ggml-zdnn.cpp
++++ b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
+@@ -469,6 +469,7 @@ static ggml_backend_i ggml_backend_zdnn_i = {
+     /* .event_wait             = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/ggml/src/ggml-zendnn/ggml-zendnn.cpp b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
+index fe0eba002..a3d9f00da 100644
+--- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
++++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
+@@ -584,6 +584,7 @@ static struct ggml_backend_i ggml_backend_zendnn_i = {
+     /* .event_wait              = */ NULL,
+     /* .stage_buffer            = */ NULL,
+     /* .stage_upload            = */ NULL,
++    /* .stage_gather            = */ NULL,
+     /* .stage_wait              = */ NULL,
+     /* .stage_d2d               = */ NULL,
+     /* .stage_h2d_gbps          = */ NULL,
+diff --git a/src/models/dflash.cpp b/src/models/dflash.cpp
+index b6cb6bfb9..b80e3d95f 100644
+--- a/src/models/dflash.cpp
++++ b/src/models/dflash.cpp
+@@ -3,6 +3,50 @@
+ #include "llama-impl.h"
+ #include "llama-kv-cache.h"
+ #include "llama-kv-cache-iswa.h"
++#include "llama-context.h"
++
++// Llama-Frankenstein F1: during a device-feature injection (cparams.lf_dev_inject) the ubatch token ids are rows of
++// the target's last batch; the target keeps its extracted layer inputs on the device (ctx_other), so the concatenated
++// target features are gathered there instead of being uploaded from the host.
++class llm_graph_input_lf_rows : public llm_graph_input_i {
++public:
++    void set_input(const llama_ubatch * ubatch) override {
++        GGML_ASSERT(ubatch->token != nullptr && (int64_t) ubatch->n_tokens == rows->ne[0]);
++        ggml_backend_tensor_set(rows, ubatch->token, 0, ubatch->n_tokens*ggml_element_size(rows));
++    }
++    bool can_reuse(const llm_graph_params & params) override {
++        return params.cparams.lf_dev_inject && params.ubatch.token != nullptr && rows->ne[0] == (int64_t) params.ubatch.n_tokens;
++    }
++    ggml_tensor * rows = nullptr; // I32 [n_tokens]
++};
++
++// target features [n_embd_inp, n_tokens]: the host-provided embd input, or the device gather under F1
++static ggml_tensor * lf_dflash_target_features(llm_graph_context & g, const llama_model & model, int64_t n_embd_inp, int64_t n_tokens) {
++    if (!g.cparams.lf_dev_inject) {
++        auto inp = std::make_unique<llm_graph_input_embd>(n_embd_inp);
++        inp->embd = ggml_new_tensor_2d(g.ctx0, GGML_TYPE_F32, n_embd_inp, n_tokens);
++        ggml_set_input(inp->embd);
++        ggml_tensor * t = inp->embd;
++        g.res->add_input(std::move(inp));
++        return t;
++    }
++    GGML_ASSERT(g.cparams.ctx_other != nullptr && "F1 device injection needs the target context (ctx_other)");
++    auto inp = std::make_unique<llm_graph_input_lf_rows>();
++    inp->rows = ggml_new_tensor_1d(g.ctx0, GGML_TYPE_I32, n_tokens);
++    ggml_set_input(inp->rows);
++    ggml_tensor * rows = inp->rows;
++    g.res->add_input(std::move(inp));
++
++    ggml_tensor * cur = nullptr;
++    for (const int32_t lid : model.target_layer_ids) {
++        ggml_tensor * src = g.cparams.ctx_other->get_lf_layer_inp_dev((uint32_t) lid);
++        GGML_ASSERT(src != nullptr && "F1: target layer input not kept on the device");
++        ggml_tensor * f = ggml_get_rows(g.ctx0, src, rows); // [n_embd, n_tokens]
++        cur = cur == nullptr ? f : ggml_concat(g.ctx0, cur, f, 0);
++    }
++    GGML_ASSERT(cur != nullptr && cur->ne[0] == n_embd_inp);
++    return cur;
++}
+ 
+ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
+ 
+@@ -601,18 +645,10 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
+     };
+ 
+     // KV cache injection
+-    ASSERT_EMBD_OR_TOKEN(ubatch);
+-    if (ubatch.embd) {
+-        auto inp = std::make_unique<llm_graph_input_embd>(n_embd_inp);
+-
+-        inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd_inp, n_tokens);
+-        ggml_set_input(inp->embd);
+-
+-        ggml_tensor * inp_target = inp->embd;
++    if (ubatch.embd || cparams.lf_dev_inject) {
++        ggml_tensor * inp_target = lf_dflash_target_features(*this, model, n_embd_inp, n_tokens);
+         cb(inp_target, "inp_target_features", -1);
+ 
+-        res->add_input(std::move(inp));
+-
+         // fuse the target features through the encoder
+         ggml_tensor * inp_g = build_lora_mm(model.fc, inp_target, model.fc_s);
+         inp_g = build_norm(inp_g, model.output_norm_enc, NULL, LLM_NORM_RMS, -1);
+@@ -868,18 +904,10 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
+     llm_graph_input_attn_k_iswa * inp_attn = build_attn_inp_k_iswa();
+ 
+     // KV cache injection: fused target features from the encoder
+-    ASSERT_EMBD_OR_TOKEN(ubatch);
+-    if (ubatch.embd) {
+-        auto inp = std::make_unique<llm_graph_input_embd>(n_embd_inp);
+-
+-        inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd_inp, n_tokens);
+-        ggml_set_input(inp->embd);
+-
+-        ggml_tensor * inp_target = inp->embd;
++    if (ubatch.embd || cparams.lf_dev_inject) {
++        ggml_tensor * inp_target = lf_dflash_target_features(*this, model, n_embd_inp, n_tokens);
+         cb(inp_target, "inp_target_features", -1);
+ 
+-        res->add_input(std::move(inp));
+-
+         // fuse the target features through the encoder
+         ggml_tensor * inp_g = build_lora_mm(model.fc, inp_target, model.fc_s);
+         inp_g = build_norm(inp_g, model.output_norm_enc, nullptr, LLM_NORM_RMS, -1);
+-- 
+2.56.0
+

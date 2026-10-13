@@ -2,7 +2,8 @@
 
 Scope: everything **this repo adds or repurposes**, plus the upstream variables and the non-ggml
 runtime variables (HIP/ROCm) that materially affect how this delivery behaves.  Defaults are taken from
-the `rdna-boosts` tree at release `v16-a55e952b8-r35`; the table was generated from the code, not from
+the `rdna-boosts` tree at release `v12-097cf33d9-r52` (V2.0; the pre-r52 values were unchanged from the
+            16-block set, which was a pure re-organization); the table was generated from the code, not from
 memory (see [Maintaining this file](#maintaining-this-file)).
 
 ## How to read this
@@ -106,6 +107,11 @@ pinned` (and `auto`) keeps the usual behaviour and allocates **no** pool.  When 
 pinned bounce buffer over the page cache, one per host tensor, process-wide budget, and it serves the MoE
 expert-cache fills.  r35.
 
+**It does not reduce host RSS yet.**  It keeps the full pinned `ROCm_Host` master (the source logs
+*"Phase 2b; full pinned master kept"*), so measured `RssShmem` is identical with and without the pool
+(18.7 GiB on 35B-A3B `-ncmoe 40`; 54.1 GiB on Flash-Next IQ4_NL `-ncmoe 40`).  Dropping the master is a
+separate campaign: `wip/host-expert-master-drop/`.
+
 | variable / flag | default | class | notes |
 |---|---|---|---|
 | `--host-experts pool` | `pinned` | option | select the bounded host pool.  `pinned`/`auto` = no pool; `mmap` was removed in r33. |
@@ -200,7 +206,8 @@ configuration.
 | `LLAMA_SPEC_DRAFT_N_MAX_CLAMP` | `1` = clamp on | kill-switch | clamps `--spec-draft-n-max` to 15 (the recurrent snapshot bound). `0` escapes the clamp; **purity is only promised to 7**. |
 | `LLAMA_MTP_DRAFT_OP_OFFLOAD` | unset | tuning | op-offload behaviour for the draft model. |
 | `LLAMA_MTP_SPARSE` / `LLAMA_MTP_SPARSE_DECODE` | unset | tuning | sparse MTP variants. |
-| `GGML_LF_DFLASH_DEV` | **on** (single sequence) | kill-switch | DFlash device-resident layer-input features (F1).  `0` uses the host path.  Default-on since r26; if the device buffers cannot be allocated the target warns once and stays on the host path for the rest of the context.  Multi-sequence always uses the host path. |
+| `LLAMA_MTP_INGEST_TAIL` | unset/`0` = every row | **opt-in tuning** (r52, block 02) | feeds the MTP draft only the last N positions of each prompt (the server reports each prompt end via `common_speculative_set_prompt_end()`); generation rows are always fed.  The draft loses look-back over the skipped prefix only, so output is unchanged, but draft acceptance drops: on a ~31k-token prompt, `4096` measured prefill **+4.8 %** and decode **-4.4 %** (acceptance 0.821 -> 0.715).  Kept opt-in because it is a speed/look-back trade, not a pure win.  Tools other than the server never report a prompt end, so there the variable has no effect. |
+| `GGML_LF_DFLASH_DEV` | **on** | kill-switch | DFlash device-resident layer-input features (F1).  `0` uses the host path.  Default-on since r26; if the device buffers cannot be allocated the target warns once and stays on the host path for the rest of the context.  Since r53 F1 also covers several sequences (`--parallel >= 2`); with host-resident MoE experts (`-ncmoe`/`-cmoe`, `llama_model_moe_host_expert_dev_count(...) > 0`) several sequences stay on the host path and log a warning (the movable-boundary slab's device reads, issue #127 MoE form).  One sequence is unchanged. |
 
 The tuned adaptive-MTP controller is selected with **`--spec-type draft-mtp-adaptive`** (a CLI flag, not
 an environment variable).  Plain `--spec-type draft-mtp` does not use it.
@@ -212,6 +219,7 @@ an environment variable).  Plain `--spec-type draft-mtp` does not use it.
 | variable | default | class | notes |
 |---|---|---|---|
 | `LLAMA_MMAP_HOST_EXPERTS` | — | **removed (r33)** | the legacy alias for `--host-experts`.  The pageable `--host-experts mmap` mode was dropped in r33 (issue #116): a no-XNACK GPU (gfx1201 reports `XNACK enabled: NO`) cannot read a pageable host master in a kernel, so `-ncmoe`/`-cmoe` experts are always pinned (`ROCm_Host`).  The variable is now ignored.  The bounded pinned DIO host tier that replaces the reclaimable-page-cache idea is the `archive/work/host-expert-dio-cache/` campaign. |
+| `LLAMA_LOAD_RELEASE_MMAP` | **on** (block 06, r49) | kill-switch | unmaps each model-mapping range right after the tensor is copied to its device buffer, and skips the up-front whole-file prefetch, so a `-ncmoe` load does not hold the full file mapping and the pinned host expert master at the same time.  `madvise(MADV_DONTNEED)` is not enough here (the ROCm runtime re-faults those pages on the next pageable H2D copy), so the range is munmapped; the exact ranges a host-pointer tensor points into (a tied embedding is loaded host-side and device-side from the same range) are preserved.  `0` restores the pre-r49 prefetch-then-unmap-at-end behaviour.  Skipped under `--load-mode mlock`/`--mlock`, `--check-tensors` and lazy tensors. |
 | `LLAMA_TENSOR_HOST_BUFT` | unset | tuning | host buffer type for overridden tensors. |
 | `LLAMA_DEVICE_INPUT` | off | **opt-in** | device-side input handling. |
 | `LLAMA_DROP_COMPUTE_BUFFERS` | **on** (every tool) | tuning / kill-switch | drop the wide-prefill compute layout at the prefill→decode transition so a wide `-ub` and a large arena coexist (`-ub 8192` cache-auto cli decode 45.6 → 78.7 t/s).  Follows `common_params::drop_compute_buffers`; set the env to `0`/`1` to override.  **A server may drop too** (this was cli-only until r22): the movable-boundary slab reclaims a later wide layout with a boundary move, which is verified on `wide1 → short → wide2` at `-ub 8192` (0 aborts, all coherent).  `0` is only needed where the compute layout CANNOT be reclaimed — i.e. with `GGML_CUDA_SLAB=0`. |
@@ -247,6 +255,8 @@ See `AGENTS.md`.
 | `GGML_CUDA_AR_SMALL_BYTES` | `65536` (r46, block 12) | tuning | the small-message threshold in bytes for the knob above. |
 | `GGML_CUDA_AR_P2P` | off (r46, block 12) | **opt-in** | 2-device, not-fused P2P push all-reduce: each device writes its wire data and arrival token into the peer's fine-grained VRAM and reads locally, replacing the host ring and the three all-thread `__threadfence_system()` calls with a store-count drain plus one system-scope release store.  Falls back to the host ring if peer access / fine-grained allocation fails or there are not exactly 2 devices.  Bit-identical; MTP-neutral on the reporter's box, +2.6 % one-token decode. |
 | `GGML_CUDA_AR_P2P_LITE` | `1` (r46, block 12) | kill-switch | `0` keeps the full `__threadfence_system()` fences on the P2P path (A/B only). |
+| `GGML_CUDA_AR_KER_EVENTS` | `0` = off | **opt-out / diagnostic** (r52, block 01) | the chunked kernel path no longer records `ev_pool[*][slot].ker` after every all-reduce (each record is a ROCm marker packet the GPU processes after every AR kernel); slot reuse on that path is already ordered on the GPUs by the arrival tokens, so `acquire_slot` syncs only when the slot's last user recorded the event.  `1` restores per-AR recording for A/B; pacing (`GGML_CUDA_AR_PACE=1`) also forces it. |
+| `GGML_CUDA_AR_P2P_LARGE` | off (r52, block 01) | **opt-in** | 2-device copy-engine path: each device pulls the peer's contribution straight into `dev_tmp` with `hipMemcpyPeerAsync` (one PCIe crossing) instead of bouncing both halves through pinned host memory (two).  Same add kernel on the same bytes, so bit-identical; a 10.5 MB exchange measured 808 -> 437 us on the reporter's pair, +1.3 % on a 31.5k prefill.  Unset/`0` keeps the host-bounce path. |
 
 ---
 
@@ -326,6 +336,8 @@ The same idiom — and therefore also default-on despite the name — covers
 | `LLAMA_CONV_TAIL_CONT` | off | kill-switch (**opt-in**) | `1` restores the `cont` + `cpy` conv-state tail copy instead of the direct strided 2D memcpy (r25). |
 | `GGML_FORCE_NO_INTEGRATED` | off | ignore integrated GPUs when picking devices. |
 | `GGML_CUDA_ASYNC_INPUT` | off (r46, block 06) | **opt-in** | async graph-input uploads: a `set_tensor` of `<= 1 MiB` into a COMPUTE buffer stages through a per-device 16 MiB pinned ring with a done-event ordering, so the host does not block on every copy; any setup failure falls back to the synchronous path.  Bit-identical in 4 repeat runs; kept opt-in because of the historical single-run impurity described in `archive/work/decode-host-overhead/`. |
+| `GGML_CUDA_MOE_RPB_SHORT` | unset = on (RDNA4) | **kill-switch / tuning** (r52, block 10) | rows per block for a short-K (`< 8` K-blocks per row) `MUL_MAT_ID` expert GEMM: RDNA4 uses **8** instead of `ceil(8 / K-blocks)` (the Flash-Next q2_0 down split under `-sm tensor` measured 43.0 -> 29.8 us per 4-token verify call).  `0` restores the old rule; `2`/`4`/`8` force a value on any architecture; other values are ignored. |
+| `GGML_CUDA_TOPK_SORTED` | unset = on | **kill-switch** (r52, block 08) | `topk_moe`'s argmax uses DPP lane exchanges (`ggml_cuda_xor_lane`) and per-lane sorted 64-bit keys for the gating outputs (softmax/sigmoid/sqrt-softplus, no bias, no delayed softmax, power-of-2 candidates per lane).  Same ids, weights and order (ties to the lower index).  `0` restores the per-round scan; the argmax rounds drop 7.1 -> 3.8 us per 512-expert/10-used call. |
 | `GGML_CUDA_GRID_STALL_PAD` | on, HIP only (r46, block 15) | kill-switch | `0` disables the gfx1201 grid-size dispatch workaround: a launch whose block count is a multiple of 256 (or work-item count a multiple of 65536) waits ~6-11 us on gfx1201 (ROCm/legacy-rocm-build#6689), so `mul_mat_vec_f`/`mul_mat_vec_q_ksplit`/`mul_mat_vec_q_moe` add one returning block.  Bit-identical; delete the helper and its call sites once AMD ships the fix. |
 
 ---
@@ -339,6 +351,7 @@ The same idiom — and therefore also default-on despite the name — covers
 | `GGML_CUDA_FA_WMMA_256` / `GGML_CUDA_FA_WMMA_MAX_HEAD` | unset | tuning | WMMA tile / head caps. |
 | `GGML_CUDA_FA_KV_NATIVE` / `GGML_CUDA_FA_MASK_SKIP` | unset | tuning | native-KV and mask-skip paths. |
 | `GGML_CUDA_FA_STAGE_MAX_MB` | unset | tuning | FA staging budget. |
+| `GGML_CUDA_FA_STAGE_PREALLOC` | **on** | kill-switch | `0` restores the 1.25x growth ladder (issue #138).  The prefill staging arena is allocated once at the F16 size of the K/V view roots, capped per operand by `GGML_CUDA_FA_STAGE_MAX_MB` and only while `optional_alloc_within_free_cap` allows it; an unbounded cap (`GGML_CUDA_FA_STAGE_MAX_MB=0`) passes no hint. |
 | `LLAMA_QSA_OFF` | off | kill-switch | disables QSA. |
 | `LLAMA_QSA_SPARSE_FA` | on | kill-switch | `0` = the dense masked path. **This is the QSA oracle**: the `W=1..8` matrix is blind to a width-uniform corruption, so measure the perplexity ratio against `LLAMA_QSA_SPARSE_FA=0` when touching the QSA op. |
 | `LLAMA_QSA_KEYS_ONLY`, `LLAMA_QSA_PLE_HOSTGATHER`, `LLAMA_QSA_DENSE_SHORTCUT`, `LLAMA_QSA_SCORE_BOUNDS`, `LLAMA_QSA_SCORE_STRIP`, `LLAMA_QSA_SCORE_WMMA`, `LLAMA_QSA_SCORE_WMMA_MB`, `GGML_CUDA_QSA_IDENTITY`, `GGML_CUDA_QSA_SLICES`, `GGML_CUDA_QSA3`, `GGML_CUDA_QSA_INDEXER_CACHE`, `GGML_CUDA_QSA_INDEXER_SCORE`, `GGML_QSA_DERIVED_BIAS`, `GGML_QSA_DERIVED_VIS`, `GGML_QSA_SCORE_MEM`, `LLAMA_KQ_MASK_DERIVED` | off / unset | tuning | QSA variants and indexer tuning. |
