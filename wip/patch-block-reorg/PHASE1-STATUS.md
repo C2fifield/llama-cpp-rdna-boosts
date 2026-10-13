@@ -839,3 +839,50 @@ published tip too).
 
 The exploratory option-B block-10 tree is on scratch branch `v2-block10` (`55f9e2061`); the block-10
 work continues from the amended `6d675ee23`.
+
+---
+
+## 19. Block 10 status after the block-09 fix (2026-10-12, session 3)
+
+Continuing block 10 on the amended block 09 (`6d675ee23`) surfaced and fixed the qwen4exp **load**
+blocker, but block 10 is **not finished** — its dense arm is not yet coherent.
+
+### 19.1 Fixed: the missing HC op dispatch
+
+The block-10 WIP (`0d3e20323`) contains `hc-mix.{cu,cuh}` (which defines `ggml_cuda_op_hc_mix` /
+`ggml_cuda_op_hc_combine`) but **never dispatches `GGML_OP_HC_MIX` / `GGML_OP_HC_COMBINE`** in
+`ggml/src/ggml-cuda/ggml-cuda.cu`.  The ops therefore have no CUDA `supports_op`, the Meta scheduler
+splits the HC graph, and a non-contiguous view is handed to the Meta backend's async setter:
+
+```
+ggml-backend.cpp: GGML_ASSERT(ggml_is_contiguous(tensor)) failed
+  <- ggml_backend_sched_copy_input <- ... <- llama_context::decode (context warm-up)
+```
+
+(Op coordinates: `input= (view)`, op 37, `ne=[2560,2,1,1]`, `nb=[4,10256,20512,20512]`.)  r50 has the
+two `case GGML_OP_HC_MIX` / `HC_COMBINE` arms (`ggml-cuda.cu` dispatch + `supports_op`); old-14 does not
+(the HC dispatch is **old-15** content).  Adding them to the block-10 tree makes the model load and
+generate.  (Recorded on scratch `v2-block10`.)
+
+### 19.2 Still open: the dense arm diverges from r50
+
+`Qwen3.8-Flash-Next-Q4_K_M`, `LLAMA_QSA_OFF=1`, `--seed 42 --temp 0 -n 24`, deterministic on both:
+
+| build | greedy text |
+|---|---|
+| r50 (`84058162b`) | `[Start thinking] We need to answer user's simple question: "The capital of France is". …` |
+| v2 block 10 | `[Start thinking] We need to answer user's simple query: "The capital of France is". …` |
+
+and with `GGML_CUDA_DISABLE_FUSION=1` the two are further apart (`"We need to respond to user: …"` vs
+`"We need to answer user's simple question: …"`).  So the WIP is missing **numerics-affecting old-15
+content** beyond the load fix — not just the HC fusion matchers it already names.  Block 10 cannot be
+committed until it matches r50's dense arm.
+
+### 19.3 Next
+
+Bring the rest of old-15's **non-QSA** qwen4exp/HC content into block 10 (HC matchers
+`ggml_cuda_match_hc_mix` / `ggml_cuda_hc_mix_closed` / `ggml_cuda_op_hc_mix_reduce` / the
+`hc_combine_norm` / `idx_relu_sum` / `sigmoid_mul_add` matchers, plus the missing kernel rewrites), then
+re-run the qwen4exp dense coherence against r50.  This is the same keyword-triage problem the WIP hit;
+a tree-vs-r50 reduction over the touched files is the reliable method.  Scratch state: `v2-block10`
+(rebased onto `6d675ee23`, QSA kernel files removed, HC dispatch added, builds, loads).

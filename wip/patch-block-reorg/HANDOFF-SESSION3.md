@@ -90,11 +90,27 @@ upstream `--moe-cache-mib` engine path; the grid-pad and `batched_reduce` hypoth
 (`GGML_CUDA_GRID_STALL_PAD=0` still faults).  It does not change the block plan — the maintainer's
 decision on how/when to fix it is pending (options in §15).  Do **not** block `10 qwen4exp` on it.
 
+> **BLOCK 09 FIXED (session 3, maintainer decision):** §17's dropped base content (the four
+`GGML_OP_LIGHTNING_INDEXER` / `GGML_OP_DSV4_HC_*` Meta split-state cases) is repaired; block 09 was
+amended to **`6d675ee23`** (see `PHASE1-STATUS.md` §18).  Per-block build gate **10/10**; base's
+qwen4exp model now loads+generates.  The §17.3 blocks-00–09 dropped-content sweep is **still open**.
+
+> **BLOCK 10 PROGRESS (session 3): see `PHASE1-STATUS.md` §16 + §19.**  The maintainer chose "move
+old-14's QSA/indexer to `11 qsa`"; scoping it showed the WIP has **no QSA dispatch at all** and that the
+QSA graph is a Phase-2-class rewrite of `qwen4exp.cpp` (§16).  The pragmatic boundary adopted: block 10 =
+WIP minus the six QSA/indexer `.cu/.cuh` files; `11 qsa` = those + the CUDA dispatch (to be written) +
+old-15 W1–W3.  On the amended block 09 the WIP still **aborted on load** — the missing
+`GGML_OP_HC_MIX`/`HC_COMBINE` CUDA dispatch (old-15 content); adding it makes the model load+generate,
+but the **dense arm still diverges from r50** ("question" vs "query"), so block 10 is **not finished**
+(§19).  Scratch: `v2-block10` (rebased onto `6d675ee23`).
+
 **Note on old-14's QSA/indexer files** (`fattn-qsa.cu`, `indexer-*.cu`, `mmvf.cu` additions,
 `mmq.cu`/`mmq.cuh`): they are currently inside the block-10 WIP. The plan puts QSA/indexer in `11 qsa`.
-The cleanest path is probably to keep them here (old-14 introduces them together) and make `11 qsa`
-only the old-15 QSA memory wins (W1–W3) + `qsa3` — i.e. merge the planned 10+11 like 08+09, and confirm
-with the maintainer. **Ask before assuming.**
+**DECIDED (maintainer, session 3): move them to `11 qsa`.**  Because the QSA graph is a rewrite of
+upstream's QSA inside `qwen4exp.cpp` (not separable by file), the interim boundary is: block 10 = the
+WIP **minus** the six QSA/indexer kernel files; `11 qsa` = those **plus the CUDA dispatch that must be
+written** (the WIP has none) plus old-15 W1–W3.  See `PHASE1-STATUS.md` §16 for the full analysis and the
+plan-exact alternative.
 
 ## 4. Deferred / stripped items (must be re-added or given a home)
 
