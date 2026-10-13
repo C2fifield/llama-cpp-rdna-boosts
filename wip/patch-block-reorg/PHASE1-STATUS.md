@@ -808,3 +808,34 @@ re-run the block-09 region gates plus a qwen4exp **load** smoke test, then conti
 Confirm the audit-and-repair path (fix block 09 + sweep 00–09) — or say if the intent was to carry
 these base cases in a later block instead (in which case block 09's own base-qwen4exp build is still
 broken and should be documented as such).
+
+---
+
+## 18. Block 09 fixed (2026-10-12, session 3 — maintainer decision "Fix block 09")
+
+§17's dropped-base-content regression is **repaired**.  The four missing
+`ggml_backend_meta_get_split_state` cases (`GGML_OP_LIGHTNING_INDEXER`, `GGML_OP_DSV4_HC_COMB/PRE/POST`)
+were restored to `ggml/src/ggml-backend-meta.cpp` and **block 09 was amended**:
+
+| | |
+|---|---|
+| before | `4463f18c7` (broken: 96/100 base cases) |
+| after  | **`6d675ee23`** (100/100 base cases; +8 lines, `ggml-backend-meta.cpp` only) |
+
+Verification:
+
+| gate | result |
+|---|---|
+| per-block fresh `all` build (`gate-per-block-build.sh`, `097cf33d9..6d675ee23`) | **10/10** |
+| qwen4exp load + generate (`Qwen3.8-Flash-Next-Q4_K_M`, `-ngl 99 -sm tensor`, `-p "The capital of France is"`) | **loads and generates** (previously aborted `ggml op not implemented: DSV4_HC_PRE`) |
+
+The change is inert for every non-qwen4exp model (it adds switch cases for ops that only qwen4exp-family
+graphs contain), so the recorded block-09 region gates (35B-A3B `-ncmoe` cache coherence, prefill-logit)
+are unaffected; they will be re-run with the release gates on the final tree.
+
+**Still open from §17:** the systematic blocks 00–09 "dropped base content" audit has **not** been done
+(only the one known instance is fixed).  The reference-tip `TODO.md` #56 fault is unchanged (it is in the
+published tip too).
+
+The exploratory option-B block-10 tree is on scratch branch `v2-block10` (`55f9e2061`); the block-10
+work continues from the amended `6d675ee23`.
