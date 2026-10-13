@@ -1,0 +1,54 @@
+From d0561e4735081771378404b54a989d84ad1e1734 Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Mon, 12 Oct 2026 16:29:49 +0000
+Subject: [PATCH 2/2] speculative: draft_mtp copies only the last target row
+ for prompt batches
+
+process() copied every row's next-token hidden state of the batch into verify_h (n_embd = 10240 floats for
+qwen4exp, ~84 MB per 2048-token prompt ubatch), but accept() only follows a verify batch, whose own process()
+refills verify_h; a prompt batch only needs its last row (the next pending_h).  A sequence's rows are trimmed
+only while its last row is still inside the prompt reported by common_speculative_set_prompt_end, so verify
+batches of any length (e.g. ngram-mod's 64-token drafts) keep every row, and callers that never report a
+prompt end keep the full copy.  Same output.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ common/speculative.cpp | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index e2725931e..3d188b866 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1800,12 +1800,26 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 continue;
+             }
+ 
+-            const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
++            int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
++            int32_t i_row0 = i_batch_beg[seq_id];
++            // A prompt batch (still inside the prompt reported by set_prompt_end): accept() only ever follows a verify
++            // batch, whose own process() refills verify_h, so only the last row (the next pending_h) is needed (a
++            // 2048-row prompt ubatch copied ~84 MB here).  Verify batches, of any length, keep every row.  The prompt
++            // phase also ends here, so the shared-memory path (which skips the ingest loop above) ends it too.
++            const llama_pos pos_end  = batch_in.tokens[i_batch_end[seq_id]].pos[0];
++            const bool      have_end = (size_t) seq_id < ingest_prompt_end.size() && ingest_prompt_end[seq_id] >= 0;
++            if (have_end && pos_end >= ingest_prompt_end[seq_id]) {
++                ingest_from[seq_id]       = 0;   // generation reached
++                ingest_prompt_end[seq_id] = -1;
++            } else if (n_rows > 1 && have_end) {
++                i_row0 += n_rows - 1;
++                n_rows  = 1;
++            }
+             verify_h_rows[seq_id] = n_rows;
+             verify_h[seq_id].resize((size_t) n_rows * n_embd);
+ 
+             for (int32_t i = 0; i < n_rows; ++i) {
+-                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
++                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_row0 + i);
+                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
+             }
+ 
+-- 
+2.53.0
+
