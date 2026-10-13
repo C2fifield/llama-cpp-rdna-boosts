@@ -49,11 +49,11 @@ jobs:
             echo "ERROR: tag ${GITHUB_REF_NAME} does not match release.json release ${rel}" >&2
             exit 1
           fi
-          # ... and the name must follow v16-<base>-r<N> (the tag carries the short
+          # ... and the name must follow v<blocks>-<base>-r<N> (the tag carries the short
           # fork-point SHA while release.json may record either form).
-          tag_base="$(sed -E 's/^v16-(.+)-r[1-9][0-9]*$/\1/' <<< "${GITHUB_REF_NAME}")"
-          if [[ ! "${GITHUB_REF_NAME}" =~ ^v16-.+-r[1-9][0-9]*$ ]] || [ "${#tag_base}" -lt 7 ] || [[ "${base}" != "${tag_base}"* ]]; then
-            echo "ERROR: tag ${GITHUB_REF_NAME} must match v16-<base>-r<N> for release.json base ${base}" >&2
+          tag_base="$(sed -E 's/^v[0-9]+-(.+)-r[1-9][0-9]*$/\1/' <<< "${GITHUB_REF_NAME}")"
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+-.+-r[1-9][0-9]*$ ]] || [ "${#tag_base}" -lt 7 ] || [[ "${base}" != "${tag_base}"* ]]; then
+            echo "ERROR: tag ${GITHUB_REF_NAME} must match v<blocks>-<base>-r<N> for release.json base ${base}" >&2
             exit 1
           fi
           {
@@ -83,7 +83,7 @@ jobs:
           owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
           repo="${GITHUB_REPOSITORY#*/}"
           image="${REGISTRY}/${owner_lc}/${repo}"
-          notes="llama.cpp fork point \`${BASE}\`, canonical tree \`${TREE}\`, ${N_BLOCKS} patches (block 00 + blocks 01-15).
+          notes="llama.cpp fork point \`${BASE}\`, canonical tree \`${TREE}\`, ${N_BLOCKS} patches (block 00 + blocks 01-$((N_BLOCKS-1))).
 
           Apply with \`scripts/apply-all.sh\` on a fresh llama.cpp checkout at \`${BASE}\`; verify the artifacts against \`SHA256SUMS\`.
 

@@ -1,108 +1,9 @@
-From a1e3e4c3c8dd6dfe802aede9d13d81064c2c016a Mon Sep 17 00:00:00 2001
-From: Stew Forster <stew675@gmail.com>
-Date: Wed, 9 Sep 2026 10:29:21 +0000
-Subject: [PATCH 01/15] rdna-boosts: block 01: adaptive MTP draft depth
+From 8401ee71fe994e9c2f2c9f929173c2c2361e1c42 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Mon, 12 Oct 2026 14:21:47 -0500
+Subject: [PATCH 02/11] rdna-boosts: block 02: adaptive MTP draft depth
 
-Adaptive MTP draft depth (--spec-type draft-mtp-adaptive): a per-seq
-credit-bucket controller tracks the acceptance of MTP-drafted tokens and
-adapts the draft depth N on every verify round.  Each round moves a
-bucket B by (n_accepted - depth), except that a full accept is credited
-max(1, n_accepted - 1) instead, so a deeper accept is worth more and a
-strong run by another speculator (which can accept far past the depth)
-is credited too.  The depth climbs a step when B reaches the cap (the
-drop pressure plus the climb budget) and drops a step when B falls to
-zero, carrying the surplus or the deficit into the new depth's bucket.
-N stays within [floor, cap]: the floor is --spec-draft-n-min-adaptive
-(default 3), the cap is --spec-draft-n-max (bounded by the model MTP
-layer count).  The cold start is cap - 3 bounded by the floor, because the
-climb is the expensive direction and the drift settles the depth from
-there; the start is only the drift's entry point, so it is overridable per
-context with --spec-draft-n-start (clamped to [floor, cap]) for a workload
-whose best entry point differs (a wide verify batch costs more at a deep
-context); the depth resets on each new generation.
-
-Squashed from the stew675 llama.cpp PR #27210 changeset (author of
-record), refreshed 2026-09-08 to the PR-review response head
-d236d41a2 (github.com/ggml-org/llama.cpp/pull/27210
-issuecomment-5582088497).  The refresh carries the review round's
-changes over the previously delivered PR state (0994374fd):
-
-- common_params_speculative::has_mtp() helper; arg.cpp/common.cpp/
-  server-context.cpp/init-result MTP-type checks refactored through it
-- accept_partial() virtual + common_speculative_accept_partial() so a
-  partial acceptance the context could not apply (checkpoint-restore
-  path in tools/server + examples/speculative-simple) is reported once
-  with the true accept count, and the following replay round (n_last
-  reset) cannot feed stale draft counts to the adaptive controller; the
-  non-adaptive accept path is unchanged
-- adaptive depth reset moves ahead of the empty-prompt early return in
-  begin(), so the depth is reset on every new generation
-- --spec-draft-n-min-adaptive rejects values < 1 (invalid_argument);
-  registration order/example coverage normalized; --spec-draft-n-min
-  in adaptive mode warns that it is unused
-- invalid adaptive range check: GGML_ABORT -> std::runtime_error
-- draft-mtp + draft-mtp-adaptive together are rejected (shared ctx_dft)
-- adaptive controller header comment rewritten (the constants lived in
-  climb_threshold/drop_pressure tables at this point; they are now the
-  credit-bucket form below)
-- docs/speculative.md, tools/cli/README.md, tools/server/README.md
-  document draft-mtp-adaptive + --spec-draft-n-min-adaptive
-- src/models/delta-net-base.cpp: conv-state snapshot-bound rationale
-  comment (only callers that roll back remove tokens this batch decoded)
-- tests/test-arg-parser.cpp: stale "defaults to 2" comment fixed
-  (default is 3), value-0 rejection case added
-
-Controller behaviour was re-validated by the PR author on delta-net
-hardware after the review changes (C3/C6 on Qwen3.8-27B): throughput
-and acceptance match prior measurements within run-to-run noise.
-
-Amended 2026-09-15: the mean-reverting accumulator was replaced by the
-credit-bucket controller above (stew675's bucketed design) and tuned for
-the delivery's acceptance, which is higher than mainline's and therefore
-raises the bucket drift at every depth.  The credit function needs no
-tuning: the drift's zero-crossing already lands on the throughput optimum
-of every workload measured (code ~9, prose/reasoning/phase-switching at
-the floor, verbatim recall at the ceiling).  The constants did:
-
-- climb_budget grows with depth, 20 + 6*(depth - 1).  A flat 20 let six
-  consecutive full accepts at depth 8 cascade the depth 9 -> 10 -> 11 ->
-  12 in 16 rounds, because the credit grows with depth; a depth-scaled
-  budget makes the top of the range resist a streak as the floor does.
-- drop_pressure is steeper, max(60, 10*depth) instead of max(20, 4*depth),
-  which damps the slow 6 <-> 12 limit cycle a flat budget produced (40
-  depth changes in 477 verification rounds; each change costs a rollback
-  and a re-draft).
-- the cold start is cap - 3 instead of the floor (overridable per context
-  with --spec-draft-n-start, clamped to [floor, cap]).  Off the floor a
-  step costs ~20 net full accepts and the controller burned a third of a
-  3000-token run reaching the plateau, which is the entire advantage of a
-  higher ceiling.  Settling down is cheap even for a workload whose
-  equilibrium is the floor, so starting near the plateau costs a reasoning
-  or phase-switching workload little.
-
-Amended 2026-09-16: the cold start was briefly moved to the midpoint of the
-floor and the cap, on the theory that a lower entry point helps a short
-generation at a deep context.  A same-build comparison (shallow and ~32k
-context, -n 300 and -n 3000) showed the cap - 3 start is at least as fast
-in every case: end-to-end throughput tracks the round count, and the
-optimized multi-token verify makes a wider batch cheap, so a lower start
-only lowers the settled mean depth (reasoning/prose pay nothing, recall
-loses most).  The default is cap - 3 again and the start is a runtime
-option (--spec-draft-n-start) rather than a constant.
-
-Measured, Qwen3.8-27B Q8_0 x 2-card tensor split, f16 KV, -n 3000: code
-ceiling-12 96.0 t/s vs ceiling-7 95.8 (was 92.8 vs 96.3, the reported
-regression), 4 depth changes instead of 40; reasoning +5.0%, prose
-+11.2%, code +18.8%, recall +58.7% riding at depth 12; a code <-> reasoning
-phase-switching workload stays at 64.0 against its 64.3 pinned-depth
-optimum.  On 1-card UD-Q4_K_XL, code ceiling-12 is 84.7 vs ceiling-7
-61.4 (+37.9%).  Greedy output is unchanged: adaptive cap 7, adaptive cap
-12 and fixed draft-mtp are byte-identical.
-
-The depth state transitions are now reported at TRC (they are the
-user-visible explanation of a run's decode throughput) and carry the
-bucket; tests/test-speculative-adaptive.cpp is rewritten against the
-bucket constants.
+Sources: old 01 (whole block).
 ---
  common/arg.cpp                                |  38 ++-
  common/common.cpp                             |  76 +++++-
@@ -905,10 +806,10 @@ index 6f76c819f..0eab7fec5 100644
          uint32_t n_outputs_max_per_seq; // max outputs per sequence (0 = n_outputs_max)
          int32_t  n_threads;             // number of threads to use for generation
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 23170d8a3..fdc63208e 100644
+index 5589d1297..9b1d80cbc 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -3974,6 +3974,7 @@ llama_context_params llama_context_default_params() {
+@@ -4010,6 +4010,7 @@ llama_context_params llama_context_default_params() {
          /*.n_ubatch                    =*/ 512,
          /*.n_seq_max                   =*/ 1,
          /*.n_rs_seq                    =*/ 0,

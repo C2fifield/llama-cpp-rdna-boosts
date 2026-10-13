@@ -4,8 +4,17 @@ Squashed, standalone diff blocks of RDNA-specific performance and correctness
 work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
-The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
-**`a55e952b8`**, released as **`v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree
+The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
+**`097cf33d9`**, released as **`v12-097cf33d9-r51`** (canonical tip `15d62da2f`, net tree
+`48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green), per-block `all` build **12/12**, prefill-logit 0.000707 / 98.755 % PASS, qwen4exp quant-coherence
+PASS, 35B draft-MTP acceptance 0.646 (+41 % over plain), width-purity PASS, same-seed identical to r50.
+V2.0 re-organized the former 16-block set by concern and moved each concern into a self-contained
+function/file (Phase 2); the applied tree is behaviour-preserving but not tree-identical.  See
+`WORKLOG.md` 261013.001 (r51); the execution record is archived at `archive/work/patch-block-reorg/`.
+The entries below are the **pre-V2.0 (16-block) verification history**:
+
+**Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree
 `45ba5da24f872c5f9aa1b70b85470b5eb4d98395`): the mmap host-memory reclaim lands in **block 06** (the
 loader stops prefetching the whole file and unmaps each tensor's mapping right after its device upload,
 so a `-ncmoe` load never holds the full mapping and the pinned host master at once;

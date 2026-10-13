@@ -2,7 +2,8 @@
 
 Scope: everything **this repo adds or repurposes**, plus the upstream variables and the non-ggml
 runtime variables (HIP/ROCm) that materially affect how this delivery behaves.  Defaults are taken from
-the `rdna-boosts` tree at release `v16-a55e952b8-r35`; the table was generated from the code, not from
+the `rdna-boosts` tree at release `v12-097cf33d9-r51` (V2.0; the values are unchanged from the
+            16-block set, which was a pure re-organization); the table was generated from the code, not from
 memory (see [Maintaining this file](#maintaining-this-file)).
 
 ## How to read this

@@ -1,7 +1,28 @@
 # rdna-boosts patch set (delivery)
 
-16 patches (block 00 structural fixes + blocks 01-15) against upstream master **`097cf33d9`**
-(re-based 2026-10-12 from `a55e952b8`; `a55e952b8` was re-based 2026-10-05 from `84e76d8a2`).
+**12 patches** (block 00 + blocks 01-11) against upstream master **`097cf33d9`**.
+`v12` is the V2.0 clean break in numbering: the former 16-block set was re-organized so every concern
+lives in its owning block, and Phase 2 moved each concern into a self-contained function/file (see the
+r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record are archived at
+`../archive/work/patch-block-reorg/`).
+
+> The **block-by-block notes below are the historical pre-V2.0 16-block numbering** (`block 00`..`block
+> 15`), kept verbatim as the provenance/edit history.  The current patch files are `0000`..`0011`; the
+> V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
+> validation is `../MANIFESTS.md`.
+
+> **Current release `v12-097cf33d9-r51` (2026-10-13) -- V2.0 block re-org + self-contained refactor:**
+> canonical tip `15d62da2f`, net tree `48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`; strict **12/12**
+> `git am` (`validate-set.sh` green).  The applied tree is behaviour-preserving but not tree-identical
+> to r50: Phase 1 redistributed each concern into its owning block; Phase 2 extracted the
+> `ggml_cuda_try_fuse` arms, the MMVQ vec-dot/VDR selectors + MoE kernel (`mmvq-vecdot.cuh`,
+> `mmvq-moe.cu`), the FA native-KV/band predicates (`fattn-rdna.cuh`), the context/loader glue helpers,
+> and split `ggml-cuda.cu` (9819 -> 6370 lines) into `ggml-cuda-try-fuse.cu`, `ggml-cuda-slab.cu`,
+> `ggml-cuda-moe-cache-hooks.cu` and `ggml-cuda-arena.cu`.  All same-seed gates byte-identical to r50;
+> `gate-prefill-logits.sh` 0.000707 / 98.755 % PASS; `gate-qwen4exp-quant-coherence.sh` PASS; 35B-A3B
+> draft-MTP acceptance 0.646, 142.1 vs 100.5 t/s (+41 %); width purity PASS; per-block `all` 12/12.
+> The fork `rdna-boosts` branch is refreshed (`7b28073be`) and the 7.14.1/10.1 container images pushed.
+> See `../WORKLOG.md` 261013.001 (r51).
 
 > **Current release `v16-097cf33d9-r50` (2026-10-12) -- re-base (+195 commits); upstream MoE cache kept dormant, #29953 MMQ `J_best` adopted:**
 > canonical block-15 tip `9a9e6aa6c`, net tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`; strict **16/16**

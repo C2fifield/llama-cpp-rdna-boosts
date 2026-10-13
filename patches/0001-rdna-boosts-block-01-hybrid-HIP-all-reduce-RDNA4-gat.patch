@@ -1,51 +1,10 @@
-From 9c94561c37d4134d0cbdc6304576af810c3c989d Mon Sep 17 00:00:00 2001
-From: Stew Forster <stew675@gmail.com>
-Date: Tue, 1 Sep 2026 08:54:07 +0000
-Subject: [PATCH 12/15] rdna-boosts: block 12: hybrid HIP all-reduce
+From 320fecf0d0ba2229c908a946c2210d2ba3276f60 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Mon, 12 Oct 2026 14:21:47 -0500
+Subject: [PATCH 01/11] rdna-boosts: block 01: hybrid HIP all-reduce
  (RDNA4-gated)
 
-Amended 2026-09-04 (stew675/llama-cpp-rdna-boosts issue #13, reporter
-tungel): runtime NCCL/RCCL failures are no longer fatal.  RCCL >= 2.30.4
-can refuse kernel dispatch on the first collective (hipErrorIllegalState:
-"the operation cannot be performed in the present state") when a GPU sits
-behind a PCIe root port without 32/64-bit AtomicOp completer support
-(e.g. PCH/Z390), even though ncclCommInitAll succeeds (see ROCm/ROCm#6520).
-Previously the process aborted at the first prefill AllReduce
-(NCCL_CHECK -> GGML_ABORT) although the internal host-staged pipeline was
-up and stable.
-
-On the first NCCL failure the comm layer now: clears the sticky HIP errors
-the failed dispatch left on each AR device (else the fallback aborts on the
-next CUDA_CHECK), warns once with the known cause + `dmesg | grep -i
-atomic` check, permanently stops using NCCL for the rest of the run (comm
-state is unknown), and re-routes AllReduce to the internal host-staged
-pipeline when available, otherwise to the meta backend's butterfly.  The
-failing call itself returns false, so the butterfly handles it.
-ncclCommDestroy at teardown is also no longer fatal (comm state unknown
-after a failed collective).  No behavior change on healthy setups; the
-fallback only triggers when NCCL itself fails.
-Amended 2026-09-16: this block is the home for the all-reduce *alternatives*, and
-gains a third, opt-in algorithm: GGML_CUDA_ALLREDUCE=ce, a 2-GPU
-copy-engine (SDMA) P2P all-reduce.  It keeps the hybrid block's structure
--- the internal host-staged pipeline still serves the latency-bound small
-tensors (decode/verify), the large (prefill) tensors go to the new arm --
-so the decode path is byte-identical to hybrid; only the prefill transport
-changes.  Same dtype policy as the NCCL large path (fp32 -> bf16 reduce ->
-fp32), but the peer exchange is cudaMemcpyPeerAsync on the compute streams
-with cross-device events instead of NCCL's SM-driven kernels.  Measured on
-2x R9700 (27B Q8_0, -sm tensor, bf16 KV, -b/-ub 2048): pp512 1973->2019,
-pp2048 2103->2190, pp4096 2082->2170 (+2..+4 %), tg128 unchanged, greedy
-text identical, plain == draft-mtp byte-identical.
-
-The platform default is UNCHANGED (hybrid); 'ce' is opt-in and is a beta
-mode -- if it cannot be set up it degrades to the hybrid path, never to the
-meta-backend butterfly.  Not yet validated at rank counts other than 2.
-See wip/q8-prefill-tuning/ in the delivery repo for the measurements.
-
-Block 16 fold (packaging: back to the 16-block 0000-0015 set).  This block also absorbs the
-small-message all-reduce half of the former block 16: 4 blocks instead of 8 for messages below
-`GGML_CUDA_AR_SMALL_BYTES` (default 64 KiB) and the opt-in 2-device P2P all-reduce
-(`GGML_CUDA_AR_P2P=1`).  Net tree unchanged.
+Sources: old 12 (whole block).
 ---
  ggml/src/ggml-cuda/allreduce-hip.cu | 1662 +++++++++++++++++++++++++++
  ggml/src/ggml-cuda/allreduce.cu     |   27 +-
@@ -1802,10 +1761,10 @@ index 76205d323..a2e1f41dd 100644
 +void ggml_cuda_ar_stage_hook_run(int device, cudaStream_t stream,
 +                                 const float * data, int64_t count);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index af4389d0b..68dc93cde 100644
+index 957908f65..212339e83 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -2249,21 +2249,129 @@ struct ggml_backend_cuda_comm_context {
+@@ -978,21 +978,129 @@ struct ggml_backend_cuda_comm_context {
  
      ggml_cuda_ar_pipeline *     ar_pipeline = nullptr;
  
@@ -1936,7 +1895,7 @@ index af4389d0b..68dc93cde 100644
  // AllReduce via NCCL. Reduces as FP32 for small tensors and BF16 for large
  // tensors (bandwidth-bound), then converts back to FP32.
  static bool ggml_backend_cuda_comm_allreduce_nccl(
-@@ -2283,9 +2391,19 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
+@@ -1012,9 +1120,19 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
          GGML_ASSERT(ggml_is_contiguously_allocated(tensors[i]));
      }
  
@@ -1957,7 +1916,7 @@ index af4389d0b..68dc93cde 100644
          for (size_t i = 0; i < n_backends; ++i) {
              if ((tensors[i]->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
                  ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
-@@ -2293,12 +2411,18 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
+@@ -1022,12 +1140,18 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
                  CUDA_CHECK(cudaMemsetAsync(tensors[i]->data, 0, ggml_nbytes(tensors[i]), cuda_ctx->stream()));
              }
          }
@@ -1979,7 +1938,7 @@ index af4389d0b..68dc93cde 100644
          return true;
      }
  
-@@ -2321,12 +2445,18 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
+@@ -1050,12 +1174,18 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
          CUDA_CHECK(cudaGetLastError());
      }
  
@@ -2001,7 +1960,7 @@ index af4389d0b..68dc93cde 100644
  
      for (size_t i = 0; i < n_backends; ++i) {
          ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
-@@ -2347,7 +2477,7 @@ static bool ggml_backend_cuda_comm_allreduce_internal(
+@@ -1076,7 +1206,7 @@ static bool ggml_backend_cuda_comm_allreduce_internal(
      GGML_ASSERT(comm_ctx->ar_pipeline != nullptr);
  
      const size_t n_backends = comm_ctx->backends.size();
@@ -2010,7 +1969,7 @@ index af4389d0b..68dc93cde 100644
      GGML_ASSERT(tensors[0] != nullptr);
  
      const int64_t   ne   = ggml_nelements(tensors[0]);
-@@ -2427,29 +2557,31 @@ static void ggml_backend_cuda_comm_init_none(ggml_backend_cuda_comm_context * re
+@@ -1156,29 +1286,31 @@ static void ggml_backend_cuda_comm_init_none(ggml_backend_cuda_comm_context * re
      ret->try_allreduce = ggml_backend_cuda_comm_try_allreduce_butterfly;
  }
  
@@ -2052,7 +2011,7 @@ index af4389d0b..68dc93cde 100644
      }
  
      const size_t n = ret->dev_ids.size();
-@@ -2457,26 +2589,320 @@ static void ggml_backend_cuda_comm_init_nccl(ggml_backend_cuda_comm_context * re
+@@ -1186,26 +1318,320 @@ static void ggml_backend_cuda_comm_init_nccl(ggml_backend_cuda_comm_context * re
      ncclResult_t rc = ncclCommInitAll(ret->comms.data(), (int) n, ret->dev_ids.data());
      if (rc == ncclSuccess) {
          ret->try_allreduce = ggml_backend_cuda_comm_try_allreduce_nccl;
@@ -2073,8 +2032,7 @@ index af4389d0b..68dc93cde 100644
  #endif // GGML_USE_NCCL
 +    return false;
 +}
- 
--    ggml_backend_cuda_comm_init_internal(ret);
++
 +// ---------------------------------------------------------------------------------------------
 +// Copy-engine (SDMA) P2P AllReduce (GGML_CUDA_ALLREDUCE=ce; opt-in, 2 GPUs).  The platform
 +// default stays the hybrid NCCL + internal pipeline described above.
@@ -2090,12 +2048,8 @@ index af4389d0b..68dc93cde 100644
 +    for (long i = blockIdx.x * (long) blockDim.x + threadIdx.x; i < n; i += (long) gridDim.x * blockDim.x) {
 +        o[i] = __float2bfloat16(__bfloat162float(a[i]) + __bfloat162float(b[i]));
 +    }
- }
- 
--// Top-level init.  Picks one of the three init paths based on
--// GGML_CUDA_ALLREDUCE (or the platform default) and lets the chain handle
--// any fallback.  Unrecognised env values warn and fall through to the
--// platform default.
++}
++
 +static bool ggml_backend_cuda_comm_allreduce_ce(ggml_backend_cuda_comm_context * comm_ctx, struct ggml_tensor ** tensors) {
 +    const int64_t ne = ggml_nelements(tensors[0]);
 +    if (ne == 0) {
@@ -2303,10 +2257,15 @@ index af4389d0b..68dc93cde 100644
 +        CUDA_CHECK(cudaEventRecord(comm_ctx->ce_ev_out[i], s));
 +        CUDA_CHECK(cudaGetLastError());
 +    }
-+
+ 
+-    ggml_backend_cuda_comm_init_internal(ret);
 +    return true;
-+}
-+
+ }
+ 
+-// Top-level init.  Picks one of the three init paths based on
+-// GGML_CUDA_ALLREDUCE (or the platform default) and lets the chain handle
+-// any fallback.  Unrecognised env values warn and fall through to the
+-// platform default.
 +static bool ggml_backend_cuda_comm_init_ce(ggml_backend_cuda_comm_context * ret) {
 +    const size_t nb = ret->backends.size();
 +    if (nb < 2) {
@@ -2382,7 +2341,7 @@ index af4389d0b..68dc93cde 100644
  static void * ggml_backend_cuda_comm_init(ggml_backend_t * backends, size_t n_backends) {
      for (size_t i = 0; i < n_backends; i++) {
          if (!ggml_backend_is_cuda(backends[i])) {
-@@ -2492,38 +2918,89 @@ static void * ggml_backend_cuda_comm_init(ggml_backend_t * backends, size_t n_ba
+@@ -1221,38 +1647,89 @@ static void * ggml_backend_cuda_comm_init(ggml_backend_t * backends, size_t n_ba
      }
  
      const char * env = getenv("GGML_CUDA_ALLREDUCE");
@@ -2482,7 +2441,7 @@ index af4389d0b..68dc93cde 100644
  }
  
  // host buffer type
-@@ -6439,6 +6916,18 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -4585,6 +5062,18 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                  graph->graph = nullptr;
              }
  

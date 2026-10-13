@@ -131,11 +131,11 @@ If the package is private, authenticate first:
 Releases are tagged by hand and the images are built locally; only the cheap
 asset packaging stays in CI:
 
-- **tag push** (`v16-<base>-r<N>`, the release identity) →
+- **tag push** (`v<blocks>-<base>-r<N>`, the release identity) →
   [`.github/workflows/release.yml`](.github/workflows/release.yml) attaches
   `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`
   to the GitHub Release (about a minute; no compiler, no Docker).  The tag is
-  checked against `release.json.release` and the `v16-<base>-r<N>` shape.
+  checked against `release.json.release` and the `v<blocks>-<base>-r<N>` shape.
 - **local image build** → `scripts/build-containers.sh --rocm "7.14.1 10.1"
   --push` builds and pushes the images.  Run it before or after the tag; it
   reads the tree from `release.json`, not from the tag.
@@ -163,14 +163,14 @@ To cut a release after a re-base or a block amendment:
 ```bash
 # refresh the artifact hashes and stamp the release name (the git tag is the
 # release identity; it MUST equal release.json.release)
-./scripts/make-release.sh --release v16-<base-sha>-r<N>
+./scripts/make-release.sh --release v<blocks>-<base-sha>-r<N>
 # or, on a re-base, set all four metadata values together:
 ./scripts/make-release.sh \
-  --release v16-<base-sha>-r1 \
+  --release v<blocks>-<base-sha>-r1 \
   --base <new-base-sha> \
   --base-tree "$(git -C ~/llama.cpp rev-parse <new-base-sha>^{tree})" \
-  --tip  <canonical-block-15-tip> \
-  --tree "$(git -C ~/llama.cpp rev-parse <canonical-block-15-tip>^{tree})"
+  --tip  <canonical-tip> \
+  --tree "$(git -C ~/llama.cpp rev-parse <canonical-tip>^{tree})"
 
 ./scripts/validate-set.sh          # strict apply + tree/hash/checksum gate
 
@@ -181,16 +181,16 @@ To cut a release after a re-base or a block amendment:
 ./scripts/build-containers.sh --rocm "7.14.1 10.1" --push
 
 # freeze it: annotated tag on the commit that carries this release.json
-git tag -a v16-<base-sha>-r<N> -m "rdna-boosts v16-<base-sha>-r<N>"
-git push origin main v16-<base-sha>-r<N>
+git tag -a v<blocks>-<base-sha>-r<N> -m "rdna-boosts v<blocks>-<base-sha>-r<N>"
+git push origin main v<blocks>-<base-sha>-r<N>
 ```
 
-**Release naming.**  One tag per release, `v16-<base-sha>-r<N>`, where `N` is
+**Release naming.**  One tag per release, `v<blocks>-<base-sha>-r<N>` (e.g. the V2.0 release is `v12-097cf33d9-r51`), where `N` is
 that base's revision: `r1` is the release that lands the re-base and `r2`,
 `r3`, ... each later release on the same base.  `release.json.release` must be
 exactly the tag — `validate.yml` checks the manifest, and
 [`release.yml`](.github/workflows/release.yml) refuses to package a tag that
-disagrees with it or does not match `v16-<base-sha>-r<N>`.  Only a **tag push**
+disagrees with it or does not match `v<blocks>-<base-sha>-r<N>`.  Only a **tag push**
 cuts a release; the local image build never bumps the revision and never
 creates a Release.  (The historical `v16-790cf51aa` tag predates the explicit
 `-rN`; it is the `r1` of its base.  Two revisions were never tagged —

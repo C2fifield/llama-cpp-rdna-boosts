@@ -21,7 +21,7 @@
 # On a re-base all four metadata values change together:
 #   --base      <new fork point>          (upstream commit the set applies to;
 #                                          use the SHORT form, as used in the
-#                                          v16-<base>-r<N> release tag)
+#                                          v<blocks>-<base>-r<N> release tag)
 #   --base-tree <git rev-parse BASE^{tree}>
 #   --tip       <canonical fork block-15 commit>
 #   --tree      <git rev-parse TIP^{tree}>
@@ -35,7 +35,7 @@
 #           --base-tree "$(git -C ~/llama.cpp rev-parse a55e952b8^{tree})" \
 #           --tip <canonical-block-15-tip> \
 #           --tree "$(git -C ~/llama.cpp rev-parse <canonical-block-15-tip>^{tree})" \
-#           --release v16-a55e952b8-r1
+#           --release v12-097cf33d9-r51
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

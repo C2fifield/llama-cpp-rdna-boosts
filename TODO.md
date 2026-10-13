@@ -6,10 +6,13 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v16-a55e952b8-r49`, 2026-10-11):** the delivery is the **16-patch set** against
-fork point **`a55e952b8`**, canonical block-15 tip `f0a74f4cc`, net tree
-**`45ba5da24f872c5f9aa1b70b85470b5eb4d98395`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r49 adds the mmap host-memory reclaim (block 06): the loader no longer faults the
+**Current state (release `v12-097cf33d9-r51`, 2026-10-13):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `15d62da2f`, net tree
+**`48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  V2.0 re-organized the former 16-block set by concern and moved each concern into a
+self-contained function/file; the applied tree is behaviour-preserving (all same-seed gates byte-identical
+to r50).  See `WORKLOG.md` 261013.001 (r51).  **Previous (16-block) state:** r49 added the mmap
+host-memory reclaim (block 06): the loader no longer faults the
 whole model file in up front and it unmaps each tensor's mapping range right after the copy to its device
 buffer, so a `-ncmoe` load never holds the full mapping and the pinned host master at once
 (`LLAMA_LOAD_RELEASE_MMAP=0` is the kill-switch; peak VmRSS on Qwen3.8-Flash-Next-IQ4_NL `-ncmoe 40`,
@@ -91,7 +94,7 @@ here (the grid-pad / `nrows`-guard and `batched_reduce` hypotheses are excluded)
 rides on (scheduler routed-expert rebalance / merged per-layer MoE split, Meta delegation, the pinned
 `ROCm_Host` loader, `stage_*`/preflight), under the `--moe-cache-mib` + `--host-experts` path.
 Reproduce: `build/bin/test-llama-archs -a deepseek2 -s 42` vs the upstream base (passes).
-Full diagnosis: `wip/patch-block-reorg/PHASE1-STATUS.md` §15.
+Full diagnosis: `archive/work/patch-block-reorg/PHASE1-STATUS.md` §15.
 
 ### 55. Remove the full pinned `ROCm_Host` master when `--host-experts pool` is on
 
@@ -492,7 +495,7 @@ Give it a deterministic repro (e.g. `compute-sanitizer`, or the `GGML_CUDA_SPLIC
 
 ## Merge hygiene — finer block-06 dispatch split (r50 follow-up)
 
-**SUPERSEDED by `wip/patch-block-reorg/` (seeded 2026-10-12).**  The r50 finer split is now one part of a
+**SUPERSEDED by `archive/work/patch-block-reorg/` (seeded 2026-10-12).**  The r50 finer split is now one part of a
 larger, fundamental re-organisation of the whole block taxonomy (the r50 lateral move into block 15 is
 reversed by the target map in `MIGRATION-MAP.md`).  The spec below is retained as the hunk-level detail
 for the `ggml_cuda_try_fuse` / `ggml-backend-meta.cpp` moves; the live campaign and the decisions it

@@ -1,8 +1,11 @@
 # `patch-block-reorg` — fundamental re-organisation of the block taxonomy
 
-**Status: PHASE 1 COMPLETE / PHASE 2 ACTIVE (2026-10-12).** Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's explicit go-ahead (see the WIP and promotion rules in
-`AGENTS.md`).
+**Status: PROMOTED / ARCHIVED (2026-10-13) -- NOT part of the delivery, kept as the execution record.**
+Both phases are complete and the result shipped as release **`v12-097cf33d9-r51`** (12 blocks; the
+Phase-1 block re-org + the Phase-2 self-contained refactor).  The authoritative record of the shipped
+state is `WORKLOG.md` 261013.001 (r51), `release.json`, `patches/` and `MANIFESTS.md`; the dated
+execution history (Phase-1/Phase-2 status, checkpoints `pin/v2-phase2-ckpt1..14`, old->new mapping,
+per-file region map, rebase-resilience rationale) is this directory.
 
 > **This is a fundamental re-org, not another r50 micro-fix.** The archived r50 merge-hygiene work
 > (`archive/work/r50-merge-hygiene/`) was a *narrow, tree-invariant redistribution* whose only goal was to

@@ -1,5 +1,69 @@
 # WORKLOG - dated delivery records
 
+## 261013.001 (r51) -- V2.0: the 16-block set re-cut as a 12-block set (block-boundary re-org + self-contained refactor)
+
+**Delivery change: `release.json` now names a 12-block set at base `097cf33d9`, release
+`v12-097cf33d9-r51`, net tree `48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1` (the previous release was the
+16-block `v16-097cf33d9-r50`, tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`).**  The applied tree is
+**behaviour-preserving but not tree-identical**: Phase 1 redistributed each concern into its owning
+block, and Phase 2 moved each concern into a self-contained function/file so a future upstream re-base
+collides with a small call point rather than a rewritten shared function.  All same-seed gates are
+byte-identical to r50.
+
+**The 12 blocks.**  `v12` is a clean break in numbering:
+
+| # | subject | concern |
+|---|---|---|
+| 00 | foundation | band-uniformity, Meta-wrapper, allocator fixes (old-00 + old-05 + old-07 + old-09a + the old-06 readback + old-15 W4) |
+| 01 | hybrid HIP all-reduce (RDNA4-gated) | old-12 |
+| 02 | adaptive MTP draft depth | old-01 |
+| 03 | chunked gated-delta-net prefill | old-02 |
+| 04 | BF16 KV cache + native-BF16 FA | old-03 |
+| 05 | FA band / native quantized K-V / derived kq mask | old-04 FA + old-15 FA |
+| 06 | MMB quantized prefill GEMM | old-08 MMB |
+| 07 | k-quant boosts (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
+| 08 | fused kernels (old-08 fusions + old-13 fused MoE + old-15 PR57/63) | old-08 + old-13 + old-15 |
+| 09 | host-resident MoE (iface, scheduler, Meta, slab, cache engine) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena |
+| 10 | qwen4exp (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy |
+| 11 | campaign remainder (CPU wins, backend iface fills, DFlash, FA build grouping) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
+
+**Phase-2 refactor (self-contained concerns; `ggml_cuda_try_fuse` and the FA/quant hubs).**  Landed on
+the `v2-phase2` chain and folded into the owning blocks, each validated before re-homing:
+
+- the whole `ggml_cuda_try_fuse` extraction (2244 -> 1064 lines at the function; every delivery arm a
+  guarded one-line call to a concern file);
+- `mmvq-vecdot.cuh` (shared vec-dot/VDR selectors) and `mmvq-moe.cu` (the dedicated MUL_MAT_ID MoE
+  kernel + launch; `mmvq.cu` 3745 -> 3368 lines);
+- `fattn-rdna.cuh` (the FA native-KV/band predicate bodies out of `fattn-common.cuh`, which drops
+  2421 -> 2007 lines);
+- named helpers for the FA tensor-parallel hint and the host-expert policy;
+- the `ggml-cuda.cu` split: **9819 -> 6370 lines**, into `ggml-cuda-try-fuse.cu` (2209),
+  `ggml-cuda-slab.cu` (1115), `ggml-cuda-moe-cache-hooks.cu` (237) and `ggml-cuda-arena.cu` (57).
+
+The dated Phase-1/Phase-2 execution record, checkpoints 1-14 (`pin/v2-phase2-ckpt*`), the old->new
+mapping and the per-file region map are archived at `archive/work/patch-block-reorg/`.
+
+**Validation (gfx1201, 3x R9700).**
+- per-block fresh `all` build: **12/12** (`scripts/gate-per-block-build.sh`);
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `48cf3e81...`);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS;
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (every quant coherent, 0 `////`);
+- 4B / qwen4exp dense+sparse / 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
+  identical;
+- 35B-A3B draft-MTP (`-sm tensor -c 16384 -n 3000`, bf16 KV): acceptance **0.646** (758/1173, mean len
+  2.94, acc/pos 0.801/0.632/0.506), **142.1 t/s** vs plain **100.5 t/s** (+41 %);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B.
+
+**Release artifacts.**  The personal fork (`git@github.com:stew675/llama.cpp.git`) `rdna-boosts` branch
+is refreshed from a clean `097cf33d9` apply (`--force-with-lease`, tip `7b28073be`, tree verified equal
+to `release.json`).  The ROCm container images are rebuilt and pushed locally for **7.14.1** and
+**10.1** (`full`/`light`/`server`, the `-097cf33d9` immutable tags and `latest` on 10.1) via
+`scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune` (15 tags, all confirmed in GHCR).
+
+**Known open defects (pre-existing, not reorg artifacts):** `TODO.md` #56/#57; the r2-style per-block
+sweep for the upstream `MUL_MAT_ID` `dup=1` F16 bug tracked in `wip/upstream-mul-mat-id-dup/`.
+
 ## 261012.007 (wip, handoff) -- patch-block-reorg: cold-start handover + next-session prompt; 14-block plan approved
 
 **No delivery change.**  Phase 1 of the V2.0 re-org is checkpointed and handed off for a fresh session:
