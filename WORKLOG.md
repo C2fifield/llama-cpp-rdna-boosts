@@ -48,6 +48,9 @@ and `wip/meta-segmented-upload-async/`; `TODO.md` #58 resolved, the parked meta-
 re-pointed at the perf follow-up, item 5(b) closed, and `wip/CAMPAIGNS.md` updated (item #55 /
 `host-expert-master-drop/` stays open, deferred).
 
+**Container images:** not built in-session; deferred to a separate local
+`scripts/build-containers.sh --rocm "7.14.1 10.1"` run (the r53 precedent).
+
 ## 261013.003 (r53) -- PR #144 DFlash multi-sequence F1 folded into blocks 00/10/11, #138 fa-stage-prealloc into 09/10; upstream MUL_MAT_ID dup fix published
 
 **Release `v12-097cf33d9-r53`** (base `097cf33d9`, canonical tip `4b27ac644`, net tree

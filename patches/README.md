@@ -20,7 +20,8 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > two changed blocks are **09** (`ggml-backend-meta.cpp` segmented async/sync upload + `llama-model.cpp`
 > gemma4 guard removed) and **11** (`src/llama.cpp` DFlash2 selector guard).  Known cost: the sync
 > per-op segmented upload puts that gemma4 config at ~9 t/s; the async follow-up is
-> `wip/meta-segmented-upload-async/`.  See `../WORKLOG.md` 261013.004 (r54).
+> `wip/meta-segmented-upload-async/`.  **No Docker in-session for r54** (deferred to a separate local
+> run).  See `../WORKLOG.md` 261013.004 (r54).
 >
 > **Previous release `v12-097cf33d9-r53` (2026-10-13) -- PR #144 DFlash multi-sequence F1 + #138 fa-stage-prealloc:**
 > canonical tip `4b27ac644`, net tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`; strict **12/12**

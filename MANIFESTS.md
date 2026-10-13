@@ -13,7 +13,7 @@ pre-existing `dup=1` fails as r53), DFlash2 `-sm tensor` clean rejection.  r54 f
 fixes into their owning blocks: **block 11** (a clean DFlash2 `-sm tensor` rejection; real fix re-seeded
 as `wip/dflash-meta-split-impl/`) and **block 09** (segmented host-resident expert upload fixed, gemma4
 `-sm tensor` rejection lifted; async perf follow-up `wip/meta-segmented-upload-async/`).  **Docker for
-r54: pending.**  The r54 record is `WORKLOG.md` 261013.004; r53 is `WORKLOG.md` 261013.003 (release
+r54: deferred to a separate local run** (not built in-session; the r53 precedent).  The r54 record is `WORKLOG.md` 261013.004; r53 is `WORKLOG.md` 261013.003 (release
 `v12-097cf33d9-r53`, tip `4b27ac644`, tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); the r52 fold is
 `WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree
 `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); the V2.0 re-org and its r51 validation are
