@@ -85,3 +85,19 @@ run.  That is the strongest candidate for making pool mode genuinely small.
   `WORKLOG.md` 261011.017 (r49).
 - `ENVIRONMENT.md` §1.2.1; `patches/README.md` block 06; issue #139.
 - `ggml/src/ggml-cuda/moe-expert-cache.cu` (`g_pool_*`, `moe_host_pool_on`, the "full pinned master kept" log).
+
+## r53 re-confirmation (2026-10-13, WIP-cleanup session)
+
+Re-confirmed on the r54 parent tree (r53, canonical tip `4b27ac644`), 2x R9700, 35B-A3B UD-Q4_K_M
+`-ncmoe 40`, `memwatch.sh` peak `RssShmem`:
+
+| config | peak `RssShmem` |
+|---|---:|
+| default `pinned` | **18776 MiB** |
+| `--host-experts pool` (MIB unset = 25 %) | **18776 MiB** (identical) |
+
+The source still logs `Phase 2b; full pinned master kept`.  So the r49 finding holds on r53: the pool
+is a bounce tier, not a memory win, and the full pinned master is the remaining footprint.  This
+campaign was **deferred to a dedicated session** in the 2026-10-13 cleanup (the four-campaign
+handover, `archive/docs/HANDOVER-2026-10-13-wip-cleanup.md`); the reader enumeration, hypotheses and
+gates above are the starting point.
