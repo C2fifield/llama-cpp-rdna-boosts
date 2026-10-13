@@ -4,6 +4,17 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt3 — `v2-phase2-ckpt3.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt3` = `463c1d598` |
+| branch tip | `v2-phase2` = `463c1d598` |
+| block 10 (amended) | `952aa59f7` |
+
+Adds over ckpt2: routed weighted-down (`mmvq.cu`) and the MUL_MAT pair (`mmq.cu`).  See
+`../PHASE2-STATUS.md` §7b.
+
 ## ckpt2 — `v2-phase2-ckpt2.bundle`
 
 | | |

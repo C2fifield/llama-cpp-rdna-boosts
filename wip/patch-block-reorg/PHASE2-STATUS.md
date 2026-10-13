@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`d86bcf088`** (block 11 rebased) |
-| block 10 (amended) | **`fbed3f4c0`** |
+| Phase-2 branch | `v2-phase2` = **`463c1d598`** (block 11 rebased) |
+| block 10 (amended) | **`952aa59f7`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -127,10 +127,11 @@ Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 <delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
 tree delta is exactly the intended extraction.
 
-**Checkpoint 2** (`checkpoints/v2-phase2-ckpt2.bundle`, tag `pin/v2-phase2-ckpt2`): `v2-phase2` =
-`d86bcf088`, block 10 = `fbed3f4c0`.  **Checkpoint 1** (`checkpoints/v2-phase2-ckpt1.bundle`, tag
-`pin/v2-phase2-ckpt1`): `v2-phase2` = `d8ad56737`, block 10 = `1fa36b3ea`.  Restore instructions in
-`checkpoints/README.md`.
+**Checkpoint 3** (`checkpoints/v2-phase2-ckpt3.bundle`, tag `pin/v2-phase2-ckpt3`): `v2-phase2` =
+`463c1d598`, block 10 = `952aa59f7`.  **Checkpoint 2** (`checkpoints/v2-phase2-ckpt2.bundle`, tag
+`pin/v2-phase2-ckpt2`): `v2-phase2` = `d86bcf088`, block 10 = `fbed3f4c0`.  **Checkpoint 1**
+(`checkpoints/v2-phase2-ckpt1.bundle`, tag `pin/v2-phase2-ckpt1`): `v2-phase2` = `d8ad56737`, block
+10 = `1fa36b3ea`.  Restore instructions in `checkpoints/README.md`.
 
 ## 7b. Batching pass 1 — conv/norm, decode/norm folds, MWR (2026-10-12, session 2)
 
@@ -161,11 +162,20 @@ dispatch the gate `MUL_MAT` before the fused norm.  Kill-switch A/Bs (`GGML_CUDA
 
 `ggml_cuda_moe_weighted_reduction_try_fuse` (matcher already portable in `ggml-moe-weighted-reduction.h`).
 
+### Cluster D — routed weighted-down + MUL_MAT pair
+
+- `ggml_cuda_mul_mat_id_weighted_down_try_fuse` → `mmvq.cu` (the qwen4exp 10-expert weighted sum).
+- `ggml_cuda_mul_mat_q_pair_try_fuse` → `mmq.cu` (the gate+up / shared-expert pair), with the `cc`
+  lookup moved into the helper.
+
+All of A–D: 4B + qwen4exp dense/sparse + 35B-A3B greedy text **identical to r50**; per-block `all`
+**12/12**; prefill-logit **0.000707 / 98.755 %**.
+
 `try_fuse` is now mostly an ordered list of guarded one-line calls.  Remaining block-10-owned arms:
-`weighted_down`, `mul_mat_q_pair`, `swiglu_mmq` (routed + dense), `ssm_conv_in`, `ssm_prescan`,
-`moe_down_fold`, dual-output mmvq, `scale_unary`, the `hc_comb` cluster and the `hc` gate-mix arm.
-Then the 5 block-09-owned arms (`glu_q8_1`, `shared_expert`, `l2_norm_pair`, `gate_beta_verify`,
-`shexp_down_gate`) and the 3 block-08-owned arms (`gdn_gate`, `scale_unary`, `topk_moe`).
+`swiglu_mmq` (routed + dense), `ssm_conv_in`, `ssm_prescan`, `moe_down_fold`, dual-output mmvq, the
+`hc_comb` cluster and the `hc` gate-mix arm.  Then the 5 block-09-owned arms (`glu_q8_1`,
+`shared_expert`, `l2_norm_pair`, `gate_beta_verify`, `shexp_down_gate`) and the 3 block-08-owned arms
+(`gdn_gate`, `scale_unary`, `topk_moe`).
 
 ## 8. Scale of the remaining work
 
