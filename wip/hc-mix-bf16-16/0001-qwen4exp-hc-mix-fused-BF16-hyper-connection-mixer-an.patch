@@ -1,0 +1,240 @@
+From 4387e6526102c2046bef9fcc8d10dbf1f1b5d289 Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Tue, 13 Oct 2026 15:55:28 +0000
+Subject: [PATCH] qwen4exp/hc-mix: fused BF16 hyper-connection mixer and
+ combine up to 16 tokens
+
+Several concurrent speculative streams verify 9-16 tokens per step (4 users x (1 + 3 drafts) = 16).
+Above 8 tokens the mixer fell back to the unfused BF16 chain (generic mmvf, ~118 us per mixer vs
+~41 us fused at 8).  The BF16 mixer and the combine now serve up to HC_BF16_MAX_TOKENS = 16; the
+launcher runs a 9-16-token batch as chunks of at most 8 tokens through the existing kernels (every
+token is computed independently, so a chunk is bit-identical to one launch; a single 16-token
+instantiation was slower, ~94 us for the down/inject kernel).  The Q8_0 variant keeps 8.
+
+Bit-identical: output and first-token probabilities for prompts of exactly 4, 8, 9..16, 17, 24
+tokens match the previous build; greedy sha unchanged.  IQ3_XXS all-VRAM -sm tensor, 600-token
+greedy chats, mean of 3: 3 users 163.9 -> 169.3, 4 users 160.8 -> 168.6, 6 users 146.9 -> 158.6;
+1-2 users unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cuda/hc-mix.cu | 103 ++++++++++++++++++++---------------
+ src/models/qwen4exp.cpp      |  18 ++++--
+ 2 files changed, 72 insertions(+), 49 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/hc-mix.cu b/ggml/src/ggml-cuda/hc-mix.cu
+index 2394d8163..89f349287 100644
+--- a/ggml/src/ggml-cuda/hc-mix.cu
++++ b/ggml/src/ggml-cuda/hc-mix.cu
+@@ -30,6 +30,12 @@
+ // same bound; a verify batch is --spec-draft-n-max + 1 tokens and the
+ // greedy-purity guarantee is defined over that band (GREEDY-PURITY.md).
+ static constexpr int64_t HC_FUSED_MAX_TOKENS = 8;
++// The BF16 variant (Flash-Next GSQ-RCO) and the combine serve a wider band: several concurrent speculative streams
++// verify 9-16 tokens per step, where the unfused chain is the generic mmvf (~1.5x the fused time per layer).  The
++// BF16 mixer runs such a batch as chunks of HC_FUSED_MAX_TOKENS tokens; every token is computed independently with
++// the K-only block sizes of the unfused chain, so the band stays width-invariant (src/models/qwen4exp.cpp gates on
++// the same bound).
++static constexpr int64_t HC_BF16_MAX_TOKENS = 16;
+ 
+ 
+ // Grouped RMSNorm over the hc streams plus the gamma scale (w_norm). One
+@@ -888,7 +894,7 @@ static void ggml_cuda_op_hc_mix_bf16(ggml_backend_cuda_context & ctx, ggml_tenso
+     const int64_t hc_lr    = w_down->ne[1];
+     const int64_t out_n    = n_embd + (w_inject ? hc : 0);
+ 
+-    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS);
++    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS);
+     GGML_ASSERT(hc_lr == 320);                       // the up kernel is the K = 320 (160-thread) mmvf block
+     GGML_ASSERT(hc_dim % 2 == 0 && n_embd % 32 == 0);
+     GGML_ASSERT(x->ne[1] == hc && x->nb[2] == hc_dim*sizeof(float));
+@@ -928,49 +934,60 @@ static void ggml_cuda_op_hc_mix_bf16(ggml_backend_cuda_context & ctx, ggml_tenso
+                 (const float *) x->data, (const float *) w_norm->data, xn, (block_q8_1 *) nullptr, (int) n_embd, eps,
+                 hc_dim, hc_dim, (int64_t) 0);
+     }
+-    {
+-        const int nrows_inject = w_inject ? hc : 0;
+-        const ggml_cuda_kernel_launch_params launch_params = {dim3(hc_lr + nrows_inject), dim3(256), 0, stream};
++    // A batch wider than the kernels' template band (9-16 tokens: several concurrent speculative streams) runs as
++    // chunks of at most HC_FUSED_MAX_TOKENS tokens.  Every token is computed independently (its own xn / lo / output
++    // rows, located by the per-token strides), so a chunk is bit-identical to the same tokens in one launch, and the
++    // 8-token kernels are faster than one instantiation for 16 (fewer registers per token in flight).
++    for (int64_t t0 = 0; t0 < n_tokens; t0 += HC_FUSED_MAX_TOKENS) {
++        const int64_t nt_c      = std::min<int64_t>(HC_FUSED_MAX_TOKENS, n_tokens - t0);
++        const float * xn_c      = xn + t0*hc_dim;
++        float       * lo_c      = lo + t0*hc_lr;
++        float       * inject_c  = inject_d ? inject_d + t0*inject_stride_t : nullptr;
++        float       * mixed_c   = dst_d + t0*mixed_stride_t;
++        {
++            const int nrows_inject = w_inject ? hc : 0;
++            const ggml_cuda_kernel_launch_params launch_params = {dim3(hc_lr + nrows_inject), dim3(256), 0, stream};
+ #define HC_BF16_DOWN(NT) ggml_cuda_kernel_launch(hc_mix_bf16_down_inject<NT>, launch_params, \
+-        (const nv_bfloat16 *) w_down->data, w_inject ? (const nv_bfloat16 *) w_inject->data : nullptr, xn, lo, \
+-        inject_d, (int) (hc_dim/2), (int) hc_lr, hc_dim, hc_lr, inject_stride_t)
+-        switch (n_tokens) {
+-            case 1: HC_BF16_DOWN(1); break;
+-            case 2: HC_BF16_DOWN(2); break;
+-            case 3: HC_BF16_DOWN(3); break;
+-            case 4: HC_BF16_DOWN(4); break;
+-            case 5: HC_BF16_DOWN(5); break;
+-            case 6: HC_BF16_DOWN(6); break;
+-            case 7: HC_BF16_DOWN(7); break;
+-            case 8: HC_BF16_DOWN(8); break;
+-            default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) n_tokens);
+-        }
++            (const nv_bfloat16 *) w_down->data, w_inject ? (const nv_bfloat16 *) w_inject->data : nullptr, xn_c, lo_c, \
++            inject_c, (int) (hc_dim/2), (int) hc_lr, hc_dim, hc_lr, inject_stride_t)
++            switch (nt_c) {
++                case 1: HC_BF16_DOWN(1); break;
++                case 2: HC_BF16_DOWN(2); break;
++                case 3: HC_BF16_DOWN(3); break;
++                case 4: HC_BF16_DOWN(4); break;
++                case 5: HC_BF16_DOWN(5); break;
++                case 6: HC_BF16_DOWN(6); break;
++                case 7: HC_BF16_DOWN(7); break;
++                case 8: HC_BF16_DOWN(8); break;
++                default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) nt_c);
++            }
+ #undef HC_BF16_DOWN
+-    }
+-    {
+-        // GGML_HC_UP_V2=0: the original row-at-a-time kernel (v2 is bit-identical)
+-        static const bool up_v2 = !getenv("GGML_HC_UP_V2") || atoi(getenv("GGML_HC_UP_V2")) != 0;
+-        // at most 448 blocks of 4 warps (the gfx1201 grid-size stall, as mul_mat_vec_f_vb); v2: 256 blocks (flat from
+-        // 128 to 320 at n_embd 2560, slower above), at most HC_UP2_MAXR rows per block
+-        const int nblk = up_v2 ? (int) std::max<int64_t>(std::min<int64_t>(n_embd, 256), (n_embd + HC_UP2_MAXR - 1)/HC_UP2_MAXR)
+-                               : (int) std::min<int64_t>(n_embd, 448);
+-        const ggml_cuda_kernel_launch_params launch_params = {dim3(nblk), dim3(hc*32), 0, stream};
+-#define HC_BF16_UP(NT) do { if (up_v2) { ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse2<NT>, launch_params, \
+-        (const nv_bfloat16 *) w_up->data, lo, xn, dst_d, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } else { \
+-        ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse<NT>, launch_params, \
+-        (const nv_bfloat16 *) w_up->data, lo, xn, dst_d, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } } while (0)
+-        switch (n_tokens) {
+-            case 1: HC_BF16_UP(1); break;
+-            case 2: HC_BF16_UP(2); break;
+-            case 3: HC_BF16_UP(3); break;
+-            case 4: HC_BF16_UP(4); break;
+-            case 5: HC_BF16_UP(5); break;
+-            case 6: HC_BF16_UP(6); break;
+-            case 7: HC_BF16_UP(7); break;
+-            case 8: HC_BF16_UP(8); break;
+-            default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) n_tokens);
+         }
++        {
++            // GGML_HC_UP_V2=0: the original row-at-a-time kernel (v2 is bit-identical)
++            static const bool up_v2 = !getenv("GGML_HC_UP_V2") || atoi(getenv("GGML_HC_UP_V2")) != 0;
++            // at most 448 blocks of 4 warps (the gfx1201 grid-size stall, as mul_mat_vec_f_vb); v2: 256 blocks (flat from
++            // 128 to 320 at n_embd 2560, slower above), at most HC_UP2_MAXR rows per block
++            const int nblk = up_v2 ? (int) std::max<int64_t>(std::min<int64_t>(n_embd, 256), (n_embd + HC_UP2_MAXR - 1)/HC_UP2_MAXR)
++                                   : (int) std::min<int64_t>(n_embd, 448);
++            const ggml_cuda_kernel_launch_params launch_params = {dim3(nblk), dim3(hc*32), 0, stream};
++#define HC_BF16_UP(NT) do { if (up_v2) { ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse2<NT>, launch_params, \
++            (const nv_bfloat16 *) w_up->data, lo_c, xn_c, mixed_c, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } else { \
++            ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse<NT>, launch_params, \
++            (const nv_bfloat16 *) w_up->data, lo_c, xn_c, mixed_c, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } } while (0)
++            switch (nt_c) {
++                case 1: HC_BF16_UP(1); break;
++                case 2: HC_BF16_UP(2); break;
++                case 3: HC_BF16_UP(3); break;
++                case 4: HC_BF16_UP(4); break;
++                case 5: HC_BF16_UP(5); break;
++                case 6: HC_BF16_UP(6); break;
++                case 7: HC_BF16_UP(7); break;
++                case 8: HC_BF16_UP(8); break;
++                default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) nt_c);
++            }
+ #undef HC_BF16_UP
++        }
+     }
+ }
+ 
+@@ -1189,7 +1206,7 @@ void ggml_cuda_op_hc_mix(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+ // `inject` is often a view into the mix output, so it is read with its own
+ // per-token stride.
+ // Token dimension: the op serves the whole decode/verify band, nt <=
+-// HC_FUSED_MAX_TOKENS (the graph gates in src/models/qwen4exp.cpp use the same
++// HC_BF16_MAX_TOKENS (the graph gates in src/models/qwen4exp.cpp use the same
+ // bound), which is what makes the band width-invariant.
+ static __global__ void hc_combine_kernel(
+         const float * residual, const float * block_out, const float * inject,
+@@ -1238,7 +1255,7 @@ bool ggml_cuda_hc_combine_mix_fusable(const ggml_tensor * comb, const ggml_tenso
+     const int     hc       = ggml_get_op_params_i32(comb, 0);
+     return mix->src[2]->type == GGML_TYPE_BF16 && ggml_get_op_params_i32(mix, 0) == hc && hc == 4 &&
+         residual->type == GGML_TYPE_F32 && block_out->type == GGML_TYPE_F32 && inject->type == GGML_TYPE_F32 &&
+-        comb->type == GGML_TYPE_F32 && residual->ne[1] == hc && n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS &&
++        comb->type == GGML_TYPE_F32 && residual->ne[1] == hc && n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS &&
+         block_out->ne[0] == n_embd && inject->ne[0] == hc &&
+         (block_out->ne[1] == n_tokens || block_out->ne[1] == 1) && (inject->ne[1] == n_tokens || inject->ne[1] == 1) &&
+         residual->nb[1] == n_embd*sizeof(float) && residual->nb[2] == n_embd*hc*sizeof(float) &&
+@@ -1266,7 +1283,7 @@ void ggml_cuda_op_hc_combine(ggml_backend_cuda_context & ctx, ggml_tensor * dst)
+     const int64_t n_embd   = residual->ne[0];
+     const int64_t n_tokens = residual->ne[2];
+ 
+-    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS);  // decode/verify band
++    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS);  // decode/verify band (the BF16 models' wider one)
+     GGML_ASSERT(residual->ne[1] == hc);
+     GGML_ASSERT(block_out->ne[0] == n_embd);
+     GGML_ASSERT(inject->ne[0] == hc);
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index d39d5ea8c..e76f29ada 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -25,12 +25,16 @@
+ #endif
+ 
+ // Upper bound of the decode/verify band served by the fused hyper-connection ops
+-// (ggml_cuda_op_hc_mix / _hc_combine, which assert the same bound - HC_FUSED_MAX_TOKENS
+-// in ggml-cuda/hc-mix.cu). A verify batch is --spec-draft-n-max + 1 tokens and the
++// (ggml_cuda_op_hc_mix, which asserts the same bound - HC_FUSED_MAX_TOKENS in
++// ggml-cuda/hc-mix.cu; the BF16 mixer and the combine use HC_BF16_MAX_TOKENS below). A verify batch is --spec-draft-n-max + 1 tokens and the
+ // greedy-purity guarantee is defined over that band (GREEDY-PURITY.md), so routing the
+ // whole band through the fused path is what keeps decode and verify bit-identical; the
+ // prefill chunks keep the unfused chain (mmq-era numerics, untouched).
+ static constexpr int64_t HC_FUSED_MAX_TOKENS = 8;
++// The BF16 fused mixer and the combine serve up to HC_BF16_MAX_TOKENS (the same constant in hc-mix.cu): several
++// concurrent speculative streams verify 9-16 tokens per step, and the fused kernels replay the unfused BF16 chain for
++// every token at any width in that band.
++static constexpr int64_t HC_BF16_MAX_TOKENS = 16;
+ 
+ // The same band for the QSA decode arm policy: the "dense decode below the arch crossover"
+ // arm must not be gated on n_tokens == 1, or a W=1 decode and a W=(--spec-draft-n-max + 1)
+@@ -667,7 +671,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+     const int64_t hc_dim = hc * n_embd;
+     const int64_t nt     = x->ne[2];
+ 
+-    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS): fuse the whole mixer - grouped
++    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS, HC_BF16_MAX_TOKENS for the BF16 mixer): fuse the whole mixer - grouped
+     // RMSNorm, gamma scale, both LoRA products with the silu/sigmoid gating, the
+     // stream collapse AND the inject product - into one dispatch; the model views the
+     // mixed and inject outputs out of the one result. Serving the whole band (not just
+@@ -689,7 +693,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+     // nt == 0 appears in the reservation-only graphs (the old nt == 1 gate excluded them).
+     // The band covers decode AND short prefill chunks: a <= HC_FUSED_MAX_TOKENS-token batch
+     // cannot be told apart from a verify batch, and both must use the decode arithmetic.
+-    if (nt > 0 && nt <= HC_FUSED_MAX_TOKENS && cparams.fused_hc_mix && fused_ok) {
++    if (nt > 0 && nt <= (fused_bf16 ? HC_BF16_MAX_TOKENS : HC_FUSED_MAX_TOKENS) && cparams.fused_hc_mix && fused_ok) {
+         // w_inject == nullptr only for the head call (il = -1): no tail
+         ggml_tensor * dst_t = ggml_hc_mix(ctx0, x, w_norm, w_down, w_up, w_inject,
+                 hc, hparams.f_norm_rms_eps);
+@@ -788,14 +792,16 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
+     const int64_t hc = hparams.dsv4_hc_mult;
+     const int64_t nt = residual->ne[2];
+ 
+-    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS): fuse the whole residual
++    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS, HC_BF16_MAX_TOKENS for a BF16-mixer model): fuse the whole residual
+     // combine into one dispatch, so a verify batch runs the same per-token
+     // arithmetic as a single-token decode (see HC_FUSED_MAX_TOKENS above).
+     // The prefill path keeps the unfused chain (its mmq-era numerics are
+     // irrelevant here - combine is elementwise - but the chain must stay
+     // identical for the prefill gates).
+     // nt == 0: reservation-only graph (see build_hc_mix)
+-    if (nt > 0 && nt <= HC_FUSED_MAX_TOKENS && cparams.fused_hc_combine) {
++    // a BF16-mixer model (its mixers run the fused op up to HC_BF16_MAX_TOKENS) fuses the combine over the same band
++    const bool bf16_hc = model.hc_head_down != nullptr && model.hc_head_down->type == GGML_TYPE_BF16;
++    if (nt > 0 && nt <= (bf16_hc ? HC_BF16_MAX_TOKENS : HC_FUSED_MAX_TOKENS) && cparams.fused_hc_combine) {
+         ggml_tensor * cur = ggml_hc_combine(ctx0, residual, block_out, inject, hc);
+         cb(cur, "hc_combine", il);
+         return cur;
+-- 
+2.53.0
+
