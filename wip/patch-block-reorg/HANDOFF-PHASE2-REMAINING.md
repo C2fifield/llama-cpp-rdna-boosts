@@ -10,16 +10,16 @@ Read this first, then `PHASE2-STATUS.md` (the dated Phase-2 log — it has the p
 
 - **Phase 1 is complete** at tag `v2-phase1` = `a40841e1e` (12 blocks 00–11; tree byte-identical to the
   published delivery `af0595360`).
-- **Phase 2 is in progress** on branch **`v2-phase2`** = **`18a2fd0f8`** (a re-cut of Phase 1 with the
+- **Phase 2 is in progress** on branch **`v2-phase2`** = **`3802688c1`** (a re-cut of Phase 1 with the
   Phase-2 refactors folded into the owning blocks).
 - **Done:** the whole `ggml_cuda_try_fuse` extraction (work item 1 — `try_fuse` 2244 → **1064** lines,
   the rest being upstream arms); work item 2 (MMQ `J` selection was already self-contained); work item 3
   (steps 1–2 the RDNA `nwarps`/rpb policy; **step 3 the MoE kernel file split** `mmvq-moe.cu` +
-  `mmvq-vecdot.cuh`, re-homed in block 10).
-- **Remaining:** item 4 (FA chooser), item 5 (context/loader glue), item 6 (the maintainer's
-  `ggml-cuda.cu` split), then the **V2.0 release cut**.
+  `mmvq-vecdot.cuh`); item 4 (**the FA native-KV/band predicates → `fattn-rdna.cuh`**, block 05).
+- **Remaining:** item 5 (context/loader glue), item 6 (the maintainer's `ggml-cuda.cu` split), then the
+  **V2.0 release cut**.
 - **The delivery `patches/` and `release.json` are untouched**; nothing has been pushed to the fork.
-- Checkpoints 1–8 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
+- Checkpoints 1–10 exist as tags + bundles (see §2). `v2-phase1` is the safe rollback.
 
 ## 1. What this work is
 
@@ -33,11 +33,12 @@ collides with a small call point, not a rewritten shared function. The authorita
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (tree == `af0595360`, the delivery) |
-| **Phase-2 branch** | **`v2-phase2` = `18a2fd0f8`** |
+| **Phase-2 branch** | **`v2-phase2` = `3802688c1`** |
+| block 05 (amended) | `75cb9c0b1` |
 | block 08 (amended) | `fcce5864e` |
 | block 09 (amended) | `96a7d0d16` |
-| block 10 (amended) | `fdd20f2c6` |
-| block 11 (amended) | `18a2fd0f8` |
+| block 10 (amended) | `6d6f9692e` |
+| block 11 (amended) | `3802688c1` |
 | base | `097cf33d9` (tree `30c400cc…`) |
 | delivery tip (r50) | `af0595360` / `84058162b` (tree `f102245d…`) |
 | reference build r50 | `~/llama-rebase/build-r50` |
@@ -58,7 +59,8 @@ Checkpoints (annotated tags in `~/llama.cpp`) — each also has a bundle in
 | `pin/v2-phase2-ckpt6` | `cf9c2e474` | + glu_q8_1/shared_expert; try_fuse COMPLETE |
 | `pin/v2-phase2-ckpt7` | `24ef342b3` | item 3 s1: `calc_nwarps` → `mmvq-rdna.cuh` |
 | `pin/v2-phase2-ckpt8` | `9d6730dc8` | item 3 s2: launch-param helpers → `mmvq-rdna-params.cuh` |
-| **`pin/v2-phase2-ckpt9`** | **`18a2fd0f8`** | **item 3 s3: MoE kernel → `mmvq-moe.cu` + shared selectors → `mmvq-vecdot.cuh`** |
+| `pin/v2-phase2-ckpt9` | `18a2fd0f8` | item 3 s3: MoE kernel → `mmvq-moe.cu` + shared selectors → `mmvq-vecdot.cuh` |
+| **`pin/v2-phase2-ckpt10`** | **`3802688c1`** | **item 4: FA predicates → `fattn-rdna.cuh` (block 05)** |
 
 ## 3. Done (do not redo)
 
@@ -128,18 +130,17 @@ selectors (`vec_dot_q_cuda_t`, the `GGML_CUDA_MMVQ_MOE_DENSE` guard, `get_vec_do
 not touch `mmvq*`).  Gates: 4B/qwen4exp dense+sparse/35B identical to r50, width purity PASS, prefill-logit
 0.000707 / 98.755 %, per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §9.
 
-### 4.2 Item 4 — FA `type_KV` / band / native chooser → `fattn-rdna.cuh`
+### 4.2 Item 4 — FA `type_KV` / band / native chooser → `fattn-rdna.cuh` — **DONE (ckpt10)**
 
-Current interleave (all in `fattn.cu` / `fattn-common.cuh`): the band predicate
-`ggml_cuda_fattn_band_wmma_applies`, `ggml_cuda_fattn_band_wmma_ncols1`, the native-KV type selector
-`ggml_cuda_fattn_kv_native_type`, the derived-mask reachability (`kq_mask_derivable`), and the
-`launch_fattn` branches. Target: move the predicate *bodies* into `fattn-rdna.cuh` and leave predicate
-calls in `launch_fattn`; the tile/mma **generated instances stay in the template-instance TUs** (G6 —
-never move them). Highest risk (numerics-sensitive, large gates). Owner blocks 04–07/05.
+The native-KV policy/selectors and the band-WMMA predicates moved out of `fattn-common.cuh` into
+`fattn-rdna.cuh` (429 lines; `fattn-common.cuh` 2421 → 2007), re-homed in **block 05** (the block that
+owns the FA band/native-KV/derived-mask diff).  Left inline: `launch_fattn`'s native-staging decision
+block and the dequant chunk helpers (they consume the predicates / context arena; not a clean move).
+Generated instances stay with their axis (G6).
 
-Gate: `test-backend-ops -o FLASH_ATTN_EXT` full matrix (6389 cases; also with `GGML_CUDA_FA_KV_NATIVE=0`
-and `GGML_HIP_FA_BAND_WMMA=0`), width purity, `gate-prefill-logits.sh` (prefill kernels!), and a
-native-vs-staging same-seed check, in addition to the standard set (§6).
+Gates (all green): `test-backend-ops -o FLASH_ATTN_EXT` 6389/6389 default + `GGML_CUDA_FA_KV_NATIVE=0`
++ `GGML_HIP_FA_BAND_WMMA=0`; width purity; prefill-logit 0.000707 / 98.755 %; native-vs-staging same-seed
+identical; per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §10.
 
 ### 4.3 Item 5 — `llama-context.cpp` / `llama-model-loader.cpp` glue
 

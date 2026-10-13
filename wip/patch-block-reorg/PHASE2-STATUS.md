@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`18a2fd0f8`** (block 11) |
-| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `fdd20f2c6`** |
+| Phase-2 branch | `v2-phase2` = **`3802688c1`** (block 11) |
+| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `6d6f9692e`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -311,3 +311,35 @@ tip's four `mmvq*` files are byte-identical to the validated tree.
 Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; `test-logits-width-probe`
 **width_purity=PASS (worst maxdiff 0)** on 4B and 35B; `gate-prefill-logits.sh` mean KLD **0.000707**,
 same-top-p **98.755 %** PASS; full per-block `all` build **12/12**.  **Item 3 is complete.**
+
+## 10. Item 4 — the FA native-KV / band chooser → `fattn-rdna.cuh` (2026-10-13)
+
+The delivery's flash-attention *predicate bodies* moved out of upstream's `fattn-common.cuh` into a new
+`fattn-rdna.cuh` (429 lines), leaving only the include / call points behind.  Moved, as two contiguous
+pure-relocation regions:
+
+- **native-KV policy + selectors** — `GGML_CUDA_FA_Q8_CHUNK`, the `fattn_kv_native_policy` enum and
+  policy read, the `q8_0`/`q4_0`/`bf16` supported predicates, `ggml_cuda_fattn_kv_layout_ok`, the
+  `GGML_CUDA_FATTN_KV_NATIVE_ARM` macro (q4_1/q5_0/q5_1/iq4_nl), `ggml_cuda_fattn_kv_native_type`,
+  `ggml_cuda_fattn_tile_kv_native_type`, `ggml_cuda_fattn_native_type_from_kernel`,
+  `ggml_cuda_fattn_native_ggml_type`;
+- **band-WMMA** — `ggml_cuda_fattn_band_wmma_{ncols1_env,enabled,gqa_max,two_byte,ncols1,split,applies}`.
+
+`fattn-common.cuh` 2421 → **2007** lines; it `#include`s the new header at the old region-1 location
+(after `#define FATTN_KQ_STRIDE`, which the header relies on — noted in its include-order comment).
+**Re-homed in block 05** — the block that owns the 1053-line `fattn-common.cuh` diff (the FA band /
+native-KV / derived-mask block); the tip diff applies there cleanly and the 06–11 replay is
+conflict-free (only block 10 touches `fattn-common.cuh` below the moved regions, inside `launch_fattn`).
+The rebased tip's `fattn-common.cuh` and `fattn-rdna.cuh` are byte-identical to the validated tree.
+
+**Deliberately left inline** (would have rewritten upstream control flow, not a clean move): the
+`launch_fattn` native-staging decision block (it consumes the predicates and the context staging arena)
+and the `ggml_cuda_fattn_dequantize_*_chunk` device helpers.  Generated instances stay with their axis
+(G6).  There is no `kq_mask_derivable()` function — the name is only a comment alias for the
+`dst->src[5] != nullptr` derived-op check.
+
+Gates: `test-backend-ops -o FLASH_ATTN_EXT` **6389/6389** in all three arms (default,
+`GGML_CUDA_FA_KV_NATIVE=0`, `GGML_HIP_FA_BAND_WMMA=0`); 4B + qwen4exp dense/sparse + 35B-A3B same-seed
+greedy **identical to r50**; q8_0-KV native-vs-staging same-seed **identical**;
+`test-logits-width-probe` **PASS (worst maxdiff 0)** on 4B and 35B; `gate-prefill-logits.sh` mean KLD
+**0.000707**, same-top-p **98.755 %** PASS; full per-block `all` build **12/12**.

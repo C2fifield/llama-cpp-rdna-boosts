@@ -4,6 +4,19 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt10 — `v2-phase2-ckpt10.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt10` = `3802688c1` |
+| branch tip | `v2-phase2` = `3802688c1` |
+| block 5 / 8 / 9 / 10 | `75cb9c0b1` / `fcce5864e` / `96a7d0d16` / `6d6f9692e` |
+
+Item 4: the FA native-KV / band predicate bodies moved to `fattn-rdna.cuh`, re-homed in block 05.
+`fattn-common.cuh` 2421 → 2007 lines.  `FLASH_ATTN_EXT` 6389/6389 in default / `GGML_CUDA_FA_KV_NATIVE=0`
+/ `GGML_HIP_FA_BAND_WMMA=0`; width purity PASS; prefill-logit 0.000707 / 98.755 %; per-block `all` 12/12.
+See `../PHASE2-STATUS.md` §10.
+
 ## ckpt9 — `v2-phase2-ckpt9.bundle`
 
 | | |
