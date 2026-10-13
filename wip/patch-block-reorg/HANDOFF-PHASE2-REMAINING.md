@@ -156,8 +156,7 @@ to r50; per-block `all` 12/12.  Detail in `PHASE2-STATUS.md` §11.
 
 ### 4.4 Item 6 — the maintainer's `ggml-cuda.cu` split (CAPSTONE)
 
-`ggml-cuda.cu` is still **7722 lines** (was 9819; `ggml-cuda-try-fuse.cu` split landed at ckpt12).
-Split whole function groups into their own TUs:
+**Item 6 is COMPLETE (ckpt14): `ggml-cuda.cu` 9819 → 6370 lines.**  Final split:
 - ~~`ggml-cuda-try-fuse.cu`~~ — **DONE (ckpt12)**: `ggml_cuda_try_fuse` (+ `ggml_cuda_can_fuse`,
   the fusion matchers/range helpers, and `ggml_cuda_{rdna3_5_dense_glu_disabled,should_fuse_mul_mat_vec_f}`)
   moved out; `ggml_cuda_gdn_state_gather_deferrable` + `ggml_cuda_topk_moe_fusion` exposed for the graph
@@ -166,10 +165,10 @@ Split whole function groups into their own TUs:
 - ~~`ggml-cuda-slab.cu`~~ — **DONE (ckpt13)**: the movable-boundary slab moved out (accessors added
   to `ggml-cuda-vmm.h`); `ggml-cuda.cu` 7722 → 6640 lines.  `ggml_cuda_device_malloc` and the pool cap
   stay in `ggml-cuda.cu` (not slab state).  See `PHASE2-STATUS.md` §13;
-- `ggml-cuda-moe-cache-hooks.cu` — `ggml_backend_cuda_moe_cache_*` (~8507–8526), the `stage_*` hooks,
-  `ggml_backend_cuda_device_moe_cache_*` (~9414–9470), `fattn_stage`/`h2d_stage` accounting (~9650–9681);
-- `ggml-cuda-arena.cu` — the expert-cache arena / `optional_alloc_within_free_cap` / compute-margin
-  helpers.
+- ~~`ggml-cuda-moe-cache-hooks.cu`~~ — **DONE (ckpt14)**: the `moe_cache_*` callbacks, `stage_*`
+  hooks and `fattn_stage`/`h2d_stage` accounting moved out (the private-struct device wrappers stay);
+- ~~`ggml-cuda-arena.cu`~~ — **DONE (ckpt14)**: the compute-margin/chunk helpers (the expert-cache arena
+  is already `moe-expert-cache.cu`).  See `PHASE2-STATUS.md` §14.
 
 Method: pure `git mv` of function groups + `#include` of a shared `ggml-cuda-internal.cuh` (or expose
 each via `common.cuh`). Keep the `ggml-cuda.cu` region map in `FILE-OWNERSHIP.md §3` consistent. **Do not

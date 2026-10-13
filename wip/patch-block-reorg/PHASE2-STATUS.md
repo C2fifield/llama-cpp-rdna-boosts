@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`94f73ef44`** (block 11) |
-| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `408d8fd1a`** |
+| Phase-2 branch | `v2-phase2` = **`15d62da2f`** (block 11) |
+| block 05/08/09/10 | **`6097ad7d5` / `134f545fd` / `7a1bbfcbb` / `1024268b0`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -414,3 +414,31 @@ are byte-identical to the validated tree.
 
 Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
 **identical to r50**; `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS; per-block `all` **12/12**.
+
+## 14. Item 6c/6d — MoE-cache/stage hooks + arena, and the capstone close (2026-10-13)
+
+**6c — `ggml-cuda-moe-cache-hooks.cu` (237 lines).**  The MoE expert-cache callbacks
+(`ggml_backend_cuda_moe_cache_{update,take_over,band,gather}`), the op-offload H2D staging hooks
+(`ggml_backend_cuda_stage_*`) and the FA/H2D staging accounting (`fattn_stage_{bound,used}`,
+`h2d_stage_{used,bound}`) moved out, declared in `ggml-cuda-moe-cache-hooks.cuh`.  The thin device-API
+wrappers (`ggml_backend_cuda_device_moe_cache_*`) **stay** in `ggml-cuda.cu`: they cast the private
+`ggml_backend_cuda_device_context`, which is not visible outside the TU.  No static-outside-used-inside
+symbols and no shared globals — a pure relocation.
+
+**6d — `ggml-cuda-arena.cu` (57 lines).**  The compute-buffer sizing helpers
+(`ggml_backend_cuda_buffer_type_get_compute_margin_pct`, `..._get_compute_chunk_bytes`) moved out; the
+expert-cache arena itself is already `moe-expert-cache.cu`, and `optional_alloc_within_free_cap` no longer
+exists.  `ggml_cuda_device_malloc` (the single allocation choke point with the arena-yield retry) stays in
+`ggml-cuda.cu` — it is generic, not slab/arena state.
+
+**`ggml-cuda.cu` is now 6370 lines** (9819 at the Phase-2 start).  Both splits re-homed in **block 10**;
+the tip diff applies there cleanly, only block 11 replays, and all five touched/new files are
+byte-identical to the validated tree.
+
+Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; 35B-A3B `-ncmoe 40`
+**identical to r50**; `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS; full per-block `all` build
+**12/12**.
+
+**Item 6 (the `ggml-cuda.cu` split) is complete.**  Final delivery-side TUs: `ggml-cuda-try-fuse.cu`
+(2209), `ggml-cuda-slab.cu` (1115), `ggml-cuda-moe-cache-hooks.cu` (237), `ggml-cuda-arena.cu` (57),
+plus `fattn-rdna.cuh` (429), `mmvq-moe.cu` (346) and `mmvq-vecdot.cuh`.

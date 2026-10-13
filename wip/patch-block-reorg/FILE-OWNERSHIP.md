@@ -117,13 +117,16 @@ owns each:
 | `ggml-cuda-try-fuse.cu` / `.cuh` | 10 | `ggml_cuda_try_fuse`, `ggml_cuda_can_fuse`, the fusion matchers/range helpers, `ggml_cuda_should_fuse_rope_set_rows`…`find_*`; `ggml-cuda.cu` keeps the single `ggml_cuda_try_fuse()` call |
 | `llama_context_set_fa_tensor_parallel_hint()` | 05 | `src/llama-context.cpp`; one call in the constructor |
 | `llama_host_experts_mode_apply()` | 10 | `src/llama-model-loader.cpp`; one call in the constructor, caller's `__func__` preserved |
+| `ggml-cuda-slab.cu` | 10 | movable-boundary slab; state via `ggml-cuda-vmm.h` accessors |
+| `ggml-cuda-moe-cache-hooks.cu` / `.cuh` | 10 | `moe_cache_*` callbacks, `stage_*` hooks, `fattn/h2d_stage_*` accounting (device wrappers stay) |
+| `ggml-cuda-arena.cu` / `.cuh` | 10 | compute-margin / chunk helpers |
 
 `ggml-cuda.cu` region map (§3) still holds for the remaining regions; the `try-fuse arms` row is now
-satisfied by `ggml-cuda-try-fuse.cu`. **Residual (item 6b–d):** the movable-boundary slab
-(`ggml-cuda-slab.cu`), the MoE-cache hooks (`ggml-cuda-moe-cache-hooks.cu`) and the arena
-(`ggml-cuda-arena.cu`) are **not yet split** — they are state-coupled (file-static `g_slab_*` /
-`g_slab_armed` are set by the MoE preflight and the narrow2 wrapper) and need a shared
-`ggml-cuda-internal.cuh` or setters; `ggml-cuda.cu` is **7722** lines.
+satisfied by `ggml-cuda-try-fuse.cu`. **Residual (item 6b–d):** **All of item 6 is now split** (ckpt14): `ggml-cuda.cu` **9819 → 6370** lines, with
+`ggml-cuda-try-fuse.cu` (2209), `ggml-cuda-slab.cu` (1115), `ggml-cuda-moe-cache-hooks.cu` (237) and
+`ggml-cuda-arena.cu` (57).  The slab's shared state is exposed through accessors in `ggml-cuda-vmm.h`
+(`ggml_cuda_slab_arm`, `..._compute_enabled`, `..._set_compute_narrow2`, `..._headroom_bytes`,
+`..._set_narrow_floor`), and `ggml_cuda_device_malloc` / the pool cap stay in `ggml-cuda.cu` (generic).
 
 ### Per-block modified-vs-added metric (V2.0 chain, 12 blocks)
 
