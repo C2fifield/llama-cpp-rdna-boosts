@@ -394,4 +394,4 @@ the header).  The new TU is picked up by the `.cu` glob (no CMake edit).
 only block 11 replays.  The rebased tip's three files are byte-identical to the validated tree.
 
 Gates: 4B + qwen4exp dense/sparse + 35B-A3B same-seed greedy **identical to r50**; full per-block `all`
-build **12/12**.
+build **12/12**; `gate-prefill-logits.sh` mean KLD **0.000707**, same-top-p **98.755 %** PASS.

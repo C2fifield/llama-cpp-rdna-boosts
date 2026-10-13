@@ -101,3 +101,51 @@ own `SOURCE_*` region.
 The authoritative per-block owner-file lists are in `TARGET-BLOCKS.md` ("Owner files"). When redistributing
 a hunk, check the destination block's file surface first: if the file is not listed, either the target
 list is wrong or the hunk belongs to another block. Update this document when the target list changes.
+
+---
+
+## 6. Phase-2 region map updates (V2.0, 2026-10-13)
+
+Phase 2 split delivery concerns out of upstream hub files. New/changed regions and the block that
+owns each:
+
+| file / region | owner | note |
+|---|---|---|
+| `mmvq-vecdot.cuh` | 10 (moved from mmvq.cu) | the `vec_dot_q_cuda_t` typedef, `GGML_CUDA_MMVQ_MOE_DENSE` guard, `get_vec_dot_q_cuda`, `get_vdr_mmvq` (shared by the dense dispatch and the MoE kernel) |
+| `mmvq-moe.cu` / `mmvq-moe.cuh` | 10 | `mul_mat_vec_q_moe` + `mul_mat_vec_q_moe_launch` (23 explicit launch instantiations); `mmvq.cu` keeps only `mul_mat_vec_q_moe_launch<type>(...)` at the `has_ids` branch |
+| `fattn-rdna.cuh` | 05 | the FA native-KV policy/selectors and the band-WMMA predicates; `fattn-common.cuh` keeps only `#include "fattn-rdna.cuh"` + the predicate calls |
+| `ggml-cuda-try-fuse.cu` / `.cuh` | 10 | `ggml_cuda_try_fuse`, `ggml_cuda_can_fuse`, the fusion matchers/range helpers, `ggml_cuda_should_fuse_rope_set_rows`…`find_*`; `ggml-cuda.cu` keeps the single `ggml_cuda_try_fuse()` call |
+| `llama_context_set_fa_tensor_parallel_hint()` | 05 | `src/llama-context.cpp`; one call in the constructor |
+| `llama_host_experts_mode_apply()` | 10 | `src/llama-model-loader.cpp`; one call in the constructor, caller's `__func__` preserved |
+
+`ggml-cuda.cu` region map (§3) still holds for the remaining regions; the `try-fuse arms` row is now
+satisfied by `ggml-cuda-try-fuse.cu`. **Residual (item 6b–d):** the movable-boundary slab
+(`ggml-cuda-slab.cu`), the MoE-cache hooks (`ggml-cuda-moe-cache-hooks.cu`) and the arena
+(`ggml-cuda-arena.cu`) are **not yet split** — they are state-coupled (file-static `g_slab_*` /
+`g_slab_armed` are set by the MoE preflight and the narrow2 wrapper) and need a shared
+`ggml-cuda-internal.cuh` or setters; `ggml-cuda.cu` is **7722** lines.
+
+### Per-block modified-vs-added metric (V2.0 chain, 12 blocks)
+
+`git show --name-status` per block (`add` = new files, `mod` = modified upstream files — the conflict
+surface). Compare `REBASE-RESILIENCE.md` §2 (old 16-block chain).
+
+| block | add | mod | subject |
+|---|---:|---:|---|
+| 00 | 0 | 9 | foundation |
+| 01 | 1 | 3 | hybrid HIP all-reduce |
+| 02 | 3 | 16 | adaptive MTP |
+| 03 | 4 | 18 | chunked GDN |
+| 04 | 0 | 8 | BF16 KV / native BF16 FA |
+| 05 | 229 | 58 | FA band / native KV / derived mask |
+| 06 | 3 | 2 | MMB |
+| 07 | 0 | 9 | k-quant boosts |
+| 08 | 8 | 27 | fused kernels |
+| 09 | 6 | 51 | host-resident MoE |
+| 10 | 19 | 74 | qwen4exp / HC / QSA / indexer |
+| 11 | 0 | 24 | campaign remainder |
+
+Block 05's 229 added files are almost entirely generated `template-instances/*.cu` (the axis travels
+with its block).  The modified-file surface is now concentrated in blocks 05 (58), 09 (51) and 10 (74),
+which is the expected residual (FA/quant/MoE hubs); the pre-Phase-2 `ggml-cuda.cu` interleave is now
+split across the concern files and `ggml-cuda-try-fuse.cu`.
