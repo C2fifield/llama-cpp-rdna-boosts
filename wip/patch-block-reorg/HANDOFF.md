@@ -11,7 +11,7 @@ findings log.
 `qwen4exp` is WIP on `v2-qwen4exp-wip` with one `test-llama-archs` GPU fault to diagnose).**  Read
 that file first, then the sections below for the design and the original 05 execution steps.
 
-The **audit is complete** and the **method is proven**.  `v2-phase1` = `0a5d26280` (blocks 00–09).
+The **audit is complete** and the **method is proven**.  `v2-phase1` = `a40841e1e` (blocks 00–09).
 
 ## 1. Ref map (exact)
 
@@ -20,7 +20,7 @@ The **audit is complete** and the **method is proven**.  `v2-phase1` = `0a5d2628
 | delivery repo | `~/llama-cpp-rdna-boosts` (branch `main`, pushed to `origin` = `git@github.com:stew675/llama-cpp-rdna-boosts.git`) |
 | reference release | `release.json` base `097cf33d9` (tree `30c400ccea2e2fb47b663036a6cee08a4dc542d8`), tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
 | Phase-1 worktree | `~/llama-v2` (git worktree of `~/llama.cpp`), branch **`v2-phase1`** |
-| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `0a5d26280` (blocks 00–09) |
+| clean checkpoint | tag **`pin/v2-phase1-00-04`** = `2a1502311` (blocks 00–04); **`v2-phase1`** now at `a40841e1e` (blocks 00–09) |
 | scratch (partial FA) | branch `v2-fa-wip` = `116ff4ccf` (do **not** use; kept only as a record) |
 | block-10 WIP | branch `v2-qwen4exp-wip` = `0d3e20323` (block 10 WIP; **not** for delivery) |
 | scratch (08 build) | branch `v2-prefill-wip` = `5f11da3ce` |
@@ -95,7 +95,7 @@ dispatches to them.
 
 ## 5. `05 fa` – `09 slab-moe` DONE; next: `10 qwen4exp`
 
-> **Status 2026-10-12 (session 2):** blocks 05–09 are built and committed; `v2-phase1` = `0a5d26280`
+> **Status 2026-10-12 (session 2):** blocks 05–09 are built and committed; `v2-phase1` = `a40841e1e`
 > (clean, 10/10).  **Next task:** `10 qwen4exp` (`src/models/qwen4exp.cpp`, the lazy reader, the HC
 > machinery `hc-mix`/`hyperconn`/`dsv4-hc`, the HC matchers, the qwen4exp prefill policy) — this is also
 > where the qwen4exp/HC and cache-blocks `ggml-cuda.cu` arms stripped from 08/09 are re-added.

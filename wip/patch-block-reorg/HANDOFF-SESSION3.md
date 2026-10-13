@@ -7,10 +7,14 @@ rules", "Critical facts") still applies.
 
 ## TL;DR
 
-Blocks **00–09 are rebuilt, committed and gated** on `v2-phase1` (**10/10** fresh per-block builds).
-Block **10 `qwen4exp` is WIP on scratch branch `v2-qwen4exp-wip`** (`0d3e20323`): it **builds** and
-`test-lazy-reader` passes, but `test-llama-archs` hits a **GPU memory fault to diagnose**. The delivery
-`patches/`/`release.json` are untouched.
+**PHASE 1 IS COMPLETE (session 3).**  `v2-phase1` = **`a40841e1e`** — **12 blocks (00–11)**, per-block
+fresh `all` build **12/12**, and the tree is **byte-identical to the reference tip**
+(`git diff a40841e1e af0595360` empty; `release.json.tree`).  Prefill-logit **0.000707 / 98.755 %**,
+4B same-seed and qwen4exp dense+sparse coherence == r50.  See `PHASE1-STATUS.md` §23 for the block
+table, gates and the plan deviations (the planned `11 qsa` merged into `10 qwen4exp`; the planned
+`mmap-reclaim` was carried inside block 10; block 11 is a catch-all `campaign remainder`).
+
+On scratch `v2-block10` (rebased onto the fixed block 09, QSA kernel files removed, HC dispatch added).
 
 The maintainer decided (this session) that the planned 08+09 are **one `fused-kernels` block** (see
 §13), and observed that splitting `ggml-cuda.cu` into multiple files is the right Phase-2 follow-up.
@@ -20,9 +24,9 @@ The maintainer decided (this session) that the planned 08+09 are **one `fused-ke
 | ref | value |
 |---|---|
 | delivery repo | `~/llama-cpp-rdna-boosts` (branch `main`, **pushed**) |
-| Phase-1 worktree | `~/llama-v2` (worktree of `~/llama.cpp`), branch **`v2-phase1`** = **`0a5d26280`** (blocks 00–09, clean) |
+| Phase-1 worktree | `~/llama-v2` (worktree of `~/llama.cpp`), branch **`v2-phase1`** = **`a40841e1e`** (blocks 00–11, complete) |
 | clean checkpoint tag | `pin/v2-phase1-00-04` = `2a1502311` |
-| block-10 WIP | branch **`v2-qwen4exp-wip`** = **`0d3e20323`** (do **not** use for anything else) |
+| block-10 scratch | branch **`v2-block10`** = `8ddece0a6` (scratch; block 10 is committed on `v2-phase1`) |
 | block-08 source | branch `v2-prefill-wip` = `5f11da3ce` (squashed into block 08 `5ae8cb848`) |
 | reference release | `release.json` base `097cf33d9`, tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
 | canonical chains | `~/llama.cpp` (rdna-boosts), `~/llama-rebase` |
@@ -47,9 +51,12 @@ Block map so far: 00 foundation, 01 allreduce, 02 mtp-adaptive, 03 gdn, 04 bf16-
 | 07 kquant | `95d15bad9` | 9 | `MUL_MAT` 2444/2444 |
 | 08 fused-kernels | `5ae8cb848` | 27 + 6 | fusion on == off; `width_purity` PASS; MUL_MAT 2444/2444; prefill-logit PASS |
 | 09 slab-moe | `0a5d26280` | 55 | 35B-A3B `-ncmoe 40` cache off == on; prefill-logit PASS |
+| 10 qwen4exp | `27f159a7a` | 60 | qwen4exp dense+sparse == r50; `FLASH_ATTN_QSA` 22/22; lazy-reader PASS; `test-llama-archs -a qwen4exp` OK |
+| 11 campaign-remainder | `a40841e1e` | 24 | tree == r50; prefill-logit PASS; 4B same-seed == r50 |
 
 **Per-block fresh `all` build gate:** `scripts/gate-per-block-build.sh --repo ~/llama-v2 --base
-097cf33d9 --tip "$(git -C ~/llama-v2 rev-parse v2-phase1)" --build-dir build-per-block` → **10/10**.
+097cf33d9 --tip "$(git -C ~/llama-v2 rev-parse v2-phase1)" --build-dir build-per-block` → **12/12**;
+`git diff a40841e1e af0595360` **empty**.
 
 Known pre-existing test failures (present since 06, fixed by a later/upstream block — NOT caused by
 the delivery): `test-backend-ops -o MUL_MAT_ID` has 4 `f16 / dup=1` failures + an
