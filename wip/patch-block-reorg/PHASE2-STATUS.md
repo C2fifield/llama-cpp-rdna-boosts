@@ -120,9 +120,31 @@ The big remaining interleaves, in rough value order:
 Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 `-moe-cache-hooks.cu`, `-arena.cu`).
 
-## 7. Open question for the maintainer
+## 7. Process decision and checkpoint
 
-Block-10-owned extractions re-home cheaply (amend block 10, rebase block 11).  Block-08/09-owned
-extractions will conflict in `ggml-cuda.cu` when rebasing blocks 09/10/11.  Confirm the amend+rebase
-route (as done here) is preferred over accumulating the extractions as tip sub-commits for the release
-cut to squash.
+**Resolved (maintainer, 2026-10-12):** amend-owning-block + rebase is correct; hoisting more per change
+(batching a whole concern rather than one tiny arm) is encouraged.  The earlier `git diff <commit>
+<delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
+tree delta is exactly the intended extraction.
+
+**Checkpoint 1** (`checkpoints/v2-phase2-ckpt1.bundle`, tag `pin/v2-phase2-ckpt1`): `v2-phase2` =
+`d8ad56737`, block 10 = `1fa36b3ea`.  Restore instructions in `checkpoints/README.md`.
+
+## 8. Scale of the remaining work
+
+The `try_fuse` split is the bulk.  `ggml_cuda_try_fuse` is **2212 lines** now (upstream base: 792), and
+the delivery matchers *before* it (`topk_moe`, `MWR`, `shared_expert`, the `hc_combine_norm` helpers)
+add ~700 more lines in `ggml-cuda.cu` (11307 lines total).  Roughly **25+ delivery arms / ~2300 lines**
+remain inside `try_fuse`, plus: `mmvq.cu` dispatch (3257 lines; ~700 lines of `calc_nwarps`/
+`calc_rows_per_block`/item-split/ksplit), the FA chooser (`fattn.cu` 919 + the MMA/tile kernels), the
+`llama-context.cpp`/`llama-model-loader.cpp` glue, and finally the maintainer's `ggml-cuda.cu` split
+(`-try-fuse.cu`, `-slab.cu`, `-moe-cache-hooks.cu`, `-arena.cu`).  The MMQ `J` selection of plan item 2
+is **already** a self-contained `ggml_cuda_mmq_select_J` (3 call sites) — largely done.
+
+Batching plan (more per change, per the maintainer): one commit per concern cluster, not per arm —
+(a) conv1d + norm arms (block 08); (b) MoE/MMVQ decode cluster: cpy_batch, glu_q8_1, shared_expert,
+weighted-down, q_pair (blocks 08/09/10); (c) the ssm/gdn cluster: ssm_conv_in, ssm_prescan, gdn_gate,
+gdn_beta_sigmoid, gdn/ssm cpy, gate_beta_verify, l2_norm_pair (block 08/10); (d) the MWR matcher;
+(e) the hc_comb cluster (needs `ggml_cuda_is_view_or_noop` / `ggml_cuda_bf16_src1_cache_on` hoists);
+(f) the remaining upstream-shared arms.  Each batch still gets a fresh per-block build N/N + its
+gate(s).
