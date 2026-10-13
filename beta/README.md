@@ -32,6 +32,9 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
 
 ## Current candidates
 
-| candidate | what | status |
-|---|---|---|
-| [`fa-stage-prealloc/`](fa-stage-prealloc/README.md) | issue #138: allocate the FA prefill staging arena once at its eventual size instead of climbing the 1.25x growth ladder (Windows/WDDM retention).  Owns `fattn_stage_try_get` in **block 15**; promotion target left open. | **BETA** — awaiting the reporter's Windows re-test |
+_None — `fa-stage-prealloc` (issue #138) was promoted into r53 blocks 09/10 and moved to
+`archive/work/fa-stage-prealloc/` (record: `WORKLOG.md` 261013.003)._
+
+**Recently promoted.**  `fa-stage-prealloc/` (issue #138): the FA prefill staging arena is allocated
+once at its eventual size, folded into blocks 09/10, default-on with `GGML_CUDA_FA_STAGE_PREALLOC=0` as
+the kill switch.

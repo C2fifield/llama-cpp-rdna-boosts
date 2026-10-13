@@ -11,7 +11,20 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r52` (2026-10-13) -- four contributor WIP PRs folded into their owning blocks:**
+> **Current release `v12-097cf33d9-r53` (2026-10-13) -- PR #144 DFlash multi-sequence F1 + #138 fa-stage-prealloc:**
+> canonical tip `4b27ac644`, net tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`; strict **12/12**
+> `git am` (`validate-set.sh` green), per-block build 4/4 (blocks 00/09/10/11), `gate-prefill-logits.sh`
+> 0.000707 / 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, 4B greedy `1c5d32ac537d` unchanged,
+> DFlash 2-slot F1 on == off (same slots/acceptance, F1 faster), host-experts guard fires, 35B-A3B
+> draft-MTP acceptance 0.77302 (2 GPUs) / 0.733 (3 GPUs) unchanged, width-purity PASS, `TOPK_MOE`
+> 448/448, `MUL_MAT_ID` mmvq 162/162, dense batched B=1/4/8 within noise.  **#144 -> blocks 00/10/11**
+> (DFlash F1 for several sequences, the readback wait for a ubatch without outputs; the host-resident
+> MoE experts guard shipped as the PR wrote it), **#138 -> blocks 09/10** (`fattn_stage_try_get` hint,
+> default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).  The upstream `MUL_MAT_ID` duplicate-ids fix is an
+> `upstream/` candidate only (the delivery ships pure).  **No Docker for r53.**  See `../WORKLOG.md`
+> 261013.003 (r53).
+>
+> **Previous release `v12-097cf33d9-r52` (2026-10-13) -- four contributor WIP PRs folded into their owning blocks:**
 > canonical tip `2f3349306`, net tree `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`; strict **12/12**
 > `git am` (`validate-set.sh` green), per-block `all` build 12/12, `gate-prefill-logits.sh` 0.000707 /
 > 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, width-purity PASS, `TOPK_MOE` 448/448,

@@ -1,4 +1,4 @@
-From 63ef4dce6fad4051168b7a37ec1ff38268fc2c5c Mon Sep 17 00:00:00 2001
+From 5937cd681da00f16d7ef0146a3f9b78c1d1cbb09 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -38,7 +38,7 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml-cuda/cpy-batch.cu               |   10 +
  ggml/src/ggml-cuda/cpy-batch.cuh              |    1 +
  ggml/src/ggml-cuda/dsv4-hc.cu                 |   93 +-
- ggml/src/ggml-cuda/fattn-common.cuh           |  103 +-
+ ggml/src/ggml-cuda/fattn-common.cuh           |  117 +-
  ggml/src/ggml-cuda/fattn-qsa.cu               |  753 +++
  ggml/src/ggml-cuda/fattn-qsa.cuh              |   28 +
  ggml/src/ggml-cuda/fattn-qsa3.cu              |  731 +++
@@ -97,9 +97,9 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml.c                               |  446 +-
  src/CMakeLists.txt                            |    1 +
  src/llama-arch.cpp                            |   22 +
- src/llama-context.cpp                         |  362 +-
- src/llama-context.h                           |   18 +
- src/llama-ext.h                               |    9 +
+ src/llama-context.cpp                         |  391 +-
+ src/llama-context.h                           |   22 +
+ src/llama-ext.h                               |   12 +
  src/llama-graph.cpp                           |    3 +
  src/llama-graph.h                             |    5 +
  src/llama-kv-cache.cpp                        |   10 +-
@@ -122,7 +122,7 @@ QSA/HC op dispatch is old-15):
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 18915 insertions(+), 4842 deletions(-)
+ 99 files changed, 18964 insertions(+), 4843 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -1352,7 +1352,7 @@ index 2728b08b6..55a4ecf86 100644
  void ggml_compute_forward_map_custom2(const struct ggml_compute_params * params, struct ggml_tensor * dst);
  void ggml_compute_forward_map_custom3(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 19563ef7b..3052232dc 100644
+index 7e218c0f8..1d255b749 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -91,6 +91,7 @@
@@ -1446,7 +1446,7 @@ index 19563ef7b..3052232dc 100644
  // Issue/TODO #42: the shared device-allocation helper (defined in ggml-cuda.cu).  It yields the
  // lowest-priority MoE expert-cache arena when an allocation cannot otherwise be satisfied, so every
  // device allocation inherits the same fail-soft policy.
-@@ -2286,6 +2295,40 @@ struct ggml_backend_cuda_context {
+@@ -2314,6 +2323,40 @@ struct ggml_backend_cuda_context {
      }
  };
  
@@ -1487,7 +1487,7 @@ index 19563ef7b..3052232dc 100644
  struct ggml_cuda_mm_fusion_args_host {
      const ggml_tensor * x_bias = nullptr;
      const ggml_tensor * gate = nullptr;
-@@ -2455,6 +2498,3 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+@@ -2483,6 +2526,3 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
      kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
      CUDA_CHECK(cudaGetLastError());
  }
@@ -1793,10 +1793,10 @@ index ca1d2dc8a..6451de414 100644
  
  void ggml_cuda_op_dsv4_hc_post(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index f79e8de8e..d60decc96 100644
+index f79e8de8e..836bd871e 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
-@@ -1498,27 +1498,80 @@ void launch_fattn(
+@@ -1498,27 +1498,94 @@ void launch_fattn(
          (kv_native_kernel != FATTN_KV_NATIVE_PER_OPERAND ? kv_native_kernel :
           (V_is_K_view ? kv_native_K : ggml_cuda_fattn_kv_native_type(V)));
  
@@ -1858,7 +1858,21 @@ index f79e8de8e..d60decc96 100644
 +    const bool stage_wants_K = !native_width && stage_cap_K && kv_native_K != FATTN_KV_NATIVE_NONE;
 +    const bool stage_wants_V = !native_width && stage_cap_V && kv_native_V != FATTN_KV_NATIVE_NONE && !V_is_K_view;
 +    const size_t stage_req = (stage_wants_K ? stage_bytes_K : 0) + (stage_wants_V ? stage_bytes_V : 0);
-+    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req) : nullptr;
++    // Issue #138: the eventual full size of the staging arena is known from the F16 size of the K/V
++    // view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB exactly as the request is.  Passing
++    // it lets the arena allocate once instead of climbing its 1.25x growth ladder, which on
++    // Windows/WDDM strands every freed step against the process (~5x the final arena over a deep
++    // prefill).  With an unbounded cap (=0) no hint is passed: the full root can be many GiB and the
++    // ladder stays the safer growth path there.
++    size_t stage_hint = 0;
++    if (stage_req != 0 && stage_max_bytes != 0) {
++        auto full_bytes = [stage_max_bytes](const ggml_tensor * t) {
++            const ggml_tensor * root = t->view_src != nullptr ? t->view_src : t;
++            return std::min((size_t) ggml_nelements(root)*sizeof(half), stage_max_bytes);
++        };
++        stage_hint = (stage_wants_K ? full_bytes(K) : 0) + (stage_wants_V ? full_bytes(V) : 0);
++    }
++    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req, stage_hint) : nullptr;
 +    const bool stage_ok = stage_buf != nullptr;
 +
 +    const bool use_native_K = (native_width || !stage_ok || !stage_cap_K) && kv_native_K != FATTN_KV_NATIVE_NONE;
@@ -1893,7 +1907,7 @@ index f79e8de8e..d60decc96 100644
  
      // The pool buffers are freed in reverse declaration order, and the VMM pool (GGML_HIP_NO_VMM=OFF / CUDA)
      // requires that to be the reverse of the allocation order: declare them in the order they are allocated
-@@ -1543,8 +1596,13 @@ void launch_fattn(
+@@ -1543,8 +1610,13 @@ void launch_fattn(
          const size_t bs = ggml_blck_size(K->type);
          const size_t ts = ggml_type_size(K->type);
  
@@ -1909,7 +1923,7 @@ index f79e8de8e..d60decc96 100644
          if (ggml_is_contiguously_allocated(K)) {
              to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
              to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
-@@ -1577,8 +1635,13 @@ void launch_fattn(
+@@ -1577,8 +1649,13 @@ void launch_fattn(
              const size_t bs = ggml_blck_size(V->type);
              const size_t ts = ggml_type_size(V->type);
  
@@ -21047,7 +21061,7 @@ index 0dc4cc961..21c19a41d 100644
              return true;
      }
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 561e4d297..a42cdf3e4 100644
+index 6a39daeb8..9641a5a4f 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -21271,7 +21285,38 @@ index 561e4d297..a42cdf3e4 100644
      ret = GGML_STATUS_SUCCESS;
  
      return res;
-@@ -2791,8 +2909,125 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+@@ -2280,6 +2398,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+     output_swaps.clear();
+     embd_batch_idxs.clear();
++    lf_dev_rows.clear();
+ 
+     sched_reserve();
+ 
+@@ -2578,6 +2697,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+         }
+     } while (true);
+ 
++    // F1: the device buffers hold the rows in ubatch order; keep the inverse of embd_batch_idxs for the
++    // draft (output_reorder() permutes only the host buffers, and clears embd_batch_idxs when it runs)
++    if (cparams.lf_layer_inp_dev && !lf_layer_dev.empty()) {
++        bool same = true;
++        for (size_t d = 0; d < embd_batch_idxs.size() && same; ++d) {
++            same = embd_batch_idxs[d] == (int32_t) d;
++        }
++        if (!same) {
++            lf_dev_rows.assign(embd_batch_idxs.size(), -1);
++            for (size_t d = 0; d < embd_batch_idxs.size(); ++d) {
++                GGML_ASSERT(embd_batch_idxs[d] >= 0 && (size_t) embd_batch_idxs[d] < lf_dev_rows.size());
++                lf_dev_rows[embd_batch_idxs[d]] = (int32_t) d;
++            }
++        }
++    }
++
+     // set to total number of outputs in the batch, for use in llama_get_logits_ith
+     n_outputs = n_outputs_all;
+ 
+@@ -2800,8 +2935,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
      return n_outputs_max;
  }
  
@@ -21281,6 +21326,11 @@ index 561e4d297..a42cdf3e4 100644
 +
 +ggml_tensor * llama_context::get_lf_layer_inp_dev(uint32_t lid) const {
 +    return lid < lf_layer_dev.size() ? lf_layer_dev[lid] : nullptr;
++}
++
++const int32_t * llama_context::get_lf_dev_rows(int32_t * n_rows) const {
++    *n_rows = (int32_t) lf_dev_rows.size();
++    return lf_dev_rows.empty() ? nullptr : lf_dev_rows.data();
 +}
 +
 +void llama_context::set_lf_dev_inject(bool enable) {
@@ -21397,7 +21447,17 @@ index 561e4d297..a42cdf3e4 100644
      for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
          if (!cparams.embeddings_layer_inp[il]) {
              continue;
-@@ -3094,10 +3329,32 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2902,7 +3159,8 @@ void llama_context::output_reorder() {
+                 }
+             }
+             for (auto & layer : embd_layer_inp) {
+-                if (layer.has_data()) {
++                // F1 keeps the rows on the device (its own row map, see decode()); the host rows are unused there
++                if (layer.has_data() && !cparams.lf_layer_inp_dev) {
+                     for (size_t k = 0; k < n_embd; ++k) {
+                         std::swap(layer.data[i*n_embd + k], layer.data[j*n_embd + k]);
+                     }
+@@ -3103,10 +3361,32 @@ ggml_cgraph * llama_context::graph_reserve(
          } else {
              ggml_backend_sched_split_graph(sched.get(), gf);
          }
@@ -21434,7 +21494,7 @@ index 561e4d297..a42cdf3e4 100644
      }
  
      return gf;
-@@ -4503,6 +4760,26 @@ llama_context_params llama_context_default_params() {
+@@ -4512,6 +4792,26 @@ llama_context_params llama_context_default_params() {
      return result;
  }
  
@@ -21461,7 +21521,7 @@ index 561e4d297..a42cdf3e4 100644
  llama_context * llama_init_from_model(
                   llama_model * model,
          llama_context_params   params) {
-@@ -4538,10 +4815,49 @@ llama_context * llama_init_from_model(
+@@ -4547,10 +4847,49 @@ llama_context * llama_init_from_model(
          if (model->get_split_state_ud.n_devices == 1) {
              LLAMA_LOG_WARN("%s: SPLIT_MODE_TENSOR being used for a single device is not recommended\n", __func__);
          }
@@ -21513,7 +21573,7 @@ index 561e4d297..a42cdf3e4 100644
          return nullptr;
      }
  
-@@ -4770,6 +5086,22 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+@@ -4779,6 +5118,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
      return ctx->get_embeddings_nextn_ith(i);
  }
  
@@ -21523,6 +21583,10 @@ index 561e4d297..a42cdf3e4 100644
 +
 +ggml_tensor * llama_lf_get_layer_inp_dev(llama_context * ctx, uint32_t lid) {
 +    return ctx->get_lf_layer_inp_dev(lid);
++}
++
++const int32_t * llama_lf_get_dev_rows(llama_context * ctx, int32_t * n_rows) {
++    return ctx->get_lf_dev_rows(n_rows);
 +}
 +
 +void llama_lf_set_dev_inject(llama_context * ctx, bool enable) {
@@ -21537,10 +21601,10 @@ index 561e4d297..a42cdf3e4 100644
      ctx->synchronize();
  
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 2f89b2fab..0a1c265ba 100644
+index 2f89b2fab..2130cca62 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -248,6 +248,24 @@ private:
+@@ -248,6 +248,28 @@ private:
      // from backend into host-side embd_layer_inp buffers
      bool extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);
  
@@ -21548,6 +21612,7 @@ index 2f89b2fab..0a1c265ba 100644
 +    // Llama-Frankenstein F1: device-resident layer inputs (target) and device feature injection (draft)
 +    void          set_lf_layer_inp_dev(bool enable);
 +    ggml_tensor * get_lf_layer_inp_dev(uint32_t lid) const;
++    const int32_t * get_lf_dev_rows(int32_t * n_rows) const;
 +    void          set_lf_dev_inject(bool enable);
 +    // draft context: mark the target's device layer inputs as read (GPU-side event, no host wait)
 +    void          lf_signal_features_consumed();
@@ -21561,21 +21626,27 @@ index 2f89b2fab..0a1c265ba 100644
 +    ggml_backend_buffer_ptr    lf_layer_buf;
 +    ggml_backend_event_t       lf_consumed_ev      = nullptr;
 +    bool                       lf_consumed_pending = false;
++    // F1 with several sequences: the ubatches may reorder the batch (split_equal), the device buffers keep the ubatch
++    // order (output_reorder() only fixes the host buffers): target batch row -> buffer row; empty when the order held
++    std::vector<int32_t>       lf_dev_rows;
 +
      //
      // graph
      //
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 967cbcc65..cabf1e8b2 100644
+index 967cbcc65..9ac8eff63 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -139,6 +139,15 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
+@@ -139,6 +139,18 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
  // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
  LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
  
-+// Llama-Frankenstein F1: device-resident layer inputs for draft feature injection (single sequence)
++// Llama-Frankenstein F1: device-resident layer inputs for draft feature injection
 +LLAMA_API void                 llama_lf_set_layer_inp_dev(struct llama_context * ctx, bool enable);
 +LLAMA_API struct ggml_tensor * llama_lf_get_layer_inp_dev(struct llama_context * ctx, uint32_t lid);
++// target context: the device buffer row of each row of its last batch, or nullptr when they are the same (the ubatches
++// kept the batch order: always for one sequence); *n_rows = the batch size when not nullptr
++LLAMA_API const int32_t *      llama_lf_get_dev_rows     (struct llama_context * ctx, int32_t * n_rows);
 +// draft context: while enabled, a token batch is a KV injection whose token ids are the rows of the target's
 +// last batch (its ctx_other) to read from the device layer inputs
 +LLAMA_API void                 llama_lf_set_dev_inject   (struct llama_context * ctx, bool enable);

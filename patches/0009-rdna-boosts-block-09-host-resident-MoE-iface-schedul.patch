@@ -1,4 +1,4 @@
-From 847596940b46f4a564c7e5ed3472e1e2fe5644ec Mon Sep 17 00:00:00 2001
+From 53f573638caee4387d785da0c4d94c5f23fd94aa Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -34,7 +34,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-cann/ggml-cann.cpp         |    6 +
  ggml/src/ggml-cpu/ggml-cpu.cpp           |  194 +-
  ggml/src/ggml-cuda/CMakeLists.txt        |    6 +
- ggml/src/ggml-cuda/common.cuh            |  582 +++-
+ ggml/src/ggml-cuda/common.cuh            |  610 +++-
  ggml/src/ggml-cuda/cpy-batch.cu          |  108 +
  ggml/src/ggml-cuda/cpy-batch.cuh         |    9 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h       |   87 +
@@ -75,7 +75,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  src/llama.cpp                            |    2 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   60 +-
- 57 files changed, 11722 insertions(+), 326 deletions(-)
+ 57 files changed, 11750 insertions(+), 326 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -4149,7 +4149,7 @@ index 297d9ffc9..01737d1b7 100644
      file(GLOB   SRCS "template-instances/mmq*.cu")
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 0354d673d..19563ef7b 100644
+index 0354d673d..7e218c0f8 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -142,6 +142,20 @@ static __device__ __forceinline__ void ggml_cuda_pdl_lc() {
@@ -4411,7 +4411,7 @@ index 0354d673d..19563ef7b 100644
              if (q8_1_arena != nullptr) {
                  CUDA_CHECK(cudaMemcpy(new_arena, q8_1_arena, q8_1_arena_pos, cudaMemcpyDeviceToDevice));
                  // Captured CUDA/HIP graphs keep pointers into the old arena, and the multi-token graph that
-@@ -1672,6 +1811,400 @@ struct ggml_backend_cuda_context {
+@@ -1672,6 +1811,428 @@ struct ggml_backend_cuda_context {
  
      ggml_cuda_stream_context concurrent_stream_context;
  
@@ -4451,40 +4451,68 @@ index 0354d673d..19563ef7b 100644
 +    // reserve -- the reserve sizes it for n_ctx -- so a llama-server --fit run can legitimately have
 +    // less free memory at the first deep prefill than the fit projected; failing here must degrade
 +    // to the native read, not kill the run.
-+    void * fattn_stage_try_get(int stream_no, size_t size) {
++    //
++    // `size_hint`, when non-zero, is the eventual full size this arena will be asked for (the F16
++    // size of the K/V view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB; computed by
++    // launch_fattn).  When it is set and at least `size`, the arena is allocated once at that size
++    // instead of climbing the 1.25x growth ladder: on Windows/WDDM a freed allocation stays
++    // committed against the process, so the ladder strands roughly 5x the final arena over a deep
++    // prefill.  The hint is only honoured when it stays within the optional-allocation free cap
++    // (the slab-active guard) and is tried before the ladder, so on refusal or cudaMalloc failure
++    // the existing growth step runs -- an oversized (or unbounded) hint can never cost more than
++    // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
++    void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
 +        GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
 +        if (size > fattn_stage_size[stream_no]) {
-+            const size_t new_size = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
-+            // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
-+            // still leave when the movable-boundary slab is active (see
-+            // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
-+            if (!optional_alloc_within_free_cap(fattn_stage_bytes() - fattn_stage_size[stream_no] + new_size)) {
-+                if (!fattn_stage_oom_warned) {
-+                    fattn_stage_oom_warned = true;
-+                    GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
-+                                  "(the slab is active and free VRAM is tight); reading the K/V cache "
-+                                  "natively instead (prefill may be slower)\n",
-+                                  __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
-+                }
-+                return nullptr;
-+            }
++            static const bool prealloc = []() {
++                const char * e = getenv("GGML_CUDA_FA_STAGE_PREALLOC");
++                return e == nullptr || atoi(e) != 0;
++            }();
++            const size_t new_size  = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
++            const size_t cur_total = fattn_stage_bytes() - fattn_stage_size[stream_no];
++            size_t alloc_size = new_size;
 +            char * new_arena = nullptr;
-+            if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
-+                (void) cudaGetLastError(); // clear the sticky error
-+                if (!fattn_stage_oom_warned) {
-+                    fattn_stage_oom_warned = true;
-+                    GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
-+                                  "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
-+                                  __func__, new_size >> 20);
++            if (prealloc && size_hint >= size) {
++                const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
++                if (optional_alloc_within_free_cap(cur_total + hint_size)) {
++                    if (cudaMalloc(&new_arena, hint_size) == cudaSuccess) {
++                        alloc_size = hint_size;
++                    } else {
++                        (void) cudaGetLastError(); // clear the sticky error, fall back to the growth step
++                    }
 +                }
-+                return nullptr;
++            }
++            if (new_arena == nullptr) {
++                // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
++                // still leave when the movable-boundary slab is active (see
++                // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
++                if (!optional_alloc_within_free_cap(cur_total + new_size)) {
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
++                                      "(the slab is active and free VRAM is tight); reading the K/V cache "
++                                      "natively instead (prefill may be slower)\n",
++                                      __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
++                    }
++                    return nullptr;
++                }
++                if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
++                    (void) cudaGetLastError(); // clear the sticky error
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
++                                      "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
++                                      __func__, new_size >> 20);
++                    }
++                    return nullptr;
++                }
 +            }
 +            if (fattn_stage[stream_no] != nullptr) {
 +                ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
 +                CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
 +            }
 +            fattn_stage[stream_no]      = new_arena;
-+            fattn_stage_size[stream_no] = new_size;
++            fattn_stage_size[stream_no] = alloc_size;
 +        }
 +        return fattn_stage[stream_no];
 +    }
@@ -4812,7 +4840,7 @@ index 0354d673d..19563ef7b 100644
      ~ggml_backend_cuda_context();
  
      cudaStream_t stream(int device, int stream) {
-@@ -1707,6 +2240,38 @@ struct ggml_backend_cuda_context {
+@@ -1707,6 +2268,38 @@ struct ggml_backend_cuda_context {
      // pool
      std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS];
  
@@ -4851,7 +4879,7 @@ index 0354d673d..19563ef7b 100644
      static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device, int stream_no);
  
      ggml_cuda_pool & pool(int device) {
-@@ -1890,3 +2455,6 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+@@ -1890,3 +2483,6 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
      kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
      CUDA_CHECK(cudaGetLastError());
  }
@@ -12939,7 +12967,7 @@ index 0eab7fec5..f91f0c7d8 100644
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 2767fa2b0..561e4d297 100644
+index 9da3c1c04..6a39daeb8 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -462,9 +462,10 @@ llama_context::llama_context(
@@ -13165,7 +13193,7 @@ index 2767fa2b0..561e4d297 100644
      auto * res = get_gf_res_prev();
      auto * gf  = res->get_gf();
  
-@@ -3929,6 +4118,52 @@ void llama_context::perf_reset() {
+@@ -3938,6 +4127,52 @@ void llama_context::perf_reset() {
      // note: the reallocation counters are not reset - they track the lifetime totals for this context
  }
  
@@ -13218,7 +13246,7 @@ index 2767fa2b0..561e4d297 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3939,22 +4174,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3948,22 +4183,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -13259,7 +13287,7 @@ index 2767fa2b0..561e4d297 100644
          }
      }
      return ret;
-@@ -4243,6 +4494,7 @@ llama_context_params llama_context_default_params() {
+@@ -4252,6 +4503,7 @@ llama_context_params llama_context_default_params() {
          /*.op_offload                  =*/ true,
          /*.swa_full                    =*/ true,
          /*.kv_unified                  =*/ false,

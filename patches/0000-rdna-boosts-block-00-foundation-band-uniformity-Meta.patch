@@ -1,4 +1,4 @@
-From 4143c62afe554c7ff54de990bd3fdbad4467fd85 Mon Sep 17 00:00:00 2001
+From b1a2290501e7a7d0e087b3bc117ce5a05feedce0 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:38 -0500
 Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
@@ -22,9 +22,9 @@ Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
  ggml/src/ggml-cuda/fattn-common.cuh           | 10 +++-
  .../vulkan-shaders/flash_attn.comp            | 29 ++++++++++-
  .../vulkan-shaders/flash_attn_cm1.comp        | 49 +++++++++++++++++--
- src/llama-context.cpp                         | 38 +++++++++++++-
+ src/llama-context.cpp                         | 47 +++++++++++++++++-
  src/llama.cpp                                 | 40 +++++++++------
- 9 files changed, 200 insertions(+), 26 deletions(-)
+ 9 files changed, 209 insertions(+), 26 deletions(-)
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
 index c5043a4a8..226473421 100644
@@ -325,7 +325,7 @@ index aa9dd624b..143a25b0f 100644
                          const uint v_tile_row = j * Bc + bc_chunk * MatBc;
                          const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 23170d8a3..5589d1297 100644
+index 23170d8a3..7da192d67 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1972,6 +1972,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
@@ -346,7 +346,7 @@ index 23170d8a3..5589d1297 100644
      do {
          const auto & ubatch = mctx->get_ubatch();
  
-@@ -2156,7 +2167,32 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2156,7 +2167,41 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
          n_outputs_prev += n_outputs;
          n_tokens_prev  += ubatch.n_tokens;
@@ -364,11 +364,20 @@ index 23170d8a3..5589d1297 100644
 +        // and the host rows end up holding a later ubatch's data (multi-ubatch per-token outputs:
 +        // perplexity / KLD, and the server's multi-sequence batches).  A single-ubatch decode has
 +        // nothing to order against and pays nothing.
++        // The per-token readbacks (the DFlash layer inputs, the unmasked nextn embeddings) also run in a ubatch without
++        // outputs (a prompt chunk that does not end its prompt), so they need the same wait there: the next ubatch's input
++        // upload waits only for this graph's compute, not for the copies queued after it, and was observed (Windows, ROCm)
++        // to overwrite a layer input before its copy had read it.
 +        static const bool readback_sync = getenv("GGML_READBACK_SYNC") == nullptr || atoi(getenv("GGML_READBACK_SYNC")) != 0;
-+        if (readback_sync && n_outputs > 0) {
++        if (readback_sync && (n_outputs > 0 || extract_all_idxs)) {
 +            sync_readback(t_logits);
 +            sync_readback(t_embd);
 +            sync_readback(t_h_nextn);
++            for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
++                if (cparams.embeddings_layer_inp[il]) {
++                    sync_readback(res->get_layer_inp((int) il));
++                }
++            }
 +            if (has_samplers) {
 +                for (ggml_tensor * t : res->t_sampled)        { sync_readback(t); }
 +                for (ggml_tensor * t : res->t_sampled_logits) { sync_readback(t); }

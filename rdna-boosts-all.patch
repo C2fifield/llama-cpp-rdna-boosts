@@ -1168,7 +1168,7 @@ index 000000000..1f8e8a6b5
 +    }
 +};
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index c5043a4a8..3d188b866 100644
+index c5043a4a8..83b9d8858 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -9,6 +9,7 @@
@@ -1205,27 +1205,36 @@ index c5043a4a8..3d188b866 100644
      // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
      virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
      virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
-@@ -987,6 +996,12 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -987,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
  
      std::vector<float> features_buf; // [n_chunk, n_embd_enc] gathered target features
  
-+    // Llama-Frankenstein F1 (single sequence; default on, GGML_LF_DFLASH_DEV=0 turns it off): the target keeps its extracted
-+    // layer inputs on the device and the injection batch carries the target rows as token ids, so the features never leave
-+    // the GPU. If the target cannot allocate its device buffers, it keeps the host path and so does the draft.
++    // Llama-Frankenstein F1 (default on, GGML_LF_DFLASH_DEV=0 turns it off): the target keeps its extracted layer inputs on
++    // the device and the injection batch carries the target rows as token ids, so the features never leave the GPU. Any
++    // number of sequences: the rows are positions in the target batch, the same offsets the host path reads, and each
++    // sequence is injected with its own seq_id. If the target cannot allocate its device buffers, it keeps the host path
++    // and so does the draft.
 +    bool        lf_dev = false;
 +    llama_batch batch_inject_tok = {};
 +
      std::vector<common_sampler_ptr> smpls;
  
      // backend sampler chain per seq, attached to ctx_dft
-@@ -1117,6 +1132,23 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1117,6 +1134,29 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
          }
  
 +        {
 +            const char * lf_env = getenv("GGML_LF_DFLASH_DEV");
 +            const bool   lf_on  = lf_env == nullptr || atoi(lf_env) != 0;
-+            lf_dev = lf_on && n_seq == 1;
++            // several sequences keep the host path when the target has host-resident MoE experts (-ncmoe/-cmoe): the
++            // movable-boundary slab armed for them was observed to break the draft's device reads there (draft
++            // acceptance near 0 with two or more slots; one sequence, or GGML_CUDA_SLAB=0, is fine)
++            const bool host_experts = llama_model_moe_host_expert_dev_count(llama_get_model(ctx_tgt)) > 0;
++            lf_dev = lf_on && (n_seq == 1 || !host_experts);
++            if (lf_on && !lf_dev) {
++                LOG_WRN("%s: F1: %d sequences with host-resident MoE experts, using the host path\n", __func__, (int) n_seq);
++            }
 +            if (lf_dev) {
 +                llama_lf_set_layer_inp_dev(ctx_tgt, true);
 +                batch_inject_tok = llama_batch_init(llama_n_ubatch(ctx_dft), 0, n_seq);
@@ -1233,16 +1242,15 @@ index c5043a4a8..3d188b866 100644
 +                    free(batch_inject_tok.pos);
 +                    batch_inject_tok.pos = (llama_pos *) malloc(sizeof(llama_pos) * 4 * llama_n_batch(ctx_dft));
 +                }
-+                LOG_INF("%s: F1: target features stay on the device (default on, GGML_LF_DFLASH_DEV=0 turns it off)\n", __func__);
-+            } else if (lf_env != nullptr && atoi(lf_env) != 0) {
-+                LOG_WRN("%s: F1 needs a single sequence (n_seq = %d), using the host path\n", __func__, (int) n_seq);
++                LOG_INF("%s: F1: target features stay on the device (n_seq = %d; default on, GGML_LF_DFLASH_DEV=0 turns it off)\n",
++                        __func__, (int) n_seq);
 +            }
 +        }
 +
          // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
          llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2);
          llama_set_causal_attn(ctx_dft, causal_attn); // DFlash needs non-causal attention unless the model says otherwise
-@@ -1134,6 +1166,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1134,6 +1174,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              llama_sampler_free(backend_chains[seq_id]);
          }
          backend_chains.clear();
@@ -1253,7 +1261,7 @@ index c5043a4a8..3d188b866 100644
      }
  
      void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
-@@ -1190,12 +1226,50 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1190,12 +1234,56 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
  
          const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
  
@@ -1261,8 +1269,14 @@ index c5043a4a8..3d188b866 100644
 +        // stream, and the target must not overwrite them before the draft is done
 +        // the target falls back to the host path when its device buffers could not be allocated
 +        const bool use_dev = lf_dev && has_tokens && llama_lf_get_layer_inp_dev(ctx_tgt, (uint32_t) target_layer_ids[0]) != nullptr;
++        // with several sequences the target's ubatches may have reordered the batch: its device rows are then found
++        // through the row map (nullptr = same order, always the case for one sequence)
++        int32_t         lf_n_rows = 0;
++        const int32_t * lf_rows   = nullptr;
 +        if (use_dev) {
 +            llama_synchronize(ctx_tgt);
++            lf_rows = llama_lf_get_dev_rows(ctx_tgt, &lf_n_rows);
++            GGML_ASSERT(lf_rows == nullptr || lf_n_rows == n_tokens);
 +        }
 +
          for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
@@ -1278,7 +1292,7 @@ index c5043a4a8..3d188b866 100644
 +                    for (int32_t i = 0; i < n_chunk; ++i) {
 +                        const int32_t   row = i_batch_beg[seq_id] + offset + i;
 +                        const llama_pos p   = batch_in.tokens[row].pos[0];
-+                        batch_inject_tok.token[i] = row; // row of the target batch (see llama_lf_set_dev_inject)
++                        batch_inject_tok.token[i] = lf_rows ? lf_rows[row] : row; // device row (see llama_lf_set_dev_inject)
 +                        batch_inject_tok.pos[i]   = p;
 +                        if (is_mrope) {
 +                            batch_inject_tok.pos[1 * n_chunk + i] = p;
@@ -1304,7 +1318,7 @@ index c5043a4a8..3d188b866 100644
              // an M-RoPE image pins all its rows to one position, so a windowed draft
              // cache cannot free cells for it - skip it, the draft can jump over the gap
              const bool pos_pinned = batch_in.tokens[i_batch_beg[seq_id]].pos[0] == batch_in.tokens[i_batch_end[seq_id]].pos[0];
-@@ -1236,6 +1310,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+@@ -1236,6 +1324,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
              }
          }
  
@@ -1315,7 +1329,7 @@ index c5043a4a8..3d188b866 100644
          return true;
      }
  
-@@ -1425,8 +1503,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1425,8 +1517,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
      std::vector<int>                i_last;
      std::vector<std::vector<float>> chain_h;
  
@@ -1332,7 +1346,7 @@ index c5043a4a8..3d188b866 100644
          , params(params.draft)
      {
          auto * ctx_tgt = this->params.ctx_tgt;
-@@ -1438,6 +1522,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1438,6 +1536,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                  "MTP input row width must match the target h_nextn width");
          n_mtp_layers = std::max(1, (int) llama_model_n_layer_nextn(llama_get_model(ctx_dft)));
  
@@ -1344,7 +1358,7 @@ index c5043a4a8..3d188b866 100644
          SPC_TRC("%s", "adding speculative implementation 'draft-mtp'\n");
          SPC_TRC("- n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
          SPC_TRC("- gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n",
-@@ -1478,9 +1567,20 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1478,9 +1581,20 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
          llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
  
@@ -1366,7 +1380,7 @@ index c5043a4a8..3d188b866 100644
          if (chain_heads) {
              this->params.n_max = std::min(this->params.n_max, n_mtp_layers);
  
-@@ -1491,6 +1591,34 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1491,6 +1605,34 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          }
          this->n_max = this->params.n_max;
  
@@ -1401,7 +1415,7 @@ index c5043a4a8..3d188b866 100644
          pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
  
          i_last.assign(n_seq, -1);
-@@ -1519,6 +1647,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1519,6 +1661,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          // reset here rather than per round, or two identical requests differ
          common_sampler_reset(smpls[seq_id].get());
  
@@ -1415,7 +1429,7 @@ index c5043a4a8..3d188b866 100644
          const int32_t N = (int32_t) prompt.size();
          if (N <= 0) {
              return;
-@@ -1536,6 +1671,28 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1536,6 +1685,28 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          }
      }
  
@@ -1444,7 +1458,7 @@ index c5043a4a8..3d188b866 100644
      bool process(const common_batch & batch_in) override {
          if (batch_in.size() <= 0) {
              return true;
-@@ -1584,6 +1741,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1584,6 +1755,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
  
                  const llama_seq_id seq_id = t.seq_id;
  
@@ -1461,7 +1475,7 @@ index c5043a4a8..3d188b866 100644
                  // vision tokens carry an embedding instead of an id
                  const int32_t idx = t.id != LLAMA_TOKEN_NULL
                      ? batch.add(t.id, t.pos[0], seq_id, false)
-@@ -1599,7 +1766,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1599,7 +1780,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
              auto * mem_dft = llama_get_memory(ctx_dft);
  
              bool ok = true;
@@ -1470,7 +1484,7 @@ index c5043a4a8..3d188b866 100644
                  if (chain_heads) {
                      // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
                      for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
-@@ -1633,12 +1800,26 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1633,12 +1814,26 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                  continue;
              }
  
@@ -1499,7 +1513,7 @@ index c5043a4a8..3d188b866 100644
                  std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
              }
  
-@@ -1667,6 +1848,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1667,6 +1862,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
  
              n_drafting++;
              drafting[seq_id] = true;
@@ -1514,7 +1528,7 @@ index c5043a4a8..3d188b866 100644
              // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
              if (!params.probabilistic) {
                  dp.result_q = nullptr;
-@@ -1762,7 +1951,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1762,7 +1965,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                      dp.result_q->emplace_back(cur_p->data, cur_p->data + cur_p->size);
                  }
  
@@ -1523,7 +1537,7 @@ index c5043a4a8..3d188b866 100644
                      drafting[seq_id] = false;
                      n_drafting--;
                      continue;
-@@ -1809,17 +1998,52 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1809,17 +2012,52 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                  continue;
              }
  
@@ -1578,7 +1592,7 @@ index c5043a4a8..3d188b866 100644
          const int32_t n_rows = verify_h_rows[seq_id];
          if (n_rows <= 0) {
              return;
-@@ -1829,6 +2053,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+@@ -1829,6 +2067,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
          const size_t row_bytes = (size_t) n_embd * sizeof(float);
          std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
      }
@@ -1596,7 +1610,7 @@ index c5043a4a8..3d188b866 100644
  };
  
  // state of self-speculation (simple implementation, not ngram-map)
-@@ -2314,6 +2549,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
+@@ -2314,6 +2563,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
          case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:  return "draft-simple";
          case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:  return "draft-eagle3";
          case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:     return "draft-mtp";
@@ -1604,7 +1618,7 @@ index c5043a4a8..3d188b866 100644
          case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:  return "draft-dflash";
          case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:  return "draft-dspark";
          case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE:  return "ngram-simple";
-@@ -2405,6 +2641,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
+@@ -2405,6 +2655,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
              case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:
              case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:
              case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:
@@ -1612,7 +1626,7 @@ index c5043a4a8..3d188b866 100644
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:
              case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:
                  n_max = std::max(n_max, std::max(0, spec->draft.n_max));
-@@ -2603,23 +2840,47 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2603,23 +2854,47 @@ common_speculative_init_result::common_speculative_init_result(
      llama_context * ctx_tgt) :
      pimpl(new impl{}) {
      const bool has_draft = params.speculative.has_dft();
@@ -1663,7 +1677,7 @@ index c5043a4a8..3d188b866 100644
      cparams.ctx_other = ctx_tgt;
  
      std::string model_path;
-@@ -2627,6 +2888,12 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2627,6 +2902,12 @@ common_speculative_init_result::common_speculative_init_result(
          model_path = params.speculative.draft.mparams.path;
          LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
  
@@ -1676,7 +1690,7 @@ index c5043a4a8..3d188b866 100644
          llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
          if (model_dft == NULL) {
              LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
-@@ -2655,6 +2922,15 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2655,6 +2936,15 @@ common_speculative_init_result::common_speculative_init_result(
  
          pimpl->context.reset(ctx_dft);
      }
@@ -1692,7 +1706,7 @@ index c5043a4a8..3d188b866 100644
  }
  
  common_speculative_init_result::~common_speculative_init_result() = default;
-@@ -2697,7 +2973,14 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2697,7 +2987,14 @@ common_speculative * common_speculative_init(common_params_speculative & params,
          };
  
          // when adding a new type - update here the logic above
@@ -1708,7 +1722,7 @@ index c5043a4a8..3d188b866 100644
  
          // this list here defines the priority of the speculators
          // the one with highest priority are listed first
-@@ -2710,6 +2993,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2710,6 +3007,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, params.draft.ctx_dft != nullptr);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_MTP,    params.draft.ctx_dft != nullptr);
@@ -1716,7 +1730,7 @@ index c5043a4a8..3d188b866 100644
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, params.draft.ctx_dft != nullptr);
          add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, params.draft.ctx_dft != nullptr);
      }
-@@ -2729,7 +3013,11 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2729,7 +3027,11 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_MTP: {
@@ -1729,7 +1743,7 @@ index c5043a4a8..3d188b866 100644
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH: {
-@@ -2858,6 +3146,15 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
+@@ -2858,6 +3160,15 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
      }
  }
  
@@ -1745,7 +1759,7 @@ index c5043a4a8..3d188b866 100644
  bool common_speculative_process(common_speculative * spec, const common_batch & batch) {
      bool result = true;
  
-@@ -2998,6 +3295,17 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
+@@ -2998,6 +3309,17 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
      }
  }
  
@@ -8774,7 +8788,7 @@ index 101afeba2..8ad5e807d 100644
              ggml_cuda_swap(dst_row[col], dst_row[ixj]);
          }
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 928607c41..3052232dc 100644
+index 928607c41..1d255b749 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -91,6 +91,7 @@
@@ -9121,7 +9135,7 @@ index 928607c41..3052232dc 100644
          }
          it->second->last_used_time = time_now;
          return it->second.get();
-@@ -1512,8 +1731,489 @@ struct ggml_backend_cuda_context {
+@@ -1512,8 +1731,517 @@ struct ggml_backend_cuda_context {
          name(GGML_CUDA_NAME + std::to_string(device)) {
      }
  
@@ -9250,40 +9264,68 @@ index 928607c41..3052232dc 100644
 +    // reserve -- the reserve sizes it for n_ctx -- so a llama-server --fit run can legitimately have
 +    // less free memory at the first deep prefill than the fit projected; failing here must degrade
 +    // to the native read, not kill the run.
-+    void * fattn_stage_try_get(int stream_no, size_t size) {
++    //
++    // `size_hint`, when non-zero, is the eventual full size this arena will be asked for (the F16
++    // size of the K/V view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB; computed by
++    // launch_fattn).  When it is set and at least `size`, the arena is allocated once at that size
++    // instead of climbing the 1.25x growth ladder: on Windows/WDDM a freed allocation stays
++    // committed against the process, so the ladder strands roughly 5x the final arena over a deep
++    // prefill.  The hint is only honoured when it stays within the optional-allocation free cap
++    // (the slab-active guard) and is tried before the ladder, so on refusal or cudaMalloc failure
++    // the existing growth step runs -- an oversized (or unbounded) hint can never cost more than
++    // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
++    void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
 +        GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
 +        if (size > fattn_stage_size[stream_no]) {
-+            const size_t new_size = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
-+            // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
-+            // still leave when the movable-boundary slab is active (see
-+            // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
-+            if (!optional_alloc_within_free_cap(fattn_stage_bytes() - fattn_stage_size[stream_no] + new_size)) {
-+                if (!fattn_stage_oom_warned) {
-+                    fattn_stage_oom_warned = true;
-+                    GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
-+                                  "(the slab is active and free VRAM is tight); reading the K/V cache "
-+                                  "natively instead (prefill may be slower)\n",
-+                                  __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
-+                }
-+                return nullptr;
-+            }
++            static const bool prealloc = []() {
++                const char * e = getenv("GGML_CUDA_FA_STAGE_PREALLOC");
++                return e == nullptr || atoi(e) != 0;
++            }();
++            const size_t new_size  = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
++            const size_t cur_total = fattn_stage_bytes() - fattn_stage_size[stream_no];
++            size_t alloc_size = new_size;
 +            char * new_arena = nullptr;
-+            if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
-+                (void) cudaGetLastError(); // clear the sticky error
-+                if (!fattn_stage_oom_warned) {
-+                    fattn_stage_oom_warned = true;
-+                    GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
-+                                  "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
-+                                  __func__, new_size >> 20);
++            if (prealloc && size_hint >= size) {
++                const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
++                if (optional_alloc_within_free_cap(cur_total + hint_size)) {
++                    if (cudaMalloc(&new_arena, hint_size) == cudaSuccess) {
++                        alloc_size = hint_size;
++                    } else {
++                        (void) cudaGetLastError(); // clear the sticky error, fall back to the growth step
++                    }
 +                }
-+                return nullptr;
++            }
++            if (new_arena == nullptr) {
++                // fit-slab-accounting revival (G4): bound this optional transient by the free VRAM it would
++                // still leave when the movable-boundary slab is active (see
++                // `optional_alloc_within_free_cap`).  A refusal falls back to the native K/V read.
++                if (!optional_alloc_within_free_cap(cur_total + new_size)) {
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: leaving the FA prefill staging arena at %zu MiB rather than %zu MiB "
++                                      "(the slab is active and free VRAM is tight); reading the K/V cache "
++                                      "natively instead (prefill may be slower)\n",
++                                      __func__, fattn_stage_size[stream_no] >> 20, new_size >> 20);
++                    }
++                    return nullptr;
++                }
++                if (cudaMalloc(&new_arena, new_size) != cudaSuccess) {
++                    (void) cudaGetLastError(); // clear the sticky error
++                    if (!fattn_stage_oom_warned) {
++                        fattn_stage_oom_warned = true;
++                        GGML_LOG_WARN("%s: not enough free device memory for a %zu MiB FA prefill staging "
++                                      "buffer, reading the K/V cache natively instead (prefill may be slower)\n",
++                                      __func__, new_size >> 20);
++                    }
++                    return nullptr;
++                }
 +            }
 +            if (fattn_stage[stream_no] != nullptr) {
 +                ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
 +                CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
 +            }
 +            fattn_stage[stream_no]      = new_arena;
-+            fattn_stage_size[stream_no] = new_size;
++            fattn_stage_size[stream_no] = alloc_size;
 +        }
 +        return fattn_stage[stream_no];
 +    }
@@ -9611,7 +9653,7 @@ index 928607c41..3052232dc 100644
      ~ggml_backend_cuda_context();
  
      cudaStream_t stream(int device, int stream) {
-@@ -1549,6 +2249,38 @@ struct ggml_backend_cuda_context {
+@@ -1549,6 +2277,38 @@ struct ggml_backend_cuda_context {
      // pool
      std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS];
  
@@ -9650,7 +9692,7 @@ index 928607c41..3052232dc 100644
      static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device, int stream_no);
  
      ggml_cuda_pool & pool(int device) {
-@@ -1563,12 +2295,60 @@ struct ggml_backend_cuda_context {
+@@ -1563,12 +2323,60 @@ struct ggml_backend_cuda_context {
      }
  };
  
@@ -9711,7 +9753,7 @@ index 928607c41..3052232dc 100644
      ggml_glu_op glu_op;
      float glu_limit = 0.0f;
      const ggml_tensor * shared_up = nullptr;
-@@ -1581,6 +2361,11 @@ struct ggml_cuda_mm_fusion_args_device {
+@@ -1581,6 +2389,11 @@ struct ggml_cuda_mm_fusion_args_device {
      const void * gate_bias = nullptr;
      const void * x_scale = nullptr;
      const void * gate_scale = nullptr;
@@ -10189,7 +10231,7 @@ index ca1d2dc8a..6451de414 100644
  
  void ggml_cuda_op_dsv4_hc_post(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index 41d948335..d60decc96 100644
+index 41d948335..836bd871e 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
 @@ -8,6 +8,33 @@
@@ -10760,7 +10802,7 @@ index 41d948335..d60decc96 100644
      ggml_tensor * KQV = dst;
  
      GGML_ASSERT(Q->type == GGML_TYPE_F32);
-@@ -1011,12 +1487,100 @@ void launch_fattn(
+@@ -1011,12 +1487,114 @@ void launch_fattn(
      const int cc  = ggml_cuda_info().devices[id].cc;
      const int nsm = ggml_cuda_info().devices[id].nsm;
  
@@ -10819,7 +10861,21 @@ index 41d948335..d60decc96 100644
 +    const bool stage_wants_K = !native_width && stage_cap_K && kv_native_K != FATTN_KV_NATIVE_NONE;
 +    const bool stage_wants_V = !native_width && stage_cap_V && kv_native_V != FATTN_KV_NATIVE_NONE && !V_is_K_view;
 +    const size_t stage_req = (stage_wants_K ? stage_bytes_K : 0) + (stage_wants_V ? stage_bytes_V : 0);
-+    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req) : nullptr;
++    // Issue #138: the eventual full size of the staging arena is known from the F16 size of the K/V
++    // view roots, capped per operand by GGML_CUDA_FA_STAGE_MAX_MB exactly as the request is.  Passing
++    // it lets the arena allocate once instead of climbing its 1.25x growth ladder, which on
++    // Windows/WDDM strands every freed step against the process (~5x the final arena over a deep
++    // prefill).  With an unbounded cap (=0) no hint is passed: the full root can be many GiB and the
++    // ladder stays the safer growth path there.
++    size_t stage_hint = 0;
++    if (stage_req != 0 && stage_max_bytes != 0) {
++        auto full_bytes = [stage_max_bytes](const ggml_tensor * t) {
++            const ggml_tensor * root = t->view_src != nullptr ? t->view_src : t;
++            return std::min((size_t) ggml_nelements(root)*sizeof(half), stage_max_bytes);
++        };
++        stage_hint = (stage_wants_K ? full_bytes(K) : 0) + (stage_wants_V ? full_bytes(V) : 0);
++    }
++    char * stage_buf = stage_req != 0 ? (char *) ctx.fattn_stage_try_get(ctx.curr_stream_no, stage_req, stage_hint) : nullptr;
 +    const bool stage_ok = stage_buf != nullptr;
 +
 +    const bool use_native_K = (native_width || !stage_ok || !stage_cap_K) && kv_native_K != FATTN_KV_NATIVE_NONE;
@@ -10865,7 +10921,7 @@ index 41d948335..d60decc96 100644
  
      const char * K_data = (const char *) K->data;
      size_t nb11 = K->nb[1];
-@@ -1028,12 +1592,17 @@ void launch_fattn(
+@@ -1028,12 +1606,17 @@ void launch_fattn(
      size_t nb22 = V->nb[2];
      size_t nb23 = V->nb[3];
  
@@ -10886,7 +10942,7 @@ index 41d948335..d60decc96 100644
          if (ggml_is_contiguously_allocated(K)) {
              to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
              to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
-@@ -1056,7 +1625,7 @@ void launch_fattn(
+@@ -1056,7 +1639,7 @@ void launch_fattn(
          K_data = (char *) K_f16;
      }
  
@@ -10895,7 +10951,7 @@ index 41d948335..d60decc96 100644
          if (V_is_K_view) {
              V_data = K_data;
              nb21   = nb11;
-@@ -1066,8 +1635,13 @@ void launch_fattn(
+@@ -1066,8 +1649,13 @@ void launch_fattn(
              const size_t bs = ggml_blck_size(V->type);
              const size_t ts = ggml_type_size(V->type);
  
@@ -10911,7 +10967,7 @@ index 41d948335..d60decc96 100644
              if (ggml_is_contiguously_allocated(V)) {
                  to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(V->type);
                  to_fp16(V_data, V_f16, ggml_nelements(V), main_stream);
-@@ -1132,6 +1706,88 @@ void launch_fattn(
+@@ -1132,6 +1720,88 @@ void launch_fattn(
          CUDA_CHECK(cudaGetLastError());
      }
  
@@ -11000,7 +11056,7 @@ index 41d948335..d60decc96 100644
      const dim3 block_dim(warp_size, nwarps, 1);
      int max_blocks_per_sm = 1; // Max. number of active blocks limited by occupancy.
      CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&max_blocks_per_sm, fattn_kernel, block_dim.x * block_dim.y * block_dim.z, nbytes_shared));
-@@ -1169,7 +1825,29 @@ void launch_fattn(
+@@ -1169,7 +1839,29 @@ void launch_fattn(
          blocks_num.y = 1;
          blocks_num.z = 1;
  
@@ -11031,7 +11087,7 @@ index 41d948335..d60decc96 100644
              const int nblocks_stream_k_raw = std::min(max_blocks, ntiles_KV*ntiles_dst);
              // Round down to a multiple of ntiles_dst so that each output tile gets the same number of blocks (avoids fixup).
              // Only do this if the occupancy loss from rounding is acceptable.
-@@ -1185,20 +1863,29 @@ void launch_fattn(
+@@ -1185,20 +1877,29 @@ void launch_fattn(
              blocks_num.x = nblocks_stream_k;
          }
  
@@ -11064,7 +11120,7 @@ index 41d948335..d60decc96 100644
              const int nwaves = (nblocks_total + blocks_per_wave - 1) / blocks_per_wave;
              const int efficiency_percent = 100 * nblocks_total / (nwaves*blocks_per_wave);
  
-@@ -1254,21 +1941,27 @@ void launch_fattn(
+@@ -1254,21 +1955,27 @@ void launch_fattn(
          V_data,
          mask ? ((const char *) mask->data) : nullptr,
          sinks ? ((const char *) sinks->data) : nullptr,
@@ -11096,7 +11152,7 @@ index 41d948335..d60decc96 100644
              const int bpt         = nblocks_sk / ntiles_dst;
  
              const uint3 fd0 = init_fastdiv_values(ntiles_x * ntiles_z_gqa * K->ne[2]);
-@@ -1283,7 +1976,7 @@ void launch_fattn(
+@@ -1283,7 +1990,7 @@ void launch_fattn(
                  (float *) KQV->data, dst_tmp_meta.ptr,
                   Q->ne[1], Q->ne[2], K->ne[2], nblocks_sk,
                   gqa_ratio, bpt, fd0, fd1, fd2);
@@ -53517,7 +53573,7 @@ index 0dc4cc961..21c19a41d 100644
              return true;
      }
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 23170d8a3..a42cdf3e4 100644
+index 23170d8a3..9641a5a4f 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -54273,7 +54329,15 @@ index 23170d8a3..a42cdf3e4 100644
      ret = GGML_STATUS_SUCCESS;
  
      return res;
-@@ -1972,6 +2465,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -1905,6 +2398,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+     output_swaps.clear();
+     embd_batch_idxs.clear();
++    lf_dev_rows.clear();
+ 
+     sched_reserve();
+ 
+@@ -1972,6 +2466,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      int64_t n_outputs_prev = 0;
      int64_t n_tokens_prev  = 0;
  
@@ -54291,7 +54355,7 @@ index 23170d8a3..a42cdf3e4 100644
      do {
          const auto & ubatch = mctx->get_ubatch();
  
-@@ -2156,7 +2660,32 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2156,7 +2661,57 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
          n_outputs_prev += n_outputs;
          n_tokens_prev  += ubatch.n_tokens;
@@ -54309,11 +54373,20 @@ index 23170d8a3..a42cdf3e4 100644
 +        // and the host rows end up holding a later ubatch's data (multi-ubatch per-token outputs:
 +        // perplexity / KLD, and the server's multi-sequence batches).  A single-ubatch decode has
 +        // nothing to order against and pays nothing.
++        // The per-token readbacks (the DFlash layer inputs, the unmasked nextn embeddings) also run in a ubatch without
++        // outputs (a prompt chunk that does not end its prompt), so they need the same wait there: the next ubatch's input
++        // upload waits only for this graph's compute, not for the copies queued after it, and was observed (Windows, ROCm)
++        // to overwrite a layer input before its copy had read it.
 +        static const bool readback_sync = getenv("GGML_READBACK_SYNC") == nullptr || atoi(getenv("GGML_READBACK_SYNC")) != 0;
-+        if (readback_sync && n_outputs > 0) {
++        if (readback_sync && (n_outputs > 0 || extract_all_idxs)) {
 +            sync_readback(t_logits);
 +            sync_readback(t_embd);
 +            sync_readback(t_h_nextn);
++            for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
++                if (cparams.embeddings_layer_inp[il]) {
++                    sync_readback(res->get_layer_inp((int) il));
++                }
++            }
 +            if (has_samplers) {
 +                for (ggml_tensor * t : res->t_sampled)        { sync_readback(t); }
 +                for (ggml_tensor * t : res->t_sampled_logits) { sync_readback(t); }
@@ -54322,10 +54395,26 @@ index 23170d8a3..a42cdf3e4 100644
 +            }
 +        }
 +    } while (true);
++
++    // F1: the device buffers hold the rows in ubatch order; keep the inverse of embd_batch_idxs for the
++    // draft (output_reorder() permutes only the host buffers, and clears embd_batch_idxs when it runs)
++    if (cparams.lf_layer_inp_dev && !lf_layer_dev.empty()) {
++        bool same = true;
++        for (size_t d = 0; d < embd_batch_idxs.size() && same; ++d) {
++            same = embd_batch_idxs[d] == (int32_t) d;
++        }
++        if (!same) {
++            lf_dev_rows.assign(embd_batch_idxs.size(), -1);
++            for (size_t d = 0; d < embd_batch_idxs.size(); ++d) {
++                GGML_ASSERT(embd_batch_idxs[d] >= 0 && (size_t) embd_batch_idxs[d] < lf_dev_rows.size());
++                lf_dev_rows[embd_batch_idxs[d]] = (int32_t) d;
++            }
++        }
++    }
  
      // set to total number of outputs in the batch, for use in llama_get_logits_ith
      n_outputs = n_outputs_all;
-@@ -2380,8 +2909,125 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+@@ -2380,8 +2935,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
      return n_outputs_max;
  }
  
@@ -54335,6 +54424,11 @@ index 23170d8a3..a42cdf3e4 100644
 +
 +ggml_tensor * llama_context::get_lf_layer_inp_dev(uint32_t lid) const {
 +    return lid < lf_layer_dev.size() ? lf_layer_dev[lid] : nullptr;
++}
++
++const int32_t * llama_context::get_lf_dev_rows(int32_t * n_rows) const {
++    *n_rows = (int32_t) lf_dev_rows.size();
++    return lf_dev_rows.empty() ? nullptr : lf_dev_rows.data();
 +}
 +
 +void llama_context::set_lf_dev_inject(bool enable) {
@@ -54451,7 +54545,17 @@ index 23170d8a3..a42cdf3e4 100644
      for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
          if (!cparams.embeddings_layer_inp[il]) {
              continue;
-@@ -2613,7 +3259,8 @@ static void ubatch_prepare_reserve(
+@@ -2482,7 +3159,8 @@ void llama_context::output_reorder() {
+                 }
+             }
+             for (auto & layer : embd_layer_inp) {
+-                if (layer.has_data()) {
++                // F1 keeps the rows on the device (its own row map, see decode()); the host rows are unused there
++                if (layer.has_data() && !cparams.lf_layer_inp_dev) {
+                     for (size_t k = 0; k < n_embd; ++k) {
+                         std::swap(layer.data[i*n_embd + k], layer.data[j*n_embd + k]);
+                     }
+@@ -2613,7 +3291,8 @@ static void ubatch_prepare_reserve(
  }
  
  ggml_cgraph * llama_context::graph_reserve(
@@ -54461,7 +54565,7 @@ index 23170d8a3..a42cdf3e4 100644
      LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
      GGML_ASSERT(n_outputs >= 1);
  
-@@ -2645,7 +3292,22 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2645,7 +3324,22 @@ ggml_cgraph * llama_context::graph_reserve(
  
      auto * res = gf_res_reserve.get();
  
@@ -54485,7 +54589,7 @@ index 23170d8a3..a42cdf3e4 100644
  
      res->reset();
  
-@@ -2667,10 +3329,32 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2667,10 +3361,32 @@ ggml_cgraph * llama_context::graph_reserve(
          } else {
              ggml_backend_sched_split_graph(sched.get(), gf);
          }
@@ -54522,7 +54626,7 @@ index 23170d8a3..a42cdf3e4 100644
      }
  
      return gf;
-@@ -3691,6 +4375,52 @@ void llama_context::perf_reset() {
+@@ -3691,6 +4407,52 @@ void llama_context::perf_reset() {
      // note: the reallocation counters are not reset - they track the lifetime totals for this context
  }
  
@@ -54575,7 +54679,7 @@ index 23170d8a3..a42cdf3e4 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3701,22 +4431,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3701,22 +4463,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -54616,7 +54720,7 @@ index 23170d8a3..a42cdf3e4 100644
          }
      }
      return ret;
-@@ -3974,6 +4720,7 @@ llama_context_params llama_context_default_params() {
+@@ -3974,6 +4752,7 @@ llama_context_params llama_context_default_params() {
          /*.n_ubatch                    =*/ 512,
          /*.n_seq_max                   =*/ 1,
          /*.n_rs_seq                    =*/ 0,
@@ -54624,7 +54728,7 @@ index 23170d8a3..a42cdf3e4 100644
          /*.n_outputs_max               =*/ 0,
          /*.n_outputs_max_per_seq       =*/ 1,
          /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default
-@@ -4004,6 +4751,7 @@ llama_context_params llama_context_default_params() {
+@@ -4004,6 +4783,7 @@ llama_context_params llama_context_default_params() {
          /*.op_offload                  =*/ true,
          /*.swa_full                    =*/ true,
          /*.kv_unified                  =*/ false,
@@ -54632,7 +54736,7 @@ index 23170d8a3..a42cdf3e4 100644
          /*.sampler                     =*/ nullptr,
          /*.n_sampler                   =*/ 0,
          /*.ctx_other                   =*/ nullptr,
-@@ -4012,6 +4760,26 @@ llama_context_params llama_context_default_params() {
+@@ -4012,6 +4792,26 @@ llama_context_params llama_context_default_params() {
      return result;
  }
  
@@ -54659,7 +54763,7 @@ index 23170d8a3..a42cdf3e4 100644
  llama_context * llama_init_from_model(
                   llama_model * model,
          llama_context_params   params) {
-@@ -4047,10 +4815,49 @@ llama_context * llama_init_from_model(
+@@ -4047,10 +4847,49 @@ llama_context * llama_init_from_model(
          if (model->get_split_state_ud.n_devices == 1) {
              LLAMA_LOG_WARN("%s: SPLIT_MODE_TENSOR being used for a single device is not recommended\n", __func__);
          }
@@ -54711,7 +54815,7 @@ index 23170d8a3..a42cdf3e4 100644
          return nullptr;
      }
  
-@@ -4279,6 +5086,22 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+@@ -4279,6 +5118,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
      return ctx->get_embeddings_nextn_ith(i);
  }
  
@@ -54721,6 +54825,10 @@ index 23170d8a3..a42cdf3e4 100644
 +
 +ggml_tensor * llama_lf_get_layer_inp_dev(llama_context * ctx, uint32_t lid) {
 +    return ctx->get_lf_layer_inp_dev(lid);
++}
++
++const int32_t * llama_lf_get_dev_rows(llama_context * ctx, int32_t * n_rows) {
++    return ctx->get_lf_dev_rows(n_rows);
 +}
 +
 +void llama_lf_set_dev_inject(llama_context * ctx, bool enable) {
@@ -54735,7 +54843,7 @@ index 23170d8a3..a42cdf3e4 100644
      ctx->synchronize();
  
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 277aff71d..0a1c265ba 100644
+index 277aff71d..2130cca62 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -58,6 +58,11 @@ struct llama_context {
@@ -54750,7 +54858,7 @@ index 277aff71d..0a1c265ba 100644
      void synchronize();
  
      const llama_model   & get_model()   const;
-@@ -243,6 +248,24 @@ private:
+@@ -243,6 +248,28 @@ private:
      // from backend into host-side embd_layer_inp buffers
      bool extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);
  
@@ -54758,6 +54866,7 @@ index 277aff71d..0a1c265ba 100644
 +    // Llama-Frankenstein F1: device-resident layer inputs (target) and device feature injection (draft)
 +    void          set_lf_layer_inp_dev(bool enable);
 +    ggml_tensor * get_lf_layer_inp_dev(uint32_t lid) const;
++    const int32_t * get_lf_dev_rows(int32_t * n_rows) const;
 +    void          set_lf_dev_inject(bool enable);
 +    // draft context: mark the target's device layer inputs as read (GPU-side event, no host wait)
 +    void          lf_signal_features_consumed();
@@ -54771,11 +54880,14 @@ index 277aff71d..0a1c265ba 100644
 +    ggml_backend_buffer_ptr    lf_layer_buf;
 +    ggml_backend_event_t       lf_consumed_ev      = nullptr;
 +    bool                       lf_consumed_pending = false;
++    // F1 with several sequences: the ubatches may reorder the batch (split_equal), the device buffers keep the ubatch
++    // order (output_reorder() only fixes the host buffers): target batch row -> buffer row; empty when the order held
++    std::vector<int32_t>       lf_dev_rows;
 +
      //
      // graph
      //
-@@ -257,8 +280,17 @@ public:
+@@ -257,8 +284,17 @@ public:
      ggml_status graph_compute(ggml_cgraph * gf, bool batched);
  
      // reserve a graph with a dummy ubatch of the specified size
@@ -54794,7 +54906,7 @@ index 277aff71d..0a1c265ba 100644
  
      bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
  
-@@ -355,6 +387,10 @@ private:
+@@ -355,6 +391,10 @@ private:
      uint32_t n_input_tensors = 0; // number of tensors marked as input during the last graph reserve
      uint32_t n_outputs = 0; // number of actually-used outputs in the current ubatch or last logical batch
  
@@ -54805,7 +54917,7 @@ index 277aff71d..0a1c265ba 100644
      std::vector<int32_t> output_ids; // map batch token positions to ids of the logits and embd buffers
  
      struct swap_info {
-@@ -421,6 +457,13 @@ private:
+@@ -421,6 +461,13 @@ private:
  
      bool has_evaluated_once = false;
  
@@ -54870,7 +54982,7 @@ index f4eb181a7..de2e648fd 100644
      enum llama_rope_scaling_type rope_scaling_type;
      enum llama_pooling_type pooling_type;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index faf4beb69..cabf1e8b2 100644
+index faf4beb69..9ac8eff63 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
 @@ -88,6 +88,17 @@ LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
@@ -54891,13 +55003,16 @@ index faf4beb69..cabf1e8b2 100644
  LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);
  
  // Set whether the context outputs nextn embeddings or not
-@@ -128,6 +139,15 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
+@@ -128,6 +139,18 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
  // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
  LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
  
-+// Llama-Frankenstein F1: device-resident layer inputs for draft feature injection (single sequence)
++// Llama-Frankenstein F1: device-resident layer inputs for draft feature injection
 +LLAMA_API void                 llama_lf_set_layer_inp_dev(struct llama_context * ctx, bool enable);
 +LLAMA_API struct ggml_tensor * llama_lf_get_layer_inp_dev(struct llama_context * ctx, uint32_t lid);
++// target context: the device buffer row of each row of its last batch, or nullptr when they are the same (the ubatches
++// kept the batch order: always for one sequence); *n_rows = the batch size when not nullptr
++LLAMA_API const int32_t *      llama_lf_get_dev_rows     (struct llama_context * ctx, int32_t * n_rows);
 +// draft context: while enabled, a token batch is a KV injection whose token ids are the rows of the target's
 +// last batch (its ctx_other) to read from the device layer inputs
 +LLAMA_API void                 llama_lf_set_dev_inject   (struct llama_context * ctx, bool enable);

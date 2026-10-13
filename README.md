@@ -18,7 +18,9 @@ concern lives in its owning block and every delivery concern is a self-contained
 function/file; the applied tree is behaviour-preserving (all same-seed gates are
 byte-identical to r50).  **`r52`** folds four contributor WIP PRs (#140-#143) into
 blocks 01/02/08/10 (all-reduce events/P2P, MTP prompt-tail ingest, `topk_moe` sorted
-keys, short-K MoE rows-per-block).
+keys, short-K MoE rows-per-block).  **`r53`** folds PR #144 (DFlash device-resident features for
+several sequences, blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10,
+default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

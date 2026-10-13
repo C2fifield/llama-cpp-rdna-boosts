@@ -5,14 +5,17 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r52`** (canonical tip `2f3349306`, net tree
-`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green), per-block `all` build **12/12**, prefill-logit 0.000707 / 98.755 % PASS, qwen4exp quant-coherence
-PASS, width-purity PASS, `TOPK_MOE` 448/448, `MUL_MAT_ID` mmvq 166/166, dense batched B=1/4/8 no worse
-than r50, 35B-A3B draft-MTP acceptance 0.733 (160.4 vs plain 106.5 t/s).  r52 folds four contributor
-PRs (#140-#143) into blocks 01/02/08/10; the applied tree is not tree-identical.  The V2.0 re-org and its
-r51 validation are `WORKLOG.md` 261013.001 (r51), archived at `archive/work/patch-block-reorg/`; the r52
-record is `WORKLOG.md` 261013.002.
+**`097cf33d9`**, released as **`v12-097cf33d9-r53`** (canonical tip `4b27ac644`, net tree
+`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green), per-block `all` build **4/4** changed blocks (00/09/10/11), prefill-logit 0.000707 / 98.755 %
+PASS, qwen4exp quant-coherence PASS, width-purity PASS, `TOPK_MOE` 448/448, `MUL_MAT_ID` mmvq
+162/162, dense batched B=1/4/8 within noise, 4B greedy `1c5d32ac537d` unchanged, DFlash 2-slot F1 on ==
+off, 35B-A3B draft-MTP acceptance 0.77302 (2 GPUs) / 0.733 (3 GPUs) unchanged.  r53 folds PR #144
+(blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the applied tree is not
+tree-identical.  **No Docker for r53.**  The r53 record is `WORKLOG.md` 261013.003; the r52 fold is
+`WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree
+`8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); the V2.0 re-org and its r51 validation are
+`WORKLOG.md` 261013.001, archived at `archive/work/patch-block-reorg/`.
 The entries below are the **pre-V2.0 (16-block) verification history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

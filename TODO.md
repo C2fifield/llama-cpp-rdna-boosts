@@ -6,12 +6,14 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r51`, 2026-10-13):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `15d62da2f`, net tree
-**`48cf3e8107a3e58e3bc5c10a9b5087f73a88d1f1`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  V2.0 re-organized the former 16-block set by concern and moved each concern into a
-self-contained function/file; the applied tree is behaviour-preserving (all same-seed gates byte-identical
-to r50).  See `WORKLOG.md` 261013.001 (r51).  **Previous (16-block) state:** r49 added the mmap
+**Current state (release `v12-097cf33d9-r53`, 2026-10-13):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `4b27ac644`, net tree
+**`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r53 folds PR #144 (DFlash F1 for several sequences + the readback wait, blocks
+00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the upstream `MUL_MAT_ID` duplicate-ids
+fix is an `upstream/` candidate only.  V2.0 re-organized the former 16-block set by concern and moved each
+concern into a self-contained function/file; the applied tree is behaviour-preserving (all same-seed gates
+byte-identical to r50).  See `WORKLOG.md` 261013.003 (r53).  **Previous (16-block) state:** r49 added the mmap
 host-memory reclaim (block 06): the loader no longer faults the
 whole model file in up front and it unmaps each tensor's mapping range right after the copy to its device
 buffer, so a `-ncmoe` load never holds the full mapping and the pinned host master at once
@@ -49,6 +51,27 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 #42, #44/#39/#38, and now #35) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
 
 ## Active (kept compact: only what this repo will work on next)
+
+### 58. `-sm tensor` + DFlash aborts in the Meta split-state build — CORRECTNESS
+
+**Opened 2026-10-13 (found while validating PR #144's multi-sequence DFlash on 2x R9700).**  A DFlash
+target plus drafter (`-md`, `--spec-type draft-dflash`) under `-sm tensor` aborts at model load:
+
+```
+ggml/src/ggml-backend-meta.cpp:707: GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0) failed
+```
+
+after the (normal-during-fitting) `dflash requires ctx_other to be set` warning.  It reproduces on r52
+and r53 (the assert and the DFlash graph are unchanged by r53), so it is **pre-existing**, not a PR #144
+regression.  `-sm layer` works and is what the r53 DFlash gates used; the older 3-GPU DFlash records
+used `-sm tensor`, so this is the current blocker for a multi-GPU tensor-split DFlash run.
+
+**Fix direction:** the draft context is a second `llama_context` over the target model; while the Meta
+backend builds the draft's graph it reaches a tensor whose split state has `axis == SPLIT_AXIS_0`, which
+the `ggml-backend-meta.cpp:707` guard rejects.  Track which tensor/op introduces that state on the
+draft graph and whether the draft's per-context split state needs its own builder path.  Reproduce:
+`llama-cli -m <27B target> -md <DFlash2 drafter> --spec-type draft-dflash -sm tensor ...` (2 GPUs).
+Campaign: `wip/dflash-meta-split/`.
 
 ### 57. `test-llama-archs` CPU mixed-batch FAIL is a delivery regression — CORRECTNESS
 

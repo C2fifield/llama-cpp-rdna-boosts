@@ -20,7 +20,7 @@ is the signature of a stub, not of a campaign.
 
 | directory | what | status |
 |---|---|---|
-| [`upstream-mul-mat-id-dup/`](upstream-mul-mat-id-dup/README.md) | **upstream F16 `MUL_MAT_ID` duplicate-ids bug on CUDA/HIP**: `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` fails F16 and page-faults `quantize_mmq_q8_1`; confirmed on unpatched `097cf33d9` | **OPEN / upstream (seeded 2026-10-12)** — fix the F16 dup path + re-check the MMQ `src1_q8_1` sizing; candidate for `upstream/`; the delivery ships pure.  This directory also hosts the **r53 handover** ([`HANDOVER-r53.md`](upstream-mul-mat-id-dup/HANDOVER-r53.md) + [`NEXT-SESSION-PROMPT.md`](upstream-mul-mat-id-dup/NEXT-SESSION-PROMPT.md)), which groups this fix with PR #144 and the #138 `fa-stage-prealloc` promotion into one release |
+| [`dflash-meta-split/`](dflash-meta-split/README.md) | **`-sm tensor` + DFlash aborts** at `ggml-backend-meta.cpp:707` (`GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0)`) during model load; `-sm layer` works.  Reproduces on r52 and r53, so pre-existing, exposed while validating PR #144 | **OPEN / needs a deterministic repro + root cause (seeded 2026-10-13, TODO #58)** |
 | [`kv-cell-offset-nondeterminism/`](kv-cell-offset-nondeterminism/README.md) | **the unified-KV residual (TODO #52 part C)**: a sequence's attention result depends on the physical **set** of KV cells it occupies in the shared stream, not just its start offset; under `--kv-unified` the allocator lets that set depend on scheduling history, so greedy repetitions differ | **PARKED (2026-10-11)** — root cause pinned (cell-set vs the FA reduction/split grid; a fixed alignment is insufficient, and the grid is model/shape-dependent), but a proper fix is an upstream unified-KV redesign (per-sequence contiguous, tile-aligned regions). Documented as a gotcha (`-np > 1` + `--kv-unified` is not deterministic; use `--no-kv-unified`); issue #134 closed as upstream-inherent. Record: [`FINDINGS-offset-mechanism.md`](kv-cell-offset-nondeterminism/FINDINGS-offset-mechanism.md), probe + repro in `kv-cell-offset-nondeterminism/tools/` |
 | [`rs-rollback-boundary/`](rs-rollback-boundary/README.md) | the recurrent rollback-boundary guard (issue #131): the global `last_ubatch_nseq_tokens` tracker reports the wrong sequence; the per-sequence guard is folded into block 02, but the **"large prefill as the last prepared batch before a rollback"** ordering and whether the restored snapshot is stale are open | **OPEN / ACTIVE (resuming)** — the dense 27B does not reproduce the warning on r43 (0/106 rollbacks) and `--no-kv-unified` does not change that; the MoE reproducer fires it and shows the rolling sequence's own last prepare is a 4571-token prefill. Open questions, reproducers and instrumentation: [`README.md`](rs-rollback-boundary/README.md) |
 | [`fp8-support/`](fp8-support/README.md) | native FP8 E4M3 for RDNA4 | PARKED (2026-09-26) — rebased and building, fully RDNA4-gated, but **gate 2 failed** (the fp8 4B is 0.69x Q8_0 where cllm had 1.16x, because the delivery's MMB/GEMM work made Q8_0 +32 % and the fp8 WMMA path did not follow).  Resume actions are in `PLAN.md`.  Not closed — paused behind the delivery work |
@@ -74,3 +74,11 @@ IQ-grid-staging / verify items are no-deltas, and the one survivor (arena THP) w
 The record moved to `archive/work/strata-amd-kernels/` (with a resolution banner) and the `wip/` entry was
 deleted with no stub; its lone residual was re-seeded as `q1-0-byte-perm/` (promoted in r49 -- record now
 `archive/work/q1-0-byte-perm/`).
+
+**Promoted (r53, 2026-10-13).** Three campaigns left `wip/`/`beta/`:
+`dflash-multiseq/` (PR #144) was folded into the delivery (blocks 00/10/11) and `fa-stage-prealloc/`
+(issue #138, from `beta/`) into blocks 09/10; their records now live under
+`archive/work/dflash-multiseq/` and `archive/work/fa-stage-prealloc/`. The upstream `MUL_MAT_ID`
+duplicate-ids fix was completed and published as `upstream/UPSTREAM-PR-mul-mat-id-dup.{md,patch}`
+(the delivery ships pure on it), with its record under `archive/work/upstream-mul-mat-id-dup/`.
+See `WORKLOG.md` 261013.003 (r53).

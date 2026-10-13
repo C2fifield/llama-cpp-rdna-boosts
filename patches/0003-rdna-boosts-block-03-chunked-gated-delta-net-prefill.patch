@@ -1,4 +1,4 @@
-From fba47a514d8ad9ae1e1ee79c33f627f2bf23bacf Mon Sep 17 00:00:00 2001
+From 135fe990bcb78826c0e2f39244e1beac3c4856f4 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 03/11] rdna-boosts: block 03: chunked gated-delta-net prefill
@@ -3037,7 +3037,7 @@ index 882cdf4a5..f34b5de51 100644
      result->op     = GGML_OP_GATED_DELTA_NET;
      result->src[0] = q;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 9b1d80cbc..cc6e19319 100644
+index 50668ba15..35c96127b 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -195,6 +195,10 @@ llama_context::llama_context(

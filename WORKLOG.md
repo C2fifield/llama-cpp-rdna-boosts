@@ -1,5 +1,72 @@
 # WORKLOG - dated delivery records
 
+## 261013.003 (r53) -- PR #144 DFlash multi-sequence F1 folded into blocks 00/10/11, #138 fa-stage-prealloc into 09/10; upstream MUL_MAT_ID dup fix published
+
+**Release `v12-097cf33d9-r53`** (base `097cf33d9`, canonical tip `4b27ac644`, net tree
+`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); block count stays **12** (00-11).  Two contributor items
+were folded into the blocks that own their concerns (the r51 clean-separation goal); the third item is
+an `upstream/` candidate and the delivery ships **pure** on it.  **No Docker build for r53** (container
+images deferred to a later tag, per the maintainer).
+
+- **PR #144 `wip/dflash-multiseq`** (@overdoingism) -> **block 11** (`common/speculative.cpp`: F1 for
+  several sequences, `llama_lf_get_dev_rows`, the host-resident-MoE-experts guard), **block 10**
+  (`src/llama-context.{cpp,h}`, `src/llama-ext.h`: `lf_dev_rows`, `get_lf_dev_rows`, the
+  `output_reorder` guard) and **block 00** (`src/llama-context.cpp`: the `GGML_READBACK_SYNC` wait for
+  a ubatch without outputs, covering the per-token DFlash layer inputs).  The guard ships as the PR
+  wrote it: with `-ncmoe`/`-cmoe` several sequences stay on the host path (issue #127 MoE form).
+- **#138 `beta/fa-stage-prealloc`** (@DanoPTT) -> **block 09** (`ggml/src/ggml-cuda/common.cuh`:
+  `fattn_stage_try_get(size_hint)`) and **block 10** (`ggml/src/ggml-cuda/fattn-common.cuh`:
+  `launch_fattn` hint).  Default-on, `GGML_CUDA_FA_STAGE_PREALLOC=0` restores the 1.25x ladder; the
+  hint is tried only while `optional_alloc_within_free_cap(...)` allows it.
+- **Upstream `MUL_MAT_ID` duplicate-ids** (`archive/work/upstream-mul-mat-id-dup/`, formerly
+  `wip/upstream-mul-mat-id-dup/`): finished and published as
+  `upstream/UPSTREAM-PR-mul-mat-id-dup.{md,patch}` (applies clean to `097cf33d9` and current master
+  `1b70350c9`).  **Not in `patches/`** -- the delivery ships pure.  The fix makes `mm_ids_helper`
+  emit every repeated `(token, iex)` occurrence, loops the MMQ/MMF column tiles over the expanded
+  expert column list (stream-k keeps the worst-case grid width), routes every `MUL_MAT_ID` through the
+  compact MMF kernel, and removes the host fallback's first-match `break`.
+
+The fork chain was rebuilt with `git rebase -i` (blocks 00/09/10/11 amended, no message change), then
+`make-patches.sh` / `make-release.sh` regenerated `patches/` and `release.json`.
+
+**Validation (gfx1201, R9700).**
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `4083fd0e...`);
+- `scripts/gate-per-block-build.sh --changed-from 2f3349306`: **4/4** changed blocks (00/09/10/11) + the
+  tip build the `all` target (the other 8 block deltas are byte-identical to r52);
+- `scripts/gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %** PASS (unchanged);
+- `scripts/gate-qwen4exp-quant-coherence.sh`: PASS (GSQ-IQ3_XXS coherent, 0 `////`; the gather on/off
+  hash WARN is the documented qwen4exp `-sm tensor` run-to-run nondeterminism);
+- 4B `Qwen3.5-Q8_0` same-seed greedy identical to r52 (`1c5d32ac537d`); MoE greedy text varies
+  run-to-run (allowed; MTP acceptance is the bar);
+- DFlash, 27B UD-Q4_K_XL + DFlash2, 2 GPUs `-sm layer`: single sequence F1 on == off
+  (`834bfd5bf6b8`), F1 prefill 1181 vs 1099 t/s; `--parallel 2` (two pinned slots) F1 on == off
+  (slot0 `bd13536b7a7b`, slot1 `c8a25913427d`, acceptance 0.62121 / 0.48052), F1 ~5 % faster;
+  `-ncmoe 40` + `--parallel 2` logs the host-experts guard and stays coherent (**`-sm tensor` + DFlash
+  aborts on both r52 and r53 -- pre-existing, not a regression**);
+- 35B-A3B draft-MTP 2 GPUs (`-sm tensor -c 16384 -n 3000`, bf16 KV, prose): acceptance **0.77302**
+  identical to r52, **191.8** vs plain **108.9 t/s** (3-GPU acceptance **0.733** identical);
+- `test-logits-width-probe`: **PASS (worst maxdiff 0)** on 4B and 35B-A3B;
+- `test-backend-ops -o TOPK_MOE` **448/448**; `-o MUL_MAT_ID -p 'n=1,'` **162/162**;
+- dense batched `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (27B Q4_K_XL, q8_0 KV, 3 GPUs):
+  B=1 28.1-28.6, B=4 103.4-104.4, B=8 180.5-181.8 t/s, within noise of r52 across interleaved rounds;
+- upstream `MUL_MAT_ID` fix (base + patch): `-o MUL_MAT_ID -p 'dup=1'` 16/16 (base 0/16), full
+  `-o MUL_MAT_ID` 947/947, `-o MUL_MAT` 2444/2444, `scripts/check-gpu-faults.sh` clean; 35B-A3B Q8_0
+  pp512/pp2048 2587/2577 vs unpatched 2588/2563 t/s (within noise).
+
+**ENVIRONMENT/docs.**  New `GGML_CUDA_FA_STAGE_PREALLOC` row (default on, kill-switch);
+`GGML_LF_DFLASH_DEV` updated for the multi-sequence F1 and the host-experts guard.  `archive/work/`
+RESOLUTIONs for `dflash-multiseq`, `fa-stage-prealloc` and `upstream-mul-mat-id-dup`; `wip/CAMPAIGNS.md`
+updated; `wip/upstream-mul-mat-id-dup/` moved to `archive/work/`.
+
+**Known open defects (pre-existing, unchanged):** `TODO.md` #56/#57; `-sm tensor` + DFlash aborts
+(`llama-model.cpp` / `ggml-backend-meta.cpp`, r52 does it too); the upstream `MUL_MAT_ID` dup bug is
+now fixed as an `upstream/` candidate only.
+
+**Release artifacts.**  Delivery `main` + tag `v12-097cf33d9-r53`; the personal fork's `rdna-boosts`
+branch is refreshed to the r53 tree (`--force-with-lease`).  Container images are **not** rebuilt for
+this tag (deferred, per the maintainer).
+
 ## 261013.002 (r52) -- four contributor WIP PRs folded into their owning blocks (#140, #141, #142, #143)
 
 **Release `v12-097cf33d9-r52`** (base `097cf33d9`, canonical tip `2f3349306`, net tree
