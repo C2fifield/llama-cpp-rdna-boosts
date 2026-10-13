@@ -1,0 +1,90 @@
+From c098af050f1d9897840de3e2d5761cc039776d2d Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Tue, 13 Oct 2026 20:24:43 +0000
+Subject: [PATCH] llama: read a state save's deferred tensor ranges as merged
+ spans (LLAMA_STATE_GET_MERGE_GAP)
+
+llama_io_write_host flushed every deferred write_tensor as its own synchronous ggml_backend_tensor_get.  Under
+concurrent decoding a sequence's KV cells are interleaved with the other slots' a few tokens at a time, so a slot save
+read ~8,000-10,000 short ranges (~40 us each on ROCm, 340-400 ms per save).  Consecutive reads of one tensor whose gaps
+are at most LLAMA_STATE_GET_MERGE_GAP bytes (default 256 KiB, 0 = the old per-range reads) are now read as one span and
+scattered on the host: 109 gets per save (one per tensor), 25-65 ms.  The saved bytes are the same.  If the host span
+buffer cannot be allocated, that run falls back to per-range reads (the destructor must not throw).
+
+On our local build (Flash-Next IQ3_XXS + MTP, all experts in VRAM, -sm tensor, 4 slots): the first short request after
+6 concurrent chats 2168 -> 661 ms, 6 concurrent chats 140.3 -> 162.1 t/s; greedy output unchanged.  See README.md for
+the r52 numbers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/llama-context.cpp | 54 ++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index a42cdf3e4..2a58643df 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3584,9 +3584,57 @@ public:
+             uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
+ 
+     ~llama_io_write_host() {
+-        // TODO: add backend support to batch tensor_get? or some other way to speed this up
+-        for (const auto & winfo : winfos) {
+-            ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
++        // Each ggml_backend_tensor_get is a synchronous device copy with a fixed cost (tens of us on ROCm), and a sequence's
++        // KV cells are often many short ranges (concurrent decoding interleaves the slots' cells a few tokens at a time), so
++        // the deferred reads of one tensor whose gaps are at most LLAMA_STATE_GET_MERGE_GAP bytes (default 256 KiB, 0 = off)
++        // are read as one span and scattered on the host.  The bytes written are the same.
++        static const size_t max_gap = [] {
++            const char * e = getenv("LLAMA_STATE_GET_MERGE_GAP");
++            return e != nullptr ? (size_t) strtoull(e, nullptr, 10) : (size_t) 256*1024;
++        }();
++        if (max_gap == 0) {
++            for (const auto & winfo : winfos) {
++                ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
++            }
++        } else {
++            std::vector<uint8_t> span_buf;
++            for (size_t i = 0; i < winfos.size(); ) {
++                // [i, j): consecutive reads of one tensor, each starting at or after the previous one's end
++                const write_info & first = winfos[i];
++                size_t end = first.offset + first.size;
++                bool   dst_contiguous = true;
++                size_t j = i + 1;
++                for (; j < winfos.size(); ++j) {
++                    const write_info & w = winfos[j];
++                    if (w.tensor != first.tensor || w.offset < end || w.offset - end > max_gap) {
++                        break;
++                    }
++                    dst_contiguous = dst_contiguous && w.offset == end && w.ptr == winfos[j - 1].ptr + winfos[j - 1].size;
++                    end = w.offset + w.size;
++                }
++                bool merged = j - i == 1 || dst_contiguous;
++                if (merged) {
++                    ggml_backend_tensor_get(first.tensor, first.ptr, first.offset, end - first.offset);
++                } else {
++                    try {
++                        span_buf.resize(end - first.offset);
++                        merged = true;
++                    } catch (const std::bad_alloc &) {
++                        // no host memory for the span (a destructor must not throw): read the pieces one by one
++                    }
++                    if (merged) {
++                        ggml_backend_tensor_get(first.tensor, span_buf.data(), first.offset, end - first.offset);
++                        for (size_t k = i; k < j; ++k) {
++                            memcpy(winfos[k].ptr, span_buf.data() + (winfos[k].offset - first.offset), winfos[k].size);
++                        }
++                    } else {
++                        for (size_t k = i; k < j; ++k) {
++                            ggml_backend_tensor_get(winfos[k].tensor, winfos[k].ptr, winfos[k].offset, winfos[k].size);
++                        }
++                    }
++                }
++                i = j;
++            }
+         }
+     }
+ 
+-- 
+2.53.0
+
