@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`d8ad56737`** (block 11 rebased) |
-| block 10 (amended) | **`1fa36b3ea`** |
+| Phase-2 branch | `v2-phase2` = **`d86bcf088`** (block 11 rebased) |
+| block 10 (amended) | **`fbed3f4c0`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -127,8 +127,45 @@ Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 <delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
 tree delta is exactly the intended extraction.
 
-**Checkpoint 1** (`checkpoints/v2-phase2-ckpt1.bundle`, tag `pin/v2-phase2-ckpt1`): `v2-phase2` =
-`d8ad56737`, block 10 = `1fa36b3ea`.  Restore instructions in `checkpoints/README.md`.
+**Checkpoint 2** (`checkpoints/v2-phase2-ckpt2.bundle`, tag `pin/v2-phase2-ckpt2`): `v2-phase2` =
+`d86bcf088`, block 10 = `fbed3f4c0`.  **Checkpoint 1** (`checkpoints/v2-phase2-ckpt1.bundle`, tag
+`pin/v2-phase2-ckpt1`): `v2-phase2` = `d8ad56737`, block 10 = `1fa36b3ea`.  Restore instructions in
+`checkpoints/README.md`.
+
+## 7b. Batching pass 1 — conv/norm, decode/norm folds, MWR (2026-10-12, session 2)
+
+After the maintainer's go-ahead, the remaining block-10-owned arms were extracted in clusters.  All are
+pure moves; every cluster cleared a fresh tip build, 4B same-seed, qwen4exp dense+sparse, 35B-A3B,
+`test-backend-ops` where applicable, the full per-block `all` build (**12/12**) and
+`gate-prefill-logits.sh` (**0.000707 / 98.755 %**).
+
+### Cluster A — conv1d + narrow-row norm → `ple-conv.cu` / `gdn-conv.cu` / `norm-gated.cu`
+
+`ggml_cuda_ple_conv_try_fuse`, `ggml_cuda_gdn_conv_try_fuse`, `ggml_cuda_norm_rows_try_fuse`.  Hoist:
+`ggml_cuda_compute_forward` is now non-static (declared in `common.cuh`) so `norm-gated.cu` can
+dispatch the gate `MUL_MAT` before the fused norm.  Kill-switch A/Bs (`GGML_CUDA_DISABLE_CONV_FUSION=1`,
+`GGML_CUDA_DISABLE_NORM_ROWS=1`) bit-identical.
+
+### Cluster B — cpy-batch / GDN / SSM / norm-fold arms + helper hoists
+
+- `ggml_cuda_cpy_batch_try_fuse` → `cpy-batch.cu`.
+- `ggml_cuda_gdn_beta_sigmoid_try_fuse` + `ggml_cuda_gdn_cache_cpy_try_fuse` → `gated_delta_net.cu`.
+- `ggml_cuda_ssm_scan_cache_cpy_try_fuse` → `ssm-scan.cu`.
+- `ggml_cuda_add_rms_q8_1_try_fuse` + `ggml_cuda_norm_q8_1_try_fuse` → `norm.cu`.
+- Hoists: `ggml_cuda_is_view_or_noop` → `common.cuh` (inline); `ggml_cuda_should_fuse_mul_mat_vec_q`
+  → `mmvq.cu`/`.cuh`; `ggml_cuda_try_gdn_cache_fusion` → `gated_delta_net.cu`;
+  `ggml_cuda_try_ssm_scan_cache_fusion` → `ssm-scan.cu`; `ggml_cuda_check_fusion_memory_ranges`
+  now non-static (declared in `common.cuh`).
+
+### Cluster C — MoE weighted reduction (MWR) → `moe-weighted-reduction.cu`
+
+`ggml_cuda_moe_weighted_reduction_try_fuse` (matcher already portable in `ggml-moe-weighted-reduction.h`).
+
+`try_fuse` is now mostly an ordered list of guarded one-line calls.  Remaining block-10-owned arms:
+`weighted_down`, `mul_mat_q_pair`, `swiglu_mmq` (routed + dense), `ssm_conv_in`, `ssm_prescan`,
+`moe_down_fold`, dual-output mmvq, `scale_unary`, the `hc_comb` cluster and the `hc` gate-mix arm.
+Then the 5 block-09-owned arms (`glu_q8_1`, `shared_expert`, `l2_norm_pair`, `gate_beta_verify`,
+`shexp_down_gate`) and the 3 block-08-owned arms (`gdn_gate`, `scale_unary`, `topk_moe`).
 
 ## 8. Scale of the remaining work
 
