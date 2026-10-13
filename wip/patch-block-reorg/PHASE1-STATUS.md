@@ -1038,3 +1038,60 @@ qwen4exp / QSA / HC16 content (i.e. r50's qwen4exp-side tree).  The remaining v2
 - **Still not committed as block 10**: the qwen4exp coherence test fails (one token) until old-15's
   HC16/qwen4exp/QSA-W1–W3 content is pulled in.  Scratch `v2-block10` (uncommitted working changes on
   top of `2890c1864`) holds the QSA-dispatch + GDN work.
+
+---
+
+## 23. Phase-1 chain COMPLETE — 12 blocks, tree-invariant (2026-10-12, session 3)
+
+Blocks **10 `qwen4exp`** (merged with the planned `11 qsa`, per the maintainer's "QSA is part of the
+qwen4exp architecture") and **11 `campaign remainder`** are committed.  The Phase-1 tree now equals the
+reference tip **exactly**.
+
+| # | alias | commit | change |
+|---|---|---|---|
+| 00 | foundation | `4143c62af` | (as before) |
+| 01 | allreduce | `320fecf0d` | (as before) |
+| 02 | mtp-adaptive | `8401ee71f` | (as before) |
+| 03 | gdn | `8f244219d` | (as before) |
+| 04 | bf16-kv | `2a1502311` | (as before) |
+| 05 | fa | `05e88da52` | (as before) |
+| 06 | mmb | `298060c73` | (as before) |
+| 07 | kquant | `95d15bad9` | (as before) |
+| 08 | fused-kernels | **`5ae8cb848`** | §21: restored the old-08 GDN/SSM/Q8_1 fusion arms |
+| 09 | slab-moe | **`0a5d26280`** | §18: restored 4 base Meta split-state cases; rebased on 08 |
+| 10 | qwen4exp | **`27f159a7a`** | old-14 + old-15's qwen4exp/QSA/HC16, QSA dispatch, GDN beta-sigmoid, lazy reader, indexer cache |
+| 11 | campaign-remainder | **`a40841e1e`** | CPU wins (sampling/quants/repack/arch-fallback), ggml-alloc plumbing, backend iface NULL fills, DFlash F1, FA build grouping |
+
+**Tree invariant:** `git diff a40841e1e af0595360` is **empty** (`release.json.tree`
+`f102245dfb116f02f6b3f572df7fb413a5c65cf8`), i.e. the Phase-1 chain reproduces the published delivery
+byte-for-byte.
+
+| gate (final build `build-per-block`) | result |
+|---|---|
+| per-block fresh `all` build, `097cf33d9..a40841e1e` | **12/12** |
+| tree == `release.json.tree` | **exact** |
+| `gate-prefill-logits.sh` | mean KLD **0.000707**, same-top-p **98.755 %** — PASS |
+| 4B Q8_0 same-seed greedy vs r50 | **identical** |
+| qwen4exp (`Qwen3.8-Flash-Next-Q4_K_M`, `-sm tensor`) dense + sparse vs r50 | **identical** |
+| `test-backend-ops -o FLASH_ATTN_QSA` | **22/22** |
+| `test-lazy-reader` | **all passed** |
+| `test-llama-archs -a qwen4exp` GPU rows | **all OK** (1 FAIL = §19/`TODO #57` CPU mixed-batch, also in r50) |
+
+### Deviations from the original 14-block plan (recorded)
+
+- The planned `11 qsa` **merged into `10 qwen4exp`** (QSA is intrinsic to the architecture — §22).
+- The planned `12/13 mmap-reclaim` did **not** become its own block: taking r50's loader into block 10
+  carried the `LLAMA_LOAD_RELEASE_MMAP` reclaim with it.  A later refinement could peel it out.
+- `11 campaign-remainder` is a **catch-all**, not a single concern (G1 deviation): the old-15 CPU wins,
+  backend iface fills, DFlash and the FA build grouping have no natural earlier home.  Splitting it is a
+  Phase-2/3 refinement.
+
+### Known delivery defects carried (not reorg artifacts; see TODO)
+
+- `TODO #56` — `test-llama-archs -a deepseek2` GPU fault (host experts + `--moe-cache-mib`); present in
+  the published tip.
+- `TODO #57` — `test-llama-archs` **CPU mixed-batch FAIL**; present in the published tip
+  (r50 `FAIL 3.52e-01` vs base `OK 3.32e-14`), bit-identical in the v2 chain.
+
+Next: `scripts/make-patches.sh` + `make-release.sh` + `validate-set.sh` for the Phase-1 checkpoint, then
+Phase 2.

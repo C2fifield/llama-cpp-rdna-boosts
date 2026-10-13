@@ -47,6 +47,22 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 57. `test-llama-archs` CPU mixed-batch FAIL is a delivery regression — CORRECTNESS
+
+**Opened 2026-10-12 (found during the `patch-block-reorg` Phase-1 block-10 gate; recorded as a known
+issue).**  `test-llama-archs`'s **CPU** row (`AMD Ryzen … | MoE | ... | Mixed batch`) FAILs for the
+published delivery but **passes at the upstream base `097cf33d9`**:
+
+| build | `qwen4exp` CPU Mixed batch | `deepseek2` CPU Mixed batch |
+|---|---|---|
+| base `097cf33d9` | **OK (3.32e-14)** | **OK (6.28e-10)** |
+| reference tip `84058162b` (r50) | **FAIL (3.52e-01)** | **FAIL (9.37e-01)** |
+| v2 block 10 `27f159a7a` | **FAIL (3.52e-01)** (bit-identical to r50) | (same) |
+
+So it is a **pre-existing delivery defect in the published tip**, not a reorg artifact — the same class
+as #56.  It was missed because the release gates do not run `test-llama-archs`.  Reproduce:
+`build/bin/test-llama-archs -a qwen4exp -s 42` (CPU row) vs the upstream base (passes).
+
 ### 56. `test-llama-archs -a deepseek2` GPU memory fault with host experts + `--moe-cache-mib` — CORRECTNESS
 
 **Opened 2026-10-12 (found during the `patch-block-reorg` Phase-1 block-09 gate; recorded as a known
