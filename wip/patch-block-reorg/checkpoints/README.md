@@ -4,6 +4,17 @@ Exact, restorable snapshots of the Phase-2 `v2-phase2` chain.  A checkpoint is a
 range `<release.json.base>..v2-phase2`; it needs `097cf33d9` present in the target repo (it is the
 published upstream base, so any llama.cpp clone has it).
 
+## ckpt8 — `v2-phase2-ckpt8.bundle`
+
+| | |
+|---|---|
+| tag (in `~/llama.cpp`) | `pin/v2-phase2-ckpt8` = `9d6730dc8` |
+| branch tip | `v2-phase2` = `9d6730dc8` |
+| block 8 / 9 / 10 | `fcce5864e` / `96a7d0d16` / `5d472a3eb` |
+
+Item 3 step 2: the remaining RDNA launch-parameter helpers moved to `mmvq-rdna-params.cuh`,
+re-homed in block 08.  `width_purity` PASS.  See `../PHASE2-STATUS.md` §9.
+
 ## ckpt7 — `v2-phase2-ckpt7.bundle`
 
 | | |

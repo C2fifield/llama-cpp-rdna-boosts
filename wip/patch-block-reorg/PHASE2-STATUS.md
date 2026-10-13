@@ -9,8 +9,8 @@ published delivery).  Phase 2 works on top of it on branch **`v2-phase2`**.
 | ref | value |
 |---|---|
 | Phase-1 checkpoint | `v2-phase1` = `a40841e1e` (12 blocks, tree == `af0595360`) |
-| Phase-2 branch | `v2-phase2` = **`24ef342b3`** (block 11) |
-| block 8/9/10 | **`51bfc6c7f` / `eb2105b51` / `50f5fa1d1`** |
+| Phase-2 branch | `v2-phase2` = **`9d6730dc8`** (block 11) |
+| block 8/9/10 | **`fcce5864e` / `96a7d0d16` / `5d472a3eb`** |
 | delivery repo | `~/llama-cpp-rdna-boosts` (`main`) |
 
 ## 1. Method (as executed)
@@ -127,8 +127,9 @@ Then the maintainer's `ggml-cuda.cu` split (`ggml-cuda-try-fuse.cu`, `-slab.cu`,
 <delivery-tip>` empty-check does not apply after Phase 2 changes the tree; the correct check is that the
 tree delta is exactly the intended extraction.
 
-**Checkpoint 7** (`checkpoints/v2-phase2-ckpt7.bundle`, tag `pin/v2-phase2-ckpt7`): `v2-phase2` =
-`24ef342b3`; block 08 = `51bfc6c7f`, block 09 = `eb2105b51`, block 10 = `50f5fa1d1`.  **Checkpoint 6**:
+**Checkpoint 8** (`checkpoints/v2-phase2-ckpt8.bundle`, tag `pin/v2-phase2-ckpt8`): `v2-phase2` =
+`9d6730dc8`; block 08 = `fcce5864e`, block 09 = `96a7d0d16`, block 10 = `5d472a3eb`.  **Checkpoint 7**:
+`24ef342b3` / block 08 `51bfc6c7f` / 09 `eb2105b51` / 10 `50f5fa1d1`.  **Checkpoint 6**:
 `cf9c2e474` / block 08 `8296626db` / 09 `9cf2c7181` / 10 `bf1fbfa55`.  **Checkpoint 5**: `8326733e1` /
 block 08 `8296626db` / 09 `7ffdd65e9` / 10 `11ddfb213`.  **Checkpoint 4**: `9c1ec61d6` / block 10
 `3238b04e9`.  **Checkpoint 3**: `463c1d598` / `952aa59f7`.  **Checkpoint 2**: `d86bcf088` /
@@ -278,8 +279,16 @@ Gates: `test-logits-width-probe` **width_purity=PASS (worst maxdiff 0)** on 4B a
 qwen4exp dense/sparse identical to r50; per-block `all` **12/12**; prefill-logit **0.000707 /
 98.755 %**.
 
-**Item 3, step 2 (next):** move the remaining RDNA launch-policy helpers out of `mmvq.cu`
-(`calc_nwarps_weight`, `calc_rows_per_block_override`, `calc_rows_per_block_weight`,
-`mmvq_decode_grid_loop_type`, the `GGML_MMVQ_RDNA4_*` macros) into `mmvq-rdna.cuh` (they must be
-defined after `calc_nwarps`, so they need a second include point or a forward declaration), and
-consider moving the `mul_mat_vec_q_moe` / item-split kernels to `mmvq-moe.cu`.
+**Item 3, step 2 — the rest of the RDNA launch policy → `mmvq-rdna-params.cuh`.**  `calc_nwarps_weight`,
+`calc_rows_per_block_override`, `calc_rows_per_block_weight`, `mmvq_decode_grid_loop_type` and the
+`GGML_MMVQ_RDNA4_*` macros moved to a second header (`mmvq-rdna-params.cuh`) included by `mmvq.cu`
+right after `calc_rows_per_block()` (they call `calc_nwarps`/`calc_rows_per_block`, so they need a
+later include point than the `mmvq-rdna.cuh` nwarps hook).  `calc_rows_per_block` itself is
+**upstream-unchanged** and stays in `mmvq.cu`.  Re-homed in block 08; the 09/10/11 rebase was clean
+and the four `mmvq*` files are byte-identical to the validated tree.
+
+Gates: `test-logits-width-probe` **PASS** (4B + 35B, worst maxdiff 0); 4B + qwen4exp dense/sparse
+identical; per-block `all` **12/12**; prefill-logit **0.000707 / 98.755 %**.
+
+**Item 3, step 3 (next):** the MoE item-split kernel `mul_mat_vec_q_moe` (+ its launch) → a separate
+`mmvq-moe.cu`; then the `llama-batched-bench -npl 1,4,8` stock-relative perf gate.
