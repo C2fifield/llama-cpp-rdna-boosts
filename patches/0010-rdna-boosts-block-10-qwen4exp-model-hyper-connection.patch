@@ -1,4 +1,4 @@
-From 5937cd681da00f16d7ef0146a3f9b78c1d1cbb09 Mon Sep 17 00:00:00 2001
+From 233d98723fe5f5e01bc665ee67a9d484d5a9a29d Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -490,7 +490,7 @@ index 337709f31..9cac9c2c3 100644
  
  bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index fe9a31c3f..278dac781 100644
+index cfc5766ab..6ad3c8668 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
 @@ -1213,6 +1213,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
@@ -23384,10 +23384,10 @@ index cd838c120..939d928bf 100644
              return !ranges.empty();
          }
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 970693f94..16fbdfc3f 100644
+index 2fdcbd512..4f69ceee8 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -432,7 +432,46 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
+@@ -385,7 +385,46 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
  struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const struct ggml_tensor * tensor, void * userdata) {
      const llama_meta_device_get_split_state_userdata * ud = (const llama_meta_device_get_split_state_userdata *) userdata;
      const llama_hparams & hparams = ud->model->hparams;
@@ -23435,7 +23435,7 @@ index 970693f94..16fbdfc3f 100644
      const bool is_dsv4 = ud->model->arch == LLM_ARCH_DEEPSEEK4 ||
          (ud->model->arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0);
  
-@@ -2498,6 +2537,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
+@@ -2451,6 +2490,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
      return ret;
  }
  
@@ -23462,7 +23462,7 @@ index 970693f94..16fbdfc3f 100644
  uint64_t llama_model::n_elements() const {
      return pimpl->n_elements;
  }
-@@ -3140,10 +3199,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3093,10 +3152,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
          default:
              {
                  // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
@@ -23515,7 +23515,7 @@ index 970693f94..16fbdfc3f 100644
  
                  const bool mtp_on_hybrid_nemotron =
                      params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -3936,7 +4036,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+@@ -3889,7 +3989,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
      TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
      TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
      TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),
@@ -23525,7 +23525,7 @@ index 970693f94..16fbdfc3f 100644
  
  ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
      GGML_ASSERT(ml != nullptr);
-@@ -4071,23 +4172,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -4024,23 +4125,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }

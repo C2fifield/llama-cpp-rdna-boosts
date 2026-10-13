@@ -11,7 +11,18 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r53` (2026-10-13) -- PR #144 DFlash multi-sequence F1 + #138 fa-stage-prealloc:**
+> **Current release `v12-097cf33d9-r54` (2026-10-13) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed, gemma4 `-sm tensor` rejection lifted (block 09):**
+> canonical tip `c816fc32c`, net tree `71f524a5215acdbdcb4b951d04e387366479d31f`; strict **12/12**
+> `git am` (`validate-set.sh` green), 4B `Qwen3.5-Q8_0` same-seed greedy **byte-identical to r53**
+> (`1c5d32ac537d`), gemma4 26B-A4B `-ncmoe 40 -sm tensor` coherent with cache-on == cache-off, `-sm
+> layer` and all-resident unchanged, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
+> pre-existing `dup=1` fails as r53), DFlash2 `-sm tensor` now a clean `use -sm layer` rejection.  The
+> two changed blocks are **09** (`ggml-backend-meta.cpp` segmented async/sync upload + `llama-model.cpp`
+> gemma4 guard removed) and **11** (`src/llama.cpp` DFlash2 selector guard).  Known cost: the sync
+> per-op segmented upload puts that gemma4 config at ~9 t/s; the async follow-up is
+> `wip/meta-segmented-upload-async/`.  See `../WORKLOG.md` 261013.004 (r54).
+>
+> **Previous release `v12-097cf33d9-r53` (2026-10-13) -- PR #144 DFlash multi-sequence F1 + #138 fa-stage-prealloc:**
 > canonical tip `4b27ac644`, net tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`; strict **12/12**
 > `git am` (`validate-set.sh` green), per-block build 4/4 (blocks 00/09/10/11), `gate-prefill-logits.sh`
 > 0.000707 / 98.755 % PASS, `gate-qwen4exp-quant-coherence.sh` PASS, 4B greedy `1c5d32ac537d` unchanged,

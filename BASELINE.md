@@ -2,13 +2,15 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r53`** (canonical tip `4b27ac644`, net tree
-`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`).  r53 folds PR #144 (DFlash F1 for several sequences and
-`GGML_READBACK_SYNC` for a ubatch without outputs; blocks 00/10/11) and issue #138's
-`fa-stage-prealloc` (blocks 09/10); the upstream `MUL_MAT_ID` duplicate-ids fix is an `upstream/`
-candidate only.  The applied tree is not tree-identical to the 16-block r50 set (Phase 1
-redistributed the concerns; Phase 2 moved each into a self-contained function/file).  See
-`WORKLOG.md` 261013.003 (r53), 261013.002 (r52) and 261013.001 (r51).  The entries below are the
+**`v12-097cf33d9-r54`** (canonical tip `c816fc32c`, net tree
+`71f524a5215acdbdcb4b951d04e387366479d31f`).  r54 folds two WIP-cleanup fixes into their owning
+blocks: **block 11** (a clean DFlash2 `-sm tensor` rejection; real fix re-seeded as
+`wip/dflash-meta-split-impl/`) and **block 09** (segmented host-resident expert upload fixed, gemma4
+`-sm tensor` rejection lifted; async perf follow-up `wip/meta-segmented-upload-async/`).  The
+`ssm_alpha`/`ssm_beta` fusion (item 5(b)) was re-measured and closed below the bar.  The applied tree
+is not tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each
+into a self-contained function/file).  See `WORKLOG.md` 261013.004 (r54), 261013.003 (r53),
+261013.002 (r52) and 261013.001 (r51).  The entries below are the
 **pre-V2.0 (16-block) provenance history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

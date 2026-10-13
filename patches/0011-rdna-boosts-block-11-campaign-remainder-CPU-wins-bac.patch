@@ -1,4 +1,4 @@
-From 4b27ac6448ae9fe785eca0a208b3788dc501751d Mon Sep 17 00:00:00 2001
+From c816fc32c8431a1d9b82d306211483815325004e Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -35,8 +35,9 @@ reference tip af0595360 (release.json.tree) exactly.
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
+ src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 24 files changed, 539 insertions(+), 85 deletions(-)
+ 25 files changed, 550 insertions(+), 85 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -1008,6 +1009,28 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
+diff --git a/src/llama.cpp b/src/llama.cpp
+index f031e6555..5c77bb1fa 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -375,6 +375,17 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
+         } catch(const std::exception & e) {
+             throw std::runtime_error("error loading model hyperparameters: " + std::string(e.what()));
+         }
++        // TODO #58: a DFlash2 drafter with a selector builds `ggml_top_k` over the draft logits, which
++        // `-sm tensor` vocab-splits (axis 0); the Meta backend cannot reduce a per-row op across a split
++        // axis and aborts in `ggml-backend-meta.cpp`.  Reject cleanly with a `-sm layer` hint instead of
++        // aborting mid-load.  A real Meta distributed-top-k / split-to-mirrored gather is tracked in
++        // `wip/dflash-meta-split/`.
++        if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && model->arch == LLM_ARCH_DFLASH &&
++            model->hparams.dflash_selector_rank > 0) {
++            throw std::runtime_error("LLAMA_SPLIT_MODE_TENSOR is not supported for a DFlash2 drafter with a "
++                                     "selector: its per-row TOP_K over the vocab-split draft logits has no "
++                                     "tensor-split path -- use -sm layer for that config");
++        }
+         if (model->arch == LLM_ARCH_CLIP) {
+             throw std::runtime_error("CLIP cannot be used as main model, use it with --mmproj instead");
+         }
 diff --git a/src/models/dflash.cpp b/src/models/dflash.cpp
 index b6cb6bfb9..b80e3d95f 100644
 --- a/src/models/dflash.cpp

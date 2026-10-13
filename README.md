@@ -20,7 +20,10 @@ byte-identical to r50).  **`r52`** folds four contributor WIP PRs (#140-#143) in
 blocks 01/02/08/10 (all-reduce events/P2P, MTP prompt-tail ingest, `topk_moe` sorted
 keys, short-K MoE rows-per-block).  **`r53`** folds PR #144 (DFlash device-resident features for
 several sequences, blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10,
-default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).
+default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).  **`r54`** folds two WIP-cleanup fixes into their owning
+blocks: a clean DFlash2 `-sm tensor` rejection (**block 11**, `-sm layer` is the supported config) and
+the segmented host-resident expert upload fix that enables gemma4 + `-ncmoe`/`-cmoe` + `-sm tensor`
+(**block 09**; the async/per-row perf follow-up is `wip/meta-segmented-upload-async/`).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

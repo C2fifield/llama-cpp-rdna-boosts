@@ -6,14 +6,16 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r53`, 2026-10-13):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `4b27ac644`, net tree
-**`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r53 folds PR #144 (DFlash F1 for several sequences + the readback wait, blocks
-00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the upstream `MUL_MAT_ID` duplicate-ids
-fix is an `upstream/` candidate only.  V2.0 re-organized the former 16-block set by concern and moved each
+**Current state (release `v12-097cf33d9-r54`, 2026-10-13):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `c816fc32c`, net tree
+**`71f524a5215acdbdcb4b951d04e387366479d31f`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r54 folds the WIP-cleanup code changes into the blocks that own them: a clean
+DFlash2 `-sm tensor` rejection (**block 11**, TODO #58; real fix re-seeded as
+`wip/dflash-meta-split-impl/`) and the segmented host-resident expert upload fix that lifts the gemma4
+`-sm tensor` rejection (**block 09**; the async-perf follow-up is `wip/meta-segmented-upload-async/`).
+The `ssm_alpha`/`ssm_beta` fusion (item 5(b)) was re-measured and closed below the bar.  V2.0 re-organized the former 16-block set by concern and moved each
 concern into a self-contained function/file; the applied tree is behaviour-preserving (all same-seed gates
-byte-identical to r50).  See `WORKLOG.md` 261013.003 (r53).  **Previous (16-block) state:** r49 added the mmap
+byte-identical to r50).  See `WORKLOG.md` 261013.004 (r54) and 261013.003 (r53).  **Previous (16-block) state:** r49 added the mmap
 host-memory reclaim (block 06): the loader no longer faults the
 whole model file in up front and it unmaps each tensor's mapping range right after the copy to its device
 buffer, so a `-ncmoe` load never holds the full mapping and the pinned host master at once
@@ -53,6 +55,13 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 ## Active (kept compact: only what this repo will work on next)
 
 ### 58. `-sm tensor` + DFlash aborts in the Meta split-state build — CORRECTNESS
+
+**RESOLVED (2026-10-13), folded into `v12-097cf33d9-r54` (block 11).**  The aborting op was the DFlash2
+selector's `ggml_top_k` over the vocab-split draft logits (axis 0); r54 replaces the raw assert with a
+clean `-sm layer` rejection at model load.  The real fix (a Meta distributed top-k / split-to-mirrored
+gather) is re-seeded as `wip/dflash-meta-split-impl/`.  Record:
+`archive/work/dflash-meta-split/RESOLUTION.md`; `WORKLOG.md` 261013.004.  The body below is the
+original finding, kept for history.
 
 **Opened 2026-10-13 (found while validating PR #144's multi-sequence DFlash on 2x R9700).**  A DFlash
 target plus drafter (`-md`, `--spec-type draft-dflash`) under `-sm tensor` aborts at model load:
@@ -479,9 +488,10 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
 - **MoE topk fusion adoption (item 5(a)).**  ~0.5 % prefill for a ~188 MB arena cost and a numerics fork
   (fused top1 logit 18.424 -> 18.690 vs the unfused reference), so it needs a quality gate before it can
   be trusted.  `archive/work/wip-archive/qwen4exp/discovery/2026-09-06-strix-halo-gfx1151-launch-overhead-topk.md`.
-- **`ssm_alpha` + `ssm_beta` single-walk fusion (item 5(b)).**  ~0.3-0.6 % prefill, blocked by the graph
-  expansion order (the two MMs are non-adjacent) -> needs a graph restructure or load-time stacked
-  weights.  `archive/work/wip-archive/qwen4exp/discovery/2026-09-06-strix-halo-gfx1151-cijk-dense-gemm.md`.
+- **`ssm_alpha` + `ssm_beta` single-walk fusion (item 5(b)) — CLOSED 2026-10-13.**  Re-measured on
+  r53: 1.43x on the pair at N=8192 (bit-identical on gfx1201), but only ~0.3-0.6 % prefill and blocked
+  by the non-adjacent DFS order; closed below the adoption bar.
+  `archive/work/ssm-alpha-beta-fusion/RESOLUTION.md`.
 
 ## Where the current lists live
 
@@ -497,24 +507,19 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
 - Memory campaign (wins, V3/V4 plans, Block 15 record — now promoted to `patches/0015`): `archive/work/block-15-campaign-wins/HANDOVER.md`,
   `README.md`, `BETA-TESTING.md`; upstream PR candidates: `upstream/README.md`.
 
-## Parked: finish the meta segmented expert upload (host-resident experts under `-sm tensor`)
+## Parked: segmented expert upload performance (async per-row sets) — RESOLVED into r54, perf follow-up OPEN
 
-`llm_arch_supports_sm_tensor()` no longer rejects `LLM_ARCH_GEMMA4` outright (r9, issue #99): an
-all-resident or `-ngl`-offloaded gemma4 splits under `-sm tensor`, and only a host-resident expert
-table (`-ncmoe`/`-cmoe`, detected in `llama_model_create`) and the MTP head (`gemma4-assistant`) are
-rejected.  The remaining work is the segmented per-ubatch upload for a host-resident expert table:
-gemma4's fused expert tensor (`ffn_gate_up_exps`) has a segmented split layout (`n_segments`/`nr`),
-and `ggml_backend_meta_set_tensor_async` only handles a contiguous slice, so the MMQ tail pad that
-`copy_experts` appends makes the range non-row-aligned.
+**The correctness half is DONE (r54, block 09):** `-sm tensor` + a host-resident gemma4 expert table
+(`-ncmoe`/`-cmoe`) is no longer rejected and generates coherently.  The old accumulate fallback dropped
+the scheduler's partial segmented upload, and the sync segmented setter asserted on the `copy_experts`
+MMQ tail pad; both are fixed.  Record: `archive/work/meta-segmented-expert-upload/RESOLUTION.md`;
+`WORKLOG.md` 261013.004.
 
-A partial fix exists but is **not** landed (it hung non-deterministically, one GPU spinning): port
-`ggml_backend_meta_buffer_set_tensor`'s segmented handling into the async setter, copy the
-row-aligned part through the segments and the <=512-byte pad as a flat per-device range, and use
-per-row 1-D async sets instead of the 2-D pageable `hipMemcpy2DAsync` (which faults on this shape).
-Give it a deterministic repro (e.g. `compute-sanitizer`, or the `GGML_CUDA_SPLICE_GATHER` /
-`GGML_META_PINHOST` force-modes) before retrying.  All of it is in
-`archive/work/moe-expert-cache/item3-findings-session20.md`; the issue-#99 gate change is in
-`archive/work/issue-99/README.md`.
+**The performance half is OPEN** in `wip/meta-segmented-upload-async/`: the fix routes the per-op
+segmented upload through the **synchronous** setter, so gemma4 + `-ncmoe` + `-sm tensor` runs at only
+~9 t/s (was an abort/rejection before, so no working config regresses).  The follow-up is to make that
+upload async again (per-row 1-D `set_async` + the tail), with the sync arm as the A/B reference and
+`cache-on == cache-off` byte-identity as the correctness oracle.
 
 ## Merge hygiene — finer block-06 dispatch split (r50 follow-up)
 

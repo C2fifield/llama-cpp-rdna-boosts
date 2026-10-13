@@ -5,14 +5,16 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r53`** (canonical tip `4b27ac644`, net tree
-`4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green), per-block `all` build **4/4** changed blocks (00/09/10/11), prefill-logit 0.000707 / 98.755 %
-PASS, qwen4exp quant-coherence PASS, width-purity PASS, `TOPK_MOE` 448/448, `MUL_MAT_ID` mmvq
-162/162, dense batched B=1/4/8 within noise, 4B greedy `1c5d32ac537d` unchanged, DFlash 2-slot F1 on ==
-off, 35B-A3B draft-MTP acceptance 0.77302 (2 GPUs) / 0.733 (3 GPUs) unchanged.  r53 folds PR #144
-(blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10); the applied tree is not
-tree-identical.  **No Docker for r53.**  The r53 record is `WORKLOG.md` 261013.003; the r52 fold is
+**`097cf33d9`**, released as **`v12-097cf33d9-r54`** (canonical tip `c816fc32c`, net tree
+`71f524a5215acdbdcb4b951d04e387366479d31f`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green), 4B greedy `1c5d32ac537d` unchanged from r53, gemma4 26B-A4B `-ncmoe 40 -sm tensor` coherent
+(cache-on == cache-off), `-sm layer`/all-resident unchanged, `MUL_MAT_ID` no regression (the same 4
+pre-existing `dup=1` fails as r53), DFlash2 `-sm tensor` clean rejection.  r54 folds two WIP-cleanup
+fixes into their owning blocks: **block 11** (a clean DFlash2 `-sm tensor` rejection; real fix re-seeded
+as `wip/dflash-meta-split-impl/`) and **block 09** (segmented host-resident expert upload fixed, gemma4
+`-sm tensor` rejection lifted; async perf follow-up `wip/meta-segmented-upload-async/`).  **Docker for
+r54: pending.**  The r54 record is `WORKLOG.md` 261013.004; r53 is `WORKLOG.md` 261013.003 (release
+`v12-097cf33d9-r53`, tip `4b27ac644`, tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); the r52 fold is
 `WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree
 `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); the V2.0 re-org and its r51 validation are
 `WORKLOG.md` 261013.001, archived at `archive/work/patch-block-reorg/`.

@@ -1,4 +1,4 @@
-From 53f573638caee4387d785da0c4d94c5f23fd94aa Mon Sep 17 00:00:00 2001
+From f7cfc4cb0c6ab282d48dd86d8c38b0f8617e7522 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -28,7 +28,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/include/ggml-backend.h              |   70 +
  ggml/src/ggml-alloc.c                    |   85 +-
  ggml/src/ggml-backend-impl.h             |  182 +
- ggml/src/ggml-backend-meta.cpp           | 1088 +++++-
+ ggml/src/ggml-backend-meta.cpp           | 1121 +++++-
  ggml/src/ggml-backend.cpp                | 1141 ++++++-
  ggml/src/ggml-blas/ggml-blas.cpp         |    6 +
  ggml/src/ggml-cann/ggml-cann.cpp         |    6 +
@@ -69,13 +69,13 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  src/llama-mmap.h                         |    5 +
  src/llama-model-loader.cpp               |  238 +-
  src/llama-model-loader.h                 |   33 +-
- src/llama-model.cpp                      |  166 +-
+ src/llama-model.cpp                      |  119 +-
  src/llama-model.h                        |    4 +
  src/llama-quant.cpp                      |    2 +-
  src/llama.cpp                            |    2 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   60 +-
- 57 files changed, 11750 insertions(+), 326 deletions(-)
+ 57 files changed, 11734 insertions(+), 328 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -1075,7 +1075,7 @@ index dc7367dec..dd50b3b76 100644
  
      struct ggml_backend_device {
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index 0d130fcd2..fe9a31c3f 100644
+index 0d130fcd2..cfc5766ab 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
 @@ -4,6 +4,7 @@
@@ -1613,7 +1613,41 @@ index 0d130fcd2..fe9a31c3f 100644
  
      return GGML_STATUS_SUCCESS;
  }
-@@ -1714,7 +1975,7 @@ void ggml_backend_meta_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_
+@@ -1487,9 +1748,9 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+ 
+         const size_t row_stride = tensor->nb[2];
+         GGML_ASSERT(offset % row_stride == 0);
+-        GGML_ASSERT(size   % row_stride == 0);
+         const int64_t row_start = offset / row_stride;
+         const int64_t row_count = size   / row_stride;
++        const size_t  tail      = size   % row_stride;   // the scheduler's <=512-byte MMQ tail pad
+         GGML_ASSERT(row_start + row_count <= tensor->ne[2]);
+ 
+         for (size_t s = 0; s < split_state.n_segments; s++) {
+@@ -1505,7 +1766,21 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+                 }
+             }
+         }
+-        GGML_ASSERT(offset_data*row_count == size);
++        GGML_ASSERT(offset_data*row_count == size - tail);
++
++        // `copy_experts` appends `min(expert_size, 512)` bytes of the next expert so the MMQ padding is
++        // finite.  The row-aligned loop above cannot express that tail, so place it flat at each
++        // device's next expert slot (the exact bytes are irrelevant -- only that they are finite).
++        if (tail > 0) {
++            GGML_ASSERT(row_start + row_count + 1 <= tensor->ne[2]);
++            const char * pad_src = (const char *) data + size - tail;
++            for (size_t j = 0; j < n_bufs; j++) {
++                ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
++                const size_t dst_off = (size_t) (row_start + row_count) * simple_tensor->nb[2];
++                GGML_ASSERT(dst_off + tail <= ggml_nbytes(simple_tensor));
++                ggml_backend_tensor_set(simple_tensor, pad_src, dst_off, tail);
++            }
++        }
+         return;
+     }
+ 
+@@ -1714,7 +1989,7 @@ void ggml_backend_meta_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_
      }
  }
  
@@ -1622,7 +1656,7 @@ index 0d130fcd2..fe9a31c3f 100644
      const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
  
      const ggml_init_params params = {
-@@ -1730,7 +1991,9 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+@@ -1730,7 +2005,9 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
      std::vector<ggml_backend_buffer_t> bufs;
      bufs.reserve(n_simple_bufts);
      for (size_t i = 0; i < n_simple_bufts; i++) {
@@ -1633,7 +1667,7 @@ index 0d130fcd2..fe9a31c3f 100644
          GGML_ASSERT(bufs.back() != nullptr);
          max_size = std::max(max_size, ggml_backend_buffer_get_size(bufs.back()));
      }
-@@ -1739,6 +2002,10 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+@@ -1739,6 +2016,10 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
      return ggml_backend_buffer_init(buft, ggml_backend_meta_buffer_iface, buf_ctx, max_size);
  }
  
@@ -1644,7 +1678,7 @@ index 0d130fcd2..fe9a31c3f 100644
  static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_backend_buffer_type_t buft, ggml_tensor ** tensors, int n_tensors) {
      const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
  
-@@ -1837,6 +2104,48 @@ struct ggml_backend_meta_context {
+@@ -1837,6 +2118,48 @@ struct ggml_backend_meta_context {
      size_t                      max_subgraphs = 0;
      size_t                      n_subgraphs   = 0;
      uint64_t                    uid           = 0;
@@ -1693,7 +1727,7 @@ index 0d130fcd2..fe9a31c3f 100644
  
      void *                               comm_ctx       = nullptr;
      ggml_backend_comm_allreduce_tensor_t comm_allreduce = nullptr;
-@@ -1859,6 +2168,26 @@ struct ggml_backend_meta_context {
+@@ -1859,6 +2182,26 @@ struct ggml_backend_meta_context {
          }
          name += ")";
  
@@ -1720,7 +1754,7 @@ index 0d130fcd2..fe9a31c3f 100644
          if (n_devs > 1) {
              ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
                  ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_init");
-@@ -1881,6 +2210,12 @@ struct ggml_backend_meta_context {
+@@ -1881,6 +2224,12 @@ struct ggml_backend_meta_context {
              GGML_ASSERT(comm_free != nullptr);
              comm_free(comm_ctx);
          }
@@ -1733,21 +1767,36 @@ index 0d130fcd2..fe9a31c3f 100644
          for (auto & bc : backend_configs) {
              ggml_backend_free(bc.backend);
          }
-@@ -1902,12 +2237,32 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
+@@ -1902,12 +2251,47 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
  
  static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
 -    GGML_ASSERT(offset == 0);
      GGML_ASSERT(ggml_is_contiguous(tensor));
++    if (size == 0) {
++        // A zero-element tensor has no meaningful meta split state (UNKNOWN); nothing to upload.
++        return;
++    }
  
      const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
 -    GGML_ASSERT(split_state.n_segments == 1);
 -    GGML_ASSERT(split_state.nr[0]      == 1);
 +    if (split_state.n_segments != 1 || split_state.nr[0] != 1 || split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
-+        // UPSTREAM PR #22466 (adapted): a layout the contiguous-chunk splice cannot express.  The
-+        // loader uploads such a tensor in chunks at increasing offsets, so accumulate them and hand the
-+        // whole tensor to `set_tensor` (which stages through pinned memory) once it is complete.
 +        const size_t total = ggml_nbytes(tensor);
++        // A row-aligned range (the scheduler's per-op upload of a pruned expert group, possibly with the
++        // MMQ tail pad) is handed to the sync setter, which places each device's segmented slice and
++        // handles the tail.  A mid-row chunk (the loader's pinned async-upload pipeline, adapted from
++        // upstream PR #22466) is accumulated and flushed whole.
++        size_t row_stride = 0;
++        if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_0) {
++            row_stride = tensor->nb[1];
++        } else if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_1) {
++            row_stride = tensor->nb[2];
++        }
++        if (row_stride > 0 && offset % row_stride == 0) {
++            ggml_backend_tensor_set(tensor, data, offset, size);
++            return;
++        }
 +        if (offset == 0 && size == total) {
 +            ggml_backend_tensor_set(tensor, data, 0, size);
 +            return;
@@ -1769,7 +1818,7 @@ index 0d130fcd2..fe9a31c3f 100644
  
      switch (split_state.axis) {
          case GGML_BACKEND_SPLIT_AXIS_0:
-@@ -1915,25 +2270,82 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
+@@ -1915,25 +2299,82 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
          case GGML_BACKEND_SPLIT_AXIS_2: {
              // Exploit that tensors are contiguous to splice it with simple tensors as "chunks".
              const size_t chunk_size_full = tensor->nb[split_state.axis + 1];
@@ -1867,7 +1916,7 @@ index 0d130fcd2..fe9a31c3f 100644
              for (size_t j = 0; j < n_backends; j++) {
                  ggml_backend_tensor_set_async(
                      ggml_backend_meta_simple_backend(backend, j), ggml_backend_meta_buffer_simple_tensor(tensor, j), data, offset, size);
-@@ -1947,13 +2359,25 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
+@@ -1947,13 +2388,25 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
  
  static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
@@ -1895,7 +1944,7 @@ index 0d130fcd2..fe9a31c3f 100644
      switch (split_state.axis) {
          case GGML_BACKEND_SPLIT_AXIS_0:
          case GGML_BACKEND_SPLIT_AXIS_1:
-@@ -1978,12 +2402,6 @@ static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggm
+@@ -1978,12 +2431,6 @@ static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggm
              }
              GGML_ASSERT(offset_j == chunk_size_full);
          } break;
@@ -1908,7 +1957,7 @@ index 0d130fcd2..fe9a31c3f 100644
          default: {
              GGML_ABORT("fatal error");
          }
-@@ -1997,6 +2415,247 @@ static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
+@@ -1997,6 +2444,247 @@ static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
      }
  }
  
@@ -2156,7 +2205,7 @@ index 0d130fcd2..fe9a31c3f 100644
  static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
      GGML_ASSERT(cgraph->grads == nullptr);
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
-@@ -2046,6 +2705,17 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2046,6 +2734,17 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
  
              for (int i = 0; i < cgraph->n_nodes; i++) {
                  ggml_tensor * node = cgraph->nodes[i];
@@ -2174,7 +2223,7 @@ index 0d130fcd2..fe9a31c3f 100644
                  if (!ggml_backend_buffer_is_meta(node->buffer)) {
                      // [TAG_META_HOST_VIEWS]
                      GGML_ASSERT(ggml_backend_meta_is_host_view(node));
-@@ -2059,6 +2729,39 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2059,6 +2758,39 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
              }
          }
  
@@ -2214,7 +2263,7 @@ index 0d130fcd2..fe9a31c3f 100644
          {
              // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
              auto get_i_delayed_branch = [&](const int i) -> int {
-@@ -2289,7 +2992,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2289,7 +3021,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
              backend_ctx->ctx.reset(ggml_init(params));
              for (size_t j = 0; j < n_backends; j++) {
                  auto & bcj = backend_ctx->backend_configs[j];
@@ -2226,7 +2275,7 @@ index 0d130fcd2..fe9a31c3f 100644
                      bcj.cgraphs[i].cgraph_main = ggml_new_graph_custom(backend_ctx->ctx.get(), cgraph->n_nodes, /*grads =*/ false);
                  }
              }
-@@ -2321,6 +3027,33 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2321,6 +3056,33 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
                  cgraph_ij->uid = ggml_graph_next_uid();
              }
          }
@@ -2260,7 +2309,7 @@ index 0d130fcd2..fe9a31c3f 100644
      }
  
      size_t iga = 0; // i graph aux
-@@ -2504,6 +3237,176 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2504,6 +3266,176 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
      return GGML_STATUS_SUCCESS;
  }
  
@@ -2437,7 +2486,7 @@ index 0d130fcd2..fe9a31c3f 100644
  static const ggml_backend_i ggml_backend_meta_i = {
      /* .get_name                = */ ggml_backend_meta_get_name,
      /* .free                    = */ ggml_backend_meta_free,
-@@ -2518,9 +3421,20 @@ static const ggml_backend_i ggml_backend_meta_i = {
+@@ -2518,9 +3450,20 @@ static const ggml_backend_i ggml_backend_meta_i = {
      /* .graph_plan_update       = */ nullptr,
      /* .graph_plan_compute      = */ nullptr,
      /* .graph_compute           = */ ggml_backend_meta_graph_compute,
@@ -13980,71 +14029,10 @@ index 9e51d0ce7..cd838c120 100644
      void unmap_weight(const llama_tensor_weight & w) const;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index cde6808b8..970693f94 100644
+index cde6808b8..2fdcbd512 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -360,6 +360,47 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
- 
- }
- 
-+// gemma4's fused expert tensor (`ffn_gate_up_exps`) has a SEGMENTED split layout (n_segments/nr).
-+// When the expert table is host-resident (`-ncmoe`/`-cmoe` pushes a CPU-buffer override for it),
-+// the per-ubatch upload has no correct path under tensor split: ggml_backend_meta_set_tensor_async
-+// only understands a contiguous single-segment slice, so the meta assert fires.  An all-resident
-+// model, or one offloaded by `-ngl`/`--fit` (whole layers on the CPU backend, no per-ubatch upload),
-+// is fine.  Detect the override so only the crashing configuration is rejected, with a clear message
-+// instead of an assert (issue #99).
-+static bool llm_params_have_host_expert_override(const llama_model_params & params) {
-+    if (params.tensor_buft_overrides == nullptr) {
-+        return false;
-+    }
-+    // Representative gemma4 expert weight names; the `-ncmoe`/`-cmoe` patterns are
-+    // `...ffn_(up|down|gate|gate_up)_(ch)?exps`, which these match.
-+    static const char * const probes[] = {
-+        "blk.0.ffn_gate_up_exps.weight",
-+        "blk.0.ffn_down_exps.weight",
-+    };
-+    for (const llama_model_tensor_buft_override * o = params.tensor_buft_overrides; o->pattern != nullptr; ++o) {
-+        if (o->buft == nullptr) {
-+            continue;
-+        }
-+        const ggml_backend_dev_t dev = ggml_backend_buft_get_device(o->buft);
-+        const enum ggml_backend_dev_type dev_type =
-+            dev == nullptr ? GGML_BACKEND_DEVICE_TYPE_CPU : ggml_backend_dev_type(dev);
-+        if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-+            continue;   // the expert table stays device-resident
-+        }
-+        try {
-+            const std::regex pat(o->pattern);
-+            for (const char * probe : probes) {
-+                if (std::regex_search(std::string(probe), pat)) {
-+                    return true;
-+                }
-+            }
-+        } catch (const std::regex_error &) {
-+            // an invalid pattern is reported by the loader; ignore it here
-+        }
-+    }
-+    return false;
-+}
-+
- llama_model * llama_model_create(llm_arch arch, const llama_model_params & params) {
-     llama_model * model = llama_model_mapping(arch, params);
- 
-@@ -368,6 +409,12 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
-         if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && !llm_arch_supports_sm_tensor(arch)) {
-             throw std::runtime_error(std::string("LLAMA_SPLIT_MODE_TENSOR not implemented for architecture '") + llm_arch_name(arch) + "'");
-         }
-+        if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && arch == LLM_ARCH_GEMMA4 &&
-+            llm_params_have_host_expert_override(params)) {
-+            throw std::runtime_error("LLAMA_SPLIT_MODE_TENSOR is not supported for gemma4 with host-resident "
-+                                     "experts (-ncmoe/-cmoe): the fused expert tensor's segmented per-ubatch "
-+                                     "upload has no tensor-split path -- use -sm layer for that config");
-+        }
-     }
- 
-     return model;
-@@ -1662,9 +1709,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1662,9 +1662,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
          return {dev, &pimpl->gpu_buft_list.at(dev)};
      };
  
@@ -14069,7 +14057,7 @@ index cde6808b8..970693f94 100644
  
      // assign the repeating layers to the devices according to the splits
      pimpl->dev_layer.resize(n_layer_all);
-@@ -1868,6 +1927,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1868,6 +1880,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
          }
      }
  
@@ -14079,7 +14067,7 @@ index cde6808b8..970693f94 100644
      // per-tensor activation precision policy
      prec_policy.load(ml, *this);
  
-@@ -1933,6 +1995,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1933,6 +1948,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                  }
                  bufs.emplace_back(buf);
                  buf_map.emplace(idx, buf);
@@ -14096,7 +14084,7 @@ index cde6808b8..970693f94 100644
              }
          } else {
              ggml_backend_buffer_t buf;
-@@ -3337,6 +3409,7 @@ llama_model_params llama_model_default_params() {
+@@ -3337,6 +3362,7 @@ llama_model_params llama_model_default_params() {
          /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
@@ -14104,7 +14092,7 @@ index cde6808b8..970693f94 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -3348,6 +3421,7 @@ llama_model_params llama_model_default_params() {
+@@ -3348,6 +3374,7 @@ llama_model_params llama_model_default_params() {
          /*.no_host                     =*/ false,
          /*.no_alloc                    =*/ false,
          /*.load_mtp                    =*/ false,
@@ -14112,7 +14100,7 @@ index cde6808b8..970693f94 100644
      };
  
      return result;
-@@ -3771,6 +3845,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
+@@ -3771,6 +3798,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
      return model->tensors_by_name;
  }
  
@@ -14185,7 +14173,7 @@ index cde6808b8..970693f94 100644
  int32_t llama_model_n_expert(const struct llama_model * model) {
      return model->hparams.n_expert;
  }
-@@ -3931,3 +4071,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -3931,3 +4024,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }

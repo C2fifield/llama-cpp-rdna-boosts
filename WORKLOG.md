@@ -1,5 +1,53 @@
 # WORKLOG - dated delivery records
 
+## 261013.004 (r54) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed and gemma4 rejection lifted (block 09)
+
+**Release `v12-097cf33d9-r54`** (base `097cf33d9`, canonical tip `c816fc32c`, net tree
+`71f524a5215acdbdcb4b951d04e387366479d31f`); block count stays **12** (00-11).  Two of the four
+campaigns from the r53-seeded WIP cleanup were resolved by real code changes folded into the blocks
+that own their concerns; the third was closed as a measured no-go; the fourth (host-expert master
+drop) is deferred to its own session.  The fork chain was rebuilt with `git rebase -i --autosquash`
+(the two fixups amended blocks 09 and 11, no message change), then `make-patches.sh` / `make-release.sh`
+regenerated `patches/` and `release.json`.
+
+- **TODO #58 (`wip/dflash-meta-split` -> `archive/work/dflash-meta-split/`) -> block 11.**  The DFlash2
+  `-sm tensor` abort was root-caused: the selector (`src/models/dflash.cpp:538`, called at `:888`) runs
+  `ggml_top_k` over the draft logits, which `-sm tensor` vocab-splits (axis 0), and the Meta per-row
+  handler (`ggml-backend-meta.cpp:707`) cannot reduce across a split axis.  `src/llama.cpp` now rejects
+  a DFlash2 drafter with a selector under `-sm tensor` with a clean `use -sm layer` message (was a
+  SIGABRT at load).  The real fix (a Meta distributed top-k / split-to-mirrored gather) is re-seeded as
+  `wip/dflash-meta-split-impl/`.
+- **Segmented host-resident expert upload (`wip/meta-segmented-expert-upload` ->
+  `archive/work/meta-segmented-expert-upload/`) -> block 09.**  `ggml_backend_meta_set_tensor_async`'s
+  whole-tensor accumulate fallback (PR #22466, for the loader's chunked upload) **silently dropped**
+  the scheduler's partial per-op upload of a pruned `ffn_gate_up_exps` group; the sync segmented setter
+  then asserted on the `copy_experts` `min(expert_size,512)` MMQ tail pad.  The fix: zero-size uploads
+  are a no-op, row-aligned segmented ranges go to the sync setter (tail pad placed flat per device),
+  and mid-row loader chunks still accumulate.  The gemma4 host-expert `-sm tensor` rejection (and its
+  helper) is removed, so gemma4 MoE + `-ncmoe`/`-cmoe` + `-sm tensor` now loads and generates.  **Known
+  cost:** the synchronous per-op segmented upload puts that config at ~9 t/s; the async/per-row-1-D-set
+  optimization is re-seeded as `wip/meta-segmented-upload-async/` (the config was previously rejected,
+  so no working config regresses).
+- **`ssm_alpha` + `ssm_beta` fusion (item 5(b), `archive/work/ssm-alpha-beta-fusion/`): CLOSED.**
+  Re-measured on r53/gfx1201 (1.43x on the pair at N=8192, bit-identical here) but only ~0.3-0.6 %
+  prefill and the two MMs remain non-adjacent in the DFS graph; below the adoption bar.
+
+**Validation (gfx1201, 2x R9700).**
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, base
+  tree `30c400cc...`, applied tree `71f524a5...`);
+- 4B `Qwen3.5-Q8_0` same-seed greedy **byte-identical to r53** (`1c5d32ac537d`);
+- gemma4 26B-A4B `-ncmoe 40 -sm tensor` (default cache-on) loads and generates coherently; cache-on ==
+  cache-off byte-identical; `-sm layer -ncmoe 40` and all-resident `-sm tensor -ngl 99` unchanged;
+- `test-backend-ops -o MUL_MAT_ID`: no regression (the same 4 pre-existing `dup=1` fails as the r53
+  baseline -- the documented upstream duplicate-ids case);
+- DFlash2 `-sm tensor`: clean rejection (exit 1, no abort); `-sm layer` DFlash still generates.
+
+**Records / campaigns.**  `archive/docs/HANDOVER-2026-10-13-wip-cleanup.md` (the four-campaign
+handover); `RESOLUTION.md` x3 under `archive/work/`; new WIP campaigns `wip/dflash-meta-split-impl/`
+and `wip/meta-segmented-upload-async/`; `TODO.md` #58 resolved, the parked meta-upload section
+re-pointed at the perf follow-up, item 5(b) closed, and `wip/CAMPAIGNS.md` updated (item #55 /
+`host-expert-master-drop/` stays open, deferred).
+
 ## 261013.003 (r53) -- PR #144 DFlash multi-sequence F1 folded into blocks 00/10/11, #138 fa-stage-prealloc into 09/10; upstream MUL_MAT_ID dup fix published
 
 **Release `v12-097cf33d9-r53`** (base `097cf33d9`, canonical tip `4b27ac644`, net tree
