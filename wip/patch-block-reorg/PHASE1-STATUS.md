@@ -968,3 +968,35 @@ dispatch tables mutually consistent" rule and should be restored with the owning
 5. **(E)** restore the NULL fills with the owning block.
 
 Steps 1–2 and 5 are mechanical; 3 is trivial; 4 is a taxonomy decision.  No delivery files touched.
+
+---
+
+## 21. Blocks 00–09 sweep — fixes applied (2026-10-12, session 3)
+
+The functional drop (§20.2 A) is repaired and the chain re-verified.
+
+| block | before | after | change |
+|---|---|---|---|
+| 08 `fused-kernels` | `a32c95a6e` | **`5ae8cb848`** | restored the old-08 `ggml-cuda.cu` matcher arms: the GDN-gate chain (`fuse_gdn_gate` + `ggml_cuda_op_add_softplus_mul`), the SSM pre-scan (`disable_ssm_prescan` + `ggml_cuda_op_ssm_conv_l2_gatebeta`, the 16-node matcher), the `ggml_cuda_find_mul_q8_1_matmul` call + `ggml_cuda_op_unary_mul_q8_1`, and the `q8_1_arena` destructor free.  (`h2d_stage_free()` is left to block 09.) |
+| 09 `slab-moe` | `6d675ee23` | **`0a5d26280`** | rebased onto the amended 08 (destructor conflict resolved by keeping both the `q8_1_arena` frees and `h2d_stage_free()`). |
+
+| gate | result |
+|---|---|
+| per-block fresh `all` build, `097cf33d9..0a5d26280` | **10/10** |
+| 4B Q8_0 fusion on == off same-seed greedy | **identical** (the restored fusions are bit-identical) |
+| qwen4exp load + generate (`Qwen3.8-Flash-Next`, `-ngl 99 -sm tensor`) | **loads and generates** |
+
+### Still open from §20
+
+- **`05 fa`**: old-06's `generate_cu_files.py` per-head-size grouping (build-time only).
+- **Tests**: the old-04 Q6_K/Q8_0 `test_mul_mat` shapes and the old-08 `test_argsort`/`iq4_nl` cases.
+- **(D) old-15 content with no v2 owner**: `common/sampling.cpp`, `ggml-cpu/arch/x86/quants.c`,
+  `repack.cpp`, `arch-fallback.h`, `gated_delta_net.cuh`, `src/models/dflash.cpp`, `common/speculative.cpp`
+  (F1).  Decision needed (new `campaign-memory` block vs fold into `02`/`07`).
+- **(E)** the `stage_gather` / `moe_cache_*` NULL iface fills in the non-CUDA backends.
+
+### Block 10 re-check after the sweep
+
+Rebased onto `0a5d26280`; the qwen4exp **dense arm still diverges from r50** ("question" vs "query"), i.e.
+the cause is the WIP's missing **old-15 qwen4exp** content, not the block-08 fusions.  Scratch
+`v2-block10` = `2890c1864`.

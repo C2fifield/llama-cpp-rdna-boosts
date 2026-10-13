@@ -20,10 +20,10 @@ The maintainer decided (this session) that the planned 08+09 are **one `fused-ke
 | ref | value |
 |---|---|
 | delivery repo | `~/llama-cpp-rdna-boosts` (branch `main`, **pushed**) |
-| Phase-1 worktree | `~/llama-v2` (worktree of `~/llama.cpp`), branch **`v2-phase1`** = **`6d675ee23`** (blocks 00–09, clean) |
+| Phase-1 worktree | `~/llama-v2` (worktree of `~/llama.cpp`), branch **`v2-phase1`** = **`0a5d26280`** (blocks 00–09, clean) |
 | clean checkpoint tag | `pin/v2-phase1-00-04` = `2a1502311` |
 | block-10 WIP | branch **`v2-qwen4exp-wip`** = **`0d3e20323`** (do **not** use for anything else) |
-| block-08 source | branch `v2-prefill-wip` = `5f11da3ce` (squashed into block 08 `a32c95a6e`) |
+| block-08 source | branch `v2-prefill-wip` = `5f11da3ce` (squashed into block 08 `5ae8cb848`) |
 | reference release | `release.json` base `097cf33d9`, tip `84058162b` (tree `f102245dfb116f02f6b3f572df7fb413a5c65cf8`) |
 | canonical chains | `~/llama.cpp` (rdna-boosts), `~/llama-rebase` |
 | r49 known-good build | `~/llama.cpp/build-rocm-hybrid` (tip `f0a74f4cc`) |
@@ -45,8 +45,8 @@ Block map so far: 00 foundation, 01 allreduce, 02 mtp-adaptive, 03 gdn, 04 bf16-
 | 05 fa | `05e88da52` | 24 + 286 instances | `FLASH_ATTN_EXT` 6389/6389 ×3 arms; prefill-logit **0.000586 / 98.725 %**; same-seed == r49 |
 | 06 mmb | `298060c73` | `mmb.{cu,cuh}` +3 | `MUL_MAT` 2444/2444; MMB prefill-only |
 | 07 kquant | `95d15bad9` | 9 | `MUL_MAT` 2444/2444 |
-| 08 fused-kernels | `a32c95a6e` | 27 + 6 | fusion on == off; `width_purity` PASS; MUL_MAT 2444/2444; prefill-logit PASS |
-| 09 slab-moe | `6d675ee23` | 55 | 35B-A3B `-ncmoe 40` cache off == on; prefill-logit PASS |
+| 08 fused-kernels | `5ae8cb848` | 27 + 6 | fusion on == off; `width_purity` PASS; MUL_MAT 2444/2444; prefill-logit PASS |
+| 09 slab-moe | `0a5d26280` | 55 | 35B-A3B `-ncmoe 40` cache off == on; prefill-logit PASS |
 
 **Per-block fresh `all` build gate:** `scripts/gate-per-block-build.sh --repo ~/llama-v2 --base
 097cf33d9 --tip "$(git -C ~/llama-v2 rev-parse v2-phase1)" --build-dir build-per-block` → **10/10**.
@@ -73,7 +73,7 @@ machinery `hc-mix`/`hyperconn`/`dsv4-hc`, HC ops in `ggml.h`/`ggml.c`, `llama-me
   keyword triage misses (recorded as a Phase-2 item).
 
 **First thing to do next session (diagnose the fault):**
-1. Build `6d675ee23` (block 09) into `build-per-block` and run `test-llama-archs` — does the fault
+1. Build `0a5d26280` (block 09) into `build-per-block` and run `test-llama-archs` — does the fault
    predate block 10? (The qwen4exp rows will be absent at 09, but the fault may be arch-independent.)
 2. If it predates 10, bisect block 07's `mmvf.cu` (the old-15 `nrows` guard + `ggml_cuda_grid_stall_pad`
    launch) and block 08's `mmvf.cu` `batched_reduce` — those are the two changes to that kernel.
@@ -82,8 +82,8 @@ machinery `hc-mix`/`hyperconn`/`dsv4-hc`, HC ops in `ggml.h`/`ggml.c`, `llama-me
 
 > **DIAGNOSED (session 3): see `PHASE1-STATUS.md` §15.**  The fault **predates block 10** but is **not
 a reorg/block-10 artifact and not even a v2 artifact**: with a fixed seed (`-s 42`, `-a deepseek2`)
-the upstream base `097cf33d9` **passes 7/7**, v2 block 08 `a32c95a6e` **passes**, v2 block 09
-`6d675ee23` **faults**, and the untouched **published reference tip `84058162b` also faults** (identical
+the upstream base `097cf33d9` **passes 7/7**, v2 block 08 `5ae8cb848` **passes**, v2 block 09
+`0a5d26280` **faults**, and the untouched **published reference tip `84058162b` also faults** (identical
 `mul_mat_vec_f<float,float,1,64,false,true>` signature).  It is a **pre-existing delivery defect inside
 the block-09 `slab-moe` concern** (host-expert pinned loader / Meta / scheduler / cache hooks) on the
 upstream `--moe-cache-mib` engine path; the grid-pad and `batched_reduce` hypotheses are excluded
@@ -92,7 +92,7 @@ decision on how/when to fix it is pending (options in §15).  Do **not** block `
 
 > **BLOCK 09 FIXED (session 3, maintainer decision):** §17's dropped base content (the four
 `GGML_OP_LIGHTNING_INDEXER` / `GGML_OP_DSV4_HC_*` Meta split-state cases) is repaired; block 09 was
-amended to **`6d675ee23`** (see `PHASE1-STATUS.md` §18).  Per-block build gate **10/10**; base's
+amended to **`0a5d26280`** (see `PHASE1-STATUS.md` §18).  Per-block build gate **10/10**; base's
 qwen4exp model now loads+generates.  The §17.3 blocks-00–09 dropped-content sweep is **still open**.
 
 > **BLOCK 10 PROGRESS (session 3): see `PHASE1-STATUS.md` §16 + §19.**  The maintainer chose "move
@@ -102,7 +102,7 @@ WIP minus the six QSA/indexer `.cu/.cuh` files; `11 qsa` = those + the CUDA disp
 old-15 W1–W3.  On the amended block 09 the WIP still **aborted on load** — the missing
 `GGML_OP_HC_MIX`/`HC_COMBINE` CUDA dispatch (old-15 content); adding it makes the model load+generate,
 but the **dense arm still diverges from r50** ("question" vs "query"), so block 10 is **not finished**
-(§19).  Scratch: `v2-block10` (rebased onto `6d675ee23`).
+(§19).  Scratch: `v2-block10` (rebased onto `0a5d26280`).
 
 **Note on old-14's QSA/indexer files** (`fattn-qsa.cu`, `indexer-*.cu`, `mmvf.cu` additions,
 `mmq.cu`/`mmq.cuh`): they are currently inside the block-10 WIP. The plan puts QSA/indexer in `11 qsa`.
@@ -168,12 +168,12 @@ the Pushing policy.
 
 ```bash
 cd ~/llama-v2
-git log -1 --format='%h %s' v2-phase1          # 6d675ee23 (blocks 00-09, clean)
+git log -1 --format='%h %s' v2-phase1          # 0a5d26280 (blocks 00-09, clean)
 git checkout v2-qwen4exp-wip                   # the block-10 WIP (0d3e20323)
 # build is already in ~/llama-v2/build-per-block for this branch
 cd build-per-block && timeout 400 ./bin/test-llama-archs 2>&1 | tail -3   # reproduces the fault
 
 # 1) does the fault predate block 10?
-cd ~/llama-v2 && git worktree add /tmp/v2-b09 6d675ee23   # or: git checkout 6d675ee23
+cd ~/llama-v2 && git worktree add /tmp/v2-b09 0a5d26280   # or: git checkout 0a5d26280
 # build ggml-hip + test-llama-archs there and run it
 ```
