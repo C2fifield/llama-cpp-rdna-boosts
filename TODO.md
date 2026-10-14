@@ -80,7 +80,11 @@ deactivating persistence for the session.  **The map's data source is a device-s
 (R2), not the LFRU counters**: the identity fast path serves a fully-resident table without calling
 `access_locked`, so a big-arena run records no heat (measured: run1 identity 1 eager op / 16 hits vs
 run2 partial 30840 / 226923).  **Sequence: R2 tally first**, then the persisted map, then placement;
-R2 also repairs the host-pool warm order, which is currently id-ordered.
+R2 also repairs the host-pool warm order, which is currently id-ordered.  **R2 implemented + validated
+2026-10-15** (patch `wip/moe-heatmap-persistence/r2-device-tally.patch`, env `MOE_EXPERT_HEATMAP=1`):
+a fully-resident run now yields a full heat map (heat total 4.9M, 27873/29952 experts nonzero, top L38
+e209=4554) where before it recorded nothing (`hits=16`); prefill cost unchanged (1050.0 vs 1049.2 t/s),
+decode band gains no launch.  Persistence is the next increment.
 
 ### 61. Hotness-aware MoE arena placement and a phase-3 idle repack — PERFORMANCE
 

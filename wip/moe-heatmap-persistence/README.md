@@ -304,6 +304,61 @@ information to a file") describes a design where the cache has its own writer.  
 * Trigger the flush at **decode idle** (the server's "all slots are idle" / turn end) rather than a
   timer, so a busy server never pays disk I/O.
 
+### 2.6 R2 prototype — implemented and validated (2026-10-15)
+
+Patch: [`r2-device-tally.patch`](r2-device-tally.patch) (3 files, +219 lines; `ggml-cuda.cu`,
+`moe-expert-cache.{cu,h}`).  Env-gated **OFF** as a WIP prototype: `MOE_EXPERT_HEATMAP=1` (the
+promotion flips this to default-on when the cache is active on host experts).
+
+**What it does.**
+
+* A per-table `std::vector<uint32_t> heat` (saturating, non-decayed) plus a lazy device mirror
+  `heat_dev` (one raw `cudaMalloc` per table, ~1 KiB — deliberately NOT via `ggml_cuda_device_malloc`,
+  so a 1 KiB alloc can never trigger the arena yield ladder).
+* **Host feed (decode band):** `moe_cache_update_host` tallies `heat` from the true host routing it
+  already iterates.  Free, exact, no extra launch.
+* **Device feed (prefill band):** `moe_cache_heat_observe` (declared in the header, implemented in the
+  module) launches `moe_cache_heat_kernel` from the CUDA `mul_mat_id` dispatch.  It reads the raw
+  device ids and `atomicAdd`s per expert.
+* **Readback:** `heat_pull_locked` folds every device mirror into `heat` and zeroes it (at the report,
+  later at a persistence flush); `free_heat_dev_locked` does the pull+free on stand-down / migration /
+  re-size so the tally survives a boundary move.
+* **Report:** `moe_cache_report` prints the total, the nonzero/total expert count, and the global top-5
+  `(layer, role, expert)`, so a run shows whether the prior is populated and how peaked it is.
+
+**The enabling invariant (why the outer entry is always the true routing).**  The cache's slot-remap
+redirect is a *local* shallow-copy + re-entry inside `ggml_cuda_mul_mat_id`; the recursive call passes a
+stack `src0` with `buffer == nullptr` and `dst->src[2]` set to the remap.  So the **outer** entry always
+carries the graph's true raw ids, for every path — identity, eager, staged prefill.  The tally is
+launched at the outer entry only (`src0->buffer != nullptr`), and the two feeds are band-disjoint
+(host = decode, device = prefill) so nothing is double-counted and the decode latency path gains no
+launch.
+
+**Measured (35B-A3B UD-Q4_K_M, `-sm layer -ncmoe 40`, `-ub 2048`, 5256-token prompt).**
+
+| run | arena | `takeover` | `expert access hits` | heat total | heat nonzero | heat top |
+|---|---|---:|---:|---:|---:|---|
+| `MOE_EXPERT_CACHE_MIB=4096` | partial | 7800 | 52968 | 4 982 016 | 28398/30720 | L38 e209 = 4571 |
+| auto | fully resident (identity) | **1** | **16** | 4 915 888 | 27873/29952 | L38 e209 = 4554 |
+
+The second row is the **F7 gap closed**: before R2 a fully-resident run recorded nothing (`hits=16`);
+now it yields a full map from the device prefill tally alone.  The two rows nearly agree (L38 e209 4571
+vs 4554), i.e. **the prefill routing is an excellent proxy for the decode hot set** on this workload —
+which also justifies making the prefill feed the primary one.
+
+**Cost.**  Prefill `1049.99` vs `1049.23` t/s (`MIB=4096`), auto decode `75.77` vs `75.68` t/s — no
+measurable cost.  The device kernel is a few launches per prefill ubatch; the decode band adds none.
+
+**Known gaps / next.**
+
+1. The **decode identity** path still contributes no decode heat (it is exactly the fully-resident case,
+   which needs no map *for that run*; the prefill feed covers portability).  If wanted, a sampled
+   device tally on the decode band (every N tokens) closes it; measure the launch cost first.
+2. **Persistence** (the file, geometry key, atomic write, 60 s debounce, read-only fallback) is §2.2 and
+   is the next increment; the accumulator is ready for it.
+3. `moe_cache_get_stats` does not expose the heat; the per-turn server seam (`server-context.cpp:737`)
+   is the natural flush trigger for the debounced write.
+
 ## 3. Hypotheses / work to do
 
 1. **H1 (first-turn win).**  With a persisted heat map, a cold server start on a repeated workload
