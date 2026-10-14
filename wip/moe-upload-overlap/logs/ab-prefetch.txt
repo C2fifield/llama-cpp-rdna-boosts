@@ -44,3 +44,11 @@ compute + H2D copy stream (overlap)       81.35 ms  = compute + 0.7 ms
 # all-up-front prefetch regresses because it adds ~0.09 s of scheduler idle even though it lowers the
 # GPU kernel time.  The idle location is the open thread (candidate: pre-pass host cost + slot/D2D
 # ordering); a production-quality prefetch needs to eliminate it before this can be a win.
+
+## phase breakdown (COMPUTE_SPLITS, measured pass, -r 1)
+# arm          wall     issue   copy    gc      other
+noprefetch     587.9   0.007   573.6   14.2    0.02   (ms)
+prefetch       609.1   0.003   580.0   14.8   14.3
+# -> the pass is ~573 ms of the host BLOCKING in copy_input (graph-input syncs + cross-backend
+#    copies waiting for the GPU).  The prefetch regression is the pre-pass (~14 ms) + ~6 ms copy.
+#    NOT idle, NOT contention.  (An earlier "88 ms idle" reading from the meta-GC span was wrong.)
