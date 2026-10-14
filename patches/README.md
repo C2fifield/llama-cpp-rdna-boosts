@@ -11,7 +11,19 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r56` (2026-10-13) -- four contributor WIP PRs folded into blocks 08/09/10/11:**
+> **Current release `v12-097cf33d9-r57` (2026-10-14) -- `-Wshadow` scoped to the dangerous class on GCC (block 00) + two GCC-only warning fixes (blocks 09/10):**
+> canonical tip `a300075f7`, net tree `8a56fb31267ecc523c423845662d76571f934a51`; strict **12/12**
+> `git am` (`validate-set.sh` green), build `all` green with **0** warnings, 4B `Qwen3.5-Q8_0` same-seed
+> greedy byte-identical to r56.  Three blocks amended, **no new block**: **00** (the `llama` C++ target
+> uses `-Wshadow=local` for GNU — GCC's `-Wshadow` also reports the ubiquitous member-shadow constructor
+> idiom and "hides constructor", which the delivery does not police; clang keeps plain `-Wshadow`),
+> **09** (the AMX buffer type's designated initializer lists `get_compute_margin_pct` /
+> `alloc_buffer_usage` / `get_compute_chunk_bytes`, appended to `ggml_backend_buffer_type_i`),
+> **10** (`GGML_ASSERT(slot >= 0 && slot < n_slots)` -> `slot < n_slots`; `slot` is `size_t`).  Found via
+> the container (GCC 13.3) build log: 24,178 `-Wshadow` lines -> 815 unique sites, all GCC-only.  See
+> `../WORKLOG.md` 261014.001 (r57).
+>
+> **Previous release `v12-097cf33d9-r56` (2026-10-13) -- four contributor WIP PRs folded into blocks 08/09/10/11:**
 > canonical tip `5d51f478c`, net tree `d718f97a502d77eb609c09d540b24282e52b4284`; strict **12/12**
 > `git am` (`validate-set.sh` green), the rebuilt tip tree byte-identical to the gated tree, 4B
 > `Qwen3.5-Q8_0` same-seed greedy unchanged, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS,

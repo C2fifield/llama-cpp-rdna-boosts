@@ -1,4 +1,4 @@
-From 306b9193f1f70f987d237c57e93c101b381578de Mon Sep 17 00:00:00 2001
+From 53ae90536c6cb244e6ac2fc4df980fd72b9c23d3 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -77,7 +77,7 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml-cuda/mmvq-moe.cu                |  359 ++
  ggml/src/ggml-cuda/mmvq-moe.cuh               |   14 +
  ggml/src/ggml-cuda/mmvq-vecdot.cuh            |   85 +
- ggml/src/ggml-cuda/mmvq.cu                    |  817 ++-
+ ggml/src/ggml-cuda/mmvq.cu                    |  816 ++-
  ggml/src/ggml-cuda/mmvq.cuh                   |   12 +-
  ggml/src/ggml-cuda/moe-weighted-reduction.cu  |   42 +
  ggml/src/ggml-cuda/moe-weighted-reduction.cuh |    1 +
@@ -122,7 +122,7 @@ QSA/HC op dispatch is old-15):
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 18987 insertions(+), 4843 deletions(-)
+ 99 files changed, 18987 insertions(+), 4842 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -18660,7 +18660,7 @@ index 000000000..3829180ce
 +    }
 +}
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index ace670faa..fcc871366 100644
+index 3777efc0b..fcc871366 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -36,83 +36,8 @@ static __device__ __forceinline__ void mmvq_prefetch_l2(const void * p) {
@@ -19597,11 +19597,6 @@ index ace670faa..fcc871366 100644
  void ggml_cuda_glu_q8_1_mark(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
      static const bool fuse_glu_q8_1 = getenv("GGML_CUDA_FUSE_GLU_Q8_1") == nullptr || atoi(getenv("GGML_CUDA_FUSE_GLU_Q8_1")) != 0;
      ggml_tensor * node = cgraph->nodes[i];
-@@ -3408,4 +3366,3 @@ void ggml_cuda_glu_q8_1_mark(ggml_backend_cuda_context & ctx, const ggml_cgraph
-         ctx.glu_q8_1_mm   = mm;
-     }
- }
--
 diff --git a/ggml/src/ggml-cuda/mmvq.cuh b/ggml/src/ggml-cuda/mmvq.cuh
 index 35f625eaa..10b689844 100644
 --- a/ggml/src/ggml-cuda/mmvq.cuh
@@ -21026,7 +21021,7 @@ index 68aa913ce..9bd71e504 100644
              }
              view_src = view_src->view_src;
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index b6710ed30..cfe04c3f0 100644
+index 9c51939fd..d0d342523 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -22,6 +22,7 @@ set(LLAMA_CORE_SOURCES
@@ -21756,7 +21751,7 @@ index 6e34d8a54..79aadbade 100644
  
 diff --git a/src/llama-lazy-reader.cpp b/src/llama-lazy-reader.cpp
 new file mode 100644
-index 000000000..6faba335b
+index 000000000..9f9779b8c
 --- /dev/null
 +++ b/src/llama-lazy-reader.cpp
 @@ -0,0 +1,330 @@
@@ -22082,7 +22077,7 @@ index 000000000..6faba335b
 +        const uint32_t page = misses[i];
 +        const extent e = page_extent(page);
 +        const size_t slot = evict_one();
-+        GGML_ASSERT(slot >= 0 && slot < n_slots);
++        GGML_ASSERT(slot < n_slots);   // slot is size_t; the >= 0 half was always true (-Wtype-limits)
 +        memcpy(arena + slot * page_size, miss_buf.data() + i * page_size, e.len);
 +        page_to_slot[page] = (int32_t) slot;
 +        slot_page[slot] = (int32_t) page;

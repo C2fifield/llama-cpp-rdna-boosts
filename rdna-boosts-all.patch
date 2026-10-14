@@ -5823,6 +5823,20 @@ index 28e17f3f7..7eb07d4f8 100644
      /* .graph_optimize          = */ NULL,
  };
  
+diff --git a/ggml/src/ggml-cpu/amx/amx.cpp b/ggml/src/ggml-cpu/amx/amx.cpp
+index e90c2797f..9bd0e7052 100644
+--- a/ggml/src/ggml-cpu/amx/amx.cpp
++++ b/ggml/src/ggml-cpu/amx/amx.cpp
+@@ -236,6 +236,9 @@ ggml_backend_buffer_type_t ggml_backend_amx_buffer_type() {
+                         /* .get_alloc_size      = */ ggml_backend_amx_buffer_type_get_alloc_size,
+                         /* .get_alloc_size_n    = */ NULL,
+                         /* .is_host             = */ nullptr,
++                        /* .get_compute_margin_pct = */ nullptr,
++                        /* .alloc_buffer_usage   = */ nullptr,
++                        /* .get_compute_chunk_bytes = */ nullptr,
+                         },
+         /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+         /* .context = */ new ggml::cpu::amx::extra_buffer_type(),
 diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
 index e4882984a..486e22c7e 100644
 --- a/ggml/src/ggml-cpu/arch-fallback.h
@@ -53706,7 +53720,7 @@ index 6f76c819f..f91f0c7d8 100644
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 97250c2e8..cfe04c3f0 100644
+index 97250c2e8..d0d342523 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -22,6 +22,7 @@ set(LLAMA_CORE_SOURCES
@@ -53717,7 +53731,7 @@ index 97250c2e8..cfe04c3f0 100644
      llama-kv-cache-iswa.cpp
      llama-kv-cache-dsa.cpp
      llama-kv-cache-dsa-iswa.cpp
-@@ -69,8 +70,16 @@ target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
+@@ -69,8 +70,26 @@ target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
@@ -53728,7 +53742,17 @@ index 97250c2e8..cfe04c3f0 100644
  target_link_libraries(llama PUBLIC ggml)
  
 +if (LLAMA_ALL_WARNINGS AND NOT MSVC)
-+    target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
++    # -Wshadow catches the dangerous "declaration shadows a local variable" class in src/ (the
++    # mask-chain bug of 2026-09-11 was one).  GCC's -Wshadow additionally reports the ubiquitous
++    # "declaration shadows a member" constructor idiom and "hides constructor", which the delivery
++    # does not police and which the container build (GCC host compiler) surfaced by the thousand;
++    # -Wshadow=local keeps the dangerous local-shadow class and drops that member/global output.
++    # clang has no =local form, so it keeps plain -Wshadow.
++    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++        target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow=local>)
++    else()
++        target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
++    endif()
 +endif()
 +
  if (BUILD_SHARED_LIBS)
@@ -57313,7 +57337,7 @@ index 9bfb8f231..79aadbade 100644
  
 diff --git a/src/llama-lazy-reader.cpp b/src/llama-lazy-reader.cpp
 new file mode 100644
-index 000000000..6faba335b
+index 000000000..9f9779b8c
 --- /dev/null
 +++ b/src/llama-lazy-reader.cpp
 @@ -0,0 +1,330 @@
@@ -57639,7 +57663,7 @@ index 000000000..6faba335b
 +        const uint32_t page = misses[i];
 +        const extent e = page_extent(page);
 +        const size_t slot = evict_one();
-+        GGML_ASSERT(slot >= 0 && slot < n_slots);
++        GGML_ASSERT(slot < n_slots);   // slot is size_t; the >= 0 half was always true (-Wtype-limits)
 +        memcpy(arena + slot * page_size, miss_buf.data() + i * page_size, e.len);
 +        page_to_slot[page] = (int32_t) slot;
 +        slot_page[slot] = (int32_t) page;

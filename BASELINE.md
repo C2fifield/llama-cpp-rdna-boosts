@@ -2,14 +2,13 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r56`** (canonical tip `5d51f478c`, net tree
-`d718f97a502d77eb609c09d540b24282e52b4284`).  r56 folds four contributor WIP PRs (#146-#149) into
-their owning blocks, no new block: the RDNA4 routed-compact MMQ J selection restored (block 08), the
-pageable host<->device tensor-copy bounce (block 09), the BF16 hyper-connection mixer/combine widened
-to 16 tokens (block 10) and merged-span state saves (block 11).  The applied tree
+**`v12-097cf33d9-r57`** (canonical tip `a300075f7`, net tree
+`8a56fb31267ecc523c423845662d76571f934a51`).  r57 scopes the `-Wshadow` gate to `-Wshadow=local` on
+GCC (the container host compiler) in block 00 and fixes the two GCC-only sites it exposed (the AMX
+buffer-type initializer, block 09; the `size_t >= 0` assert, block 10).  The applied tree
 is not tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each
-into a self-contained function/file).  See `WORKLOG.md` 261013.007 (r56), 261013.005 (r55),
-261013.004 (r54), 261013.003 (r53) and 261013.002 (r52).  The entries below are the
+into a self-contained function/file).  See `WORKLOG.md` 261014.001 (r57), 261013.007 (r56),
+261013.005 (r55), 261013.004 (r54), 261013.003 (r53) and 261013.002 (r52).  The entries below are the
 **pre-V2.0 (16-block) provenance history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

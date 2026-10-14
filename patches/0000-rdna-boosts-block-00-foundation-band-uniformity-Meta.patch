@@ -1,4 +1,4 @@
-From c4396b83015896bc71c3f5c2f6f56f898ff77c58 Mon Sep 17 00:00:00 2001
+From 9494f03fa8d386dff8bde155c8c43f497bfd0ee9 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:38 -0500
 Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
@@ -22,7 +22,7 @@ Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
  ggml/src/ggml-cuda/fattn-common.cuh           |  10 +-
  .../vulkan-shaders/flash_attn.comp            |  29 +-
  .../vulkan-shaders/flash_attn_cm1.comp        |  49 +-
- src/CMakeLists.txt                            |   8 +
+ src/CMakeLists.txt                            |  18 +
  src/llama-batch.cpp                           |  56 ++-
  src/llama-context.cpp                         | 139 ++++--
  src/llama-grammar.cpp                         |   6 +-
@@ -55,7 +55,7 @@ Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
  src/models/openelm.cpp                        |  14 +-
  src/models/vllm-decision2.cpp                 |   8 +-
  src/models/wavtokenizer-dec.cpp               |  64 +--
- 40 files changed, 921 insertions(+), 734 deletions(-)
+ 40 files changed, 931 insertions(+), 734 deletions(-)
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
 index c5043a4a8..226473421 100644
@@ -356,10 +356,10 @@ index aa9dd624b..143a25b0f 100644
                          const uint v_tile_row = j * Bc + bc_chunk * MatBc;
                          const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 97250c2e8..b6710ed30 100644
+index 97250c2e8..9c51939fd 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -69,8 +69,16 @@ target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
+@@ -69,8 +69,26 @@ target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
@@ -370,7 +370,17 @@ index 97250c2e8..b6710ed30 100644
  target_link_libraries(llama PUBLIC ggml)
  
 +if (LLAMA_ALL_WARNINGS AND NOT MSVC)
-+    target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
++    # -Wshadow catches the dangerous "declaration shadows a local variable" class in src/ (the
++    # mask-chain bug of 2026-09-11 was one).  GCC's -Wshadow additionally reports the ubiquitous
++    # "declaration shadows a member" constructor idiom and "hides constructor", which the delivery
++    # does not police and which the container build (GCC host compiler) surfaced by the thousand;
++    # -Wshadow=local keeps the dangerous local-shadow class and drops that member/global output.
++    # clang has no =local form, so it keeps plain -Wshadow.
++    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++        target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow=local>)
++    else()
++        target_compile_options(llama PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
++    endif()
 +endif()
 +
  if (BUILD_SHARED_LIBS)

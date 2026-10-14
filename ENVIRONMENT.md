@@ -440,6 +440,15 @@ These are compile-time, because a device-side runtime gate does not work cleanly
 |---|---|---|
 | `-DGGML_HIP_NO_DPP_XOR` | off (DPP on) | restores `__shfl_xor` for the wave32 warp reductions on RDNA3/RDNA4 (PR #110's DPP lane exchange, folded into block 15).  The DPP path is **bit-identical** and speeds up the HC_MIX / Flash-Next band (measured on gfx1201 / ROCm 7.14: BF16 HC_MIX 58.84 -> 45.26 us at 4 tokens, 100.00 -> 62.55 us at 8, i.e. +23 % / +37 %; bandwidth-bound matmuls unchanged).  **There is deliberately no runtime env var**: a device-side runtime gate was implemented and A/B-tested but reproducibly wedged the FA prefill at ~4096 tokens with MTP, so it was dropped. |
 
+The `llama` C++ target compiles with `-Wshadow=local` under **GCC** and plain `-Wshadow` under **clang**
+(block 00).  The container build's host compiler is GCC (the `rocm/dev-ubuntu` image default, unlike the
+local `~/bin/build-llama-rocm-714`, which forces clang), and GCC's `-Wshadow` additionally reports
+"declaration shadows a member" / "hides constructor" for the ubiquitous `Foo(int x) : x(x) {}` idiom.
+`-Wshadow=local` keeps the class the gate exists for (a local shadowing a local) and drops that
+member/global output; clang has no `=local` form.  The container's `RUN cmake` step zeroes ccache stats
+(`ccache -z`) before the build, so its trailing `ccache -s` reports the rate of that build rather than
+the lifetime average.
+
 ---
 
 ## Maintaining this file

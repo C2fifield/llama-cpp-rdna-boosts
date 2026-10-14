@@ -1,4 +1,4 @@
-From 1a6938fffb98e403115d6432184c156b292d839d Mon Sep 17 00:00:00 2001
+From 6973119dac92e5b2334732d02c25a3a331ae4239 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -32,6 +32,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-backend.cpp                | 1141 ++++++-
  ggml/src/ggml-blas/ggml-blas.cpp         |    6 +
  ggml/src/ggml-cann/ggml-cann.cpp         |    6 +
+ ggml/src/ggml-cpu/amx/amx.cpp            |    3 +
  ggml/src/ggml-cpu/ggml-cpu.cpp           |  194 +-
  ggml/src/ggml-cuda/CMakeLists.txt        |    6 +
  ggml/src/ggml-cuda/common.cuh            |  610 +++-
@@ -39,7 +40,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-cuda/cpy-batch.cuh         |    9 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h       |   87 +
  ggml/src/ggml-cuda/ggml-cuda.cu          | 2480 +++++++++++++-
- ggml/src/ggml-cuda/mmvq.cu               |  276 +-
+ ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
  ggml/src/ggml-cuda/moe-expert-cache.cu   | 3929 ++++++++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h    |  284 ++
@@ -76,7 +77,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  src/llama.cpp                            |    2 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   60 +-
- 58 files changed, 11836 insertions(+), 328 deletions(-)
+ 59 files changed, 11838 insertions(+), 328 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -3947,6 +3948,20 @@ index 28e17f3f7..a5eb40581 100644
      /* .graph_optimize          = */ NULL,
  };
  
+diff --git a/ggml/src/ggml-cpu/amx/amx.cpp b/ggml/src/ggml-cpu/amx/amx.cpp
+index e90c2797f..9bd0e7052 100644
+--- a/ggml/src/ggml-cpu/amx/amx.cpp
++++ b/ggml/src/ggml-cpu/amx/amx.cpp
+@@ -236,6 +236,9 @@ ggml_backend_buffer_type_t ggml_backend_amx_buffer_type() {
+                         /* .get_alloc_size      = */ ggml_backend_amx_buffer_type_get_alloc_size,
+                         /* .get_alloc_size_n    = */ NULL,
+                         /* .is_host             = */ nullptr,
++                        /* .get_compute_margin_pct = */ nullptr,
++                        /* .alloc_buffer_usage   = */ nullptr,
++                        /* .get_compute_chunk_bytes = */ nullptr,
+                         },
+         /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+         /* .context = */ new ggml::cpu::amx::extra_buffer_type(),
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
 index 81ff5d79f..05f74e0fa 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
@@ -8026,7 +8041,7 @@ index 96a9e9e21..165e39810 100644
          /* .guid    = */ ggml_backend_cuda_guid(),
          /* .iface   = */ ggml_backend_cuda_interface,
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 56dc2fa13..ace670faa 100644
+index 56dc2fa13..3777efc0b 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -1,4 +1,5 @@
@@ -8052,7 +8067,7 @@ index 56dc2fa13..ace670faa 100644
      // The kernel indexes in type-block units; the cold geometry is reported in bytes.
      const size_t   ts = ggml_type_size(type);
      const uint32_t cold_channel_stride      = cold_channel_bytes      > 0 ? (uint32_t) (cold_channel_bytes      / ts) : 0;
-@@ -3137,3 +3144,268 @@ void ggml_cuda_mul_mat_id_weighted_rdna3_5(
+@@ -3137,3 +3144,267 @@ void ggml_cuda_mul_mat_id_weighted_rdna3_5(
              (int) (w->nb[2] / ggml_type_size(w->type)), nblocks);
      }
  }
@@ -8320,7 +8335,6 @@ index 56dc2fa13..ace670faa 100644
 +        ctx.glu_q8_1_mm   = mm;
 +    }
 +}
-+
 diff --git a/ggml/src/ggml-cuda/mmvq.cuh b/ggml/src/ggml-cuda/mmvq.cuh
 index 4140f681a..35f625eaa 100644
 --- a/ggml/src/ggml-cuda/mmvq.cuh

@@ -68,6 +68,13 @@ ENV AMDGPU_TARGETS=${ROCM_DOCKER_ARCH}
 # cache-mount (see the cmake RUN below), never in an image layer, so it neither
 # enlarges nor changes the published images; `podman system prune` clears it and
 # CCACHE_MAXSIZE bounds it.
+#
+# `ccache -z` before the build: the store outlives a release, so a bare trailing
+# `ccache -s` reports the *lifetime* hit rate (a ~50 % average across many
+# releases) and reads like a per-build miss.  Zeroing makes the logged rate the
+# rate of THIS build, which is the number worth reading (a no-change rebuild is
+# ~99.9 % hits; a release that touches a common HIP header legitimately misses
+# every HIP TU).
 ARG CCACHE_VERSION=4.12.3
 ENV CCACHE_DIR=/root/.ccache CCACHE_MAXSIZE=20G
 
@@ -111,6 +118,7 @@ RUN --mount=type=cache,target=/root/.ccache,sharing=locked \
         -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    && ccache -z \
     && cmake --build build --config Release -j$(nproc) \
     && ccache -s
 

@@ -1,5 +1,57 @@
 # WORKLOG - dated delivery records
 
+## 261014.001 (r57) -- the `-Wshadow` cleanup was clang-only: scope it to the dangerous class on GCC, fix the two GCC-only sites, and re-confirm the container ccache
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r57` (base `097cf33d9`; canonical tip
+`a300075f7`, net tree `8a56fb31267ecc523c423845662d76571f934a51`; 12 blocks; `validate-set.sh` green).
+Three blocks amended, **no new block**:
+
+- **block 00** (`src/CMakeLists.txt`): the `-Wshadow` added in r55 to the `llama` C++ target is now
+  `-Wshadow=local` for GNU and plain `-Wshadow` for clang.  GCC's `-Wshadow` is a strict superset of
+  clang's: it also reports "declaration shadows a member" (the ubiquitous `Foo(int x) : x(x) {}`
+  constructor idiom) and "hides constructor".  `-Wshadow=local` keeps the class the campaign was
+  created for (a local shadowing a local) and drops the member/global output; clang has no `=local`
+  form.
+- **block 09** (`ggml/src/ggml-cpu/amx/amx.cpp`): the AMX buffer type's designated initializer now
+  lists `get_compute_margin_pct` / `alloc_buffer_usage` / `get_compute_chunk_bytes`, which block 09
+  appended to `ggml_backend_buffer_type_i` (block 11 already fixed the sibling `repack.cpp`;
+  `-Wmissing-field-initializers` from `-Wextra`).
+- **block 10** (`src/llama-lazy-reader.cpp`): `GGML_ASSERT(slot >= 0 && slot < n_slots)` drops the
+  always-true `>= 0` half (`slot` is `size_t`; GCC `-Wtype-limits`).
+
+**Also fixed (pre-existing):** block 09's `mmvq.cu` insertion ended with a blank line that block 10
+removed, so the strict `git am` emitted `new blank line at EOF` on every r56/r57 apply.  Block 09 no
+longer adds the blank and block 10 no longer removes it; the net tree is unchanged and the set now
+applies with `git am --whitespace=error-all` clean (re-cut tip `a300075f7`).
+
+**Finding: why r56's container log had 24,178 `-Wshadow` warnings.**  The local gate build forces clang
+(`~/bin/build-llama-rocm-714` passes `-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++`), but the
+container leaves CMake to pick the image default, which is **GCC 13.3** (`The CXX compiler
+identification is GNU 13.3.0`).  So the r55 cleanup (0 `-Wshadow` on clang) never saw GCC's wider set.
+The 24,178 lines collapse to **815 unique sites in 197 files**: 24,062 "shadows a member", 76 "hides
+constructor", and only 10 non-member sites (lambda-parameter / lambda-body shadows in
+`llama-model.cpp`, `llama-moe-cache.cpp`, `llama-quant.cpp`, `llama-vocab.cpp`, `step35.cpp`), which
+clang only reports under `-Wshadow-all`.  Every one is upstream idiom; there is **no remaining clang
+`-Wshadow` site**.  Extractor: `/tmp/shadow-report.sh` (collapses the per-TU repeats).
+
+**Finding: the container ccache is correct; the log's ~50 % was a cumulative counter.**  The r56 log's
+`ccache -s` reads like a per-build miss rate, but the cache store outlives a release, so it is a
+*lifetime* average; `ccache -z` before a build settles it: a **no-change container rebuild measures
+844 calls / 843 hits (99.88 %) / 1 miss**, ~2 min.  `full`/`light`/`server` already share the one
+`build` stage (the r56 log has exactly **2** cmake builds and 358 HIP objects per line, not 3x).  The
+~30 min/line a release pays is the genuine recompile when a **common HIP header** changes: r56 touched
+`ggml/src/ggml-cuda/vendors/hip.h`, which every HIP TU includes, so all 358 `.cu` objects (x5 arches)
+missed on both lines.  r57 touches no HIP header, so its container build is HIP-half hits + the
+`llama` C++ relink.  The Dockerfile now runs `ccache -z` before the build so each image's log reports
+its own rate.
+
+**Gates.**  Build `all` green (clang, **0** warnings).  4B `Qwen3.5-Q8_0` 3-GPU same-seed greedy
+**byte-identical to r56**.  `validate-set.sh` strict 12/12, tree `8a56fb31`.  The GCC-side fix is
+verified by the r57 container build itself (a clean `[7.14.1/full]` log with 0 `-Wshadow` from the
+`llama` target).
+
+**Publish.**  Pending: fork `rdna-boosts` refresh + local ROCm 7.14.1 / 10.1 container build/push.
+
 ## 261013.007 (r56) -- four contributor WIP PRs (#146-#149) folded into blocks 08/09/10/11
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r56` (base `097cf33d9`, base tree
