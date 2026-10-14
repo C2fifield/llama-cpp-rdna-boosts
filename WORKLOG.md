@@ -1,5 +1,60 @@
 # WORKLOG - dated delivery records
 
+## 261014.004 (r59) -- issue #139: the AR spin budget uses the wall clock, and a soft timeout keeps waiting (block 01)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r59` (base `097cf33d9`; canonical tip
+`e1b2a41ed656b6bc6b690501f0df42bd1a699269`, net tree `59b9a7faeb2c975994fabdb2cfb6761a6beda560`; 12
+blocks; `validate-set.sh` green; whitespace-clean under `git am --whitespace=error-all`).  **Block 01**
+(`ggml/src/ggml-cuda/allreduce-hip.cu`) is amended, **no new block**:
+
+- **The spin budget is now wall-clock time.**  `wait_t0` and the budget check use `wall_clock64()` (a
+  constant-rate realtime counter, 100 MHz on gfx12) instead of `clock64()`, and the budget is
+  `GGML_CUDA_AR_SPIN_TIMEOUT_MS * hipDeviceAttributeWallClockRate` (kHz, fallback 100000) instead of
+  `ms * 2e6` shader cycles.  On gfx1201 `clock64()` reads `HW_REG_SHADER_CYCLES` and steps **backwards**
+  while a queue is stopped (reported: 1089107279 -> 1075226717 over 1.6 ms of wall time), so
+  `(clock64() - wait_t0)` wrapped to ~2^64 and passed any budget: a slightly-late peer was treated as
+  lost.  The `GGML_CUDA_AR_PROFILE` `prof_start` / `prof_spin` fields and their tick->us conversion use
+  `wall_clock64()` + `hipDeviceAttributeWallClockRate` too, so the profile no longer reports bogus spin
+  values.
+- **A soft timeout now keeps waiting (B2).**  `GGML_CUDA_AR_SPIN_TIMEOUT_MS` (default raised 20 ms ->
+  **2000 ms**) is a **soft** deadline: a peer wait that exceeds it is a late peer from a driver queue
+  stop, not a lost one.  The kernel reports it once (a host-mapped `slow` flag, logged at the next
+  call) and **keeps waiting**, then completes the normal phase-3 reduction, so no consumer ever sees a
+  local shard.  A new **hard** cap, `GGML_CUDA_AR_SPIN_HARD_MS` (default **20000 ms**), finally sets the
+  poison and falls back to the meta butterfly, preserving the last-resort bound that keeps an unbounded
+  spin from making the compute queue non-removable (the MES `REMOVE_QUEUE` hazard).  `soft` 0 = no soft
+  check, `hard` 0 = never poison; a hard value below the soft one is clamped up.
+
+**Finding: the same-call butterfly re-run (B1) was implemented, measured and rejected.**  The
+"preferred" fix (observe the poison in the same call and re-run that tensor through the butterfly) was
+built exactly as specified: after the chunked kernels launch, wait for them, read the poison and return
+`false` so the meta backend butterflies the same subgraph.  It is correct, but `AR_PROFILE` shows
+**4096+ internal AR calls** (the profiler caps at 4096) over a ~69-step run on 4B, roughly **59 small
+ARs per token**, so a host event sync per call destroys the host's run-ahead pipelining:
+
+| model | B1 on | B1 off | B2 |
+|---|---:|---:|---:|
+| 4B Q8_0 `tg128` | 89-90 t/s | 118 t/s | **117.6 t/s** |
+| 27B Q4_K_XL `tg64` | 31-34 t/s | 42-43 t/s | **43.0 t/s** |
+
+B2 has no host participation on the hot path (the poll loop is unchanged; only the timeout branch
+differs), so it matches B1-off exactly.
+
+**Gates (gfx1201, 2-3x R9700, ROCm 7.14.1, `~/llama.cpp/build-rocm-hybrid`).**  Build `all` green.
+`AR_PROFILE` with the real config shows the wall clock in use (`clock 100000 kHz`), spin p50 2.5 us /
+p99 115 us / **max 1.3 ms** against the 2000 ms soft budget, and **0** soft/hard warnings.  4B
+`Qwen3.5-Q8_0` 3-GPU `-sm tensor` same-seed greedy **byte-identical** to r58.  `llama-bench` 2-GPU
+`-sm tensor` **no regression** (table above).  `scripts/gate-prefill-logits.sh` **PASS** (0.000707 /
+98.755 %, the exact r58 values).  **Forced soft-timeout test:** with the soft budget temporarily set to
+1 tick and the check decimation to 1 (so every AR soft-times-out while the hard cap stays at 20 s), the
+4B `-sm tensor` greedy continuation is **byte-identical** to the no-timeout reference, and the soft
+warnings fire.  `scripts/validate-set.sh` strict 12/12, tree `59b9a7fa`; whitespace-clean.
+
+**Docs.**  `ENVIRONMENT.md` §6 documents the two knobs (`GGML_CUDA_AR_SPIN_TIMEOUT_MS` was previously
+undocumented); `README.md`, `MANIFESTS.md`, `BASELINE.md` and `patches/README.md` current-state headers
+updated.  The issue record moves to `archive/work/issue-139-ar-spin-timeout/` with a `RESOLUTION.md`.
+The memory-pressure half stays tracked separately in `wip/host-expert-master-drop/` (TODO #55).
+
 ## 261014.003 (r58) -- PR #150: the DFlash layer-input preset (folded into blocks 02 + 11)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r58` (base `097cf33d9`; canonical tip

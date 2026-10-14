@@ -5,19 +5,24 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r58`** (canonical tip `369a835bf`, net tree
-`84c1089798ace45224456cfb147e6e6fb9fabaff`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r59`** (canonical tip `e1b2a41ed`, net tree
+`59b9a7faeb2c975994fabdb2cfb6761a6beda560`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green), whitespace-clean (`git am --whitespace=error-all`), the rebuilt tip tree byte-identical to the
-gated tree, 4B same-seed greedy unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %).  r58
-folds PR #150 (DFlash layer-input preset) into **block 02** (the draft-setup read of
+gated tree, 4B same-seed greedy unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %).  r59
+lands **issue #139** in **block 01**: the hybrid all-reduce's spin budget is now wall-clock time
+(`wall_clock64()` sized by `hipDeviceAttributeWallClockRate`, because on gfx1201 `clock64()` steps
+backwards while a queue is stopped and wraps the budget), `GGML_CUDA_AR_SPIN_TIMEOUT_MS` is a **soft**
+deadline (default 2000 ms) that reports a late peer and keeps waiting, and a new hard cap
+`GGML_CUDA_AR_SPIN_HARD_MS` (default 20000 ms) alone poisons and falls back to the butterfly.  Before it,
+r58 folded PR #150 (DFlash layer-input preset) into **block 02** (the draft-setup read of
 `<arch>.target_layers` + the `llama_model_set_embeddings_layer_inp_preset()` call) and **block 11** (the
 model-side preset API, the `llama_context` ctor apply and the `set_embeddings_layer_inp()` early
 return); a DFlash draft no longer re-reserves the target's compute buffers at the first request
 (5 -> 4 reserves).  Before it, r57 closed the `-Wshadow` gap the container (GCC) build exposed: **block 00**
 (the `llama` C++ target uses `-Wshadow=local` for GNU and `-Wshadow` for clang), **block 09** (the AMX
 buffer type lists the three appended `ggml_backend_buffer_type_i` members) and **block 10** (the
-`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r58 record is
-`WORKLOG.md` 261014.003; r57 is `WORKLOG.md` 261014.001; r56 is
+`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r59 record is `WORKLOG.md` 261014.004;
+r58 is `WORKLOG.md` 261014.003; r57 is `WORKLOG.md` 261014.001; r56 is
 `WORKLOG.md` 261013.007; r55 is `WORKLOG.md` 261013.005; r54 is `WORKLOG.md` 261013.004 (release
 `v12-097cf33d9-r53`, tip `4b27ac644`, tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); the r52 fold is
 `WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree

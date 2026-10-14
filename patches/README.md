@@ -11,7 +11,19 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r58` (2026-10-14) -- DFlash layer-input preset (block 02) + context consumption (block 11):**
+> **Current release `v12-097cf33d9-r59` (2026-10-14) -- issue #139: wall-clock AR spin budget + a soft timeout that keeps waiting (block 01):**
+> canonical tip `e1b2a41ed`, net tree `59b9a7faeb2c975994fabdb2cfb6761a6beda560`; strict **12/12**
+> `git am` (`validate-set.sh` green), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed greedy byte-identical
+> to r58, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, 2-GPU `-sm tensor` `llama-bench` no
+> regression.  **block 01** (`allreduce-hip.cu`): the internal-AR spin budget is measured with
+> `wall_clock64()` and sized by `hipDeviceAttributeWallClockRate` (the `clock64()` counter steps
+> backwards on gfx1201 while a queue is stopped, wrapping the budget and false-timing-out a late peer);
+> `GGML_CUDA_AR_SPIN_TIMEOUT_MS` (default 20 ms -> **2000 ms**) is now a **soft** deadline that reports a
+> late peer and keeps waiting to a new **hard** cap `GGML_CUDA_AR_SPIN_HARD_MS` (default **20000 ms**),
+> which alone poisons and falls back to the butterfly.  A same-call butterfly re-run was measured at
+> -20-25 % decode (about 59 small ARs/token) and rejected.  See `../WORKLOG.md` 261014.004 (r59).
+>
+> **Previous release `v12-097cf33d9-r58` (2026-10-14) -- DFlash layer-input preset (block 02) + context consumption (block 11):**
 > canonical tip `369a835bf`, net tree `84c1089798ace45224456cfb147e6e6fb9fabaff`; strict **12/12**
 > `git am` (`validate-set.sh` green), whitespace-clean (`git am --whitespace=error-all`), 4B
 > `Qwen3.5-Q8_0` same-seed greedy byte-identical, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS.

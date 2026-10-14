@@ -31,6 +31,15 @@ is the signature of a stub, not of a campaign.
 | [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
 
+**Resolved (r59, 2026-10-14).**  Issue #139 (`@briansp2020`, the internal all-reduce spin timeout) was
+fixed in **block 01**: the spin budget is now wall-clock time (`wall_clock64()` sized by
+`hipDeviceAttributeWallClockRate`, because the `clock64()` counter steps backwards on gfx1201 while a
+queue is stopped), `GGML_CUDA_AR_SPIN_TIMEOUT_MS` (default 2000 ms) is a soft deadline that reports a
+late peer and keeps waiting, and `GGML_CUDA_AR_SPIN_HARD_MS` (default 20000 ms) alone poisons and falls
+back to the butterfly.  A same-call butterfly re-run was measured at -20-25 % decode and rejected.  The
+record moved to `archive/work/issue-139-ar-spin-timeout/` with a `RESOLUTION.md`; the memory-pressure
+half stays in `wip/host-expert-master-drop/`.  See `WORKLOG.md` 261014.004.
+
 **Resolved (r58, 2026-10-14).**  Contributor PR #150 (`@overdoingism`, `dflash-layer-inp-preset`) was
 merged and folded into the blocks that own each concern, then archived with a `RESOLUTION.md` under
 `archive/work/dflash-layer-inp-preset/`: the draft-setup half reads the draft GGUF's

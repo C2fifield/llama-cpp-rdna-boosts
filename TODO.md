@@ -134,8 +134,10 @@ Full diagnosis: `archive/work/patch-block-reorg/PHASE1-STATUS.md` §15.
 host peak, but `--host-experts pool` still keeps the **full pinned master** (r35 shipped the pool as a
 bounce tier; the source logs "Phase 2b; full pinned master kept").  `RssShmem` is identical with and
 without the pool: 18.7 GiB on 35B-A3B `-ncmoe 40`, 54.1 GiB on Flash-Next IQ4_NL `-ncmoe 40`.
-Dropping the master is the strongest lever for issue #139 (the amdgpu driver stops all of a process's
-GPU queues when the kernel migrates a GPU-mapped host page).  **Working home:
+Dropping the master is the strongest lever for the **memory-pressure** half of issue #139 (the amdgpu driver stops all of a process's
+GPU queues when the kernel migrates a GPU-mapped host page); the AR timeout itself is fixed in **r59**
+(block 01, wall-clock soft/hard spin deadlines), so the remaining value here is fewer stalls, not a
+correctness fix.  **Working home:
 `wip/host-expert-master-drop/`.**  Gates and the reader enumeration are in that README.
 
 ### 50. The cache-aware fusion guard is global while the slab's eviction is per-table (code `OPEN 2`)

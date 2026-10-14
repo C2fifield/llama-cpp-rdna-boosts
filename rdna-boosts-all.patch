@@ -7033,10 +7033,10 @@ index 297d9ffc9..01737d1b7 100644
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 new file mode 100644
-index 000000000..895c0f45d
+index 000000000..648014967
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/allreduce-hip.cu
-@@ -0,0 +1,1724 @@
+@@ -0,0 +1,1795 @@
 +#include "allreduce.cuh"
 +
 +#if defined(GGML_USE_HIP)
@@ -7179,12 +7179,12 @@ index 000000000..895c0f45d
 +// AR wire size at which the copy-engine path takes over from the chunked-
 +// kernel path.  Override via GGML_CUDA_AR_COPY_THRESHOLD.
 +static constexpr size_t GGML_CUDA_AR_COPY_THRESHOLD_DEFAULT = 1024 * 1024; // 1 MB
-+// Spin-budget check decimation: the kernel re-reads clock64() only every
++// Spin-budget check decimation: the kernel re-reads wall_clock64() only every
 +// this many polls.  512 = 2x the measured typical spin count (p50 ~184
 +// polls, p90 ~283, p99 ~369 on 2x gfx1201 hybrid, depth-16384), rounded up
 +// to the next power of two — so the true fast path (arrivals in tens of us)
-+// never executes the clock64() check at all, and the timeout overshoot
-+// (<= 512 polls, well under 0.1% of the 20 ms budget) is irrelevant.
++// never executes the wall_clock64() check at all, and the timeout overshoot
++// (<= 512 polls, well under 0.1% of the default budget) is irrelevant.
 +static constexpr uint32_t GGML_CUDA_AR_SPIN_CHECK_DIV = 512;
 +// Per-call CE chunk-size heuristic: chunk_bytes = clamp(nbytes / 4, MIN, MAX).
 +// The /4 keeps ~4 chunks in flight at any moment (good D2H/H2D overlap with
@@ -7214,12 +7214,14 @@ index 000000000..895c0f45d
 +        int                         count,
 +        int                         token,
 +        int64_t *                   prof_spin,
-+        int64_t *                   prof_start,  // WIP: clock64 at kernel entry (block 0); NULL disables
++        int64_t *                   prof_start,  // WIP: wall_clock64 at kernel entry (block 0); NULL disables
 +        bool                        use_sleep,   // true: __builtin_amdgcn_s_sleep(1) poll; false: dummy asm spin
 +        const ggml_cuda_ar_stage_control * __restrict__ control,  // fused-stage state; NULL disables fast path
 +        bool                        write_next_control,           // last chunk: publish control for the next call
-+        int         *               poison_dev,                   // host-mapped flag; written on spin timeout; NULL disables
-+        uint64_t                    spin_budget_cycles,           // max clock64() cycles per peer wait; 0 = unbounded
++        int         *               poison_dev,                   // host-mapped flag; written on a HARD timeout; NULL disables
++        int         *               slow_dev,                     // host-mapped flag; written on a SOFT timeout (diagnostic); NULL disables
++        uint64_t                    spin_budget_cycles,           // soft wall_clock64() deadline; 0 = no soft check
++        uint64_t                    spin_hard_budget_cycles,      // hard wall_clock64() deadline -> poison; 0 = unbounded
 +        T_wire       *              wire_write_base,              // where OUR wire data goes: == host_wire_base, or the peer's VRAM (P2P)
 +        int          *              arrival_write_base,           // where OUR arrival token goes: == arrival_base, or the peer's VRAM (P2P)
 +        bool                        p2p,                          // the read bases are this device's fine-grained VRAM, written by the peer
@@ -7254,7 +7256,7 @@ index 000000000..895c0f45d
 +    const int nt        = blockDim.x;
 +    const int bid       = blockIdx.x;
 +    if (prof_start != nullptr && bid == 0 && tid == 0) {
-+        prof_start[0] = (int64_t) clock64();
++        prof_start[0] = (int64_t) wall_clock64();
 +    }
 +    const int gtid      = bid * nt + tid;
 +    const int gnt       = gridDim.x * nt;
@@ -7313,24 +7315,29 @@ index 000000000..895c0f45d
 +    }
 +    __syncthreads();
 +
-+    // Set by thread 0 if its peer wait exceeds the budget; after the
-+    // __syncthreads() below every thread sees it and the block skips phase 3
-+    // (recvbuf keeps the local shard; the host detects the poison flag and
-+    // re-syncs the devices with a butterfly AllReduce).
++    // s_ar_timeout: set by thread 0 if its peer wait exceeds the HARD cap;
++    // after the __syncthreads() below every thread sees it and the block skips
++    // phase 3 (recvbuf keeps the local shard; the host detects the poison flag
++    // and re-syncs the devices with a butterfly AllReduce).
++    // s_ar_slow: set when the wait exceeds the SOFT budget but the peer does
++    // arrive (a driver queue stop); the kernel keeps waiting, so the reduction
++    // is correct.  The host only logs the slow flag once at the next call.
 +    __shared__ int s_ar_timeout;
++    __shared__ int s_ar_slow;
 +
 +    // Phase 2: thread 0 of each block signals on its own arrival slot, then
 +    // spins for the matching slot from peer.  Per-block tokens mean blocks
 +    // proceed independently -- no inter-block barrier needed.  Block 0's
-+    // spin window is recorded when profiling (clock64).
++    // spin window is recorded when profiling (wall_clock64).
 +    if (tid == 0) {
 +        s_ar_timeout = 0;
++        s_ar_slow    = 0;
 +        // Arrival slots are contiguous per rank: ((slot*n + rank)*BLOCKS + bid).
 +        const size_t arr_int = (size_t)(slot * n_devices + rank) * GGML_CUDA_AR_KERNEL_BLOCKS + bid;
 +        int * my_slot = arrival_write_base + arr_int * ARRIVAL_INTS;
 +
 +        if (prof_spin != nullptr && bid == 0) {
-+            prof_spin[0] = (int64_t) clock64();
++            prof_spin[0] = (int64_t) wall_clock64();
 +        }
 +        if (!stage_done) {
 +            if (p2p_lite) {
@@ -7344,7 +7351,7 @@ index 000000000..895c0f45d
 +        // Wait for EVERY peer's token for this call before reading its data.
 +        bool timed_out = false;
 +        uint32_t poll_cnt = 0;
-+        const uint64_t wait_t0 = clock64();
++        const uint64_t wait_t0 = wall_clock64();
 +        for (int j = 0; j < n_devices; ++j) {
 +            if (j == rank) continue;
 +            const int * other_slot = arrival_base +
@@ -7379,18 +7386,32 @@ index 000000000..895c0f45d
 +                    // Arrived normally; on to the next peer.
 +                    break;
 +                }
-+                // Decimation tick without arrival: the peer's arrival can be
-+                // lost on a PCIe hiccup, and an unbounded spin here is what
-+                // makes the compute queue non-removable on RDNA4 (driver
-+                // REMOVE_QUEUE fails in MES -> MODE1 reset or whole-machine
-+                // freeze).  Exceeding the budget turns that into one dropped
-+                // AR call.
-+                if (spin_budget_cycles > 0 &&
-+                    (uint64_t) (clock64() - wait_t0) >= spin_budget_cycles) {
-+                    timed_out = true;
-+                    break;
++                // Decimation tick without arrival.  A late peer during a
++                // driver queue stop is not a lost peer: the SOFT budget only
++                // reports it (slow_dev) and keeps waiting, so the reduction
++                // still completes and no consumer ever sees a local shard.  An
++                // unbounded spin makes the compute queue non-removable on
++                // RDNA4 (driver REMOVE_QUEUE fails in MES -> MODE1 reset or a
++                // whole-machine freeze), so the HARD cap still drops the call
++                // (poison) as a last resort.
++                if (spin_budget_cycles > 0) {
++                    const uint64_t waited = (uint64_t) (wall_clock64() - wait_t0);
++                    if (waited >= spin_budget_cycles) {
++                        if (!s_ar_slow) {
++                            s_ar_slow = 1;
++                            if (slow_dev != nullptr) {
++                                __threadfence_system();
++                                *(volatile int *) slow_dev = 1;
++                            }
++                        }
++                        if (spin_hard_budget_cycles > 0 && waited >= spin_hard_budget_cycles) {
++                            timed_out = true;
++                            break;
++                        }
++                    }
 +                }
-+                // Budget not expired: keep polling the same peer.
++                // Soft budget not expired (or hard cap not yet reached): keep
++                // polling the same peer.
 +            }
 +            if (timed_out) break;
 +        }
@@ -7406,7 +7427,7 @@ index 000000000..895c0f45d
 +            }
 +        } else {
 +            if (prof_spin != nullptr && bid == 0) {
-+                prof_spin[1] = (int64_t) clock64();
++                prof_spin[1] = (int64_t) wall_clock64();
 +            }
 +
 +            // Publish the stage control for the NEXT call (last chunk only).  The
@@ -7431,9 +7452,10 @@ index 000000000..895c0f45d
 +
 +    __syncthreads();
 +
-+    // Spin timeout: exit promptly without phase 3 so the queue stays
-+    // removable by the driver; the tensor keeps the local shard and the host
-+    // falls back to a butterfly AllReduce to re-sync the devices.
++    // Hard-cap timeout: exit without phase 3 so the queue stays removable by
++    // the driver; the tensor keeps the local shard and the host falls back to a
++    // butterfly AllReduce to re-sync the devices.  A soft timeout does NOT
++    // reach here: the kernel kept waiting and completed the reduction.
 +    if (s_ar_timeout != 0) {
 +        return;
 +    }
@@ -7633,8 +7655,8 @@ index 000000000..895c0f45d
 +    hipEvent_t               prof_t0[GGML_CUDA_AR_PROF_MAX];
 +    hipEvent_t               prof_t1[GGML_CUDA_AR_PROF_MAX];
 +    int64_t                  prof_ne[GGML_CUDA_AR_PROF_MAX];
-+    int64_t *                prof_spin[GGML_CUDA_MAX_DEVICES]; // dev mem: [PROF_MAX][2] clock64 (start,end)
-+    int64_t *                prof_start[GGML_CUDA_MAX_DEVICES]; // dev mem: [PROF_MAX] clock64 at kernel entry
++    int64_t *                prof_spin[GGML_CUDA_MAX_DEVICES]; // dev mem: [PROF_MAX][2] wall_clock64 (start,end)
++    int64_t *                prof_start[GGML_CUDA_MAX_DEVICES]; // dev mem: [PROF_MAX] wall_clock64 at kernel entry
 +    size_t                   prof_n;
 +    // --- end WIP instrumentation -----------------------------------------
 +
@@ -7678,12 +7700,19 @@ index 000000000..895c0f45d
 +    uint8_t * p2p_wire[GGML_CUDA_MAX_DEVICES] = {};
 +    uint8_t * p2p_arrival[GGML_CUDA_MAX_DEVICES] = {};
 +
-+    // Bounded-spin poison flag: one host-mapped (pinned) int.  Written by the
-+    // chunked kernel when a peer wait exceeds spin_timeout_ms; read/cleared by
-+    // the host in ggml_cuda_ar_allreduce.  64 bytes = one cache line.
++    // Soft-spin deadline and slow flag: one host-mapped (pinned) int each.
++    // `poison` is written when a peer wait exceeds the HARD cap (the peer may be
++    // lost); the host re-runs that call through the butterfly.  `slow` is
++    // written when a wait exceeds the soft budget but the peer does arrive (a
++    // driver queue stop); the kernel keeps waiting, so the reduction is still
++    // correct, and the host only logs it once at the next call.  64 bytes = one
++    // cache line each.
 +    ggml_cuda_ar_host_mapping poison;
-+    uint32_t spin_timeout_ms;       // GGML_CUDA_AR_SPIN_TIMEOUT_MS; 0 = unbounded (legacy)
-+    uint64_t spin_budget_cycles;    // timeout converted to clock64() cycles
++    ggml_cuda_ar_host_mapping slow;
++    uint32_t spin_timeout_ms;         // GGML_CUDA_AR_SPIN_TIMEOUT_MS (soft); 0 = no soft check
++    uint32_t spin_hard_ms;            // GGML_CUDA_AR_SPIN_HARD_MS (hard); 0 = unbounded (never poison)
++    uint64_t spin_budget_cycles;      // soft budget in wall_clock64() ticks
++    uint64_t spin_hard_budget_cycles; // hard budget in wall_clock64() ticks
 +};
 +
 +// Combined load-convert-add kernel.  The peer's contribution arrives as T_src
@@ -7997,18 +8026,48 @@ index 000000000..895c0f45d
 +        return nullptr;
 +    }
 +
-+    // Bounded-spin timeout: the budget is expressed in clock64() cycles,
-+    // assuming ~2 GHz so the real-time timeout is at or below the configured
-+    // ms (a lower GPU clock only makes the budget longer, still far below
-+    // the driver's queue fence timeout).  0 disables (legacy unbounded spin).
-+    p->spin_timeout_ms    = (uint32_t) ggml_cuda_ar_env_u64("GGML_CUDA_AR_SPIN_TIMEOUT_MS", 20);
-+    p->spin_budget_cycles = (uint64_t) p->spin_timeout_ms * 2000000ull;
++    // Bounded-spin deadlines, expressed in wall-clock ticks (wall_clock64(), a
++    // constant-rate counter on gfx12), NOT in clock64() cycles.  On gfx1201
++    // clock64() reads HW_REG_SHADER_CYCLES and can step BACKWARDS while a queue
++    // is stopped (measured 1089107279 -> 1075226717 over 1.6 ms of wall time),
++    // so (clock64() - wait_t0) wraps to ~2^64 and passes any budget, treating a
++    // slightly-late peer as lost.  wall_clock64() is monotonic and its rate is
++    // stable, so the budget is real time.  The rate is
++    // hipDeviceAttributeWallClockRate (kHz); fall back to 100 MHz when the query
++    // fails.
++    //
++    // Two deadlines (issue #139): the SOFT budget (GGML_CUDA_AR_SPIN_TIMEOUT_MS,
++    // default 2000 ms) only reports a late peer (a driver queue stop) and keeps
++    // waiting, so the reduction still completes; the HARD cap
++    // (GGML_CUDA_AR_SPIN_HARD_MS, default 20000 ms) finally poisons so an
++    // unbounded spin can never make the queue non-removable.  soft 0 = no soft
++    // check (and therefore no hard cap either); hard 0 = never poison.
++    p->spin_timeout_ms    = (uint32_t) ggml_cuda_ar_env_u64("GGML_CUDA_AR_SPIN_TIMEOUT_MS", 2000);
++    p->spin_hard_ms       = (uint32_t) ggml_cuda_ar_env_u64("GGML_CUDA_AR_SPIN_HARD_MS", 20000);
++    if (p->spin_hard_ms > 0 && p->spin_hard_ms < p->spin_timeout_ms) {
++        GGML_LOG_WARN("%s: GGML_CUDA_AR_SPIN_HARD_MS=%u below the soft budget %u; using the soft budget\n",
++                      __func__, p->spin_hard_ms, p->spin_timeout_ms);
++        p->spin_hard_ms = p->spin_timeout_ms;
++    }
++    int wall_khz = 0;
++    if (hipDeviceGetAttribute(&wall_khz, hipDeviceAttributeWallClockRate, p->devices[0]) != hipSuccess || wall_khz <= 0) {
++        (void) hipGetLastError();
++        wall_khz = 100000;
++    }
++    p->spin_budget_cycles      = (uint64_t) p->spin_timeout_ms * (uint64_t) wall_khz;
++    p->spin_hard_budget_cycles = (uint64_t) p->spin_hard_ms    * (uint64_t) wall_khz;
 +    if (p->poison.alloc(64) != hipSuccess) {
 +        GGML_LOG_ERROR("%s: alloc for spin-timeout poison flag failed\n", __func__);
 +        ggml_cuda_ar_pipeline_free(p);
 +        return nullptr;
 +    }
 +    *(int *) p->poison.host = 0;
++    if (p->slow.alloc(64) != hipSuccess) {
++        GGML_LOG_ERROR("%s: alloc for spin-timeout slow flag failed\n", __func__);
++        ggml_cuda_ar_pipeline_free(p);
++        return nullptr;
++    }
++    *(int *) p->slow.host = 0;
 +
 +    // Per-device pinned staging buffers -- POOL_SIZE-deep ring so the chunked-
 +    // kernel can write the next slot's data while the peer is still reading
@@ -8150,13 +8209,13 @@ index 000000000..895c0f45d
 +        for (auto & h : hist) {
 +            fprintf(stderr, "AR-PROFILE:   ne=%" PRId64 "  calls=%zu\n", h.first, h.second);
 +        }
-+        // Per-device spin (arrival busy-wait) stats: clock64 cycles -> us.
++        // Per-device spin (arrival busy-wait) stats: wall_clock64 ticks -> us.
 +        for (int dev = 0; dev < p->n_devices; ++dev) {
 +            std::vector<int64_t> spin(2 * p->prof_n);
 +            ggml_cuda_set_device(p->devices[dev]);
 +            CUDA_CHECK(hipMemcpy(spin.data(), p->prof_spin[dev], 2 * p->prof_n * sizeof(int64_t), hipMemcpyDeviceToHost));
 +            int rate_khz = 0;
-+            CUDA_CHECK(hipDeviceGetAttribute(&rate_khz, hipDeviceAttributeClockRate, p->devices[dev]));
++            CUDA_CHECK(hipDeviceGetAttribute(&rate_khz, hipDeviceAttributeWallClockRate, p->devices[dev]));
 +            std::vector<double> sp_us; sp_us.reserve(p->prof_n);
 +            double spin_total = 0; size_t n_spin = 0;
 +            for (size_t i = 0; i < p->prof_n; ++i) {
@@ -8176,13 +8235,13 @@ index 000000000..895c0f45d
 +            }
 +        }
 +        // Phase-1 duration per device (kernel entry -> signal write), from the
-+        // same-GPU clock64: spin_start - kernel_start.  Asymmetry here means
++        // same-GPU wall_clock64: spin_start - kernel_start.  Asymmetry here means
 +        // the data path (stage writes + fence) is slower on one device; equal
 +        // durations mean the arrival delay is pre-kernel (dispatch).
 +        {
 +            int rate_khz = 0;
 +            ggml_cuda_set_device(p->devices[0]);
-+            CUDA_CHECK(hipDeviceGetAttribute(&rate_khz, hipDeviceAttributeClockRate, p->devices[0]));
++            CUDA_CHECK(hipDeviceGetAttribute(&rate_khz, hipDeviceAttributeWallClockRate, p->devices[0]));
 +            for (int dev = 0; dev < p->n_devices; ++dev) {
 +                std::vector<int64_t> start(p->prof_n), spin(2 * p->prof_n);
 +                ggml_cuda_set_device(p->devices[dev]);
@@ -8265,6 +8324,7 @@ index 000000000..895c0f45d
 +        }
 +    }
 +    p->poison.free();
++    p->slow.free();
 +    p->arrival.free();
 +    delete p;
 +}
@@ -8491,19 +8551,28 @@ index 000000000..895c0f45d
 +    const int64_t ne = ggml_nelements(tensors[0]);
 +    GGML_ASSERT(ne > 0);
 +
-+    // Bounded-spin recovery: if a previous chunked kernel timed out waiting
-+    // for its peer (arrival lost on a PCIe hiccup), the kernel set the
-+    // host-mapped poison flag and left its tensor holding the local shard.
-+    // Run this call through the meta-backend butterfly (self-contained, no
-+    // two-sided protocol) to re-sync both devices; the chunked path resumes
-+    // on the next call.
++    // Hard-cap recovery: if a previous chunked kernel waited past the HARD cap
++    // (the peer is not merely late), the kernel set the host-mapped poison flag
++    // and left its tensor holding the local shard.  Run this call through the
++    // meta-backend butterfly (self-contained, no two-sided protocol) to re-sync
++    // both devices; the chunked path resumes on the next call.
 +    if (*(volatile int *) p->poison.host != 0) {
 +        *(volatile int *) p->poison.host = 0;
-+        GGML_LOG_WARN("internal AR: peer arrival not observed within %u ms "
++        GGML_LOG_WARN("internal AR: peer arrival not observed within the %u ms hard cap "
 +                      "(call %llu); falling back to butterfly AllReduce to "
 +                      "re-sync devices\n",
-+                      p->spin_timeout_ms, (unsigned long long) p->call_count);
++                      p->spin_hard_ms, (unsigned long long) p->call_count);
 +        return false;
++    }
++
++    // Soft-cap notice: the kernel kept waiting and completed the reduction, so
++    // there is nothing to repair; just report the late peer once at the next
++    // call.
++    if (*(volatile int *) p->slow.host != 0) {
++        *(volatile int *) p->slow.host = 0;
++        GGML_LOG_WARN("internal AR: peer arrival exceeded the %u ms soft budget "
++                      "(call %llu); the reduction still completed\n",
++                      p->spin_timeout_ms, (unsigned long long) p->call_count);
 +    }
 +
 +    const size_t   input_nbytes = ggml_nbytes(tensors[0]);
@@ -8722,7 +8791,9 @@ index 000000000..895c0f45d
 +                    p->fused ? p->stage_control_dev[i] : nullptr, \
 +                    last_chunk && p->fused, \
 +                    reinterpret_cast<int *>(p->poison.dev), \
++                    reinterpret_cast<int *>(p->slow.dev), \
 +                    p->spin_budget_cycles, \
++                    p->spin_hard_budget_cycles, \
 +                    reinterpret_cast<T_wire *>(p->p2p ? p->p2p_wire[1 - i] : p->host_wire.dev), \
 +                    reinterpret_cast<int *>(p->p2p ? p->p2p_arrival[1 - i] : p->arrival.dev), \
 +                    p->p2p, \

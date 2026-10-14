@@ -10,36 +10,9 @@ support, and an attention-memory campaign that frees several GiB of VRAM.
 [`ENVIRONMENT.md`](ENVIRONMENT.md) documents every variable the set adds or repoints: its default, and
 whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning value, or a diagnostic.
 
-It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp
-checkout at the fork point **`097cf33d9`** (upstream master).  Each block is a
-self-contained `git am` commit, so you can apply the whole set or pick the ones
-you want.  **V2.0 (`r51`)** re-organized the former 16-block set so every
-concern lives in its owning block and every delivery concern is a self-contained
-function/file; the applied tree is behaviour-preserving (all same-seed gates are
-byte-identical to r50).  **`r52`** folds four contributor WIP PRs (#140-#143) into
-blocks 01/02/08/10 (all-reduce events/P2P, MTP prompt-tail ingest, `topk_moe` sorted
-keys, short-K MoE rows-per-block).  **`r53`** folds PR #144 (DFlash device-resident features for
-several sequences, blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks 09/10,
-default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).  **`r54`** folds two WIP-cleanup fixes into their owning
-blocks: a clean DFlash2 `-sm tensor` rejection (**block 11**, `-sm layer` is the supported config) and
-the segmented host-resident expert upload fix that enables gemma4 + `-ncmoe`/`-cmoe` + `-sm tensor`
-(**block 09**; the async/per-row perf follow-up is `wip/meta-segmented-upload-async/`).  **`r55`** folds
-three WIP campaigns into their owning blocks with **no new block**: the full `-Wshadow` cleanup + `-Wshadow`
-on the `llama` C++ target (**block 00**; the one feature-introduced site is **block 05**), the
-`swizzle_bytes` → `swizzle` port that also removes the `-Wc++20-extensions` warnings (**block 05**), and
-the width-dependent `q5_1` mmvq rows-per-block (**block 08**).  **`r56`** folds four contributor WIP PRs
-(#146-#149) into their owning blocks: the restored RDNA4 routed-compact MMQ J selection (**block 08**,
-the r50 `select_J` port had left it RDNA3.5-only and dropped the `rdna4` argument), the pageable
-host<->device tensor-copy bounce (**block 09**), the BF16 hyper-connection mixer/combine widened to 16
-tokens (**block 10**) and merged-span state saves (**block 11**).  **`r57`** scopes the `-Wshadow` gate to
-GCC's `-Wshadow=local` (the container compiles host C++ with GCC, whose `-Wshadow` is a superset of
-clang's) and fixes the two GCC-only sites it revealed — the AMX buffer-type initializer (**block 09**)
-and an always-true `size_t >= 0` assert (**block 10**).  **`r58`** folds PR #150 (`@overdoingism`,
-`wip/dflash-layer-inp-preset`) in two blocks: the draft-setup half (**block 02**) presets the DFlash
-layers read from the draft GGUF before the target context exists, and the context half (**block 11**)
-adds the preset API, applies it before the first reserve and skips the reserve when
-`set_embeddings_layer_inp()` is a no-op — so a DFlash draft no longer forces a free+reallocate of the
-target's compute buffers at the first request.
+It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
+**`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r59`**.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -60,15 +33,10 @@ bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts (
 - What changed recently: [`WORKLOG.md`](WORKLOG.md)
 - Current status and validation: [`release.json`](release.json) (source of truth) and [`MANIFESTS.md`](MANIFESTS.md)
 
-> **The `mmb`/QSA/indexer campaign is folded into the delivery (2026-09-25, release `r8`).**  The 16
-> delivery patches now absorb the 28 `archive/work/mmb-general/` patches (the tree at that fold was
-> `24bb0f5acb…`; the shipped tree is always the one in `release.json`), and the build is clean on gfx1201.  The working plan, per-patch mapping and validation record are
-> in [`archive/work/beta-integration/integration.md`](archive/work/beta-integration/integration.md).
-
 ## Releases
 
 Frozen deliveries are published as GitHub Releases and tagged in this repo
-(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r52`**; the `v16-*`
+(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r59`**; the `v16-*`
 tags are the historical 16-block set.  `r1` is the
 re-base of the set onto that fork point and every later `rN` is a dated change recorded in
 [`WORKLOG.md`](WORKLOG.md), newest first).
