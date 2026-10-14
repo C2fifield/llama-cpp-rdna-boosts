@@ -3,10 +3,13 @@
 **Status: OPEN (seeded 2026-10-14; updated 2026-10-14 after instrumentation + the prefetch prototype).**
 The seed's premise is refuted — the staged hand-off **does** engage on r62.  See
 **[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md)**: staging is **+41 %** over `GGML_SCHED_STAGE=0`;
-**BACK placement is +5.7 % over FRONT** (the campaign's "placement is a no-op" was an inert-knob
-artifact — `llama-bench` ignores the `common.h` knob); and an explicit all-up-front prefetch **regresses
-~4 %** because it trades GPU overlap for ~88 ms of scheduler idle, even though concurrent H2D is nearly
-free in isolation.  The open thread is to find and remove that idle before a prefetch can win.
+**the delivery's default `-ncmoe N` (first N layers host) is the worst placement**: matched-count A/Bs
+show FRONT is ~1.5 % (3 layers) / ~2.5 % (20 layers) slower than MID/REAR for prefill, and with a
+budget-limited expert cache REAR is **+12.5 % decode** and moves ~45 % fewer host bytes/token than FRONT.
+The campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench` ignores the `common.h`
+knob); the first "BACK +5.7 %" reading was byte-confounded (dense blk.39/blk.40).  An explicit all-up-front
+prefetch **regresses ~4 %** (pre-pass host cost), even though concurrent H2D is nearly free in isolation.
+The open thread is the placement default (report-only — needs the heatmap ON and the full gates).
 Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead.
 
 ## 0. Why this exists (and what it replaces)

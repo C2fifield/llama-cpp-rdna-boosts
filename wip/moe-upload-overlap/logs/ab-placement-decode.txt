@@ -1,0 +1,38 @@
+# moe-upload-overlap — CORRECTED placement A/B (matched table counts) + decode/cache, 2026-10-14
+# gfx1201 2x R9700, ROCm 7.14.1, ~/llama.cpp r62 e909c529a + prefetch-prototype.patch
+# Qwen3.6-35B-A3B-Q8_0, -ngl 99 -sm tensor -ncmoe 4, -fa 1 -t 8, GGML_SCHED_STAGE_SLOTS=16
+# placement via LLAMA_NCMOE_LAYERS (llama-bench knob fixed in the prototype patch)
+
+## THE EARLIER "BACK +5.7%" WAS BYTE-CONFOUNDED (twice)
+# blk.39 and blk.40 have NO ffn_*_exps (dense) -- so "36,37,38,39" is 3 MoE layers (9 tables),
+# "37,38,39" is 2 (6 tables), while "0,1,2,3" is 4 (12 tables).  All comparisons below use
+# MATCHED table counts (verified with the STAGE_OK trace).
+
+## prefill, 3 host layers (9 tables each), pp4096 -ub 4096 -r 3, 2 reps
+FRONT 0,1,2       6843 / 6864
+MID   18,19,20    6979 / 6970
+BACK  36,37,38    6954 / 6942
+NOCOPY control:   FRONT 7766/7765, MID 7796/7787, BACK 7775/7763  (all within noise)
+# -> FRONT is ~1.5 % slower; MID ~= BACK.  Structural cost is placement-independent.
+
+## prefill, 20 host layers (60 tables each), pp4096 -ub 4096 -r 3, 2 reps
+FRONT 0-19        4129.3 / 4129.9
+MID   10-29       4240.3 / 4239.7
+REAR  19-38       4211.8 / 4219.7
+NOCOPY control:   FRONT ~7198, MID ~7079, REAR ~6986  (structural, all well above the real arm)
+# -> FRONT is ~2.1-2.7 % slower; MID ~= REAR.
+
+## decode, 20 host layers, -n 500, pp512 -ub 512 -r 3, heatmap OFF
+# cache auto (unset): arena=16320 MiB holds ALL 120 tables -> hit 100 %, 0 fills
+FRONT 92.20+-24.2   MID 92.12+-23.9   REAR 92.53+-24.3   (flat; the auto cache covers everything)
+# cache 4096 MiB (budget-limited): llama-cli -n 500, ~402 tokens
+FRONT 0-19 : gen 73.5 t/s  hit 85.69 %  cold 9.29 %  75.34 MiB/token
+MID   10-29: gen 79.9 t/s  hit 91.02 %  cold 4.36 %  47.3  MiB/token
+REAR  19-38: gen 82.7 t/s  hit 92.17 %  cold 3.42 %  41.21 MiB/token
+# -> monotonic FRONT < MID < REAR; REAR is +12.5 % decode over FRONT and moves ~45 % fewer host bytes.
+
+## coherence
+# FRONT 0,1,2 / MID 18,19,20 / BACK 36,37,38 / default -ncmoe 4 -> all sha=6d3d7b1cc2e0 (bit-identical)
+
+## delivery default
+# llm_add_n_cpu_ffn_overrides (common/common.h) defaults to layers 0..N-1 = the FRONT = worst placement.
