@@ -63,8 +63,11 @@ repair / host-pool warm order, the decode-identity tally gap, and the now-dead `
 The campaign record (decisions, the phase map, the design Q&A) moved to
 `archive/work/moe-heatmap-persistence/` with a `RESOLUTION.md`.
 
-**Published (2026-10-14).**  The fork's `rdna-boosts` branch was re-cut on the canonical chain and
-force-pushed to the **personal fork** (`git@github.com:stew675/llama.cpp.git`,
+**Published (2026-10-14).**  The **delivery repo** itself was pushed to `main`
+(`3075e11..1091fd2`) and the release tagged `v12-097cf33d9-r60` (annotated, on the release commit
+`6796a51`), which triggered `release.yml`: the GitHub Release carries `rdna-boosts-all.patch`,
+`patches.tar.gz`, `release.json` and `SHA256SUMS`.  The fork's `rdna-boosts` branch was re-cut on the
+canonical chain and force-pushed to the **personal fork** (`git@github.com:stew675/llama.cpp.git`,
 `e1b2a41ed -> a3459aad` with `--force-with-lease`; never upstream).  The ROCm container images were
 built and pushed **locally** with `scripts/build-containers.sh --force --rocm "7.14.1 10.1" --push
 --prune`: 15 tags (full/light/server × 7.14.1/10.1 + their `-097cf33d9` immutable variants +
