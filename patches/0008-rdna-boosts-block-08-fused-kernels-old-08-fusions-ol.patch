@@ -1,4 +1,4 @@
-From 76fe9f7db8e575d3e91695d522bf4c0568dbe178 Mon Sep 17 00:00:00 2001
+From a22aad1f926f868e7a6c53a25967a2e7d3038577 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:04:08 -0500
 Subject: [PATCH 08/11] rdna-boosts: block 08: fused kernels (old-08 fusions +
@@ -37,7 +37,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/mmq-vec-dot.cuh            |   16 +-
  ggml/src/ggml-cuda/mmq.cu                     |  402 +++-
  ggml/src/ggml-cuda/mmq.cuh                    |  439 +++-
- ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |   86 +
+ ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |   91 +
  ggml/src/ggml-cuda/mmvq-rdna.cuh              |   66 +
  ggml/src/ggml-cuda/mmvq.cu                    | 1898 +++++++++++++++--
  ggml/src/ggml-cuda/mmvq.cuh                   |   31 +
@@ -61,7 +61,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/unary.cu                   |  224 ++
  ggml/src/ggml-cuda/unary.cuh                  |   12 +
  tests/test-backend-ops.cpp                    |    2 +-
- 35 files changed, 5148 insertions(+), 437 deletions(-)
+ 35 files changed, 5153 insertions(+), 437 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cu
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cuh
  create mode 100644 ggml/src/ggml-cuda/mmvq-rdna-params.cuh
@@ -2471,10 +2471,10 @@ index d3e7b75ea..65f495cdf 100644
  bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
 diff --git a/ggml/src/ggml-cuda/mmvq-rdna-params.cuh b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
 new file mode 100644
-index 000000000..51a620803
+index 000000000..ec5b8677e
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,91 @@
 +#pragma once
 +
 +#include "common.cuh"
@@ -2549,8 +2549,13 @@ index 000000000..51a620803
 +            case GGML_TYPE_IQ2_XS:
 +            case GGML_TYPE_IQ3_XXS:
 +            case GGML_TYPE_Q2_0:
-+            case GGML_TYPE_Q5_1:
 +                return rpb_max < 2 ? rpb_max : 2;
++            // q5_1 is the exception: two rows regress the narrow verify widths on ROCm 7.14.
++            // One row is 6.6-7.1 % faster at n = 2..4 (gfx1201, m=4096 k=14336), while two rows
++            // stay ahead from n = 5 (up to +16 % at n = 8), so the row count follows the width.
++            // rows-per-block is a weight-row block decomposition, not a K reduction knob.
++            case GGML_TYPE_Q5_1:
++                return ncols_dst <= 4 ? 1 : (rpb_max < 2 ? rpb_max : 2);
 +            // Q2_K's dot product exceeds the 256-VGPR budget at 4 rows x 7..8 columns and
 +            // spills to scratch; it keeps 2 rows there.
 +            case GGML_TYPE_Q2_K:

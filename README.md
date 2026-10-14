@@ -23,7 +23,11 @@ several sequences, blocks 00/10/11) and issue #138's `fa-stage-prealloc` (blocks
 default-on `GGML_CUDA_FA_STAGE_PREALLOC=0`).  **`r54`** folds two WIP-cleanup fixes into their owning
 blocks: a clean DFlash2 `-sm tensor` rejection (**block 11**, `-sm layer` is the supported config) and
 the segmented host-resident expert upload fix that enables gemma4 + `-ncmoe`/`-cmoe` + `-sm tensor`
-(**block 09**; the async/per-row perf follow-up is `wip/meta-segmented-upload-async/`).
+(**block 09**; the async/per-row perf follow-up is `wip/meta-segmented-upload-async/`).  **`r55`** folds
+three WIP campaigns into their owning blocks with **no new block**: the full `-Wshadow` cleanup + `-Wshadow`
+on the `llama` C++ target (**block 00**; the one feature-introduced site is **block 05**), the
+`swizzle_bytes` → `swizzle` port that also removes the `-Wc++20-extensions` warnings (**block 05**), and
+the width-dependent `q5_1` mmvq rows-per-block (**block 08**).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

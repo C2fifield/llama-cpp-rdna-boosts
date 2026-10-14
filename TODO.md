@@ -176,50 +176,6 @@ the fused and non-fused paths bit-identical.
 pre-existing property of the arena, not of the ring, and disabling the fusions would cost more than it
 fixes — see the measured cost and the re-enable recipe in `ENVIRONMENT.md` §7.
 
-### 51. 3-GPU MTP decode is slower than plain decode (pre-existing)
-
-**Working home: `wip/mtp-3gpu-decode/`.**  (Originally tracked with #50; re-seeded as its own campaign 2026-10-11.)
-
-**Opened 2026-10-10 (found during the `archive/work/slab-ring-region/` 3-GPU gate).**  On 3 GPUs MTP is a *loss*,
-not a win — and it hits the production config (AGENTS.md: servers run unpinned, 3-GPU,
-`HIP_VISIBLE_DEVICES=0,1,2`, hybrid default).
-
-**Maintainer note (2026-10-11):** 3-GPU MTP is **still a bit slower** than plain decode, but **no longer
-2.6x slower**.  Re-measure the current gap on r48 first; the table below is the r38 anchor (several AR/
-slab/scheduler changes landed after it).
-
-Field config, Qwen3.8-Flash-Next IQ4_NL + the shared Q8_0 MTP head, 32 358-token prompt, 1000 generated,
-`--spec-draft-n-max 3`, same tree:
-
-| config | prefill | decode | acceptance |
-|---|---:|---:|---:|
-| 2-GPU plain (`--spec-type none`) | 546 | 41.9 | — |
-| 2-GPU MTP | 961 | **64.8** | 0.91 |
-| 3-GPU plain | — | **52.2** | — |
-| 3-GPU MTP | 1043 | **19.5** | 0.90 |
-| 3-GPU MTP, ring off (`GGML_CUDA_SLAB_RING_MIB=0`) | 759 | 21.4 | 0.91 |
-| **3-GPU MTP, clean r38 (no WIP patch)** | 768 | **20.1** | — |
-| **3-GPU plain, clean r38** | 927 | **53.0** | — |
-
-The verify step costs ~190 ms on 3 GPUs against ~57 ms on 2.  **Reproduces on clean r38**, so it is not the
-H2D-ring WIP (and `GGML_CUDA_ALLREDUCE=ce` vs the hybrid default makes no difference; `ce` is 2-GPU-only
-anyway, ENVIRONMENT §6).  Also orthogonal to the cache residency (3-GPU logs 99.1 % residency).
-
-**Reproducer:**
-
-```bash
-# the harness is preserved in the repo (the /tmp/srr copies are transient):
-#   archive/work/moe-verify-fusions/tools/field3.sh       (MTP arm)
-#   archive/work/moe-verify-fusions/tools/field_nospec.sh (plain arm)
-# prompt: wip/kv-cell-offset-nondeterminism/prompts/mixed30k.txt
-cd archive/work/moe-verify-fusions/tools
-PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field3.sh      ~/llama.cpp/build-rocm-hybrid t3  run30kfit
-PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field_nospec.sh ~/llama.cpp/build-rocm-hybrid t3n run30kfit
-```
-
-Suspects to start from: the 3-way tensor-split verify gather (the 4-token verify reads experts from three
-devices), the draft/target device placement, and whether the per-op graph capture re-fires on 3 GPUs
-(`graphs reused` is 267 on 3 GPUs vs 246/270 on 2).  Details: `archive/work/slab-ring-region/HANDOVER.md` §4.3.1.
 
 ### 52. Multi-sequence MTP is non-deterministic: a rollback reads a recurrent snapshot the last batch did not write — CORRECTNESS
 
@@ -418,16 +374,6 @@ warn-once-and-fall-back treatment (the host buffers are always reserved, so the 
 extra memory) and flips F1 default-on for single-sequence DFlash, with the runtime
 `GGML_LF_DFLASH_DEV=0` kill switch.  Folded into block 15; `WORKLOG.md` 2026-10-07 (r26).
 
-### 28. Retune the RDNA4 dense mmvq rows-per-block table for `q5_1` / `iq4_xs` on ROCm 7.14
-
-**Opened 2026-09-28** while integrating PR #57 (now in `v16-84e76d8a2-r21`, blocks 10+13).  The per-type
-`calc_rows_per_block_weight` table was swept by the author on **ROCm 10.0**; on the maintainer's **ROCm
-7.14** build it transfers for the main types (q3_K +7..+24 %, q4_K +8..+38 %, q6_K +3..+27 %, q2_K +14 %
-at n=1) but carries two small dips: **`q5_1` -3..-4 %** and **`iq4_xs` -3..-4 %** at n=2/3 -- both
-**+10..+12 %** at n=8, and the common MTP/DFlash verify widths are 4 and 8.  Kept as tuned (the aggregate
-band is a large net win); a per-type retune (e.g. 1 row for these two at 2..3 columns) needs its own
-verify-width A/B.  **Working home: `wip/mmvq-rpb-retune/`.**  Record:
-`archive/work/mmvq-verify-rows/VERIFICATION-r21.md`, `WORKLOG.md` 2026-09-28 (r21, PR #57).
 
 ### 27. Extend the RDNA4 GQA-6 FA band's 64-wide K/V row to the 2-byte (f16/bf16) arm
 
@@ -482,9 +428,6 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
   skip costs; the proposed "pin `nwarps`/`rps`/item-split" fix is **invalid** (the two arms are already
   launch-identical).  Live candidates: codegen (`has_fusion` register pressure / FMA contraction) and the
   Q8_1 cache.  Low priority — the skip is the accepted purity trade.  `archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md` §9.
-- **`-Wshadow` cleanup for `src/` (item 15).**  Audited: 128 warnings / 27 files, 46 in the risky
-  "shadows a local variable" class.  Wants a dedicated cleanup commit (~20 upstream files) to avoid
-  colliding on every re-base.  `archive/work/shadow-warnings/RECORD-2026-09-12-shadow-audit.md`.
 - **MoE topk fusion adoption (item 5(a)).**  ~0.5 % prefill for a ~188 MB arena cost and a numerics fork
   (fused top1 logit 18.424 -> 18.690 vs the unfused reference), so it needs a quality gate before it can
   be trusted.  `archive/work/wip-archive/qwen4exp/discovery/2026-09-06-strix-halo-gfx1151-launch-overhead-topk.md`.

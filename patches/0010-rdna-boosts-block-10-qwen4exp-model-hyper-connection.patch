@@ -1,4 +1,4 @@
-From 233d98723fe5f5e01bc665ee67a9d484d5a9a29d Mon Sep 17 00:00:00 2001
+From 6fb6afe2c088ef238a69f5d1eac14cd1d196967f Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -21009,7 +21009,7 @@ index 68aa913ce..9bd71e504 100644
              }
              view_src = view_src->view_src;
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 97250c2e8..a9b1a4434 100644
+index b6710ed30..cfe04c3f0 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -22,6 +22,7 @@ set(LLAMA_CORE_SOURCES
@@ -21061,7 +21061,7 @@ index 0dc4cc961..21c19a41d 100644
              return true;
      }
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 6a39daeb8..9641a5a4f 100644
+index d7f58f550..c9cb98456 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -21316,7 +21316,7 @@ index 6a39daeb8..9641a5a4f 100644
      // set to total number of outputs in the batch, for use in llama_get_logits_ith
      n_outputs = n_outputs_all;
  
-@@ -2800,8 +2935,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+@@ -2800,8 +2935,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs_l) {
      return n_outputs_max;
  }
  
@@ -21657,7 +21657,7 @@ index 967cbcc65..9ac8eff63 100644
  
  //
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index e04b9a811..2662bce16 100644
+index 51b0f02b0..c58f7a5b5 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -3893,6 +3893,9 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
@@ -21687,7 +21687,7 @@ index 75b4d0f75..9aae2b782 100644
              return false;
          }
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 16c637e40..e0c73b9d3 100644
+index 71ddb4683..aa5271156 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -79,7 +79,8 @@ llama_kv_cache::llama_kv_cache(
@@ -23201,7 +23201,7 @@ index 516c7d222..d9bf0b884 100644
  private:
      llama_memory_hybrid_idx * mem = nullptr;
 diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
-index c20356675..794d72902 100644
+index bd78eb88a..269d0036f 100644
 --- a/src/llama-memory-recurrent.cpp
 +++ b/src/llama-memory-recurrent.cpp
 @@ -580,6 +580,17 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
@@ -23232,7 +23232,7 @@ index c20356675..794d72902 100644
              // Clearing the state mid-batch would require special-casing which isn't done.
              LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 482c7ed22..be638294d 100644
+index 381cc1aca..4ce04f8f7 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -15,17 +15,35 @@
@@ -23384,7 +23384,7 @@ index cd838c120..939d928bf 100644
              return !ranges.empty();
          }
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 2fdcbd512..4f69ceee8 100644
+index 602611450..7d2af8622 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -385,7 +385,46 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
@@ -23435,7 +23435,7 @@ index 2fdcbd512..4f69ceee8 100644
      const bool is_dsv4 = ud->model->arch == LLM_ARCH_DEEPSEEK4 ||
          (ud->model->arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0);
  
-@@ -2451,6 +2490,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
+@@ -2449,6 +2488,26 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
      return ret;
  }
  
@@ -23462,7 +23462,7 @@ index 2fdcbd512..4f69ceee8 100644
  uint64_t llama_model::n_elements() const {
      return pimpl->n_elements;
  }
-@@ -3093,10 +3152,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3091,10 +3150,51 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
          default:
              {
                  // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
@@ -23476,13 +23476,13 @@ index 2fdcbd512..4f69ceee8 100644
 +                    return env == nullptr || std::atoi(env) != 0;
 +                }();
                  const bool mtp_on_hybrid_qwen =
-                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
+                     params_l.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                      (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
 -                     arch == LLM_ARCH_BAILINGMOE3);
 +                     arch == LLM_ARCH_BAILINGMOE3 ||
 +                     (arch == LLM_ARCH_QWEN4EXP && (!mtp_sparse || hparams.indexer_head_size == 0)));
 +
-+                if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_QWEN4EXP &&
++                if (params_l.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_QWEN4EXP &&
 +                        mtp_sparse && hparams.indexer_head_size > 0) {
 +                    llama_memory_hybrid_idx::layer_filter_cb f_attn =
 +                        [&](uint32_t il) { return il >= hparams.n_layer(); };
@@ -23493,8 +23493,8 @@ index 2fdcbd512..4f69ceee8 100644
 +                    LLAMA_LOG_INFO("%s: MTP context uses a hybrid-idx memory (sparse draft attention)\n", __func__);
 +                    return new llama_memory_hybrid_idx(
 +                        /* model             */ *this,
-+                        /* attn_type_k       */ params.type_k,
-+                        /* attn_type_v       */ params.type_v,
++                        /* attn_type_k       */ params_l.type_k,
++                        /* attn_type_v       */ params_l.type_v,
 +                        /* attn_v_trans      */ !cparams.flash_attn,
 +                        /* attn_kv_size      */ cparams.n_ctx_seq,
 +                        /* attn_n_pad        */ 1,
@@ -23514,8 +23514,8 @@ index 2fdcbd512..4f69ceee8 100644
 +                }
  
                  const bool mtp_on_hybrid_nemotron =
-                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -3889,7 +3989,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+                     params_l.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
+@@ -3887,7 +3987,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
      TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
      TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
      TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),
@@ -23523,9 +23523,9 @@ index 2fdcbd512..4f69ceee8 100644
 +    TENSOR_READ_LAZY      (llama_model_loader::TENSOR_READ_LAZY),
 +    TENSOR_SKIP_MANAGED   (llama_model_loader::TENSOR_SKIP_MANAGED) {}
  
- ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+ ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn_l, const std::initializer_list<int64_t> & ne, int flags) {
      GGML_ASSERT(ml != nullptr);
-@@ -4024,23 +4125,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -4022,23 +4123,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }

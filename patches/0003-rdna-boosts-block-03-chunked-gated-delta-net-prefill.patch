@@ -1,4 +1,4 @@
-From f9397d2fd55b6bfc0cd0995bc6a58a407b74614c Mon Sep 17 00:00:00 2001
+From f3db2a81fa477b92716fbda4951fa2b49e0769df Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 03/11] rdna-boosts: block 03: chunked gated-delta-net prefill
@@ -3037,7 +3037,7 @@ index 882cdf4a5..f34b5de51 100644
      result->op     = GGML_OP_GATED_DELTA_NET;
      result->src[0] = q;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 50668ba15..35c96127b 100644
+index eb7926f0c..88f2714e9 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -195,6 +195,10 @@ llama_context::llama_context(
@@ -3157,7 +3157,7 @@ index 484eafb74..fb8164664 100644
                       bool   unified,
                              /* layer filters */
 diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
-index 2893d819e..c20356675 100644
+index a54e91ebe..bd78eb88a 100644
 --- a/src/llama-memory-recurrent.cpp
 +++ b/src/llama-memory-recurrent.cpp
 @@ -25,6 +25,7 @@ llama_memory_recurrent::llama_memory_recurrent(
@@ -3301,10 +3301,10 @@ index 08489a4be..5711521f5 100644
  
      // computed before each graph build
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 6872589fa..cde6808b8 100644
+index 44315b2c2..647929451 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -2894,6 +2894,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2892,6 +2892,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
                      /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                      /* n_seq_max         */ cparams.n_seq_max,
                      /* n_rs_seq          */ cparams.n_rs_seq,
@@ -3312,7 +3312,7 @@ index 6872589fa..cde6808b8 100644
                      /* offload           */ cparams.offload_kqv,
                      /* unified           */ cparams.kv_unified,
                      /* filter_attn       */ std::move(filter_attn),
-@@ -3084,6 +3085,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3082,6 +3083,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
                              std::max((uint32_t) 1, cparams.n_seq_max),
                              cparams.n_seq_max,
                              cparams.n_rs_seq,
@@ -3320,7 +3320,7 @@ index 6872589fa..cde6808b8 100644
                              nullptr);
                  } else if (llm_arch_is_hybrid(arch) && !mtp_on_hybrid_qwen && !mtp_on_hybrid_nemotron) {
                      // The main difference between hybrid architectures is the
-@@ -3145,6 +3147,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3143,6 +3145,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
                              /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,
@@ -3328,7 +3328,7 @@ index 6872589fa..cde6808b8 100644
                              /* offload           */ cparams.offload_kqv,
                              /* unified           */ cparams.kv_unified,
                              /* filter_attn       */ std::move(filter_attn),
-@@ -3165,6 +3168,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3163,6 +3166,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
                              /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,
@@ -3336,7 +3336,7 @@ index 6872589fa..cde6808b8 100644
                              /* offload           */ cparams.offload_kqv,
                              /* unified           */ cparams.kv_unified,
                              /* filter_attn       */ std::move(filter_attn),
-@@ -3185,6 +3189,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -3183,6 +3187,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l
                              /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                              /* n_seq_max         */ cparams.n_seq_max,
                              /* n_rs_seq          */ cparams.n_rs_seq,

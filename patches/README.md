@@ -11,7 +11,18 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r54` (2026-10-13) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed, gemma4 `-sm tensor` rejection lifted (block 09):**
+> **Current release `v12-097cf33d9-r55` (2026-10-13) -- `-Wshadow` cleanup (block 00), `swizzle_bytes` fix (block 05), `q5_1` mmvq rpb retune (block 08):**
+> canonical tip `49bea1ff7`, net tree `2315b3358f96795d688eecc433b12d458f4f03f8`; strict **12/12**
+> `git am` (`validate-set.sh` green), the rebuilt tip tree byte-identical to the gated tree, 4B
+> `Qwen3.5-Q8_0` same-seed greedy `1c5d32ac537d` unchanged, `FLASH_ATTN_EXT` 6389/6389, **0** `-Wshadow`
+> and **0** `-Wc++20-extensions` warnings, 3-GPU MTP field 74.3 t/s vs plain 55.2 (+34.6 %).  Three
+> blocks amended and **no new block**: **00** (139 `-Wshadow` site renames across 35 `src/` files +
+> `-Wshadow` on the `llama` C++ target + `this->n_rs_seq = 0;` member fix + the `llama-batch.cpp`
+> duplicate-loop collapse), **05** (three `swizzle_bytes` -> `swizzle<stride_tile>` sites, also dropping
+> the `-Wc++20-extensions` warnings) and **08** (`q5_1` rows-per-block = `ncols_dst <= 4 ? 1 : 2`;
+> `iq4_xs` unchanged).  See `../WORKLOG.md` 261013.005 (r55).
+>
+> **Previous release `v12-097cf33d9-r54` (2026-10-13) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed, gemma4 `-sm tensor` rejection lifted (block 09):**
 > canonical tip `c816fc32c`, net tree `71f524a5215acdbdcb4b951d04e387366479d31f`; strict **12/12**
 > `git am` (`validate-set.sh` green), 4B `Qwen3.5-Q8_0` same-seed greedy **byte-identical to r53**
 > (`1c5d32ac537d`), gemma4 26B-A4B `-ncmoe 40 -sm tensor` coherent with cache-on == cache-off, `-sm

@@ -1,4 +1,4 @@
-From 133e9e2915c15e2e5a8fa2b3789795f1ef7e8c6b Mon Sep 17 00:00:00 2001
+From 529c2e9cda04ebe5d8c2ab1e82bfbe376fe465e1 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:47 -0500
 Subject: [PATCH 02/11] rdna-boosts: block 02: adaptive MTP draft depth
@@ -923,7 +923,7 @@ index 6f76c819f..0eab7fec5 100644
          uint32_t n_outputs_max_per_seq; // max outputs per sequence (0 = n_outputs_max)
          int32_t  n_threads;             // number of threads to use for generation
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 7da192d67..50668ba15 100644
+index edb3e836c..eb7926f0c 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -4019,6 +4019,7 @@ llama_context_params llama_context_default_params() {

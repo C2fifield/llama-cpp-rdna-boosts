@@ -1,5 +1,51 @@
 # WORKLOG - dated delivery records
 
+## 261013.005 (r55) -- `-Wshadow` cleanup (block 00), `swizzle_bytes` fix (block 05), `q5_1` mmvq rpb retune (block 08)
+
+**Release `v12-097cf33d9-r55`** (base `097cf33d9`, canonical tip `49bea1ff7`, net tree
+`2315b3358f96795d688eecc433b12d458f4f03f8`); block count stays **12** (00-11).  Three WIP campaigns
+were driven to completion and folded into the blocks that own their concerns -- **no new block**.  The
+fork chain was rebuilt with `git rebase -i --autosquash` and `make-patches.sh` / `make-release.sh`
+regenerated `patches/` and `release.json`.
+
+- **TODO #15 (`wip/wshadow-cleanup` -> `archive/work/wshadow-cleanup/`) -> block 00.**  All **139**
+  `-Wshadow` sites in `src/` fixed (46 "shadows a local variable", 92 "shadows a field", 1 "modifies
+  constructor parameter that shadows a field"): the shadowing declarations were renamed (`_l`) across
+  35 files, and `-Wshadow` is now enabled on the `llama` C++ target (`src/CMakeLists.txt`, gated on
+  `LLAMA_ALL_WARNINGS`).  **138/139 sites are upstream base code**, so they land in block 00 ("prepare
+  the upstream base"); the one feature-introduced site (`llama-kv-cache.cpp`
+  `const int64_t n_stream = cell_pos->ne[1];`, block 05) lands in block 05.  The cleanup caught two
+  real upstream bugs: a **duplicated nested `seq_id` loop** in `llama-batch.cpp` (collapsed), and
+  `llama-memory-recurrent.cpp`'s `n_rs_seq = 0;` zeroing the constructor *parameter* instead of the
+  *member*, so an empty memory module never actually disabled rollback snapshots -- fixed to
+  `this->n_rs_seq = 0;`.
+- **block 05 `swizzle_bytes` fix.**  Upstream `2ca15f540` (#29612) renamed `swizzle_bytes` to
+  `swizzle` *before* the base, but block 05 re-introduced 3 calls.  On AMD they sit in a discarded
+  `if constexpr` (compiled via the C++20 extension); on the swizzled NVIDIA path they would have
+  failed to instantiate.  The three sites now use the current `swizzle<stride_tile>(tile_KV, ...)`
+  (identical to the base), which also removes the `-Wc++20-extensions` warnings.  AMD never swizzles
+  (`ggml_cuda_fattn_mma_get_swizzled()` requires `TURING_MMA_AVAILABLE`), so the change is
+  performance-neutral on AMD.
+- **TODO #28 (`wip/mmvq-rpb-retune` -> `archive/work/mmvq-rpb-retune/`) -> block 08.**  Swept
+  `calc_rows_per_block_weight` for `q5_1`/`iq4_xs` at n=2..8 (gfx1201, m=4096 k=14336): `q5_1` **one row
+  is 6.6-7.1 % faster at n=2..4** while two rows stay ahead from n=5 (up to +16 % at n=8), so the rule
+  is now width-dependent (`ncols_dst <= 4 ? 1 : 2`); `iq4_xs` showed **no win** (the campaign's dip did
+  not reproduce) and is unchanged.
+- **TODO #51 (`wip/mtp-3gpu-decode` -> `archive/work/mtp-3gpu-decode/`): CLOSED, no code change.**  The
+  r38 3-GPU MTP deficit is gone on r54: 3-GPU MTP **74.3 t/s** vs 3-GPU plain **55.2** (**+34.6 %**)
+  and 2-GPU MTP **65.0** (r38 anchor: 3-GPU MTP 20.1 vs plain 53.0).  No profiling needed.
+
+**Validation (gfx1201, 2x R9700).**
+- `scripts/validate-set.sh` green (fresh codeload tarball at `097cf33d9`, strict 12/12 `git am`, applied
+  tree `2315b3358...`);
+- the rebuilt tip tree is **byte-identical** to the tree the gates below were run on;
+- 4B `Qwen3.5-Q8_0` same-seed greedy **`1c5d32ac537d`** unchanged;
+- `test-backend-ops -o FLASH_ATTN_EXT` **6389/6389** on ROCm0;
+- the `llama` target builds with **0** `-Wshadow` and **0** `-Wc++20-extensions` warnings;
+- field MTP (Qwen3.8-Flash-Next IQ4_NL + shared Q8_0 head, 32 358-token prompt, 1000 gen,
+  `-ncmoe 48 --spec-draft-n-max 3`): 3-GPU 74.3 t/s (acc 0.854), 2-GPU 65.0 (acc 0.832), 3-GPU plain
+  55.2 t/s.
+
 ## 261013.004 (r54) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed and gemma4 rejection lifted (block 09)
 
 **Release `v12-097cf33d9-r54`** (base `097cf33d9`, canonical tip `c816fc32c`, net tree

@@ -2,15 +2,15 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r54`** (canonical tip `c816fc32c`, net tree
-`71f524a5215acdbdcb4b951d04e387366479d31f`).  r54 folds two WIP-cleanup fixes into their owning
-blocks: **block 11** (a clean DFlash2 `-sm tensor` rejection; real fix re-seeded as
-`wip/dflash-meta-split-impl/`) and **block 09** (segmented host-resident expert upload fixed, gemma4
-`-sm tensor` rejection lifted; async perf follow-up `wip/meta-segmented-upload-async/`).  The
-`ssm_alpha`/`ssm_beta` fusion (item 5(b)) was re-measured and closed below the bar.  The applied tree
+**`v12-097cf33d9-r55`** (canonical tip `49bea1ff7`, net tree
+`2315b3358f96795d688eecc433b12d458f4f03f8`).  r55 folds three WIP campaigns into their owning blocks:
+the full `-Wshadow` cleanup (139 sites across 35 files; 138 upstream sites -> block 00, the one
+feature-introduced site -> block 05), the `swizzle_bytes` -> `swizzle` port (block 05) and the `q5_1`
+mmvq rows-per-block retune (block 08).  No new block.  The `iq4_xs` half of the retune and the 3-GPU MTP
+item (#51) closed with no code change.  The applied tree
 is not tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each
-into a self-contained function/file).  See `WORKLOG.md` 261013.004 (r54), 261013.003 (r53),
-261013.002 (r52) and 261013.001 (r51).  The entries below are the
+into a self-contained function/file).  See `WORKLOG.md` 261013.005 (r55), 261013.004 (r54),
+261013.003 (r53) and 261013.002 (r52).  The entries below are the
 **pre-V2.0 (16-block) provenance history**:
 
 **Previous release `v16-a55e952b8-r49`** (canonical block-15 tip `f0a74f4cc`, net tree

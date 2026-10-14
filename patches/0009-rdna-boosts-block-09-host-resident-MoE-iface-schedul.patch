@@ -1,4 +1,4 @@
-From f7cfc4cb0c6ab282d48dd86d8c38b0f8617e7522 Mon Sep 17 00:00:00 2001
+From 49dd0671a56a825149f815d314d6b839b2c3c2b9 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -13016,7 +13016,7 @@ index 0eab7fec5..f91f0c7d8 100644
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 9da3c1c04..6a39daeb8 100644
+index 9b9f14297..d7f58f550 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -462,9 +462,10 @@ llama_context::llama_context(
@@ -13034,7 +13034,7 @@ index 9da3c1c04..6a39daeb8 100644
      // initialized later
      cparams.pipeline_parallel = false;
 @@ -1052,6 +1053,22 @@ void llama_context::sched_reserve() {
-             __func__, (t_end_us - t_start_us)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
+             __func__, (t_end_us - t_start_us_l)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
  }
  
 +void llama_context::drop_compute_buffers() {
@@ -13441,7 +13441,7 @@ index faf4beb69..967cbcc65 100644
  
  // Set whether the context outputs nextn embeddings or not
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 03e419868..16c637e40 100644
+index b237b6162..71ddb4683 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -420,7 +420,9 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -13466,7 +13466,7 @@ index 03e419868..16c637e40 100644
                      continue;
                  }
 diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
-index 045489df7..c4dce08f6 100644
+index 7adfb7383..af3052b5f 100644
 --- a/src/llama-mmap.cpp
 +++ b/src/llama-mmap.cpp
 @@ -69,6 +69,7 @@ static std::string llama_format_win_err(DWORD err) {
@@ -13567,7 +13567,7 @@ index 6c6393d57..8cce74993 100644
  
      void seek(size_t offset, int whence) const;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 6cc0b2028..482c7ed22 100644
+index 238ab0ba1..381cc1aca 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -10,10 +10,18 @@
@@ -14029,10 +14029,10 @@ index 9e51d0ce7..cd838c120 100644
      void unmap_weight(const llama_tensor_weight & w) const;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index cde6808b8..2fdcbd512 100644
+index 647929451..602611450 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -1662,9 +1662,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1662,9 +1662,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml_l) {
          return {dev, &pimpl->gpu_buft_list.at(dev)};
      };
  
@@ -14057,17 +14057,17 @@ index cde6808b8..2fdcbd512 100644
  
      // assign the repeating layers to the devices according to the splits
      pimpl->dev_layer.resize(n_layer_all);
-@@ -1868,6 +1880,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1866,6 +1878,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml_l) {
          }
      }
  
 +    // wip/moe-cache-autosize: host-resident MoE expert bytes for the --fit arena floor reservation
-+    moe_host_expert_bytes = ml.moe_host_expert_bytes;
++    moe_host_expert_bytes = ml_l.moe_host_expert_bytes;
 +
      // per-tensor activation precision policy
-     prec_policy.load(ml, *this);
+     prec_policy.load(ml_l, *this);
  
-@@ -1933,6 +1948,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1931,6 +1946,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml_l) {
                  }
                  bufs.emplace_back(buf);
                  buf_map.emplace(idx, buf);
@@ -14076,15 +14076,15 @@ index cde6808b8..2fdcbd512 100644
 +                // per-tensor release never unmaps pages that a host-pointer tensor points into
 +                // (a tied embedding is loaded once mmap-backed and once copied to a device)
 +                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
-+                    const auto * w = ml.get_weight(ggml_get_name(t));
++                    const auto * w = ml_l.get_weight(ggml_get_name(t));
 +                    if (w != nullptr && (uint32_t) w->idx == idx) {
-+                        ml.mark_mmap_used(idx, w->offs, ggml_nbytes(t));
++                        ml_l.mark_mmap_used(idx, w->offs, ggml_nbytes(t));
 +                    }
 +                }
              }
          } else {
              ggml_backend_buffer_t buf;
-@@ -3337,6 +3362,7 @@ llama_model_params llama_model_default_params() {
+@@ -3335,6 +3360,7 @@ llama_model_params llama_model_default_params() {
          /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
@@ -14092,7 +14092,7 @@ index cde6808b8..2fdcbd512 100644
          /*.main_gpu                    =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -3348,6 +3374,7 @@ llama_model_params llama_model_default_params() {
+@@ -3346,6 +3372,7 @@ llama_model_params llama_model_default_params() {
          /*.no_host                     =*/ false,
          /*.no_alloc                    =*/ false,
          /*.load_mtp                    =*/ false,
@@ -14100,7 +14100,7 @@ index cde6808b8..2fdcbd512 100644
      };
  
      return result;
-@@ -3771,6 +3798,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
+@@ -3769,6 +3796,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
      return model->tensors_by_name;
  }
  
@@ -14173,7 +14173,7 @@ index cde6808b8..2fdcbd512 100644
  int32_t llama_model_n_expert(const struct llama_model * model) {
      return model->hparams.n_expert;
  }
-@@ -3931,3 +4024,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -3929,3 +4022,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }
@@ -14220,7 +14220,7 @@ index dff84c574..f1f81b9f1 100644
      void print_info() const;
  
 diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
-index 9c6066796..933f0ba24 100644
+index a956eaba7..d2c95ea2f 100644
 --- a/src/llama-quant.cpp
 +++ b/src/llama-quant.cpp
 @@ -974,7 +974,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
