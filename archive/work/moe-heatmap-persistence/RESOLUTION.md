@@ -6,6 +6,17 @@ delivery is `v12-097cf33d9-r60` (base `097cf33d9`, canonical tip
 `validate-set.sh` green).  Block 09's patch now carries the change; `release.json`, `ENVIRONMENT.md`,
 `patches/README.md` and `WORKLOG.md` (261014.005) are updated.
 
+## Follow-up: r61 freeze semantics (2026-10-14)
+
+r61 (block 09) made the heat map's **file mode the freeze signal**, because r60's save path never checked
+the target mode: a `tmp`+`rename` replaces a read-only file whenever the directory is writable, so the
+announced `chmod 400` trick did not freeze anything (measured), and a read-only model directory relocated
+to the cache instead of freezing.  Now a read-only sidecar is loaded and used to seed, is never
+overwritten, and is not relocated; `MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit
+freeze; `=0` still disables the feature entirely.  See `WORKLOG.md` 261014.006 (r61) and
+`ENVIRONMENT.md` section 1.2.  The r60 measurements below are unchanged (the fix is on the persistence
+path only).
+
 ## What was promoted
 
 Everything in `heatmap-persistence.patch` (R2 + persistence), default-on:

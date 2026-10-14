@@ -11,7 +11,17 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r60` (2026-10-14) -- the persistent cross-run MoE expert heat map (block 09):**
+> **Current release `v12-097cf33d9-r61` (2026-10-14) -- the heat map can be frozen (block 09):**
+> canonical tip `7f15fb91d`, net tree `047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`; strict **12/12**
+> `git am` (`validate-set.sh` green).  **block 09** fix on top of r60: the heat map's **file mode is the
+> freeze signal**.  A read-only sidecar is loaded and used to seed, is never overwritten, and is not
+> relocated (the r60 save path never checked the target mode, so `chmod 400` was silently replaced by
+> the `tmp`+`rename`; a read-only model *directory* relocated to the cache and ignored the sidecar).
+> `MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit freeze; `=0` still disables the
+> feature.  The container fallback (no sidecar + read-only model dir) is unchanged.  See `../WORKLOG.md`
+> 261014.006 (r61).
+>
+> **Previous release `v12-097cf33d9-r60` (2026-10-14) -- the persistent cross-run MoE expert heat map (block 09):**
 > canonical tip `a3459aad`, net tree `ec37675ec797392508e560616d320d8cc09efd86`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed
 > greedy unchanged, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP `none == n3` on

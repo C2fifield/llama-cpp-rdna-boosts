@@ -5,12 +5,15 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r60`** (canonical tip `a3459aad`, net tree
-`ec37675ec797392508e560616d320d8cc09efd86`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r61`** (canonical tip `7f15fb91d`, net tree
+`047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
 unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), adaptive-MTP `none == n3` on
 `-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
-pre-existing upstream `f16 dup=1` fails as r53).  r60 adds the **persistent cross-run MoE expert heat
+pre-existing upstream `f16 dup=1` fails as r53).  r61 makes the heat map's **file mode the freeze
+signal**: a read-only sidecar is loaded and used to seed but never overwritten and never relocated, and
+`MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit freeze (`=0` still disables the
+feature).  Before it, r60 added the **persistent cross-run MoE expert heat
 map** to **block 09**: a device-side prefill routing tally, an on-disk `<gguf>.moe-heatmap` sidecar
 (atomic, debounced, geometry-keyed), seed-at-sizing as provisional slots, and heat-ordered layer
 placement; default on (`MOE_EXPERT_HEATMAP=0` disables).  Measured +34 % decode over a 48-token turn and
@@ -27,7 +30,8 @@ return); a DFlash draft no longer re-reserves the target's compute buffers at th
 (5 -> 4 reserves).  Before it, r57 closed the `-Wshadow` gap the container (GCC) build exposed: **block 00**
 (the `llama` C++ target uses `-Wshadow=local` for GNU and `-Wshadow` for clang), **block 09** (the AMX
 buffer type lists the three appended `ggml_backend_buffer_type_i` members) and **block 10** (the
-`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r60 record is `WORKLOG.md` 261014.005;
+`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r61 record is `WORKLOG.md` 261014.006;
+r60 is `WORKLOG.md` 261014.005;
 r59 is `WORKLOG.md` 261014.004;
 r58 is `WORKLOG.md` 261014.003; r57 is `WORKLOG.md` 261014.001; r56 is
 `WORKLOG.md` 261013.007; r55 is `WORKLOG.md` 261013.005; r54 is `WORKLOG.md` 261013.004 (release

@@ -1,5 +1,37 @@
 # WORKLOG - dated delivery records
 
+## 261014.006 (r61) -- the heat map can be frozen (read-only file / `MOE_EXPERT_HEATMAP=load`) (block 09)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r61` (base `097cf33d9`; canonical tip
+`7f15fb91d7eceb475045a317c45dd989ce17d928`, net tree
+`047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`; 12 blocks; `validate-set.sh` green).  **Block 09** is
+amended, no new block; blocks 10/11 re-cut unchanged on top.
+
+**Bug (measured).**  The r60 save path never checked the heat-map file's mode: `g_heat_write_ok` was set
+but never read, and the staged write is a `tmp` + `rename`, which replaces a read-only target whenever
+the *directory* is writable.  So `chmod 400 <gguf>.moe-heatmap` did **not** freeze the map: a run
+overwrote it (measured sha `db3116f3...` -> `75029f30...`).  A read-only model *directory* also did not
+freeze it: with a sidecar present the code relocated to a cache directory and kept learning there,
+silently ignoring the curated map.
+
+**Fix.**  The heat-map **file's** mode is now the freeze signal, with no directory-based override:
+
+- A readable-but-not-writable sidecar is loaded and used to seed, is never overwritten, and is **not**
+  relocated (no fallback).  `chmod 400 <gguf>.moe-heatmap` is therefore sufficient, and making it
+  read-only while a server is running freezes it at the next flush boundary (the save re-checks
+  `W_OK`).
+- `MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit in-band equivalent: load and
+  seed, never write.  `MOE_EXPERT_HEATMAP=0` still disables the feature entirely (no load, no write).
+- The container path is unchanged: with **no** sidecar next to the model and a read-only model
+  directory, the map is learned in `MOE_EXPERT_HEATMAP_DIR` / the XDG cache as before.
+
+**Gates.**  `validate-set.sh` green on a fresh tarball.  Functional: read-only file (400) -> 120 tables
+seeded, file sha unchanged, log *"heat map ... is read-only; loading and seeding from it, not updating
+it"*; `MOE_EXPERT_HEATMAP=load` -> 120 seeded, sha unchanged; `MOE_EXPERT_HEATMAP=0` -> 0 seeded, 0
+loads, 0 saves.  The change is on the persistence path only (open/save); it does not touch the tally,
+the seed math or any kernel, so same-seed coherence, the prefill-logit gate and the MTP field gate are
+unaffected (r60 results carry).
+
 ## 261014.005 (r60) -- the persistent cross-run MoE expert heat map (block 09)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r60` (base `097cf33d9`; canonical tip

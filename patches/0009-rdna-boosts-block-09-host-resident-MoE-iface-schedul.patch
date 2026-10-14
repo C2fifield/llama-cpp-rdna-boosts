@@ -1,4 +1,4 @@
-From cfce1e857f1b3c63596b2d346201f52147524a9c Mon Sep 17 00:00:00 2001
+From 449fbd1ba9ec2f19334f1bb118c139b1d8b41c16 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -42,8 +42,8 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-cuda/ggml-cuda.cu          | 2489 +++++++++++-
  ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu   | 4505 ++++++++++++++++++++++
- ggml/src/ggml-cuda/moe-expert-cache.h    |  292 ++
+ ggml/src/ggml-cuda/moe-expert-cache.cu   | 4554 ++++++++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.h    |  301 ++
  ggml/src/ggml-cuda/norm.cu               |   35 +
  ggml/src/ggml-cuda/norm.cuh              |    1 +
  ggml/src/ggml-cuda/vendors/hip.h         |    5 +
@@ -77,7 +77,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  src/llama.cpp                            |    2 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   60 +-
- 59 files changed, 12431 insertions(+), 328 deletions(-)
+ 59 files changed, 12489 insertions(+), 328 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -8374,10 +8374,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..ac1a4c141
+index 000000000..0bdfd09e5
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4505 @@
+@@ -0,0 +1,4554 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -8682,6 +8682,7 @@ index 000000000..ac1a4c141
 +std::string                         g_heat_path_fallback;   // used when the model dir is read-only
 +bool                                g_heat_path_set   = false;
 +bool                                g_heat_write_ok   = false; // the chosen sidecar was probed writable
++bool                                g_heat_frozen     = false; // load-only: the map is read-only, never overwritten
 +bool                                g_heat_dead       = false; // too many soft-fails: off for this session
 +int                                 g_heat_fails      = 0;
 +int                                 g_heat_max_fails  = 3;
@@ -8933,7 +8934,19 @@ index 000000000..ac1a4c141
 +    // 48-token turn, +10.3 % over 256, fills down 2.8-4x).  It is a placement prior only - the expert
 +    // bytes are unchanged, so the output is bit-identical and `MOE_EXPERT_HEATMAP=0` restores the exact
 +    // pre-change behaviour.
-+    g_heat_on = env_int("MOE_EXPERT_HEATMAP", 1) != 0;
++    // `MOE_EXPERT_HEATMAP=load` (alias `ro`, `read-only`) keeps the load+seed but never writes, so a
++    // curated map can be frozen explicitly; a read-only map file (or a read-only model directory) is
++    // also honoured as frozen at open time.
++    {
++        const char * hm = getenv("MOE_EXPERT_HEATMAP");
++        if (hm != nullptr && (strcmp(hm, "load") == 0 || strcmp(hm, "ro") == 0 || strcmp(hm, "read-only") == 0)) {
++            g_heat_on     = true;
++            g_heat_frozen = true;
++        } else {
++            g_heat_on     = env_int("MOE_EXPERT_HEATMAP", 1) != 0;
++            g_heat_frozen = false;
++        }
++    }
 +    g_heat_max_fails  = env_int("MOE_EXPERT_HEATMAP_MAX_FAILS", 3);
 +    g_heat_debounce_s = env_int("MOE_EXPERT_HEATMAP_DEBOUNCE_S", 60);
 +    if (g_heat_max_fails < 1)  { g_heat_max_fails = 1; }
@@ -10047,6 +10060,19 @@ index 000000000..ac1a4c141
 +    if (!g_heat_on || g_heat_dead || !g_heat_path_set || g_heat_path.empty()) {
 +        return;
 +    }
++    // A frozen heat map is loaded and used to seed, but never overwritten.  The file is re-checked here
++    // too, so making it read-only while a server is running freezes it at the next flush boundary.
++    if (g_heat_frozen || !g_heat_write_ok ||
++        (access(g_heat_path.c_str(), F_OK) == 0 && access(g_heat_path.c_str(), W_OK) != 0)) {
++        g_heat_frozen = true;
++        static bool warned = false;
++        if (!warned) {
++            warned = true;
++            GGML_LOG_INFO("%s: heat map %s is read-only; seeding from it, not updating it\n",
++                          __func__, g_heat_path.c_str());
++        }
++        return;
++    }
 +    heat_merge_into_loaded_locked();
 +    std::vector<uint8_t> buf;
 +    mht1_hdr_t hdr{};
@@ -10153,23 +10179,41 @@ index 000000000..ac1a4c141
 +    g_heat_last_save = std::chrono::steady_clock::now();
 +    const std::string mp(model_path);
 +    const size_t slash = mp.find_last_of('/');
-+    const std::string dir  = slash == std::string::npos ? std::string(".") : mp.substr(0, slash);
 +    const std::string stem = slash == std::string::npos ? mp : mp.substr(slash + 1);
-+    std::string primary = mp + ".moe-heatmap";
++    const std::string primary = mp + ".moe-heatmap";
 +    const char * env_dir = getenv("MOE_EXPERT_HEATMAP_DIR");
 +#if !defined(_WIN32)
-+    bool writable = false;
-+    {
++    // Is there a readable sidecar next to the model?  If so it is AUTHORITATIVE: a read-only one is
++    // loaded and FROZEN rather than silently relocated (relocating would ignore the curated map and
++    // keep learning in a cache directory, so "chmod the sidecar" and "read-only the model directory"
++    // both freeze, as intended).
++    const bool primary_readable = access(primary.c_str(), R_OK) == 0;
++    const bool dir_writable = [&] {
 +        std::string probe = primary + ".probe";
 +        int fd = open(probe.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-+        if (fd >= 0) { close(fd); (void) unlink(probe.c_str()); writable = true; }
-+    }
++        if (fd >= 0) { close(fd); (void) unlink(probe.c_str()); return true; }
++        return false;
++    }();
 +    if (env_dir != nullptr && env_dir[0] != '\0') {
-+        g_heat_path = std::string(env_dir) + "/" + stem + ".moe-heatmap";
-+        writable = access(env_dir, W_OK) == 0;
-+    } else if (writable) {
-+        g_heat_path = primary;
++        g_heat_path     = std::string(env_dir) + "/" + stem + ".moe-heatmap";
++        g_heat_write_ok = access(env_dir, W_OK) == 0;
++    } else if (g_heat_frozen) {
++        g_heat_path     = primary;   // MOE_EXPERT_HEATMAP=load: load + seed, never write
++        g_heat_write_ok = false;
++    } else if (primary_readable && access(primary.c_str(), W_OK) != 0) {
++        // A read-only heat map IS the freeze signal: load and seed from it, never overwrite it, and do
++        // NOT fall back to a cache directory (that would ignore the curated map and keep learning).
++        g_heat_path     = primary;
++        g_heat_write_ok = false;
++        g_heat_frozen   = true;
++        GGML_LOG_INFO("%s: heat map %s is read-only; loading and seeding from it, not updating it\n",
++                      __func__, g_heat_path.c_str());
++    } else if (dir_writable) {
++        g_heat_path     = primary;
++        g_heat_write_ok = true;
 +    } else {
++        // No sidecar and a read-only model directory (the container case): fall back to a writable
++        // cache directory so the map can still be learned there.
 +        const char * xdg  = getenv("XDG_CACHE_HOME");
 +        const char * home = getenv("HOME");
 +        std::string base = (xdg != nullptr && xdg[0] != '\0') ? std::string(xdg)
@@ -10177,16 +10221,21 @@ index 000000000..ac1a4c141
 +                          : std::string("/tmp");
 +        base += "/llama-moe-heatmap";
 +        (void) mkdir(base.c_str(), 0755);
-+        g_heat_path = base + "/" + stem + ".moe-heatmap";
-+        writable = access(base.c_str(), W_OK) == 0;
-+        GGML_LOG_INFO("%s: model directory is not writable; heat map at %s\n", __func__, g_heat_path.c_str());
++        g_heat_path     = base + "/" + stem + ".moe-heatmap";
++        g_heat_write_ok = access(base.c_str(), W_OK) == 0;
++        if (!g_heat_write_ok) {
++            g_heat_frozen = true;
++        }
++        GGML_LOG_INFO("%s: model directory is not writable and has no sidecar; heat map at %s%s\n",
++                      __func__, g_heat_path.c_str(), g_heat_write_ok ? "" : " (frozen)");
 +    }
-+    g_heat_write_ok = writable;
++    if (g_heat_frozen) {
++        g_heat_write_ok = false;
++    }
 +#else
 +    g_heat_path = primary;
 +    g_heat_write_ok = false;
 +    GGML_UNUSED(env_dir);
-+    GGML_UNUSED(dir);
 +#endif
 +    heat_map_load_locked(g_heat_path);
 +}
@@ -12885,10 +12934,10 @@ index 000000000..ac1a4c141
 +}
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.h b/ggml/src/ggml-cuda/moe-expert-cache.h
 new file mode 100644
-index 000000000..65ba2301e
+index 000000000..87d7fd37d
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.h
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,301 @@
 +#pragma once
 +
 +// wip/moe-expert-cache — Phase 1a foundation (2026-09-28).
@@ -12917,6 +12966,15 @@ index 000000000..65ba2301e
 +//                              from *free* memory, so `--fit` need not know about it)
 +//   MOE_EXPERT_CACHE_PREFILL_SEED=0  disable the prompt-routing seed (default 1)
 +//   MOE_EXPERT_CACHE_PREFILL_SEED_N=N  cap the seeded experts/table (0 = all slots)
++//   MOE_EXPERT_HEATMAP=0             disable the persistent cross-run expert heat map (default 1;
++//                                    only active when the cache serves host-expert tables)
++//   MOE_EXPERT_HEATMAP=load          load and seed from the heat map but never write it (aliases ro,
++//                                    read-only); a read-only heat-map FILE is also loaded and frozen,
++//                                    with no fallback to a cache directory
++//   MOE_EXPERT_HEATMAP_DIR=DIR       sidecar directory when the model directory is not writable
++//   MOE_EXPERT_HEATMAP_DEBOUNCE_S=N  minimum seconds between heat-map writes (default 60)
++//   MOE_EXPERT_HEATMAP_MAX_FAILS=N   consecutive write failures before persistence is disabled
++//                                    for the session (default 3)
 +//   MOE_EXPERT_CACHE_PROVISIONAL=0  disable reclaiming pre-filled/seed slots before first hit
 +//                              (default 1)
 +//   MOE_HOST_POOL_MIB=N        PROCESS-WIDE pinned host pool (L2) size in MiB; 0/unset disables it
@@ -13096,7 +13154,7 @@ index 000000000..65ba2301e
 +// `mul_mat_id` dispatch (the OUTER entry, before the cache's slot-remap redirect) for the prefill
 +// band only, so the routing is counted even when the host copy path is bypassed by the H2D staging
 +// ring (`stage_consumed`) and even when the ids are never read back.  `ids` is the raw routing on
-+// the device.  A no-op unless `MOE_EXPERT_HEATMAP` is on.  Env-gated OFF (WIP).
++// the device.  A no-op unless `MOE_EXPERT_HEATMAP` is on (default on; `=load` to freeze).
 +void moe_cache_heat_observe(const struct ggml_tensor * op, const struct ggml_tensor * src0,
 +                            const struct ggml_tensor * ids, void * stream, int device);
 +

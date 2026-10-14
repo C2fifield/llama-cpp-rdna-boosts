@@ -2,11 +2,14 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r60`** (canonical tip `a3459aad`, net tree
-`ec37675ec797392508e560616d320d8cc09efd86`).  r60 adds the **persistent cross-run MoE expert heat map**
-to **block 09** (device-side prefill routing tally + on-disk `<gguf>.moe-heatmap` sidecar + seed-at-sizing
-+ heat-ordered layer placement; default on, `MOE_EXPERT_HEATMAP=0` disables) -- measured +34 % decode over
-a 48-token turn and +10.3 % over 256 on a `MOE_EXPERT_CACHE_MIB=4096` host-expert config.  Before it, r59
+**`v12-097cf33d9-r61`** (canonical tip `7f15fb91d`, net tree
+`047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`).  r61 makes the heat map's **file mode the freeze signal**:
+a read-only sidecar is loaded and used to seed but never overwritten and never relocated, and
+`MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit freeze.  Before it, r60 added the
+**persistent cross-run MoE expert heat map** to **block 09** (device-side prefill routing tally + on-disk
+`<gguf>.moe-heatmap` sidecar + seed-at-sizing + heat-ordered layer placement; default on) -- measured
++34 % decode over a 48-token turn and +10.3 % over 256 on a `MOE_EXPERT_CACHE_MIB=4096` host-expert
+config.  Before it, r59
 lands issue #139 in **block 01**: the internal
 all-reduce's spin budget is wall-clock time (`wall_clock64()` sized by
 `hipDeviceAttributeWallClockRate`; the `clock64()` counter steps backwards on gfx1201 while a queue is
@@ -20,7 +23,7 @@ a DFlash draft no longer frees and reallocates the target's compute buffers at t
 GCC (the container host compiler) in block 00 and fixes the two GCC-only sites it exposed (the AMX
 buffer-type initializer, block 09; the `size_t >= 0` assert, block 10).  The applied tree
 is not tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each
-into a self-contained function/file).  See `WORKLOG.md` 261014.005 (r60), 261014.004 (r59), 261014.003 (r58), 261014.001 (r57), 261013.007 (r56),
+into a self-contained function/file).  See `WORKLOG.md` 261014.006 (r61), 261014.005 (r60), 261014.004 (r59), 261014.003 (r58), 261014.001 (r57), 261013.007 (r56),
 261013.005 (r55), 261013.004 (r54), 261013.003 (r53) and 261013.002 (r52).  The entries below are the
 **pre-V2.0 (16-block) provenance history**:
 
