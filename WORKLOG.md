@@ -1,5 +1,49 @@
 # WORKLOG - dated delivery records
 
+## 261013.007 (r56) -- four contributor WIP PRs (#146-#149) folded into blocks 08/09/10/11
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r56` (base `097cf33d9`, base tree
+`30c400ccea2e2fb47b663036a6cee08a4dc542d8`; canonical tip `5d51f478c`, net tree
+`d718f97a502d77eb609c09d540b24282e52b4284`; 12 blocks; `validate-set.sh` green).  Four blocks amended,
+**no new block**:
+
+- **#146 `wip/rdna4-mmq-select-j` -> block 08** (`ggml/src/ggml-cuda/mmq.cu`).  `ggml_cuda_mmq_select_J`
+  gates on `mmq_routed_compact_arch_ok(cc)` again and passes `GGML_CUDA_CC_IS_RDNA4(cc)` to
+  `mmq_rdna3_5_id_get_J`.  The r50 (#29953) port had left the gate RDNA3.5-only and dropped the `rdna4`
+  argument, so gfx1201 IQ experts at ~40 RPE fell to the generic J=48 instead of 64, and gfx1151's
+  IQ2/Q2_0 types wrongly took the RDNA4 bands.  Bit-identical (J only tiles).
+- **#147 `wip/pageable-bounce` -> block 09** (`ggml-cuda.cu`, `vendors/hip.h`).  Pageable host<->device
+  tensor copies bounce through a reused 64 MiB pinned chunk per device (`GGML_CUDA_BOUNCE_MIN`, default
+  1).  One integration adaptation: `ggml_cuda_host_ptr_pageable` is HIP/CUDA-only and returns `false` on
+  MUSA, so the MUSA build keeps compiling without the pointer-attribute aliases the contributor flagged.
+- **#148 `wip/hc-mix-bf16-16` -> block 10** (`hc-mix.cu`, `src/models/qwen4exp.cpp`).  The BF16 fused
+  hyper-connection mixer and the fused combine serve `HC_BF16_MAX_TOKENS = 16`, run as chunks of at most
+  8 tokens through the existing kernels; the Q8_0 mixer keeps 8.
+- **#149 `wip/state-save-merged-reads` -> block 11** (`src/llama-context.cpp`).  `llama_io_write_host`
+  reads a save's deferred tensor ranges as merged spans (`LLAMA_STATE_GET_MERGE_GAP`, default 256 KiB,
+  `0` = per-range); the saved bytes are identical.
+
+**Gates (gfx1201, 3x R9700, ROCm 7.14.1, `~/llama.cpp/build-rocm-hybrid`).**  Build `all` green.  4B
+`Qwen3.5-Q8_0` same-seed greedy **byte-identical to r55**.  `gate-prefill-logits.sh` **PASS** (mean KLD
+**0.000707**, same-top-p **98.755 %**).  Flash-Next GSQ-IQ3_XXS `test-logits-width-probe` (`SPLIT=tensor`,
+`P=256 ub=512`): W=1..8 **byte-identical to r55** and `width_purity=PASS` — this drives the
+routed-compact `MUL_MAT_ID` path for #146.  An extended (NW=16, local validation edit) probe shows the
+#148 fused mixer+combine reproduce the unfused chain's per-width logits exactly at every width 1..16;
+the cross-width divergence at W>=9 exists in **both** the fused and the chain build (the pre-existing
+>8 width dependence the delivery only promises to `n_max` 7, not from #148).  `test-save-load-state`
+(4B) **all tests pass** (state blob round-trip + host/device/scatter seq copies through
+`llama_io_write_host`); `test-state-restore-fragmented` **SUCCESS**; a `--cache-ram` `llama-server`
+session (`-np 4`) saves/evicts entries with 0 errors.  The `gate-qwen4exp-quant-coherence.sh` default
+quants are unavailable for Flash-Next here (IQ4_NL/IQ4_XS absent, and the `-ncmoe 48 -sm tensor` config
+hits a **pre-existing** `ggml-backend-meta.cpp:1781 GGML_ASSERT(size % row_stride == 0)` that r55
+reproduces identically), so it was not used; the width probe above covers the same MoE prefill path.
+
+**Docs.**  `README.md`, `MANIFESTS.md`, `BASELINE.md`, `patches/README.md` and `ENVIRONMENT.md`
+(current-state headers + the two new variables) updated.  The four PR records moved to
+`archive/work/<name>/` with a `RESOLUTION.md` each; `wip/CAMPAIGNS.md` records the resolution.
+
+**Publish.**  Pending: fork `rdna-boosts` refresh + local ROCm 7.14.1 / 10.1 container build/push.
+
 ## 261013.006 (docs, campaign closure) -- close `moe-topk-fusion`: the fused router already fires at prefill widths on r55 (no code change)
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; no release).

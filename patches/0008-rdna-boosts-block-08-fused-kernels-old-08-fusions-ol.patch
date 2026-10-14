@@ -1,4 +1,4 @@
-From a22aad1f926f868e7a6c53a25967a2e7d3038577 Mon Sep 17 00:00:00 2001
+From 49553a2c2cc1a0b43357aa28c82566bd6f951b81 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:04:08 -0500
 Subject: [PATCH 08/11] rdna-boosts: block 08: fused kernels (old-08 fusions +
@@ -35,7 +35,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/ggml-cuda.cu               |  581 ++++-
  ggml/src/ggml-cuda/mmq-config-rdna3-5.cuh     |    6 +-
  ggml/src/ggml-cuda/mmq-vec-dot.cuh            |   16 +-
- ggml/src/ggml-cuda/mmq.cu                     |  402 +++-
+ ggml/src/ggml-cuda/mmq.cu                     |  403 +++-
  ggml/src/ggml-cuda/mmq.cuh                    |  439 +++-
  ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |   91 +
  ggml/src/ggml-cuda/mmvq-rdna.cuh              |   66 +
@@ -61,7 +61,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/unary.cu                   |  224 ++
  ggml/src/ggml-cuda/unary.cuh                  |   12 +
  tests/test-backend-ops.cpp                    |    2 +-
- 35 files changed, 5153 insertions(+), 437 deletions(-)
+ 35 files changed, 5154 insertions(+), 437 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cu
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cuh
  create mode 100644 ggml/src/ggml-cuda/mmvq-rdna-params.cuh
@@ -1356,10 +1356,10 @@ index 29ebe24fa..c8b706f63 100644
              load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
  
 diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
-index 356917850..7557a52d0 100644
+index 356917850..4e1483927 100644
 --- a/ggml/src/ggml-cuda/mmq.cu
 +++ b/ggml/src/ggml-cuda/mmq.cu
-@@ -132,8 +132,306 @@ static ggml_prec ggml_cuda_mmq_get_prec_src1(const ggml_tensor * src0, const ggm
+@@ -132,8 +132,307 @@ static ggml_prec ggml_cuda_mmq_get_prec_src1(const ggml_tensor * src0, const ggm
      return GGML_PREC_Q4;
  }
  
@@ -1419,7 +1419,8 @@ index 356917850..7557a52d0 100644
 +    nthreads_best = 0;
 +    int ntiles_J_best = INT_MAX;
 +
-+    if (!has_gate && has_ids && mmq_rdna3_5_id_n_experts_ok(nchannels_y) && GGML_CUDA_CC_IS_RDNA3_5(cc) && !fallback) {
++    // RDNA3.5 and RDNA4 (as in r49's mul_mat_q_switch_J: mmq_routed_compact_arch_ok); RDNA4 gets the IQ-type bands
++    if (!has_gate && has_ids && mmq_rdna3_5_id_n_experts_ok(nchannels_y) && mmq_routed_compact_arch_ok(cc) && !fallback) {
 +        // RDNA3.5 mul_mat_id: pick the J width from the rows-per-expert range instead of the generic
 +        // tile-count loop (which sizes J to the flattened row count and leaves every per-expert tile
 +        // mostly empty). Mirrors halo-box/strix-llama.cpp mmq_rdna3_5_id_get_J (gfx1151-measured).
@@ -1435,7 +1436,7 @@ index 356917850..7557a52d0 100644
 +        } else {
 +            const int64_t rows_per_expert = (ncols_dst + nchannels_y - 1) / nchannels_y;
 +            const bool use_j48_128e = mmq_rdna3_5_id_use_j48_128e(type, nchannels_y, rows_per_expert);
-+            int J_rdna3_5 = use_j48_128e ? 48 : mmq_rdna3_5_id_get_J(type, rows_per_expert);
++            int J_rdna3_5 = use_j48_128e ? 48 : mmq_rdna3_5_id_get_J(type, rows_per_expert, GGML_CUDA_CC_IS_RDNA4(cc));
 +            if (type == GGML_TYPE_Q6_K) {
 +                const char * env = getenv("GGML_Q6_COMPACT_J");
 +                if (env != nullptr) {
@@ -1667,7 +1668,7 @@ index 356917850..7557a52d0 100644
      GGML_ASSERT(        src1->type == GGML_TYPE_F32);
      GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
      GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
-@@ -145,6 +443,8 @@ void ggml_cuda_mul_mat_q(
+@@ -145,6 +444,8 @@ void ggml_cuda_mul_mat_q(
      const int    id    = ggml_cuda_get_device();
      const int    cc    = ggml_cuda_info().devices[id].cc;
      const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
@@ -1676,7 +1677,7 @@ index 356917850..7557a52d0 100644
  
      const size_t ts_src0 = ggml_type_size(src0->type);
      const size_t ts_src1 = ggml_type_size(src1->type);
-@@ -155,6 +455,17 @@ void ggml_cuda_mul_mat_q(
+@@ -155,6 +456,17 @@ void ggml_cuda_mul_mat_q(
      GGML_ASSERT(        nb0        == ts_dst);
      GGML_ASSERT(!ids || ids->nb[0] == ggml_type_size(ids->type));
  
@@ -1694,7 +1695,7 @@ index 356917850..7557a52d0 100644
      const char  * src0_d = (const char  *) src0->data;
      const float * src1_d = (const float *) src1->data;
      float       *  dst_d = (float       *)  dst->data;
-@@ -191,9 +502,11 @@ void ggml_cuda_mul_mat_q(
+@@ -191,9 +503,11 @@ void ggml_cuda_mul_mat_q(
      int nthreads_best = 0;
      {
          int64_t ncols_opt = ne11;
@@ -1706,7 +1707,7 @@ index 356917850..7557a52d0 100644
  
              // Each expert only sees ne12*n_expert_used/ne02 tokens on average.
              // On RDNA3 and RDNA4 it is faster to pick the tile size against this value instead of ne12.
-@@ -201,37 +514,9 @@ void ggml_cuda_mul_mat_q(
+@@ -201,37 +515,9 @@ void ggml_cuda_mul_mat_q(
                  ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
              }
          }
@@ -1747,7 +1748,7 @@ index 356917850..7557a52d0 100644
      }
      GGML_ASSERT(J_best > 0);
  
-@@ -260,9 +545,24 @@ void ggml_cuda_mul_mat_q(
+@@ -260,9 +546,24 @@ void ggml_cuda_mul_mat_q(
                  quantize_mmq_fp4_cuda(src1_d, nullptr, src1_q8_1.get(), src1_scale.ptr, src0->type, use_aligned_float8, ne10, s11, s12, s13, ne10_padded,
                                          ne11, ne12, ne13, stream);
  
@@ -1773,7 +1774,7 @@ index 356917850..7557a52d0 100644
              }
              CUDA_CHECK(cudaGetLastError());
          }
-@@ -336,12 +636,18 @@ void ggml_cuda_mul_mat_q(
+@@ -336,12 +637,18 @@ void ggml_cuda_mul_mat_q(
                  quantize_mmq_fp4_cuda(src1_d, ids_src1.get(), src1_q8_1.get(), src1_scale.ptr, src0->type, use_aligned_float8, ne10, s11, s12, s13,
                                          ne10_padded, ne11_flat, ne12_flat, ne13_flat, stream);
              }
@@ -1794,7 +1795,7 @@ index 356917850..7557a52d0 100644
          }
          CUDA_CHECK(cudaGetLastError());
      }
-@@ -360,9 +666,35 @@ void ggml_cuda_mul_mat_q(
+@@ -360,9 +667,35 @@ void ggml_cuda_mul_mat_q(
          ne03, ne13, s03, s13, s3,
          ne12, J_best};
  

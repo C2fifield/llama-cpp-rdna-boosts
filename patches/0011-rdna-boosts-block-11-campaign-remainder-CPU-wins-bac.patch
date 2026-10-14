@@ -1,4 +1,4 @@
-From 49bea1ff7dc5841cc1fadacf28923e761d1cb4d6 Mon Sep 17 00:00:00 2001
+From 5d51f478c66ca1c8e50fe5967e04c67cf5f4798b Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -35,9 +35,10 @@ reference tip af0595360 (release.json.tree) exactly.
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
+ src/llama-context.cpp                         |  54 ++++-
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 25 files changed, 550 insertions(+), 85 deletions(-)
+ 26 files changed, 601 insertions(+), 88 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -1009,6 +1010,71 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index c9cb98456..8e9fd895e 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3616,9 +3616,57 @@ public:
+             uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
+ 
+     ~llama_io_write_host() {
+-        // TODO: add backend support to batch tensor_get? or some other way to speed this up
+-        for (const auto & winfo : winfos) {
+-            ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
++        // Each ggml_backend_tensor_get is a synchronous device copy with a fixed cost (tens of us on ROCm), and a sequence's
++        // KV cells are often many short ranges (concurrent decoding interleaves the slots' cells a few tokens at a time), so
++        // the deferred reads of one tensor whose gaps are at most LLAMA_STATE_GET_MERGE_GAP bytes (default 256 KiB, 0 = off)
++        // are read as one span and scattered on the host.  The bytes written are the same.
++        static const size_t max_gap = [] {
++            const char * e = getenv("LLAMA_STATE_GET_MERGE_GAP");
++            return e != nullptr ? (size_t) strtoull(e, nullptr, 10) : (size_t) 256*1024;
++        }();
++        if (max_gap == 0) {
++            for (const auto & winfo : winfos) {
++                ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
++            }
++        } else {
++            std::vector<uint8_t> span_buf;
++            for (size_t i = 0; i < winfos.size(); ) {
++                // [i, j): consecutive reads of one tensor, each starting at or after the previous one's end
++                const write_info & first = winfos[i];
++                size_t end = first.offset + first.size;
++                bool   dst_contiguous = true;
++                size_t j = i + 1;
++                for (; j < winfos.size(); ++j) {
++                    const write_info & w = winfos[j];
++                    if (w.tensor != first.tensor || w.offset < end || w.offset - end > max_gap) {
++                        break;
++                    }
++                    dst_contiguous = dst_contiguous && w.offset == end && w.ptr == winfos[j - 1].ptr + winfos[j - 1].size;
++                    end = w.offset + w.size;
++                }
++                bool merged = j - i == 1 || dst_contiguous;
++                if (merged) {
++                    ggml_backend_tensor_get(first.tensor, first.ptr, first.offset, end - first.offset);
++                } else {
++                    try {
++                        span_buf.resize(end - first.offset);
++                        merged = true;
++                    } catch (const std::bad_alloc &) {
++                        // no host memory for the span (a destructor must not throw): read the pieces one by one
++                    }
++                    if (merged) {
++                        ggml_backend_tensor_get(first.tensor, span_buf.data(), first.offset, end - first.offset);
++                        for (size_t k = i; k < j; ++k) {
++                            memcpy(winfos[k].ptr, span_buf.data() + (winfos[k].offset - first.offset), winfos[k].size);
++                        }
++                    } else {
++                        for (size_t k = i; k < j; ++k) {
++                            ggml_backend_tensor_get(winfos[k].tensor, winfos[k].ptr, winfos[k].offset, winfos[k].size);
++                        }
++                    }
++                }
++                i = j;
++            }
+         }
+     }
+ 
 diff --git a/src/llama.cpp b/src/llama.cpp
 index f031e6555..5c77bb1fa 100644
 --- a/src/llama.cpp

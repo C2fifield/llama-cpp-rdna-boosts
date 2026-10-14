@@ -1,4 +1,4 @@
-From 6fb6afe2c088ef238a69f5d1eac14cd1d196967f Mon Sep 17 00:00:00 2001
+From 306b9193f1f70f987d237c57e93c101b381578de Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -58,7 +58,7 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   12 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |    7 +
  ggml/src/ggml-cuda/ggml-cuda.cu               | 4611 +++--------------
- ggml/src/ggml-cuda/hc-mix.cu                  | 1314 +++++
+ ggml/src/ggml-cuda/hc-mix.cu                  | 1331 +++++
  ggml/src/ggml-cuda/hc-mix.cuh                 |    8 +
  ggml/src/ggml-cuda/hyperconn.cu               | 1119 ++++
  ggml/src/ggml-cuda/hyperconn.cuh              |   77 +
@@ -115,14 +115,14 @@ QSA/HC op dispatch is old-15):
  src/llama-model.h                             |    8 +-
  src/llama.cpp                                 |   18 +-
  src/models/models.h                           |   62 +-
- src/models/qwen4exp.cpp                       | 2213 ++++++--
+ src/models/qwen4exp.cpp                       | 2219 ++++++--
  tests/CMakeLists.txt                          |    1 +
  tests/test-backend-ops.cpp                    |  376 +-
  tests/test-lazy-reader.cpp                    |  264 +
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 18964 insertions(+), 4843 deletions(-)
+ 99 files changed, 18987 insertions(+), 4843 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -7649,7 +7649,7 @@ index 8005b57b4..7ab668f15 100644
 +size_t ggml_cuda_slab_headroom_bytes();
 +void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index bac9f1308..22f1b4dce 100644
+index 165e39810..803bf8663 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,5 +1,6 @@
@@ -8861,7 +8861,7 @@ index bac9f1308..22f1b4dce 100644
      if (copy_event != nullptr) {
          CUDA_CHECK(cudaEventDestroy(copy_event));
      }
-@@ -2251,9 +1208,11 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_bac
+@@ -2348,9 +1305,11 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_bac
      ggml_cuda_set_device(buft_ctx->device);
  
      void * dev_ptr;
@@ -8874,7 +8874,7 @@ index bac9f1308..22f1b4dce 100644
          (void)cudaGetLastError();
          GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: cudaMalloc failed: %s\n", __func__, size / 1024.0 / 1024.0, buft_ctx->device, cudaGetErrorString(err));
          return nullptr;
-@@ -2271,7 +1230,7 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer_usage(gg
+@@ -2368,7 +1327,7 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer_usage(gg
  
      if (usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE && getenv("GGML_CUDA_WORK_ALLOC_DEBUG")) {
          GGML_LOG_WARN("COMPUTE_ALLOC %.1f MiB dev=%d slab_on=%d flag=%d\n", (double) size/1048576.0,
@@ -8883,7 +8883,7 @@ index bac9f1308..22f1b4dce 100644
      }
  
      if (usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
-@@ -2280,7 +1239,7 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer_usage(gg
+@@ -2377,7 +1336,7 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer_usage(gg
          // the boundary (so growth inside the region does not look like a realloc to the graph allocator).
          // Growing past the boundary moves the split -- evicting the arena tables in the taken chunks -- and
          // HIP is NOT called at runtime.
@@ -8892,7 +8892,7 @@ index bac9f1308..22f1b4dce 100644
              ggml_cuda_set_device(buft_ctx->device);
              void * dev_ptr = ggml_cuda_slab_work_alloc(buft_ctx->device, size);
              if (dev_ptr != NULL) {
-@@ -2376,54 +1335,6 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
+@@ -2473,54 +1432,6 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
      return size;
  }
  
@@ -8947,7 +8947,7 @@ index bac9f1308..22f1b4dce 100644
  
  static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_type_interface = {    /* .get_name            = */ ggml_backend_cuda_buffer_type_get_name,
      /* .alloc_buffer        = */ ggml_backend_cuda_buffer_type_alloc_buffer,
-@@ -3407,7 +2318,94 @@ struct batched_mul_mat_traits<GGML_TYPE_F16> {
+@@ -3504,7 +2415,94 @@ struct batched_mul_mat_traits<GGML_TYPE_F16> {
      static inline auto convert_nc(ggml_type src_type) { return ggml_get_to_fp16_nc_cuda(src_type); }
  };
  
@@ -9042,7 +9042,7 @@ index bac9f1308..22f1b4dce 100644
  static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
      using traits = batched_mul_mat_traits<compute_type>;
      using cuda_t = typename traits::cuda_type;
-@@ -3446,6 +2444,7 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -3543,6 +2541,7 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      bool is_src0_cont_2 = ggml_is_contiguous_2(src0);
      bool is_src1_cont_2 = ggml_is_contiguous_2(src1);
  
@@ -9050,7 +9050,7 @@ index bac9f1308..22f1b4dce 100644
      if (src0->type == compute_type) {
          src0_ptr = (const cuda_t *) src0->data;
      } else {
-@@ -3470,8 +2469,38 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -3567,8 +2566,38 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
          }
          src0_ptr = src0_alloc.get();
      }
@@ -9091,7 +9091,7 @@ index bac9f1308..22f1b4dce 100644
          src1_ptr = (const cuda_t *) src1->data;
      } else {
          src1_alloc.alloc(ggml_nelements(src1));
-@@ -3495,7 +2524,9 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -3592,7 +2621,9 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
          }
          src1_ptr = src1_alloc.get();
      }
@@ -9101,7 +9101,7 @@ index bac9f1308..22f1b4dce 100644
      ggml_cuda_pool_alloc<cuda_t> dst_temp(ctx.pool());
      char * dst_ptr;
      size_t nbd2 = dst->nb[2];
-@@ -3532,6 +2563,9 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -3629,6 +2660,9 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
          }
      }
  
@@ -9111,7 +9111,7 @@ index bac9f1308..22f1b4dce 100644
      GGML_ASSERT(ne12 % ne02 == 0);
      GGML_ASSERT(ne13 % ne03 == 0);
  
-@@ -3614,11 +2648,15 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -3711,11 +2745,15 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
                  CUBLAS_GEMM_DEFAULT_TENSOR_OP));
      }
  
@@ -9127,7 +9127,7 @@ index bac9f1308..22f1b4dce 100644
  }
  
  static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-@@ -3796,57 +2834,44 @@ bool ggml_cuda_should_fuse_mul_mat(const ggml_tensor * ffn_up,
+@@ -3893,57 +2931,44 @@ bool ggml_cuda_should_fuse_mul_mat(const ggml_tensor * ffn_up,
      return true;
  }
  
@@ -9215,7 +9215,7 @@ index bac9f1308..22f1b4dce 100644
  static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
      GGML_TENSOR_BINARY_OP_LOCALS
  
-@@ -3860,7 +2885,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -3957,7 +2982,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
      const bool bad_padding_clear = ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE
          && ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) && src0->view_src;
      if (bad_padding_clear || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
@@ -9224,7 +9224,7 @@ index bac9f1308..22f1b4dce 100644
          return;
      }
  
-@@ -3871,7 +2896,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -3968,7 +2993,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
      // requires T >= GGML_CUDA_MMB_MIN_T (default 512), so the whole decode/verify band
      // (n_tokens <= 8) stays on the existing kernels and W = 1..8 is bit-identical either way.
      if (ggml_cuda_mmb_supported_mm(src0, src1, dst)) {
@@ -9233,7 +9233,7 @@ index bac9f1308..22f1b4dce 100644
          return;
      }
  
-@@ -3879,14 +2904,19 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -3976,14 +3001,19 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
      // decode (ne11 = 1): decode uses the MMVF kernel, while a larger batch can
      // fall through to MMF, which accumulates differently and produces different
      // logits. Use the decode (ne11 = 1) config for all small batches.
@@ -9256,7 +9256,7 @@ index bac9f1308..22f1b4dce 100644
      if (ne01 == 1 && ne11 > MMVF_MAX_BATCH_SIZE && ne2 == 1 && ne3 == 1
              && src0->type == GGML_TYPE_F32
              && ggml_is_contiguous(src0) && ggml_is_contiguous(src1) && ggml_is_contiguous(dst)
-@@ -3897,22 +2927,31 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -3994,22 +3024,31 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
          dst_vec.nb[1] = dst_vec.nb[0]*ne11;
          dst_vec.nb[2] = dst_vec.nb[1];
          dst_vec.nb[3] = dst_vec.nb[1];
@@ -9294,7 +9294,7 @@ index bac9f1308..22f1b4dce 100644
  }
  
  // returns true when ggml_cuda_mul_mat_id takes the fallback path that requires stream synchronization
-@@ -3925,14 +2964,12 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
+@@ -4022,14 +3061,12 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
          return true;
      }
  
@@ -9313,7 +9313,7 @@ index bac9f1308..22f1b4dce 100644
      }
  
      if (ggml_cuda_should_use_mmq(src0->type, cc, src1->ne[2], /*n_experts=*/src0->ne[2])) {
-@@ -4008,18 +3045,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+@@ -4105,18 +3142,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
      // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
      if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
          static_assert(MMVQ_MAX_BATCH_SIZE == MMVF_MAX_BATCH_SIZE);
@@ -9344,7 +9344,7 @@ index bac9f1308..22f1b4dce 100644
              }
          }
  
-@@ -4156,7 +3193,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+@@ -4253,7 +3290,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
          nb1, nb2, nb3, stream);
  }
  
@@ -9353,7 +9353,7 @@ index bac9f1308..22f1b4dce 100644
      switch (dst->op) {
          case GGML_OP_ARGMAX:
              ggml_cuda_argmax(ctx, dst);
-@@ -4462,6 +3499,19 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+@@ -4559,6 +3596,19 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
          case GGML_OP_FLASH_ATTN_EXT:
              ggml_cuda_flash_attn_ext(ctx, dst);
              break;
@@ -9373,7 +9373,7 @@ index bac9f1308..22f1b4dce 100644
          case GGML_OP_CROSS_ENTROPY_LOSS:
              ggml_cuda_cross_entropy_loss(ctx, dst);
              break;
-@@ -4486,6 +3536,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+@@ -4583,6 +3633,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
          case GGML_OP_DSV4_HC_POST:
              ggml_cuda_op_dsv4_hc_post(ctx, dst);
              break;
@@ -9386,7 +9386,7 @@ index bac9f1308..22f1b4dce 100644
          case GGML_OP_RWKV_WKV7:
              ggml_cuda_op_rwkv_wkv7(ctx, dst);
              break;
-@@ -4562,6 +3618,79 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
+@@ -4659,6 +3715,79 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
  
      GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
  
@@ -9466,7 +9466,7 @@ index bac9f1308..22f1b4dce 100644
      CUDA_CHECK(cudaMemcpy2DAsync(
          (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
  }
-@@ -4647,11 +3776,6 @@ static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
+@@ -4744,11 +3873,6 @@ static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
      GGML_UNUSED(backend);
  }
  
@@ -9478,7 +9478,7 @@ index bac9f1308..22f1b4dce 100644
  #ifdef USE_CUDA_GRAPH
  static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
  
-@@ -4724,2427 +3848,132 @@ static int64_t ggml_cuda_graph_n_tokens(const ggml_cgraph * cgraph) {
+@@ -4821,2427 +3945,132 @@ static int64_t ggml_cuda_graph_n_tokens(const ggml_cgraph * cgraph) {
          if (node->op == GGML_OP_MUL_MAT_ID) {
              return node->ne[2];
          }
@@ -12002,7 +12002,7 @@ index bac9f1308..22f1b4dce 100644
      std::vector<cudaEvent_t> op_ev0;
      std::vector<cudaEvent_t> op_ev1;
      std::vector<std::tuple<const ggml_tensor *, int, bool>> op_nodes;
-@@ -7258,6 +4087,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -7355,6 +4184,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                  stream_ctx.concurrent_events.clear();
              }
  
@@ -12014,7 +12014,7 @@ index bac9f1308..22f1b4dce 100644
              for (int i = 0; i < cgraph->n_nodes; i++) {
                  ggml_tensor * node = cgraph->nodes[i];
                  if (is_concurrent_event_active) {
-@@ -7300,13 +4134,20 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -7397,13 +4231,20 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                      continue;
                  }
  
@@ -12035,7 +12035,7 @@ index bac9f1308..22f1b4dce 100644
  
                  if (nodes_to_skip != 0) {
                      if (op_timing) {
-@@ -7344,12 +4185,14 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -7441,12 +4282,14 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                      CUDA_CHECK(cudaEventRecord(op_ev0[i], cuda_ctx->stream()));
                  }
  
@@ -12051,7 +12051,7 @@ index bac9f1308..22f1b4dce 100644
                  if (op_timing) {
                      CUDA_CHECK(cudaEventRecord(op_ev1[i], cuda_ctx->stream()));
                      op_nodes.emplace_back(node, i, false);
-@@ -7480,17 +4323,27 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
+@@ -7577,17 +4420,27 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
  }
  #endif // USE_CUDA_GRAPH
  
@@ -12080,7 +12080,7 @@ index bac9f1308..22f1b4dce 100644
      ggml_cuda_mmb_begin_graph();
  
      bool use_cuda_graph             = false;
-@@ -7498,7 +4351,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+@@ -7595,7 +4448,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
      ggml_cuda_graph_key graph_key = {};
  
      // op timing instruments each node with stream events, which is not possible during capture
@@ -12089,7 +12089,7 @@ index bac9f1308..22f1b4dce 100644
  
  #ifdef USE_CUDA_GRAPH
      graph_key = ggml_cuda_graph_get_key(cgraph);
-@@ -7539,7 +4392,11 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+@@ -7636,7 +4489,11 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
                      GGML_LOG_DEBUG("%s: CUDA graph warmup reset\n", __func__);
                  } else {
                      use_cuda_graph = true;
@@ -12102,7 +12102,7 @@ index bac9f1308..22f1b4dce 100644
                  }
              }
              } // else: not prefill
-@@ -7554,11 +4411,15 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+@@ -7651,11 +4508,15 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
              ggml_cuda_lock_counter.fetch_add(1, std::memory_order_relaxed);
          }
  
@@ -12118,7 +12118,7 @@ index bac9f1308..22f1b4dce 100644
      return GGML_STATUS_SUCCESS;
  }
  
-@@ -7590,6 +4451,309 @@ static void ggml_backend_cuda_event_wait(ggml_backend_t backend, ggml_backend_ev
+@@ -7687,6 +4548,309 @@ static void ggml_backend_cuda_event_wait(ggml_backend_t backend, ggml_backend_ev
  static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph, ggml_backend_graph_optimize_params * params) {
      ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
  
@@ -12428,7 +12428,7 @@ index bac9f1308..22f1b4dce 100644
      static const bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
  
      auto add_alloc_deps = [&](size_t start, size_t last_node) {
-@@ -7656,8 +4820,9 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+@@ -7753,8 +4917,9 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                  continue;
              }
  
@@ -12440,7 +12440,7 @@ index bac9f1308..22f1b4dce 100644
                  params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(match.experts), match.dst);
                  params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(match.weights), match.dst);
                  if (match.expert_scale != nullptr) {
-@@ -7726,6 +4891,10 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+@@ -7823,6 +4988,10 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
          }
      }
  
@@ -12451,7 +12451,7 @@ index bac9f1308..22f1b4dce 100644
  #ifdef USE_CUDA_GRAPH
      const ggml_cuda_graph_key graph_key = ggml_cuda_graph_get_key(cgraph);
      const bool use_cuda_graph = ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
-@@ -7969,179 +5138,6 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+@@ -8066,179 +5235,6 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
      }
  }
  
@@ -12631,7 +12631,7 @@ index bac9f1308..22f1b4dce 100644
  
  static const ggml_backend_i ggml_backend_cuda_interface = {
      /* .get_name                = */ ggml_backend_cuda_get_name,
-@@ -8196,6 +5192,14 @@ static std::string ggml_cuda_device_description(int device) {
+@@ -8293,6 +5289,14 @@ static std::string ggml_cuda_device_description(int device) {
          description += " (dev p" + std::to_string(info.devices[device].physical_device) +
                         "/v" + std::to_string(info.devices[device].virtual_index) + ")";
      }
@@ -12646,7 +12646,7 @@ index bac9f1308..22f1b4dce 100644
      return description;
  }
  
-@@ -8905,8 +5909,33 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -9002,8 +6006,33 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
              return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
                  op->src[2]->type == GGML_TYPE_F32 && (op->src[3] == nullptr || op->src[3]->type == GGML_TYPE_F32) &&
                  op->type == GGML_TYPE_F32;
@@ -12680,7 +12680,7 @@ index bac9f1308..22f1b4dce 100644
          case GGML_OP_CROSS_ENTROPY_LOSS:
          case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
          case GGML_OP_OPT_STEP_ADAMW:
-@@ -9007,7 +6036,7 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
+@@ -9104,7 +6133,7 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
          // This model HAS host-resident experts, so the work/arena split is meaningful -- arm the slab.
          // Dense models never reach here (`llama_model_moe_cache_preflight` skips an empty host-expert map),
          // which is what keeps the slab off them.  Runs before the context, so before any compute buffer.
@@ -12689,7 +12689,7 @@ index bac9f1308..22f1b4dce 100644
      }
      return on;
  }
-@@ -9102,16 +6131,7 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
+@@ -9199,16 +6228,7 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
      // Default: route them to the slab's pinned second narrow region.  `GGML_CUDA_SLAB_NARROW2=0` is the
      // A/B arm -- the draft bypasses the slab entirely (raw cudaMalloc), the session's quick fix.
      GGML_UNUSED(dev);
@@ -12707,7 +12707,7 @@ index bac9f1308..22f1b4dce 100644
  }
  
  static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
-@@ -9223,8 +6243,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+@@ -9320,8 +6340,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
      GGML_UNUSED(reg);
  }
  
@@ -12731,10 +12731,10 @@ index bac9f1308..22f1b4dce 100644
      }
 diff --git a/ggml/src/ggml-cuda/hc-mix.cu b/ggml/src/ggml-cuda/hc-mix.cu
 new file mode 100644
-index 000000000..2394d8163
+index 000000000..89f349287
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/hc-mix.cu
-@@ -0,0 +1,1314 @@
+@@ -0,0 +1,1331 @@
 +// Fused hyper-connection mixer tail for qwen4exp (decode/verify band).
 +//
 +// Replaces the unfused decode chain (SCALE, SILU, MUL_MAT up, SIGMOID, MUL,
@@ -12767,6 +12767,12 @@ index 000000000..2394d8163
 +// same bound; a verify batch is --spec-draft-n-max + 1 tokens and the
 +// greedy-purity guarantee is defined over that band (GREEDY-PURITY.md).
 +static constexpr int64_t HC_FUSED_MAX_TOKENS = 8;
++// The BF16 variant (Flash-Next GSQ-RCO) and the combine serve a wider band: several concurrent speculative streams
++// verify 9-16 tokens per step, where the unfused chain is the generic mmvf (~1.5x the fused time per layer).  The
++// BF16 mixer runs such a batch as chunks of HC_FUSED_MAX_TOKENS tokens; every token is computed independently with
++// the K-only block sizes of the unfused chain, so the band stays width-invariant (src/models/qwen4exp.cpp gates on
++// the same bound).
++static constexpr int64_t HC_BF16_MAX_TOKENS = 16;
 +
 +
 +// Grouped RMSNorm over the hc streams plus the gamma scale (w_norm). One
@@ -13625,7 +13631,7 @@ index 000000000..2394d8163
 +    const int64_t hc_lr    = w_down->ne[1];
 +    const int64_t out_n    = n_embd + (w_inject ? hc : 0);
 +
-+    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS);
++    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS);
 +    GGML_ASSERT(hc_lr == 320);                       // the up kernel is the K = 320 (160-thread) mmvf block
 +    GGML_ASSERT(hc_dim % 2 == 0 && n_embd % 32 == 0);
 +    GGML_ASSERT(x->ne[1] == hc && x->nb[2] == hc_dim*sizeof(float));
@@ -13665,49 +13671,60 @@ index 000000000..2394d8163
 +                (const float *) x->data, (const float *) w_norm->data, xn, (block_q8_1 *) nullptr, (int) n_embd, eps,
 +                hc_dim, hc_dim, (int64_t) 0);
 +    }
-+    {
-+        const int nrows_inject = w_inject ? hc : 0;
-+        const ggml_cuda_kernel_launch_params launch_params = {dim3(hc_lr + nrows_inject), dim3(256), 0, stream};
++    // A batch wider than the kernels' template band (9-16 tokens: several concurrent speculative streams) runs as
++    // chunks of at most HC_FUSED_MAX_TOKENS tokens.  Every token is computed independently (its own xn / lo / output
++    // rows, located by the per-token strides), so a chunk is bit-identical to the same tokens in one launch, and the
++    // 8-token kernels are faster than one instantiation for 16 (fewer registers per token in flight).
++    for (int64_t t0 = 0; t0 < n_tokens; t0 += HC_FUSED_MAX_TOKENS) {
++        const int64_t nt_c      = std::min<int64_t>(HC_FUSED_MAX_TOKENS, n_tokens - t0);
++        const float * xn_c      = xn + t0*hc_dim;
++        float       * lo_c      = lo + t0*hc_lr;
++        float       * inject_c  = inject_d ? inject_d + t0*inject_stride_t : nullptr;
++        float       * mixed_c   = dst_d + t0*mixed_stride_t;
++        {
++            const int nrows_inject = w_inject ? hc : 0;
++            const ggml_cuda_kernel_launch_params launch_params = {dim3(hc_lr + nrows_inject), dim3(256), 0, stream};
 +#define HC_BF16_DOWN(NT) ggml_cuda_kernel_launch(hc_mix_bf16_down_inject<NT>, launch_params, \
-+        (const nv_bfloat16 *) w_down->data, w_inject ? (const nv_bfloat16 *) w_inject->data : nullptr, xn, lo, \
-+        inject_d, (int) (hc_dim/2), (int) hc_lr, hc_dim, hc_lr, inject_stride_t)
-+        switch (n_tokens) {
-+            case 1: HC_BF16_DOWN(1); break;
-+            case 2: HC_BF16_DOWN(2); break;
-+            case 3: HC_BF16_DOWN(3); break;
-+            case 4: HC_BF16_DOWN(4); break;
-+            case 5: HC_BF16_DOWN(5); break;
-+            case 6: HC_BF16_DOWN(6); break;
-+            case 7: HC_BF16_DOWN(7); break;
-+            case 8: HC_BF16_DOWN(8); break;
-+            default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) n_tokens);
-+        }
++            (const nv_bfloat16 *) w_down->data, w_inject ? (const nv_bfloat16 *) w_inject->data : nullptr, xn_c, lo_c, \
++            inject_c, (int) (hc_dim/2), (int) hc_lr, hc_dim, hc_lr, inject_stride_t)
++            switch (nt_c) {
++                case 1: HC_BF16_DOWN(1); break;
++                case 2: HC_BF16_DOWN(2); break;
++                case 3: HC_BF16_DOWN(3); break;
++                case 4: HC_BF16_DOWN(4); break;
++                case 5: HC_BF16_DOWN(5); break;
++                case 6: HC_BF16_DOWN(6); break;
++                case 7: HC_BF16_DOWN(7); break;
++                case 8: HC_BF16_DOWN(8); break;
++                default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) nt_c);
++            }
 +#undef HC_BF16_DOWN
-+    }
-+    {
-+        // GGML_HC_UP_V2=0: the original row-at-a-time kernel (v2 is bit-identical)
-+        static const bool up_v2 = !getenv("GGML_HC_UP_V2") || atoi(getenv("GGML_HC_UP_V2")) != 0;
-+        // at most 448 blocks of 4 warps (the gfx1201 grid-size stall, as mul_mat_vec_f_vb); v2: 256 blocks (flat from
-+        // 128 to 320 at n_embd 2560, slower above), at most HC_UP2_MAXR rows per block
-+        const int nblk = up_v2 ? (int) std::max<int64_t>(std::min<int64_t>(n_embd, 256), (n_embd + HC_UP2_MAXR - 1)/HC_UP2_MAXR)
-+                               : (int) std::min<int64_t>(n_embd, 448);
-+        const ggml_cuda_kernel_launch_params launch_params = {dim3(nblk), dim3(hc*32), 0, stream};
-+#define HC_BF16_UP(NT) do { if (up_v2) { ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse2<NT>, launch_params, \
-+        (const nv_bfloat16 *) w_up->data, lo, xn, dst_d, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } else { \
-+        ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse<NT>, launch_params, \
-+        (const nv_bfloat16 *) w_up->data, lo, xn, dst_d, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } } while (0)
-+        switch (n_tokens) {
-+            case 1: HC_BF16_UP(1); break;
-+            case 2: HC_BF16_UP(2); break;
-+            case 3: HC_BF16_UP(3); break;
-+            case 4: HC_BF16_UP(4); break;
-+            case 5: HC_BF16_UP(5); break;
-+            case 6: HC_BF16_UP(6); break;
-+            case 7: HC_BF16_UP(7); break;
-+            case 8: HC_BF16_UP(8); break;
-+            default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) n_tokens);
 +        }
++        {
++            // GGML_HC_UP_V2=0: the original row-at-a-time kernel (v2 is bit-identical)
++            static const bool up_v2 = !getenv("GGML_HC_UP_V2") || atoi(getenv("GGML_HC_UP_V2")) != 0;
++            // at most 448 blocks of 4 warps (the gfx1201 grid-size stall, as mul_mat_vec_f_vb); v2: 256 blocks (flat from
++            // 128 to 320 at n_embd 2560, slower above), at most HC_UP2_MAXR rows per block
++            const int nblk = up_v2 ? (int) std::max<int64_t>(std::min<int64_t>(n_embd, 256), (n_embd + HC_UP2_MAXR - 1)/HC_UP2_MAXR)
++                                   : (int) std::min<int64_t>(n_embd, 448);
++            const ggml_cuda_kernel_launch_params launch_params = {dim3(nblk), dim3(hc*32), 0, stream};
++#define HC_BF16_UP(NT) do { if (up_v2) { ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse2<NT>, launch_params, \
++            (const nv_bfloat16 *) w_up->data, lo_c, xn_c, mixed_c, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } else { \
++            ggml_cuda_kernel_launch(hc_mix_bf16_up_collapse<NT>, launch_params, \
++            (const nv_bfloat16 *) w_up->data, lo_c, xn_c, mixed_c, (int) n_embd, 1.0f / (float) hc, hc_lr, hc_dim, mixed_stride_t); } } while (0)
++            switch (nt_c) {
++                case 1: HC_BF16_UP(1); break;
++                case 2: HC_BF16_UP(2); break;
++                case 3: HC_BF16_UP(3); break;
++                case 4: HC_BF16_UP(4); break;
++                case 5: HC_BF16_UP(5); break;
++                case 6: HC_BF16_UP(6); break;
++                case 7: HC_BF16_UP(7); break;
++                case 8: HC_BF16_UP(8); break;
++                default: GGML_ABORT("hc_mix bf16: unexpected n_tokens %d\n", (int) nt_c);
++            }
 +#undef HC_BF16_UP
++        }
 +    }
 +}
 +
@@ -13926,7 +13943,7 @@ index 000000000..2394d8163
 +// `inject` is often a view into the mix output, so it is read with its own
 +// per-token stride.
 +// Token dimension: the op serves the whole decode/verify band, nt <=
-+// HC_FUSED_MAX_TOKENS (the graph gates in src/models/qwen4exp.cpp use the same
++// HC_BF16_MAX_TOKENS (the graph gates in src/models/qwen4exp.cpp use the same
 +// bound), which is what makes the band width-invariant.
 +static __global__ void hc_combine_kernel(
 +        const float * residual, const float * block_out, const float * inject,
@@ -13975,7 +13992,7 @@ index 000000000..2394d8163
 +    const int     hc       = ggml_get_op_params_i32(comb, 0);
 +    return mix->src[2]->type == GGML_TYPE_BF16 && ggml_get_op_params_i32(mix, 0) == hc && hc == 4 &&
 +        residual->type == GGML_TYPE_F32 && block_out->type == GGML_TYPE_F32 && inject->type == GGML_TYPE_F32 &&
-+        comb->type == GGML_TYPE_F32 && residual->ne[1] == hc && n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS &&
++        comb->type == GGML_TYPE_F32 && residual->ne[1] == hc && n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS &&
 +        block_out->ne[0] == n_embd && inject->ne[0] == hc &&
 +        (block_out->ne[1] == n_tokens || block_out->ne[1] == 1) && (inject->ne[1] == n_tokens || inject->ne[1] == 1) &&
 +        residual->nb[1] == n_embd*sizeof(float) && residual->nb[2] == n_embd*hc*sizeof(float) &&
@@ -14003,7 +14020,7 @@ index 000000000..2394d8163
 +    const int64_t n_embd   = residual->ne[0];
 +    const int64_t n_tokens = residual->ne[2];
 +
-+    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_FUSED_MAX_TOKENS);  // decode/verify band
++    GGML_ASSERT(n_tokens >= 1 && n_tokens <= HC_BF16_MAX_TOKENS);  // decode/verify band (the BF16 models' wider one)
 +    GGML_ASSERT(residual->ne[1] == hc);
 +    GGML_ASSERT(block_out->ne[0] == n_embd);
 +    GGML_ASSERT(inject->ne[0] == hc);
@@ -17788,7 +17805,7 @@ index 12ae14ce9..874ae235d 100644
          case  2:
              launch_mm_ids_helper< 2>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
 diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
-index 7557a52d0..eb5d9fcd1 100644
+index 4e1483927..831fea945 100644
 --- a/ggml/src/ggml-cuda/mmq.cu
 +++ b/ggml/src/ggml-cuda/mmq.cu
 @@ -1,5 +1,7 @@
@@ -17799,7 +17816,7 @@ index 7557a52d0..eb5d9fcd1 100644
  #include "quantize.cuh"
  #include "mmid.cuh"
  
-@@ -417,6 +419,14 @@ void ggml_cuda_mul_mat_q_pair(ggml_backend_cuda_context & ctx, ggml_tensor * dst
+@@ -418,6 +420,14 @@ void ggml_cuda_mul_mat_q_pair(ggml_backend_cuda_context & ctx, ggml_tensor * dst
          const int64_t s1 = dst_i->nb[1] / sizeof(float);
          const int64_t s2 = dst_i->nb[2] / sizeof(float);
          const int64_t s3 = dst_i->nb[3] / sizeof(float);
@@ -17814,7 +17831,7 @@ index 7557a52d0..eb5d9fcd1 100644
          const mmq_args args = {
              (const char *) src0_i->data, src0_i->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), (float *) dst_i->data,
              nullptr,
-@@ -828,3 +838,134 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+@@ -829,3 +839,134 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
  
      return (!GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
  }
@@ -23745,10 +23762,10 @@ index a55983cfb..c47e21163 100644
  
  struct llama_model_qwen35moe : public llama_model_base {
 diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
-index c1771fcad..d39d5ea8c 100644
+index c1771fcad..e76f29ada 100644
 --- a/src/models/qwen4exp.cpp
 +++ b/src/models/qwen4exp.cpp
-@@ -5,6 +5,289 @@
+@@ -5,6 +5,293 @@
  
  #include <algorithm>
  #include <cinttypes>
@@ -23772,12 +23789,16 @@ index c1771fcad..d39d5ea8c 100644
 +#endif
 +
 +// Upper bound of the decode/verify band served by the fused hyper-connection ops
-+// (ggml_cuda_op_hc_mix / _hc_combine, which assert the same bound - HC_FUSED_MAX_TOKENS
-+// in ggml-cuda/hc-mix.cu). A verify batch is --spec-draft-n-max + 1 tokens and the
++// (ggml_cuda_op_hc_mix, which asserts the same bound - HC_FUSED_MAX_TOKENS in
++// ggml-cuda/hc-mix.cu; the BF16 mixer and the combine use HC_BF16_MAX_TOKENS below). A verify batch is --spec-draft-n-max + 1 tokens and the
 +// greedy-purity guarantee is defined over that band (GREEDY-PURITY.md), so routing the
 +// whole band through the fused path is what keeps decode and verify bit-identical; the
 +// prefill chunks keep the unfused chain (mmq-era numerics, untouched).
 +static constexpr int64_t HC_FUSED_MAX_TOKENS = 8;
++// The BF16 fused mixer and the combine serve up to HC_BF16_MAX_TOKENS (the same constant in hc-mix.cu): several
++// concurrent speculative streams verify 9-16 tokens per step, and the fused kernels replay the unfused BF16 chain for
++// every token at any width in that band.
++static constexpr int64_t HC_BF16_MAX_TOKENS = 16;
 +
 +// The same band for the QSA decode arm policy: the "dense decode below the arch crossover"
 +// arm must not be gated on n_tokens == 1, or a W=1 decode and a W=(--spec-draft-n-max + 1)
@@ -24038,7 +24059,7 @@ index c1771fcad..d39d5ea8c 100644
  
  // bad metadata must be catchable: GGML_ASSERT aborts the whole process
  static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
-@@ -23,7 +306,26 @@ static void qwen4exp_require_arr_len(llama_model_loader & ml, llm_kv kid, uint32
+@@ -23,7 +310,26 @@ static void qwen4exp_require_arr_len(llama_model_loader & ml, llm_kv kid, uint32
      }
  }
  
@@ -24065,7 +24086,7 @@ index c1771fcad..d39d5ea8c 100644
      ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, false);
      ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
      ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
-@@ -61,26 +363,23 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
+@@ -61,26 +367,23 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
      qwen4exp_require_nonzero(ml, LLM_KV_ATTENTION_INDEXER_TOP_K,      hparams.indexer_top_k);
      ml.get_key_or_arr(LLM_KV_ATTENTION_COMPRESS_RATIOS, hparams.dsv4_compress_ratios, hparams.n_layer_all, false);
  
@@ -24107,7 +24128,7 @@ index c1771fcad..d39d5ea8c 100644
  
      // PLE n-gram hash embeddings; if the key group is absent every field stays zero
      hparams.is_ple_impl.reset();
-@@ -176,19 +475,20 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -176,19 +479,20 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
      const int64_t hc_lr  = hparams.hc_low_rank;
  
      const auto nf = nextn_flags(ml, LLM_TENSOR_HC_ATTN_NORM);
@@ -24133,7 +24154,7 @@ index c1771fcad..d39d5ea8c 100644
          output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
      }
  
-@@ -202,7 +502,8 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -202,7 +506,8 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
  
          // the converter pads the table; a model synthesised from metadata has no tensor to ask
          const std::string ple_name = tn(LLM_TENSOR_PER_LAYER_TOKEN_EMBD, "weight").str();
@@ -24143,7 +24164,7 @@ index c1771fcad..d39d5ea8c 100644
              if (ple_w->tensor->ne[1] < ple_rows) {
                  throw std::runtime_error(format("%s has %" PRId64 " rows, too few for the PLE head ranges (%" PRId64 ")",
                                                  ple_name.c_str(), ple_w->tensor->ne[1], ple_rows));
-@@ -210,13 +511,48 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -210,13 +515,48 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
              ple_rows = ple_w->tensor->ne[1];
          }
  
@@ -24195,7 +24216,7 @@ index c1771fcad..d39d5ea8c 100644
          const int64_t n_ff_exp   = hparams.n_ff_exp() ? hparams.n_ff_exp() : n_ff / n_expert_used;
          const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
  
-@@ -229,11 +565,11 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -229,11 +569,11 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
          const int64_t conv_dim   = key_dim * 2 + value_dim;
  
          // two HC modules per layer: before the token mixer, before the MoE
@@ -24209,7 +24230,7 @@ index c1771fcad..d39d5ea8c 100644
          layer.hc_ffn_down    = create_tensor(tn(LLM_TENSOR_HC_FFN_DOWN,    "weight", il), { hc_dim, hc_lr }, flags);
          layer.hc_ffn_up      = create_tensor(tn(LLM_TENSOR_HC_FFN_UP,      "weight", il), { hc_lr, hc_dim }, flags);
          layer.hc_ffn_inject  = create_tensor(tn(LLM_TENSOR_HC_FFN_INJECT,  "weight", il), { hc_dim, hc }, flags);
-@@ -266,9 +602,9 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -266,9 +606,9 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
          if (hparams.is_ple(il)) {
              layer.ple_key        = create_tensor(tn(LLM_TENSOR_PLE_KEY,        "weight", il), { n_embd, hc_dim }, flags);
              layer.ple_value      = create_tensor(tn(LLM_TENSOR_PLE_VALUE,      "weight", il), { n_embd, n_embd }, flags);
@@ -24222,7 +24243,7 @@ index c1771fcad..d39d5ea8c 100644
              layer.ple_conv1d     = create_tensor(tn(LLM_TENSOR_PLE_CONV1D,     "weight", il), { hparams.ple_conv_kernel, hc_dim }, flags);
          }
  
-@@ -280,24 +616,28 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+@@ -280,24 +620,28 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
          layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", il), { n_embd, n_ff_shexp }, flags);
          layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", il), { n_embd, n_ff_shexp }, flags);
          layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", il), { n_ff_shexp, n_embd }, flags);
@@ -24267,7 +24288,7 @@ index c1771fcad..d39d5ea8c 100644
      }
  }
  
-@@ -305,6 +645,11 @@ std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const
+@@ -305,6 +649,11 @@ std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const
      if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
          return std::make_unique<graph_mtp>(*this, params);
      }
@@ -24279,11 +24300,11 @@ index c1771fcad..d39d5ea8c 100644
      return std::make_unique<graph>(*this, params);
  }
  
-@@ -322,6 +667,71 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+@@ -322,6 +671,71 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
      const int64_t hc_dim = hc * n_embd;
      const int64_t nt     = x->ne[2];
  
-+    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS): fuse the whole mixer - grouped
++    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS, HC_BF16_MAX_TOKENS for the BF16 mixer): fuse the whole mixer - grouped
 +    // RMSNorm, gamma scale, both LoRA products with the silu/sigmoid gating, the
 +    // stream collapse AND the inject product - into one dispatch; the model views the
 +    // mixed and inject outputs out of the one result. Serving the whole band (not just
@@ -24305,7 +24326,7 @@ index c1771fcad..d39d5ea8c 100644
 +    // nt == 0 appears in the reservation-only graphs (the old nt == 1 gate excluded them).
 +    // The band covers decode AND short prefill chunks: a <= HC_FUSED_MAX_TOKENS-token batch
 +    // cannot be told apart from a verify batch, and both must use the decode arithmetic.
-+    if (nt > 0 && nt <= HC_FUSED_MAX_TOKENS && cparams.fused_hc_mix && fused_ok) {
++    if (nt > 0 && nt <= (fused_bf16 ? HC_BF16_MAX_TOKENS : HC_FUSED_MAX_TOKENS) && cparams.fused_hc_mix && fused_ok) {
 +        // w_inject == nullptr only for the head call (il = -1): no tail
 +        ggml_tensor * dst_t = ggml_hc_mix(ctx0, x, w_norm, w_down, w_up, w_inject,
 +                hc, hparams.f_norm_rms_eps);
@@ -24351,7 +24372,7 @@ index c1771fcad..d39d5ea8c 100644
      // grouped RMSNorm: reduce over one stream, then scale all streams with the [n_embd, hc] gamma
      // the converter folded each gamma to (1 + w)
      ggml_tensor * xn = ggml_mul(ctx0, ggml_rms_norm(ctx0, x, hparams.f_norm_rms_eps), w_norm);
-@@ -329,6 +739,15 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+@@ -329,6 +743,15 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
      cb(xn, "hc_norm", il);
  
      ggml_tensor * lo = build_lora_mm(w_down, xn);
@@ -24367,7 +24388,7 @@ index c1771fcad..d39d5ea8c 100644
      lo = ggml_silu(ctx0, ggml_scale(ctx0, lo, 1.0f / (float) hc));
      ggml_tensor * gate = build_lora_mm(w_up, lo);
      cb(gate, "hc_gate", il);
-@@ -358,11 +777,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+@@ -358,11 +781,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
      }
      cb(mixed, "hc_mixed", il);
  
@@ -24379,18 +24400,20 @@ index c1771fcad..d39d5ea8c 100644
      return mixed;
  }
  
-@@ -374,10 +788,47 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
+@@ -374,10 +792,49 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
      const int64_t hc = hparams.dsv4_hc_mult;
      const int64_t nt = residual->ne[2];
  
-+    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS): fuse the whole residual
++    // decode/verify band (nt <= HC_FUSED_MAX_TOKENS, HC_BF16_MAX_TOKENS for a BF16-mixer model): fuse the whole residual
 +    // combine into one dispatch, so a verify batch runs the same per-token
 +    // arithmetic as a single-token decode (see HC_FUSED_MAX_TOKENS above).
 +    // The prefill path keeps the unfused chain (its mmq-era numerics are
 +    // irrelevant here - combine is elementwise - but the chain must stay
 +    // identical for the prefill gates).
 +    // nt == 0: reservation-only graph (see build_hc_mix)
-+    if (nt > 0 && nt <= HC_FUSED_MAX_TOKENS && cparams.fused_hc_combine) {
++    // a BF16-mixer model (its mixers run the fused op up to HC_BF16_MAX_TOKENS) fuses the combine over the same band
++    const bool bf16_hc = model.hc_head_down != nullptr && model.hc_head_down->type == GGML_TYPE_BF16;
++    if (nt > 0 && nt <= (bf16_hc ? HC_BF16_MAX_TOKENS : HC_FUSED_MAX_TOKENS) && cparams.fused_hc_combine) {
 +        ggml_tensor * cur = ggml_hc_combine(ctx0, residual, block_out, inject, hc);
 +        cb(cur, "hc_combine", il);
 +        return cur;
@@ -24427,7 +24450,7 @@ index c1771fcad..d39d5ea8c 100644
      ggml_tensor * cur = nullptr;
      if (cparams.fused_dsv4_hc_post && il >= 0) {
          // identity comb: every stream adds the same block output, scaled by its own weight
-@@ -385,6 +836,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
+@@ -385,6 +842,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
          res->add_fused_node({LLM_FUSED_OP_DSV4_HC_POST, cur, il});
      } else {
          w = ggml_reshape_3d(ctx0, w, 1, hc, nt);
@@ -24440,7 +24463,7 @@ index c1771fcad..d39d5ea8c 100644
  
          ggml_tensor * b = ggml_reshape_3d(ctx0, block_out, n_embd, 1, nt);
          b = ggml_repeat_4d(ctx0, b, n_embd, hc, nt, 1);
-@@ -417,10 +874,11 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -417,10 +880,11 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                  "the indexer cache must track the attention cache cell for cell");
      }
  
@@ -24453,7 +24476,7 @@ index c1771fcad..d39d5ea8c 100644
          ggml_build_forward_expand(gf, ple_emb);
      }
  
-@@ -428,13 +886,6 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -428,13 +892,6 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
      cb(inpL, "model.input_embed", -1);
      ggml_build_forward_expand(gf, inpL);
  
@@ -24467,7 +24490,7 @@ index c1771fcad..d39d5ea8c 100644
      ggml_tensor * inp_pos     = build_inp_pos();
      ggml_tensor * inp_out_ids = build_inp_out_ids();
  
-@@ -443,9 +894,15 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -443,9 +900,15 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
              ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens),
              n_embd, hc, n_tokens, 1);
      cb(res_hc, "hc_init", -1);
@@ -24484,7 +24507,7 @@ index c1771fcad..d39d5ea8c 100644
      for (int il = 0; il < n_layer; ++il) {
          res->t_layer_inp[il] = res_hc;
  
-@@ -466,10 +923,30 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -466,10 +929,30 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
          if (hparams.is_recr(il)) {
              cur = build_layer_attn_linear(inp->get_recr(), cur, il);
          } else {
@@ -24517,7 +24540,7 @@ index c1771fcad..d39d5ea8c 100644
              // everything below is per token, so drop the rows that produce no output
              cur    = ggml_get_rows(ctx0, cur,    inp_out_ids);
              inject = ggml_get_rows(ctx0, inject, inp_out_ids);
-@@ -495,17 +972,35 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -495,17 +978,35 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
  
          // "l_last" is the layer output name that build_cvec and imatrix look for
          cb(res_hc, "l_last", il);
@@ -24562,7 +24585,7 @@ index c1771fcad..d39d5ea8c 100644
      }
  
      // the final mixer is the output norm: there is no separate one
-@@ -523,19 +1018,37 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+@@ -523,19 +1024,37 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
      ggml_build_forward_expand(gf, cur);
  }
  
@@ -24607,7 +24630,7 @@ index c1771fcad..d39d5ea8c 100644
  
      int sections[4];
      std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
-@@ -548,71 +1061,209 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+@@ -548,71 +1067,209 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
      inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_inp(), n_tokens);
      ggml_set_input(inp->embd);
  
@@ -24851,7 +24874,7 @@ index c1771fcad..d39d5ea8c 100644
      cb(cur, "result_output", -1);
      res->t_logits = cur;
  
-@@ -647,16 +1298,200 @@ ggml_tensor * llama_model_qwen4exp::graph::build_norm_gated(
+@@ -647,16 +1304,200 @@ ggml_tensor * llama_model_qwen4exp::graph::build_norm_gated(
      return ggml_mul(ctx0, normalized, gated);
  }
  
@@ -25058,7 +25081,7 @@ index c1771fcad..d39d5ea8c 100644
      }
  
      bool can_reuse(const llm_graph_params & params) override {
-@@ -667,81 +1502,93 @@ public:
+@@ -667,81 +1508,93 @@ public:
              return false;
          }
  
@@ -25216,7 +25239,7 @@ index c1771fcad..d39d5ea8c 100644
          ggml_tensor *                           cur,
          ggml_tensor *                           inp_pos,
          ggml_tensor *                           kq_mask,
-@@ -749,52 +1596,157 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
+@@ -749,52 +1602,157 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
          int                                     il) {
      const llama_kv_cache_context * mctx_idx = mctx_hyb->get_idx();
  
@@ -25413,7 +25436,7 @@ index c1771fcad..d39d5ea8c 100644
      ggml_tensor * q = build_lora_mm(model.layers[il].index_q_proj, cur);
      q = ggml_reshape_3d(ctx0, q, idx_dim, n_idx_h, n_tokens);
      q = build_norm(q, model.layers[il].index_q_norm, nullptr, LLM_NORM_RMS, il);
-@@ -803,85 +1755,385 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
+@@ -803,85 +1761,385 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
              ext_factor, attn_factor, beta_fast, beta_slow);
      cb(q, "indexer_q", il);
  
@@ -25861,7 +25884,7 @@ index c1771fcad..d39d5ea8c 100644
      if (inp->self_k_rot) {
          q_cur = llama_mul_mat_hadamard(ctx0, q_cur, inp->self_k_rot);
          k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
-@@ -909,16 +2161,106 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
+@@ -909,16 +2167,106 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
          ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
      }
  
@@ -25973,7 +25996,7 @@ index c1771fcad..d39d5ea8c 100644
      cb(cur, "kqv_out", il);
  
      // the rotation is its own inverse, so undo it on the value side of the output
-@@ -932,7 +2274,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
+@@ -932,7 +2280,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
  ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
          llm_graph_input_attn_kv * inp,
          const llama_memory_hybrid_idx_context * mctx_hyb,
@@ -25981,7 +26004,7 @@ index c1771fcad..d39d5ea8c 100644
          ggml_tensor *             cur,
          ggml_tensor *             inp_pos,
          int *                     sections,
-@@ -940,10 +2281,138 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
+@@ -940,10 +2287,138 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
      const int64_t n_embd_head = hparams.n_embd_head_v();
      GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
  
@@ -26124,7 +26147,7 @@ index c1771fcad..d39d5ea8c 100644
  
      // Qwen3Next uses a single Q projection that outputs query + gate
      ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
-@@ -995,8 +2464,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
+@@ -995,8 +2470,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
  
      const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
  
@@ -26135,7 +26158,7 @@ index c1771fcad..d39d5ea8c 100644
      } else {
          cur = build_attn(inp,
                      nullptr, nullptr, nullptr,
-@@ -1197,49 +2666,55 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
+@@ -1197,49 +2672,55 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
  //   mixed_n = (t[p]*m[0]) ^ ... ^ (t[p-n+1]*m[n-1]);  row = mixed_n % vocab[h] + offset[h]
  // The hash runs host-side because ggml has no int64 and no xor. EOS resets the window.
  
@@ -26207,7 +26230,7 @@ index c1771fcad..d39d5ea8c 100644
      const int64_t n_prev   = n_gram - 1;
  
      std::vector<int32_t> idx(n_heads * n_tokens);
-@@ -1269,29 +2744,79 @@ void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
+@@ -1269,29 +2750,79 @@ void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
          }
  
          for (int64_t n = 2; n <= n_gram; ++n) {
@@ -26298,7 +26321,7 @@ index c1771fcad..d39d5ea8c 100644
  }
  
  // Read a conv history out of its own recurrent row and write the new tail back.
-@@ -1344,7 +2869,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
+@@ -1344,7 +2875,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
                  conv_states_all->nb[1],
                  (slot * mem_size + kv_head) * row_size);
  
@@ -26310,7 +26333,7 @@ index c1771fcad..d39d5ea8c 100644
      }
  
      return conv_input;
-@@ -1355,7 +2883,40 @@ ggml_tensor * llama_model_qwen4exp::graph::build_inp_ple(
+@@ -1355,7 +2889,40 @@ ggml_tensor * llama_model_qwen4exp::graph::build_inp_ple(
      const int64_t n_heads = hparams.ple_n_heads;
  
      // the attention cells see every ubatch regardless of the layer types

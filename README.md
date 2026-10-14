@@ -27,7 +27,11 @@ the segmented host-resident expert upload fix that enables gemma4 + `-ncmoe`/`-c
 three WIP campaigns into their owning blocks with **no new block**: the full `-Wshadow` cleanup + `-Wshadow`
 on the `llama` C++ target (**block 00**; the one feature-introduced site is **block 05**), the
 `swizzle_bytes` → `swizzle` port that also removes the `-Wc++20-extensions` warnings (**block 05**), and
-the width-dependent `q5_1` mmvq rows-per-block (**block 08**).
+the width-dependent `q5_1` mmvq rows-per-block (**block 08**).  **`r56`** folds four contributor WIP PRs
+(#146-#149) into their owning blocks: the restored RDNA4 routed-compact MMQ J selection (**block 08**,
+the r50 `select_J` port had left it RDNA3.5-only and dropped the `rdna4` argument), the pageable
+host<->device tensor-copy bounce (**block 09**), the BF16 hyper-connection mixer/combine widened to 16
+tokens (**block 10**) and merged-span state saves (**block 11**).
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

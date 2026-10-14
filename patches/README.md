@@ -11,7 +11,24 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r55` (2026-10-13) -- `-Wshadow` cleanup (block 00), `swizzle_bytes` fix (block 05), `q5_1` mmvq rpb retune (block 08):**
+> **Current release `v12-097cf33d9-r56` (2026-10-13) -- four contributor WIP PRs folded into blocks 08/09/10/11:**
+> canonical tip `5d51f478c`, net tree `d718f97a502d77eb609c09d540b24282e52b4284`; strict **12/12**
+> `git am` (`validate-set.sh` green), the rebuilt tip tree byte-identical to the gated tree, 4B
+> `Qwen3.5-Q8_0` same-seed greedy unchanged, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS,
+> Flash-Next GSQ-IQ3_XXS `test-logits-width-probe` W=1..8 byte-identical to r55, `test-save-load-state`
+> all tests pass, `test-state-restore-fragmented` PASS, a `--cache-ram` server session saves/evicts
+> entries clean.  Four blocks amended and **no new block**:
+> **08** (`ggml_cuda_mmq_select_J` gates on `mmq_routed_compact_arch_ok(cc)` and passes
+> `GGML_CUDA_CC_IS_RDNA4(cc)` again, restoring the r49 RDNA4 IQ band and the gfx1151 plain IQ2/Q2_0
+> path that the r50 port had lost; PR #146), **09** (pageable host<->device tensor copies bounce through
+> a reused 64 MiB pinned chunk per device; `GGML_CUDA_BOUNCE_MIN`, default 1 = every size, 0 = off; the
+> pointer-attribute helper is HIP/CUDA-only so MUSA stays direct; PR #147), **10** (the BF16 fused
+> hyper-connection mixer and combine serve `HC_BF16_MAX_TOKENS = 16`, run as chunks of at most 8 tokens
+> through the existing kernels; Q8_0 keeps 8; PR #148), **11** (`llama_io_write_host` reads a save's
+> deferred tensor ranges as merged spans, `LLAMA_STATE_GET_MERGE_GAP` default 256 KiB, 0 = per-range;
+> PR #149).  See `../WORKLOG.md` 261013.007 (r56).
+>
+> **Previous release `v12-097cf33d9-r55` (2026-10-13) -- `-Wshadow` cleanup (block 00), `swizzle_bytes` fix (block 05), `q5_1` mmvq rpb retune (block 08):**
 > canonical tip `49bea1ff7`, net tree `2315b3358f96795d688eecc433b12d458f4f03f8`; strict **12/12**
 > `git am` (`validate-set.sh` green), the rebuilt tip tree byte-identical to the gated tree, 4B
 > `Qwen3.5-Q8_0` same-seed greedy `1c5d32ac537d` unchanged, `FLASH_ATTN_EXT` 6389/6389, **0** `-Wshadow`

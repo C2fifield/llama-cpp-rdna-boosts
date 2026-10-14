@@ -5,15 +5,16 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r55`** (canonical tip `49bea1ff7`, net tree
-`2315b3358f96795d688eecc433b12d458f4f03f8`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green), the rebuilt tip tree byte-identical to the gated tree, 4B greedy `1c5d32ac537d` unchanged,
-`FLASH_ATTN_EXT` 6389/6389, **0** `-Wshadow` and **0** `-Wc++20-extensions` warnings, 3-GPU MTP field
-74.3 t/s vs plain 55.2 (+34.6 %).  r55 folds three WIP campaigns into their owning blocks, **no new
-block**: **block 00** (139 `-Wshadow` site renames across 35 `src/` files + `-Wshadow` on the `llama` C++
-target + `this->n_rs_seq = 0;` + the `llama-batch.cpp` duplicate-loop collapse), **block 05**
-(`swizzle_bytes` -> `swizzle<stride_tile>`) and **block 08** (`q5_1` rpb width-dependent).  The r55 record
-is `WORKLOG.md` 261013.005; r54 is `WORKLOG.md` 261013.004 (release
+**`097cf33d9`**, released as **`v12-097cf33d9-r56`** (canonical tip `5d51f478c`, net tree
+`d718f97a502d77eb609c09d540b24282e52b4284`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green), the rebuilt tip tree byte-identical to the gated tree, 4B same-seed greedy unchanged,
+`gate-prefill-logits.sh` 0.000707 / 98.755 % PASS.  r56 folds four contributor WIP PRs (#146-#149)
+into their owning blocks, **no new block**: **block 08** (RDNA4 routed-compact MMQ J selection
+restored: gate back to `mmq_routed_compact_arch_ok(cc)` + the `GGML_CUDA_CC_IS_RDNA4(cc)` argument),
+**block 09** (pageable host<->device tensor-copy bounce through a reused 64 MiB pinned chunk),
+**block 10** (BF16 hyper-connection mixer + fused combine widened to `HC_BF16_MAX_TOKENS = 16`, run as
+<= 8-token chunks), **block 11** (state-save reads merged into spans, `LLAMA_STATE_GET_MERGE_GAP`).
+The r56 record is `WORKLOG.md` 261013.007; r55 is `WORKLOG.md` 261013.005; r54 is `WORKLOG.md` 261013.004 (release
 `v12-097cf33d9-r53`, tip `4b27ac644`, tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); the r52 fold is
 `WORKLOG.md` 261013.002 (release `v12-097cf33d9-r52`, tip `2f3349306`, tree
 `8b177a7b0d33a86e11aeaec6bae71fd0bda74b57`); the V2.0 re-org and its r51 validation are
