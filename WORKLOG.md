@@ -52,6 +52,19 @@ updated.  The PR record moves to `archive/work/dflash-layer-inp-preset/` with a 
 upstream patch is preserved verbatim); `wip/CAMPAIGNS.md` records the resolution.  No new environment
 variable.
 
+**Publish (2026-10-14).**  Delivery `main` pushed (`953676b` -> `4e34a37`, force-with-lease once to land
+the conventional `release:` subject; `validate.yml` green on `main` and on the tag).  Fork `rdna-boosts`
+refreshed from a clean `097cf33d9` checkout via `apply-all.sh` (strict, tree
+`84c1089798ace45224456cfb147e6e6fb9fabaff`) and force-pushed to the personal fork (`stew675/llama.cpp`):
+`37549516d` -> **`369a835bf`**.  Tag `v12-097cf33d9-r58` pushed; the Release workflow attached
+`rdna-boosts-all.patch` / `patches.tar.gz` / `release.json` / `SHA256SUMS` (run 38555756493, all four
+assets).  PR #150 was merged (`f1cf21b`, `Merge pull request #150 ...`) and the merged
+`wip/dflash-layer-inp-preset/` record removed again (`7f8eefd`), since the finished record lives in
+`archive/work/`.  Container images built and pushed locally (`scripts/build-containers.sh --rocm
+"7.14.1 10.1" --push --prune`): `full`/`light`/`server` for both ROCm lines plus `latest` on 10.1, keyed
+on the base `097cf33d9` (the r58 tree overwrites the r57 images); the registry prune found **0** versions
+to delete (everything still inside the 7-day window).
+
 ## 261014.002 (docs, tooling) -- GHCR retention: prune old container versions on every `--push`
 
 **No delivery change** (`patches/`, `release.json` and the r57 tag are untouched; no new release).
