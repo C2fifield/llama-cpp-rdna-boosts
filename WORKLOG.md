@@ -55,6 +55,16 @@ undocumented); `README.md`, `MANIFESTS.md`, `BASELINE.md` and `patches/README.md
 updated.  The issue record moves to `archive/work/issue-139-ar-spin-timeout/` with a `RESOLUTION.md`.
 The memory-pressure half stays tracked separately in `wip/host-expert-master-drop/` (TODO #55).
 
+**Publish (2026-10-14).**  Delivery `main` pushed (`60d8207` -> `b766960`; `validate.yml` green on
+`main` and on the tag).  Fork `rdna-boosts` refreshed from the r59 tip and force-pushed to the personal
+fork (`stew675/llama.cpp`): `369a835bf` -> **`e1b2a41ed`**.  Tag `v12-097cf33d9-r59` pushed; the Release
+workflow attached `rdna-boosts-all.patch` / `patches.tar.gz` / `release.json` / `SHA256SUMS` (run
+38560358065, all four assets).  Container images built and pushed locally (`scripts/build-containers.sh
+--rocm "7.14.1 10.1" --push --prune --force`): `full`/`light`/`server` for both ROCm lines plus
+`latest` on 10.1 (base `097cf33d9`, the r59 tree superseding r58); the registry prune found **0**
+versions to delete.  Issue #139 answered with the fix, the rejected-B1 measurement and the kernel
+sysctl suggestions, then closed as completed.
+
 ## 261014.003 (r58) -- PR #150: the DFlash layer-input preset (folded into blocks 02 + 11)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r58` (base `097cf33d9`; canonical tip
