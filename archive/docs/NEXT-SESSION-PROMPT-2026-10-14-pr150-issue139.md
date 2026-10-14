@@ -7,13 +7,20 @@ invariants, gates), then `WORKLOG.md` 261014.001/261014.002 and this prompt. Cur
 and built with `~/bin/build-llama-rocm-714`. Everything (docs, tooling) is pushed on `main`; the container
 build now self-prunes GHCR (`CONTAINERS.md` §Registry cleanup) and needs the `delete:packages` scope.
 
-Drive **both** items below to a recorded resolution — that means a landed fix folded into the owning block
-+ a release if code changes, or a recorded decision (park/refute, with the record archived). Triage both
-first and report the plan/priority to me **before any delivery-affecting commit**. Follow the session flow
-we used for r56/r57: assess -> adapt + rebuild -> gates -> fold into the owning block -> regenerate
-`patches/` + `release.json` -> `scripts/validate-set.sh` -> docs -> commit/push -> fork `rdna-boosts`
-refresh -> tag -> containers -> GitHub response -> archive the record with a `RESOLUTION.md`. The result
-would be **r58** (`v12-097cf33d9-r58`).
+**Order of work: do PR #150 first and drive it all the way to completion before starting issue #139.**
+Do not open the AR work until #150 is closed (folded + released + published + responded to + archived, or
+refuted/parked with the decision recorded).
+
+Each item is a full pass through the session flow we used for r56/r57: assess -> adapt + rebuild -> gates
+-> fold into the owning block -> regenerate `patches/` + `release.json` -> `scripts/validate-set.sh` ->
+docs -> commit/push -> fork `rdna-boosts` refresh -> tag -> containers -> GitHub response -> archive the
+record with a `RESOLUTION.md`. Report the plan for the item to me **before any delivery-affecting
+commit**.
+
+- **#150** (below): if it lands, cut **`v12-097cf33d9-r58`**; if it is refuted or parked, record that
+  and move on (no release).
+- **#139** (below), started only after #150 is done: same flow; if it lands, cut **`v12-097cf33d9-r59`**
+  (use r58 instead only if #150 produced no release).
 
 ## 1. PR #150 — `wip/dflash-layer-inp-preset` (@overdoingism)
 
