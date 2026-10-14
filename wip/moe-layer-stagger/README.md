@@ -1,6 +1,6 @@
 # `moe-layer-stagger` — interleave the host- and device-resident MoE expert layers to hide H2D upload
 
-**Status: REFUTED (2026-10-14) — layer placement has no prefill effect; and the chosen basis
+**Status: PARKED (2026-10-14) — REFUTED.**  Layer placement has no prefill effect; and the chosen basis
 (`-sm tensor` + `-ncmoe`) is a corrupt path.**  Result, data, method and the correctness blocker:
 [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md).  Not part of the delivery; nothing here may be
 applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from the maintainer's

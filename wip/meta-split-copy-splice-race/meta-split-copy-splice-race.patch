@@ -1,0 +1,24 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 87b3ca1e2..a20d14750 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -3744,7 +3744,18 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
+     const char * splice_env  = g_cuda_splice_env;
+     const bool splice_gather = (splice_env == nullptr || atoi(splice_env) != 0) && n_copies > 1 && stride_tensor == size;
+     if (splice_gather) {
+-        const cudaStream_t h2d_stream = cuda_ctx->copy_stream();
++        // wip/fix-meta-split-copy: the H2D MUST be ordered after the main stream.  The scheduler calls
++        // `wait_before_overwrite()` (a wait on the split backend's previous-split event) on the MAIN
++        // stream before this upload, because the graph allocator reuses this split-input buffer across
++        // splits -- the previous split may still be reading it.  The plain 2-D path below issues its
++        // copy on `cuda_ctx->stream()` and is therefore ordered; an earlier version of this gather
++        // issued the 1-D H2D on `copy_stream()` and only ordered the *consumer*
++        // (`cudaStreamWaitEvent(main, s.ev)`), so the H2D could overwrite the buffer while the previous
++        // split still read it -- it corrupts the `-sm tensor` + `-ncmoe` below-gate path (measured: 35B-A3B
++        // `3333…`, gemma4 26B-A4B `<unused32>…`, `GGML_META_SPLIT_COPY=0`/`GGML_CUDA_SPLICE_GATHER=0`
++        // clean).  The copy stream buys nothing here (the transfer must wait for that read anyway), so
++        // the gather stays a host pinned gather + one 1-D H2D, just on the main stream.
++        const cudaStream_t h2d_stream = cuda_ctx->stream();
+         const size_t full    = (n_copies > 0 ? (size_t)(n_copies-1)*stride_data    : 0) + size;
+         const size_t compact = (n_copies > 0 ? (size_t)(n_copies-1)*stride_tensor : 0) + size;
+         // the compact path only ever materializes the gathered slice; the strided path memcpys the whole range
