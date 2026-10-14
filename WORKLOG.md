@@ -42,7 +42,16 @@ reproduces identically), so it was not used; the width probe above covers the sa
 (current-state headers + the two new variables) updated.  The four PR records moved to
 `archive/work/<name>/` with a `RESOLUTION.md` each; `wip/CAMPAIGNS.md` records the resolution.
 
-**Publish.**  Pending: fork `rdna-boosts` refresh + local ROCm 7.14.1 / 10.1 container build/push.
+**Publish (2026-10-13).**  Delivery `main` pushed (`6248871`, 4 PR merge commits + the release
+commit; `validate.yml` green on `main` and the tag).  Fork `rdna-boosts` refreshed from a clean
+`097cf33d9` checkout via `apply-all.sh` (strict, tree `d718f97a502d77eb609c09d540b24282e52b4284`) and
+force-pushed to the personal fork (`stew675/llama.cpp`): `38c4ebf0c` -> **`3cf0bd8ae`**.  Tag
+`v12-097cf33d9-r56` pushed; the tag-triggered Release workflow attached
+`rdna-boosts-all.patch` / `patches.tar.gz` / `release.json` / `SHA256SUMS` (run 38510938455, 13 s).
+Container images built locally and pushed (`scripts/build-containers.sh --rocm "7.14.1 10.1" --push
+--prune`): the **15** GHCR tags (`full`/`light`/`server` x `rocm-7.14.1`/`rocm-10.1` + the
+`-097cf33d9` immutable variants + `rocm-*` + `latest`) from the r56 tree, then the locally built
+images pruned (base images + ccache kept).
 
 ## 261013.006 (docs, campaign closure) -- close `moe-topk-fusion`: the fused router already fires at prefill widths on r55 (no code change)
 
