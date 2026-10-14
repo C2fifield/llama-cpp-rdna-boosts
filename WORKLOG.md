@@ -45,6 +45,11 @@ regenerated `patches/` and `release.json`.
 - field MTP (Qwen3.8-Flash-Next IQ4_NL + shared Q8_0 head, 32 358-token prompt, 1000 gen,
   `-ncmoe 48 --spec-draft-n-max 3`): 3-GPU 74.3 t/s (acc 0.854), 2-GPU 65.0 (acc 0.832), 3-GPU plain
   55.2 t/s.
+- Containers: `scripts/build-containers.sh --rocm "7.14.1 10.1" --push` published all images
+  (`full`/`light`/`server` for both lines, the immutable `-097cf33d9` tags and `latest`) to
+  `ghcr.io/stew675/llama-cpp-rdna-boosts`; the tag-triggered `release.yml` published the GitHub
+  Release `v12-097cf33d9-r55` with `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and
+  `SHA256SUMS`.
 
 ## 261013.004 (r54) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed and gemma4 rejection lifted (block 09)
 

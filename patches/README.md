@@ -20,7 +20,8 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `-Wshadow` on the `llama` C++ target + `this->n_rs_seq = 0;` member fix + the `llama-batch.cpp`
 > duplicate-loop collapse), **05** (three `swizzle_bytes` -> `swizzle<stride_tile>` sites, also dropping
 > the `-Wc++20-extensions` warnings) and **08** (`q5_1` rows-per-block = `ncols_dst <= 4 ? 1 : 2`;
-> `iq4_xs` unchanged).  See `../WORKLOG.md` 261013.005 (r55).
+> `iq4_xs` unchanged).  See `../WORKLOG.md` 261013.005 (r55).  Container images published locally
+> (ROCm 7.14.1 + 10.1, all targets + `latest`) with `scripts/build-containers.sh --push`.
 >
 > **Previous release `v12-097cf33d9-r54` (2026-10-13) -- DFlash2 `-sm tensor` clean rejection (block 11) + segmented host-resident expert upload fixed, gemma4 `-sm tensor` rejection lifted (block 09):**
 > canonical tip `c816fc32c`, net tree `71f524a5215acdbdcb4b951d04e387366479d31f`; strict **12/12**
