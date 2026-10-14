@@ -1,0 +1,134 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
+index 3cd2fd7f5..86a1ecbd3 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
+@@ -406,6 +406,40 @@ static bool ggml_cuda_topk_moe_fusion_disabled() {
+     return disabled;
+ }
+ 
++// WIP diagnostic (wip/moe-topk-fusion): report once per distinct shape at which the fused topk_moe
++// router actually fires (GGML_CUDA_TOPK_MOE_TRACE=1).  The address guard refuses the prefill widths
++// unless the router logits are pinned (LLAMA_MOE_TOPK_PIN_LOGITS=1), so this tells the two apart.
++static void ggml_cuda_topk_moe_trace(const ggml_tensor * logits) {
++    static const bool on = getenv("GGML_CUDA_TOPK_MOE_TRACE") != nullptr;
++    if (!on) {
++        return;
++    }
++    static std::set<std::pair<int64_t, int64_t>> seen;
++    const int64_t n_tokens  = ggml_nrows(logits);
++    const int64_t n_experts = logits->ne[0];
++    if (seen.emplace(n_tokens, n_experts).second) {
++        GGML_LOG_WARN("TOPK_MOE_TRACE fired n_tokens=%" PRId64 " n_experts=%" PRId64 "\n", n_tokens, n_experts);
++    }
++}
++
++// Temporary debug (GGML_CUDA_TOPK_MOE_DEBUG=1): where the topk_moe fusion match/guard fails.  Deduped
++// by message so it prints once per (shape, outcome) per process.
++static void topk_moe_dbg(const char * fmt, ...) {
++    static const bool on = getenv("GGML_CUDA_TOPK_MOE_DEBUG") != nullptr;
++    if (!on) {
++        return;
++    }
++    char buf[256];
++    va_list args;
++    va_start(args, fmt);
++    vsnprintf(buf, sizeof(buf), fmt, args);
++    va_end(args);
++    static std::set<std::string> seen;
++    if (seen.emplace(buf).second) {
++        GGML_LOG_WARN("TOPK_MOE_DBG %s", buf);
++    }
++}
++
+ bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, ggml_cuda_topk_moe_args & args) {
+     args.sigmoid         = false;
+     args.sqrt_softplus   = false;
+@@ -1269,6 +1303,7 @@ int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgrap
+             cgraph->nodes[i]->op == GGML_OP_ARGSORT) {
+         ggml_cuda_topk_moe_args args;
+         const bool              can_fuse = ggml_cuda_topk_moe_fusion(cgraph, i, args);
++        topk_moe_dbg("match op=%s nrows=%" PRId64 " can_fuse=%d\n", ggml_op_name(node->op), (int64_t) ggml_nrows(node), (int) can_fuse);
+         std::vector<ggml_op>    ops;
+         ops.reserve(13);  // max ops; avoids gcc -Wstringop-overflow false positive
+ 
+@@ -1320,9 +1355,17 @@ int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgrap
+                         ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2) &&
+                         ggml_cuda_should_use_topk_moe(node, logits, weights, ids) &&
+                         ggml_cuda_check_fusion_memory_ranges(cgraph, i, ops.size(), out_nodes, 2, /*is_topk_moe=*/true)) {
++                    ggml_cuda_topk_moe_trace(logits);
+                     ggml_cuda_op_topk_moe(*cuda_ctx, logits, weights, ids, clamp, scale, bias, args);
+                     return ops.size() - 1;
+                 }
++                {
++                    const bool ok_sub = ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2);
++                    const bool ok_use = ok_sub && ggml_cuda_should_use_topk_moe(node, logits, weights, ids);
++                    const bool ok_mem = ok_use && ggml_cuda_check_fusion_memory_ranges(cgraph, i, ops.size(), out_nodes, 2, /*is_topk_moe=*/true);
++                    topk_moe_dbg("b1 nrows=%" PRId64 " dis=%d sub=%d use=%d mem=%d\n",
++                        (int64_t) ggml_nrows(logits), (int) ggml_cuda_topk_moe_fusion_disabled(), (int) ok_sub, (int) ok_use, (int) ok_mem);
++                }
+             } else if (!args.norm && !args.prob_bias) {
+                 //special case gpt-oss, no norm, no bias.
+                 ops.insert(ops.end(), { GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS, GGML_OP_RESHAPE,
+@@ -1336,9 +1379,17 @@ int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgrap
+                         ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2) &&
+                         ggml_cuda_should_use_topk_moe(softmax, logits, weights, ids) &&
+                         ggml_cuda_check_fusion_memory_ranges(cgraph, i, ops.size(), out_nodes, 2, /*is_topk_moe=*/true)) {
++                    ggml_cuda_topk_moe_trace(logits);
+                     ggml_cuda_op_topk_moe(*cuda_ctx, logits, weights, ids, clamp, scale, bias, args);
+                     return ops.size() - 1;
+                 }
++                {
++                    const bool ok_sub = ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2);
++                    const bool ok_use = ok_sub && ggml_cuda_should_use_topk_moe(softmax, logits, weights, ids);
++                    const bool ok_mem = ok_use && ggml_cuda_check_fusion_memory_ranges(cgraph, i, ops.size(), out_nodes, 2, /*is_topk_moe=*/true);
++                    topk_moe_dbg("b2 nrows=%" PRId64 " dis=%d sub=%d use=%d mem=%d\n",
++                        (int64_t) ggml_nrows(logits), (int) ggml_cuda_topk_moe_fusion_disabled(), (int) ok_sub, (int) ok_use, (int) ok_mem);
++                }
+             }
+         }
+     }
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index c58f7a5b5..f06d20cb8 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2158,6 +2158,16 @@ ggml_tensor * llm_graph_context::build_ffn(
+     return cur;
+ }
+ 
++// WIP kill-switch (default OFF).  Pins the MoE router logits so the fused topk_moe router can fire
++// at prefill widths; see wip/moe-topk-fusion/ in the delivery repo.  Env-gated OFF while evaluated.
++static bool moe_topk_pin_logits() {
++    static const bool enabled = [] {
++        const char * env = getenv("LLAMA_MOE_TOPK_PIN_LOGITS");
++        return env != nullptr && atoi(env) != 0;
++    }();
++    return enabled;
++}
++
+ ggml_tensor * llm_graph_context::build_moe_ffn(
+          ggml_tensor * cur,
+          ggml_tensor * gate_inp,
+@@ -2248,6 +2258,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(logits, "ffn_moe_logits_biased", il);
+     }
+ 
++    // Opt-in (WIP): pin the router logits so the fused topk_moe router can fire at prefill widths.
++    // The fusion's address guard refuses to let its output alias the logits when nrows >
++    // TOPK_MOE_ROWS_PER_BLOCK; marking the logits as a graph output keeps ggml_gallocr_free_node()
++    // from freeing their buffer, so the norm output cannot be placed at the same address
++    // (GREEDY-PURITY.md §31; the fused kernel is bit-identical to the unfused chain).
++    if (moe_topk_pin_logits()) {
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            LLAMA_LOG_WARN("MOE_TOPK_PIN reached build_moe_ffn: probs_in=%p n_tokens=%lld logits_bytes=%zu\n",
++                (void *) probs_in, (long long) n_tokens_l, ggml_nbytes(logits));
++        }
++    }
++    if (probs_in == nullptr && moe_topk_pin_logits()) {
++        ggml_set_output(logits);
++    }
++
+     ggml_tensor * probs = nullptr;
+     switch (gating_op) {
+         case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX:

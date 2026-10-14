@@ -29,8 +29,14 @@ is the signature of a stub, not of a campaign.
 | [`nwarps/`](nwarps/README.md) | per-M `nwarps` MoE candidate — the one deliberate width-purity impurity | ACTIVE (env-OFF) |
 | [`fa-band-2byte-row/`](fa-band-2byte-row/README.md) | extend the RDNA4 GQA band's 64-wide K/V config row to the 2-byte f16/bf16 arm (`ncols == 16`; TODO #27) | **OPEN (seeded 2026-10-11), small tuning** |
 | [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
-| [`moe-topk-fusion/`](moe-topk-fusion/README.md) | adopt the fused `topk_moe` (TODO item 5(a)) — ~0.5 % prefill for ~188 MB pinned logits and a numerics fork | **PARKED** — blocked on a CPU-reference quality gate |
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
+
+**Resolved (2026-10-13, no code change).**  `moe-topk-fusion/` (TODO item 5(a)) was investigated and
+closed: the fused `topk_moe` router already fires at every prefill width on r55 — on gfx1201 (3x R9700)
+**and** gfx1151 (Strix Halo, the discovery's own device) — so the campaign's ~188 MB logits-pin unlock
+is a no-op and the ~0.5-1.2 % prefill is already in the tree.  Nothing was promoted and no release was
+cut.  The record moved to `archive/work/moe-topk-fusion/` with a `RESOLUTION.md`; TODO #5(a) is removed.
+See `WORKLOG.md` 261013.006.
 
 **Resolved (r55, 2026-10-13).**  Three campaigns left `wip/`, none of them as a new block -- the
 changes were folded into the blocks that own the code (see `WORKLOG.md` 261013.005):

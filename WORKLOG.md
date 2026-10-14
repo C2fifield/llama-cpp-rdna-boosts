@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261013.006 (docs, campaign closure) -- close `moe-topk-fusion`: the fused router already fires at prefill widths on r55 (no code change)
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; no release).
+TODO item **5(a)** ("MoE topk fusion adoption") is **dropped**, and `wip/moe-topk-fusion/` moves to
+`archive/work/moe-topk-fusion/` with a `RESOLUTION.md`.
+
+The campaign proposed pinning the MoE router logits (`ggml_set_output`) so the fused `topk_moe` router
+could fire at prefill widths, where the address-overlap guard (`ggml_cuda_check_fusion_memory_ranges`,
+`is_topk_moe`) was refusing it because the norm output aliased the just-freed `ffn_moe_logits` buffer
+(~0.5 % prefill), at the cost of ~188 MB.  Two things settle it:
+
+1. **The numerics fork is gone** (2026-09-13, item 19 / `GREEDY-PURITY.md` §31): the fused router is
+   bit-identical to the generic chain it elides.
+2. **The alias does not occur on r55.**  Instrumented r55 and read the guard outcome directly: the
+   fusion fires at every width and **zero** refusals appear, on **both** the maintainer's devices:
+   - **gfx1201 (3x R9700)**, Flash-Next GSQ-IQ3_XXS: fires at `n_tokens = 2048`; pin on/off identical;
+     pp2048 **1575.7 vs 1563.8 t/s** with `GGML_CUDA_DISABLE_TOPK_MOE_FUSION=1`.
+   - **gfx1151 (Strix Halo, the discovery's own device)**, Flash-Next IQ4_NL (`-b 2048 -ub 2048
+     -c 16384`): fires at `n_tokens = 1, 2, 4, 42, 1160, 2044, 2048`; `LLAMA_MOE_TOPK_PIN_LOGITS=1`
+     gives a byte-identical fired set; pp2048 **1030.1 vs 1018.0 t/s**.
+
+   The mechanism is unchanged (`TOPK_MOE_ROWS_PER_BLOCK = 8`); the r48-era allocation plan that produced
+   the reuse changed during r51-r55.  Nothing was promoted, and no release was cut.
+
+**Artefacts.**  `archive/work/moe-topk-fusion/{README.md,RESOLUTION.md,topk-moe-diagnostics.patch}`
+(the temporary trace + env-gated pin used for the investigation, reverted from both `~/llama.cpp`
+checkouts); `wip/CAMPAIGNS.md` and `TODO.md` updated.
+
 ## 261013.005 (r55) -- `-Wshadow` cleanup (block 00), `swizzle_bytes` fix (block 05), `q5_1` mmvq rpb retune (block 08)
 
 **Release `v12-097cf33d9-r55`** (base `097cf33d9`, canonical tip `49bea1ff7`, net tree

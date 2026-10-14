@@ -428,9 +428,6 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
   skip costs; the proposed "pin `nwarps`/`rps`/item-split" fix is **invalid** (the two arms are already
   launch-identical).  Live candidates: codegen (`has_fusion` register pressure / FMA contraction) and the
   Q8_1 cache.  Low priority — the skip is the accepted purity trade.  `archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md` §9.
-- **MoE topk fusion adoption (item 5(a)).**  ~0.5 % prefill for a ~188 MB arena cost and a numerics fork
-  (fused top1 logit 18.424 -> 18.690 vs the unfused reference), so it needs a quality gate before it can
-  be trusted.  `archive/work/wip-archive/qwen4exp/discovery/2026-09-06-strix-halo-gfx1151-launch-overhead-topk.md`.
 - **`ssm_alpha` + `ssm_beta` single-walk fusion (item 5(b)) — CLOSED 2026-10-13.**  Re-measured on
   r53: 1.43x on the pair at N=8192 (bit-identical on gfx1201), but only ~0.3-0.6 % prefill and blocked
   by the non-adjacent DFS order; closed below the adoption bar.
