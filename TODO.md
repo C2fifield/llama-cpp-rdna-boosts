@@ -65,6 +65,43 @@ Documented in the README "Recommended configuration" section.  **Working home:
 `wip/ngram-mod-host-experts/`** (hypotheses: verify width against the per-op host-expert upload, the MoE
 cache band and verify graph recapture, the staging-ring width; bisect plan in that README).
 
+### 60. Persist the MoE expert heat map across runs and pre-populate the arena — PERFORMANCE
+
+**Opened 2026-10-15; scoping + findings.**  The host-resident MoE expert cache has the machinery for a
+hot-set prior (an LFRU policy + `apply_prefill_seed_locked`'s provisional bulk admission) but no prior
+to feed it: the default-on `MOE_EXPERT_CACHE_PREFILL_SEED` tally is **dead** (the arena sizes on the
+server warmup / the first decode before the prompt's routing is tallied, and the default H2D staging
+path skips the `moe_cache_update` hook for prefill ubatches), the live counters are decayed every 32
+steps, and nothing is persisted.  **Working home: `wip/moe-heatmap-persistence/`** (the dead-seed
+evidence, the on-disk format proposal, the accumulator and loader design, and the open policy
+questions).  **Decisions (maintainer, 2026-10-15):** on-disk sidecar in the model dir, default-on when
+the slab is active, keyed per geometry, atomic (tmp+rename) and debounced ~60 s, non-fatal failures
+deactivating persistence for the session.  **The map's data source is a device-side per-expert tally
+(R2), not the LFRU counters**: the identity fast path serves a fully-resident table without calling
+`access_locked`, so a big-arena run records no heat (measured: run1 identity 1 eager op / 16 hits vs
+run2 partial 30840 / 226923).  **Sequence: R2 tally first**, then the persisted map, then placement;
+R2 also repairs the host-pool warm order, which is currently id-ordered.
+
+### 61. Hotness-aware MoE arena placement and a phase-3 idle repack — PERFORMANCE
+
+**Opened 2026-10-15; scoping + findings.**  `ggml_cuda_slab_arena_alloc` fills the arena top-down and
+the boundary moves bottom-up, so the *last-allocated* table is evicted first — allocation order
+(ascending layer) is the eviction policy and there is no hotness term.  Expert blobs also differ in size
+per table (verified: UD-Q4_K_M promotes 3 of 41 `ffn_down_exps` layers to Q6_K, +46 %), though not
+within a table, so intra-table slot compaction is a no-op.  **Working home: `wip/moe-arena-defrag/`**
+(placement phase 1, repack/relocate phases 3-4, and the live-arena-address hazards).  **Decision
+(maintainer, 2026-10-15): phase 1 (hotness-ordered placement) only for now**; the relocate/repack
+phases are parked (multi-session, purity/state hazards).
+
+### 62. Absorb the controlled raw-`cudaMalloc` transients into the movable-boundary slab — MEMORY
+
+**Opened 2026-10-15; scoping + findings.**  The slab's 4 GiB `GGML_CUDA_SLAB_HEADROOM_MIB` is
+permanently outside the slab (at the default reserve `mapped == size`, so `ggml_cuda_slab_extend` is
+dead), and the headroom exists because FA staging, the Q8_1 arena, the H2D-ring fallback, MMB shadows,
+the AR scratch and the per-table remap buffers all raw-`cudaMalloc`.  Absorbing the controlled ones
+would let the headroom be lowered safely, enlarging the arena by the same amount per device.  **Working
+home: `wip/slab-transient-absorption/`** (the external-floor measurement and the per-call-site plan).
+
 ### 58. `-sm tensor` + DFlash aborts in the Meta split-state build — CORRECTNESS
 
 **RESOLVED (2026-10-13), folded into `v12-097cf33d9-r54` (block 11).**  The aborting op was the DFlash2
