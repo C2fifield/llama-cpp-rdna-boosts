@@ -50,7 +50,22 @@ its own rate.
 verified by the r57 container build itself (a clean `[7.14.1/full]` log with 0 `-Wshadow` from the
 `llama` target).
 
-**Publish.**  Pending: fork `rdna-boosts` refresh + local ROCm 7.14.1 / 10.1 container build/push.
+**Publish (2026-10-14).**  Delivery `main` pushed (`c523184`, force-with-lease once to land the
+whitespace-clean re-cut; `validate.yml` green).  Fork `rdna-boosts` refreshed from a clean `097cf33d9`
+checkout via `apply-all.sh` (strict, tree `8a56fb31267ecc523c423845662d76571f934a51`) and force-pushed:
+`3cf0bd8ae` -> **`37549516d`**.  Tag `v12-097cf33d9-r57` pushed; the Release workflow attached the four
+assets (run 38548369525, 15 s).
+
+Container images built and pushed locally (`scripts/build-containers.sh --rocm "7.14.1 10.1" --push
+--prune`): **15** GHCR tags, whole run **~7 min** for both lines (r56 was ~1 h).  With `ccache -z` the
+per-build rates are visible: **7.14.1 798/844 hits (94.55 %, only the 46 `llama`-target TUs the
+`-Wshadow` flag change invalidated)** and **10.1 844/844 (100 %)**; the whole r57 log has **0**
+`-Wshadow` / `-Wmissing-field-initializers` / `-Wtype-limits` warnings.  The contrast with r56 is the
+point: r56 changed `ggml/src/ggml-cuda/vendors/hip.h`, which every HIP TU includes, so all 358 `.cu`
+objects (x5 arches) legitimately recompiled on both lines.  **ccache was never misconfigured** — the old
+`ccache -s` was a *lifetime* counter (a ~50 % average over many releases) that read like a per-build
+miss; a no-change container rebuild measures 843/844 hits.  A release that avoids a ubiquitous HIP
+header is ~1 min/line; one that touches `hip.h`/`common.cuh` is ~30 min/line.
 
 ## 261013.007 (r56) -- four contributor WIP PRs (#146-#149) folded into blocks 08/09/10/11
 
