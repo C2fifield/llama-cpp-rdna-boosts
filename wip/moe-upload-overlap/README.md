@@ -1,8 +1,12 @@
 # `moe-upload-overlap` — make the host-expert H2D upload actually overlap compute
 
-**Status: OPEN (seeded 2026-10-14), first measurements + instrumentation, cause not yet pinned.**
-Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead
-(see `AGENTS.md`).
+**Status: OPEN (seeded 2026-10-14; updated 2026-10-14 after instrumentation).**  The seed's premise is
+refuted — the staged hand-off **does** engage on r62 (`stage_input took=1` for every host table).  See
+**[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md)**: staging is **+41 %** over `GGML_SCHED_STAGE=0`,
+but the transfer stays exposed because there is **no lookahead** and the host is drained per split
+(`inp_pos` / `out_ids` graph-input `event_synchronize`); placement is a no-op.  Next: prototype a
+scheduler prefetch — **report to the maintainer before changing delivery code** (per `AGENTS.md`).
+Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead.
 
 ## 0. Why this exists (and what it replaces)
 
@@ -44,6 +48,8 @@ layer**.  `-sm tensor`, `-p 4096 -b 4096 -ub 4096 -r 3 -fa 1 -t 8` (one ubatch �
 
 ## 2. Instrumentation evidence (r62 tree; prints added to `ggml-backend.cpp` / `ggml-backend-meta.cpp`)
 
+**The seed's claimed evidence (refuted below — kept for the record):**
+
 1. In `ggml_backend_sched_copy_input`, every host expert tensor prints
    `usage=1 ishost=1 ishw=1` — `blk.0.ffn_{gate,up,down}_exps.weight` … — so
    `sched_stage_is_host_weight()` **is** true for them.
@@ -52,37 +58,42 @@ layer**.  `-sm tensor`, `-p 4096 -b 4096 -ub 4096 -r 3 -fa 1 -t 8` (one ubatch �
    `stage_input` (the `-sm tensor` staging entry point) is **never called**.
 3. `meta_graph_compute` is called once per split (first split `n_nodes=3532`, then 99/99/73/28…).
 
-So the staged hand-off that is *supposed* to overlap is not engaging, and the tables leave through the
-synchronous copy path.  **Unresolved:** how (1) and (2) can both be true.  Candidates, in order:
+So the staged hand-off **does** engage, and the correlation is settled (full write-up in
+`FINDINGS-2026-10-14.md`):
 
-* **Gate misfire.**  `sched_stage_batch_tokens(split)` reads the token count from
-  `split->graph.nodes[0]` (a `MUL_MAT_ID`'s `src[2]`, else `src[1]->ne[1]`).  If the split that carries
-  the expert tables starts on a node whose `ne[1]` is small/0, the width gate skips the split *before*
-  the host-input count, so the expert split never reports `n_host_inputs > 0`.
-* **Split identity.**  The expert inputs seen in `copy_input` may belong to a split whose
-  `sched_stage_issue` ran in an earlier iteration/order (allocation-order dependent).
-* **Ring capacity.**  `n_host_inputs > GGML_SCHED_STAGE_SLOTS` (default 8) skips the split.  On this
-  model gate/up/down are three separate tables per layer, so any split merging ≥3 layers' experts
-  (≥9 inputs) would be skipped — but we see zero host inputs even for `-ncmoe 1` (3 inputs), so this is
-  not the whole story.
+* `sched_stage_issue` sees all 12 host tables (`nhw=1`, `n_host_inputs=1`, `bt=4096 >= mn=1542`) and
+  returns only at `reason=no_stage_buffer` — **the meta backend has no `stage_buffer` by design** and
+  stages per device through `stage_input`.  `stage_split_ok` was set before that return, so the
+  hand-off still runs.  All three seed candidates are refuted: the gate reads `bt=4096` correctly, the
+  split identity is right, and slots 8 vs 16 changes nothing.
+* `copy_input` then takes `branch=stage_input took=1` for every table; `META_STAGE_INPUT … ret=1
+  chunks=2`; `META_GRAPH_COMPUTE … pending=1`.
+* The earlier "`n_host_inputs == 0` / `stage_input` never called" reading came from the bookkeeping
+  running *after* the disabled/width-gate returns (and/or a stale binary), not from the code path.
 
-**Next step is a correlation, not a theory:** print the split index + the computed gate/tokens in both
-`sched_stage_issue` and `copy_input`, and a counter of which copy branch each expert input takes
-(`stage_input` / ring / `copy_experts` / generic `tensor_copy`).  The instrumentation recipe is in §4.
+The transfer is nonetheless exposed: the uploads are async pinned 2-D H2D on the per-device copy stream
+(host issue 1–16 µs), but they are issued only at their own split and the host is drained by the
+graph-input host synchronizes the fragmented host-layer splits introduce.  `T(partial) = T(full) +
+bytes/rate`, forcing the copies onto the main stream costs only ~5 %, and FRONT/MIDDLE/BACK is a no-op —
+so **the missing piece is a lookahead, not the ring, the gate or the slots** (see `FINDINGS` §4–§5).
 
-## 3. Fix directions (once the path is known)
+## 3. Fix directions (the seed's list is moot; the real lever is a lookahead)
 
-* **If the tables go through `copy_experts` → `ggml_backend_meta_set_tensor_async` → the compact
-  splice-gather:** r62 moved that H2D to the **main stream** (it was a `copy_stream()` race — see
-  `archive/work/meta-split-copy-splice-race/`).  That is correct, but it serialises the transfer by
-  construction.  The fix is **not** to move it back; it is to route these tables through the
-  event-ordered ring / meta `stage_input` path so the overlap is safe (upload N on the copy stream,
-  `done` event, D2D into the split input on the main stream, then compute N).
-* **If the gate is the blocker:** make `sched_stage_batch_tokens` find the real `MUL_MAT_ID` of the
-  split (it already scans for the consumer elsewhere) rather than trusting `nodes[0]`.
-* **If ring capacity is the blocker:** the number of host inputs per split is a model property
-  (3 tables/layer here); either raise `GGML_SCHED_STAGE_SLOTS` for this shape or stage per input.
-* Whatever the fix, keep the r62 corruption fixed (below-gate `-sm tensor -ncmoe` must stay coherent).
+The seed's directions all assume the hand-off is not engaging, which is false (see §2 and
+`FINDINGS-2026-10-14.md`).  The ring, the width gate and the slot count are **not** the blocker; the
+uploads already ride the event-ordered meta `stage_input` / per-device copy-stream path, and the r62
+main-stream fix concerns the below-gate splice, not this path.  The real blocker is that an upload is
+issued at the top of its own split and there is **no lookahead**, while the host is repeatedly drained by
+graph-input host synchronizes (`inp_pos` 98 ms, `out_ids` 42 ms).  What would make the overlap real:
+
+* **A real lookahead.**  Issue a host layer's tables several splits ahead (or all at the top of the
+  pass), so the per-device copy stream has in-flight device compute to run behind.  New block-09 code.
+* **Remove/avoid the graph-input host drains** so the host can run ahead to issue the lookahead.
+* Placement alone cannot help (measured identical) and neither can ring depth (measured identical).
+
+Whatever the fix, keep the r62 corruption fixed (below-gate `-sm tensor -ncmoe` must stay coherent) and
+**report to the maintainer before changing delivery code**.  Owning blocks: 09 (host-resident MoE /
+scheduler / Meta), 10 (`ggml-cuda.cu`).
 
 ## 4. Repro / instrumentation recipe
 

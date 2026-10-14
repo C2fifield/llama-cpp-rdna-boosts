@@ -1,0 +1,330 @@
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 65248 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: yes, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: yes, Wave Size: 32, VRAM: 32624 MiB
+SS split=0 backend=CPU n_inputs=0 nhw=0 stage_enabled=1 bt=1 mn=0 nnodes=2 n0_op=GET_ROWS n0_ne1=4096 n0_src1_ne1=1
+SS return split=0 reason=disabled_or_no_inputs
+SS split=1 backend=Meta(ROCm0,ROCm1) n_inputs=5 nhw=0 stage_enabled=1 bt=0 mn=0 nnodes=76 n0_op=DUP n0_ne1=4096 n0_src1_ne1=-1
+SS return split=1 reason=n_host_inputs=0 slots=8
+CI graph_input sync split=1 input=inp_mixed_embd sync_us=5 copy_us=30474
+CI graph_input sync split=1 input=inp_mixed_slots sync_us=2 copy_us=7243
+CI graph_input sync split=1 input=rs_s_copy sync_us=2 copy_us=88
+META_GRAPH_COMPUTE t=246380587639 nnodes=76 uid=81 pending=0
+META_GC phase=pending uid=81 nnodes=76 pending_us=20
+META_GC phase=done uid=81 nnodes=76 total_us=99284
+SS split=2 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=2 name=blk.0.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=2 reason=no_stage_buffer n_host_inputs=1
+CI split=2 input=blk.0.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=14
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=8
+META_STAGE_INPUT t=246381158123 name=Meta(ROCm0,ROCm1)#blk.0.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=0
+CI split=2 input=blk.0.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381158126 nnodes=1 uid=82 pending=1
+META_GC phase=pending uid=82 nnodes=1 pending_us=23
+META_GC phase=done uid=82 nnodes=1 total_us=2751
+SS split=3 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=3 name=blk.0.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=3 reason=no_stage_buffer n_host_inputs=1
+CI split=3 input=blk.0.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=6
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381161467 name=Meta(ROCm0,ROCm1)#blk.0.ffn_up_exps.weight#0 ret=1 chunks=2 slot=1
+CI split=3 input=blk.0.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381161469 nnodes=2 uid=83 pending=1
+META_GC phase=pending uid=83 nnodes=2 pending_us=11
+META_GC phase=done uid=83 nnodes=2 total_us=42
+SS split=4 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=100 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=4 name=blk.0.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=4 reason=no_stage_buffer n_host_inputs=1
+CI split=4 input=blk.0.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381161917 name=Meta(ROCm0,ROCm1)#blk.0.ffn_down_exps.weight#0 ret=1 chunks=2 slot=2
+CI split=4 input=blk.0.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381161918 nnodes=100 uid=84 pending=1
+META_GC phase=pending uid=84 nnodes=100 pending_us=20
+META_GC phase=done uid=84 nnodes=100 total_us=30219
+SS split=5 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=5 name=blk.1.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=5 reason=no_stage_buffer n_host_inputs=1
+CI split=5 input=blk.1.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=5
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381192929 name=Meta(ROCm0,ROCm1)#blk.1.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=3
+CI split=5 input=blk.1.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381192930 nnodes=1 uid=85 pending=1
+META_GC phase=pending uid=85 nnodes=1 pending_us=10
+META_GC phase=done uid=85 nnodes=1 total_us=28
+SS split=6 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=6 name=blk.1.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=6 reason=no_stage_buffer n_host_inputs=1
+CI split=6 input=blk.1.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381193450 name=Meta(ROCm0,ROCm1)#blk.1.ffn_up_exps.weight#0 ret=1 chunks=2 slot=4
+CI split=6 input=blk.1.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381193451 nnodes=2 uid=86 pending=1
+META_GC phase=pending uid=86 nnodes=2 pending_us=11
+META_GC phase=done uid=86 nnodes=2 total_us=30
+SS split=7 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=100 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=7 name=blk.1.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=7 reason=no_stage_buffer n_host_inputs=1
+CI split=7 input=blk.1.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381194054 name=Meta(ROCm0,ROCm1)#blk.1.ffn_down_exps.weight#0 ret=1 chunks=2 slot=5
+CI split=7 input=blk.1.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381194055 nnodes=100 uid=87 pending=1
+META_GC phase=pending uid=87 nnodes=100 pending_us=18
+META_GC phase=done uid=87 nnodes=100 total_us=275
+SS split=8 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=8 name=blk.2.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=8 reason=no_stage_buffer n_host_inputs=1
+CI split=8 input=blk.2.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381194901 name=Meta(ROCm0,ROCm1)#blk.2.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=6
+CI split=8 input=blk.2.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381194902 nnodes=1 uid=88 pending=1
+META_GC phase=pending uid=88 nnodes=1 pending_us=6
+META_GC phase=done uid=88 nnodes=1 total_us=22
+SS split=9 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=9 name=blk.2.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=9 reason=no_stage_buffer n_host_inputs=1
+CI split=9 input=blk.2.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=7
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381197030 name=Meta(ROCm0,ROCm1)#blk.2.ffn_up_exps.weight#0 ret=1 chunks=2 slot=7
+CI split=9 input=blk.2.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381197032 nnodes=2 uid=89 pending=1
+META_GC phase=pending uid=89 nnodes=2 pending_us=12
+META_GC phase=done uid=89 nnodes=2 total_us=46
+SS split=10 backend=Meta(ROCm0,ROCm1) n_inputs=7 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=72 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=10 name=blk.2.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=10 reason=no_stage_buffer n_host_inputs=1
+CI graph_input sync split=10 input=inp_pos sync_us=59749 copy_us=63
+CI graph_input sync split=10 input=attn_inp_k_idxs sync_us=1 copy_us=35
+CI graph_input sync split=10 input=attn_inp_v_idxs sync_us=0 copy_us=32
+CI graph_input sync split=10 input=attn_inp_kq_cell_pos sync_us=0 copy_us=54
+CI graph_input sync split=10 input=attn_inp_kq_tok_lo sync_us=0 copy_us=50
+CI graph_input sync split=10 input=attn_inp_kq_tok_hi sync_us=0 copy_us=50
+CI split=10 input=blk.2.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381257144 name=Meta(ROCm0,ROCm1)#blk.2.ffn_down_exps.weight#0 ret=1 chunks=2 slot=0
+CI split=10 input=blk.2.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381257145 nnodes=72 uid=90 pending=1
+META_GC phase=pending uid=90 nnodes=72 pending_us=14
+META_GC phase=done uid=90 nnodes=72 total_us=11046
+SS split=11 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=11 name=blk.3.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=11 reason=no_stage_buffer n_host_inputs=1
+CI split=11 input=blk.3.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=4
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381268229 name=Meta(ROCm0,ROCm1)#blk.3.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=1
+CI split=11 input=blk.3.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381268230 nnodes=1 uid=91 pending=1
+META_GC phase=pending uid=91 nnodes=1 pending_us=9
+META_GC phase=done uid=91 nnodes=1 total_us=24
+SS split=12 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=12 name=blk.3.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=12 reason=no_stage_buffer n_host_inputs=1
+CI split=12 input=blk.3.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381268272 name=Meta(ROCm0,ROCm1)#blk.3.ffn_up_exps.weight#0 ret=1 chunks=2 slot=2
+CI split=12 input=blk.3.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381268273 nnodes=2 uid=92 pending=1
+META_GC phase=pending uid=92 nnodes=2 pending_us=4
+META_GC phase=done uid=92 nnodes=2 total_us=18
+SS split=13 backend=Meta(ROCm0,ROCm1) n_inputs=2 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=3487 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=13 name=blk.3.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=13 reason=no_stage_buffer n_host_inputs=1
+CI graph_input sync split=13 input=out_ids sync_us=31592 copy_us=66
+CI split=13 input=blk.3.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=3
+META_STAGE_INPUT t=246381299976 name=Meta(ROCm0,ROCm1)#blk.3.ffn_down_exps.weight#0 ret=1 chunks=2 slot=3
+CI split=13 input=blk.3.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381299977 nnodes=3487 uid=93 pending=1
+META_GC phase=pending uid=93 nnodes=3487 pending_us=296
+META_GC phase=done uid=93 nnodes=3487 total_us=194209
+SS split=0 backend=CPU n_inputs=0 nhw=0 stage_enabled=1 bt=1 mn=0 nnodes=2 n0_op=GET_ROWS n0_ne1=4096 n0_src1_ne1=1
+SS return split=0 reason=disabled_or_no_inputs
+SS split=1 backend=Meta(ROCm0,ROCm1) n_inputs=5 nhw=0 stage_enabled=1 bt=0 mn=0 nnodes=76 n0_op=DUP n0_ne1=4096 n0_src1_ne1=-1
+SS return split=1 reason=n_host_inputs=0 slots=8
+CI graph_input sync split=1 input=inp_mixed_embd sync_us=4 copy_us=7243
+CI graph_input sync split=1 input=inp_mixed_slots sync_us=1 copy_us=56
+CI graph_input sync split=1 input=rs_s_copy sync_us=0 copy_us=78
+META_GRAPH_COMPUTE t=246381783931 nnodes=76 uid=282 pending=0
+META_GC phase=pending uid=282 nnodes=76 pending_us=394
+META_GC phase=done uid=282 nnodes=76 total_us=656
+SS split=2 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=2 name=blk.0.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=2 reason=no_stage_buffer n_host_inputs=1
+CI split=2 input=blk.0.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=11
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=3
+META_STAGE_INPUT t=246381784619 name=Meta(ROCm0,ROCm1)#blk.0.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=4
+CI split=2 input=blk.0.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784621 nnodes=1 uid=283 pending=1
+META_GC phase=pending uid=283 nnodes=1 pending_us=13
+META_GC phase=done uid=283 nnodes=1 total_us=40
+SS split=3 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=3 name=blk.0.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=3 reason=no_stage_buffer n_host_inputs=1
+CI split=3 input=blk.0.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=3
+META_STAGE_INPUT t=246381784673 name=Meta(ROCm0,ROCm1)#blk.0.ffn_up_exps.weight#0 ret=1 chunks=2 slot=5
+CI split=3 input=blk.0.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784674 nnodes=2 uid=284 pending=1
+META_GC phase=pending uid=284 nnodes=2 pending_us=5
+META_GC phase=done uid=284 nnodes=2 total_us=20
+SS split=4 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=100 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=4 name=blk.0.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=4 reason=no_stage_buffer n_host_inputs=1
+CI split=4 input=blk.0.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.0.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381784714 name=Meta(ROCm0,ROCm1)#blk.0.ffn_down_exps.weight#0 ret=1 chunks=2 slot=6
+CI split=4 input=blk.0.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784715 nnodes=100 uid=285 pending=1
+META_GC phase=pending uid=285 nnodes=100 pending_us=10
+META_GC phase=done uid=285 nnodes=100 total_us=201
+SS split=5 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=5 name=blk.1.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=5 reason=no_stage_buffer n_host_inputs=1
+CI split=5 input=blk.1.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381784929 name=Meta(ROCm0,ROCm1)#blk.1.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=7
+CI split=5 input=blk.1.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784929 nnodes=1 uid=286 pending=1
+META_GC phase=pending uid=286 nnodes=1 pending_us=6
+META_GC phase=done uid=286 nnodes=1 total_us=20
+SS split=6 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=6 name=blk.1.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=6 reason=no_stage_buffer n_host_inputs=1
+CI split=6 input=blk.1.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381784961 name=Meta(ROCm0,ROCm1)#blk.1.ffn_up_exps.weight#0 ret=1 chunks=2 slot=0
+CI split=6 input=blk.1.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784961 nnodes=2 uid=287 pending=1
+META_GC phase=pending uid=287 nnodes=2 pending_us=5
+META_GC phase=done uid=287 nnodes=2 total_us=18
+SS split=7 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=100 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=7 name=blk.1.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=7 reason=no_stage_buffer n_host_inputs=1
+CI split=7 input=blk.1.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.1.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381784992 name=Meta(ROCm0,ROCm1)#blk.1.ffn_down_exps.weight#0 ret=1 chunks=2 slot=1
+CI split=7 input=blk.1.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381784992 nnodes=100 uid=288 pending=1
+META_GC phase=pending uid=288 nnodes=100 pending_us=10
+META_GC phase=done uid=288 nnodes=100 total_us=186
+SS split=8 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=8 name=blk.2.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=8 reason=no_stage_buffer n_host_inputs=1
+CI split=8 input=blk.2.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381785192 name=Meta(ROCm0,ROCm1)#blk.2.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=2
+CI split=8 input=blk.2.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381785195 nnodes=1 uid=289 pending=1
+META_GC phase=pending uid=289 nnodes=1 pending_us=14
+META_GC phase=done uid=289 nnodes=1 total_us=29
+SS split=9 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=9 name=blk.2.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=9 reason=no_stage_buffer n_host_inputs=1
+CI split=9 input=blk.2.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381785235 name=Meta(ROCm0,ROCm1)#blk.2.ffn_up_exps.weight#0 ret=1 chunks=2 slot=3
+CI split=9 input=blk.2.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381785235 nnodes=2 uid=290 pending=1
+META_GC phase=pending uid=290 nnodes=2 pending_us=3
+META_GC phase=done uid=290 nnodes=2 total_us=16
+SS split=10 backend=Meta(ROCm0,ROCm1) n_inputs=7 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=72 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=10 name=blk.2.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=10 reason=no_stage_buffer n_host_inputs=1
+CI graph_input sync split=10 input=inp_pos sync_us=97757 copy_us=46
+CI graph_input sync split=10 input=attn_inp_k_idxs sync_us=0 copy_us=34
+CI graph_input sync split=10 input=attn_inp_v_idxs sync_us=1 copy_us=32
+CI graph_input sync split=10 input=attn_inp_kq_cell_pos sync_us=0 copy_us=92
+CI graph_input sync split=10 input=attn_inp_kq_tok_lo sync_us=0 copy_us=49
+CI graph_input sync split=10 input=attn_inp_kq_tok_hi sync_us=0 copy_us=48
+CI split=10 input=blk.2.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.2.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=3
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381883326 name=Meta(ROCm0,ROCm1)#blk.2.ffn_down_exps.weight#0 ret=1 chunks=2 slot=4
+CI split=10 input=blk.2.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381883327 nnodes=72 uid=291 pending=1
+META_GC phase=pending uid=291 nnodes=72 pending_us=14
+META_GC phase=done uid=291 nnodes=72 total_us=187
+SS split=11 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=1 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=11 name=blk.3.ffn_gate_exps.weight bytes=285212672 gatherable=0
+SS return split=11 reason=no_stage_buffer n_host_inputs=1
+CI split=11 input=blk.3.ffn_gate_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_gate_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381883525 name=Meta(ROCm0,ROCm1)#blk.3.ffn_gate_exps.weight#0 ret=1 chunks=2 slot=5
+CI split=11 input=blk.3.ffn_gate_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381883526 nnodes=1 uid=292 pending=1
+META_GC phase=pending uid=292 nnodes=1 pending_us=4
+META_GC phase=done uid=292 nnodes=1 total_us=16
+SS split=12 backend=Meta(ROCm0,ROCm1) n_inputs=1 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=2 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=1
+SS hostinput split=12 name=blk.3.ffn_up_exps.weight bytes=285212672 gatherable=0
+SS return split=12 reason=no_stage_buffer n_host_inputs=1
+CI split=12 input=blk.3.ffn_up_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_up_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=256 width=557056 stride=1114112 total=142606336 issue_us=1
+META_STAGE_INPUT t=246381883553 name=Meta(ROCm0,ROCm1)#blk.3.ffn_up_exps.weight#0 ret=1 chunks=2 slot=6
+CI split=12 input=blk.3.ffn_up_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381883553 nnodes=2 uid=293 pending=1
+META_GC phase=pending uid=293 nnodes=2 pending_us=3
+META_GC phase=done uid=293 nnodes=2 total_us=16
+SS split=13 backend=Meta(ROCm0,ROCm1) n_inputs=2 nhw=1 stage_enabled=1 bt=4096 mn=1542 nnodes=3487 n0_op=MUL_MAT_ID n0_ne1=8 n0_src1_ne1=8
+SS hostinput split=13 name=blk.3.ffn_down_exps.weight bytes=285212672 gatherable=0
+SS return split=13 reason=no_stage_buffer n_host_inputs=1
+CI graph_input sync split=13 input=out_ids sync_us=42339 copy_us=53
+CI split=13 input=blk.3.ffn_down_exps.weight usage=1 ishost=1 ihw=1 stage_split_ok=1 stage_input=1
+META_STAGE_INPUT name=Meta(ROCm0,ROCm1)#blk.3.ffn_down_exps.weight#0
+CUDA_GATHER dev=0 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+CUDA_GATHER dev=1 path=pinned_2d n_copies=524288 width=272 stride=544 total=142606336 issue_us=2
+META_STAGE_INPUT t=246381925975 name=Meta(ROCm0,ROCm1)#blk.3.ffn_down_exps.weight#0 ret=1 chunks=2 slot=7
+CI split=13 input=blk.3.ffn_down_exps.weight branch=stage_input took=1
+META_GRAPH_COMPUTE t=246381925976 nnodes=3487 uid=294 pending=1
+META_GC phase=pending uid=294 nnodes=3487 pending_us=105
+META_GC phase=done uid=294 nnodes=3487 total_us=5973
+| model                          |       size |     params | backend    | ngl |  n_cpu_moe | threads | n_batch | n_ubatch |     sm |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ---------: | ------: | ------: | -------: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B Q8_0         |  35.19 GiB |    35.51 B | ROCm       |  99 |          4 |       8 |    4096 |     4096 | tensor |   1 |          pp4096 |       6559.01 ± 0.00 |
+
+build: e909c529a (11583)

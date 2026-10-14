@@ -1,0 +1,20 @@
+# mobe-upload-overlap staging / copy / slot A/B — 2026-10-14
+# gfx1201 2x R9700, ROCm 7.14.1, ~/llama.cpp r62 e909c529a
+# model Qwen3.6-35B-A3B-Q8_0, -ngl 99 -sm tensor -ncmoe 4 -p 4096 -n 0 -b 4096 -ub 4096 -r 3 -t 8 -fa 1
+# MOE_EXPERT_HEATMAP=0 MOE_EXPERT_CACHE_MIB=0
+# interleaved (rep1 then rep2), pp4096 t/s
+
+default (staging, split copy, copy stream)   rep1 6592.53 +/- 23.39   rep2 6578.62 +/- 13.81
+GGML_SCHED_STAGE=0                           rep1 4565.31 +/- 604.25  rep2 4669.45 +/- 392.38
+GGML_SCHED_STAGE_SLOTS=16                    rep1 6589.74 +/- 18.96   rep2 6577.98 +/- 10.61
+GGML_META_SPLIT_COPY=0 (mirrored)            rep1 5676.72 +/- 16.51   rep2 5678.75 +/- 10.01
+
+default copystream                           rep1 6580.58 +/- 27.42   rep2 6578.26 +/- 24.89
+GGML_STAGE_NOCOPYSTREAM=1                    rep1 6272.74 +/- 16.80   rep2 6268.29 +/- 21.46
+
+# readings:
+#   staging vs GGML_SCHED_STAGE=0     : +41..43 %  (4620 -> 6585)
+#   ring slots 16 vs 8                : no change
+#   split copy vs mirrored            : +16 %
+#   copy stream vs forced main stream : +5 % only  -> almost no overlap
+#   T(-ncmoe 4) - T(-ncmoe 0) = 0.622 - 0.511 = 0.111 s = 12 x 136 MiB/device at ~15.5 GB/s

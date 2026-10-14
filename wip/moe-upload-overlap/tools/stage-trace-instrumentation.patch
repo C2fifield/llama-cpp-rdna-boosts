@@ -1,0 +1,442 @@
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 6ad3c8668..264975b2e 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -6,6 +6,8 @@
+ #include "ggml-cpp.h"
+ #include "ggml-moe-weighted-reduction.h"
+ 
++#include <stdio.h>
++
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
+@@ -27,6 +29,9 @@
+ // call site: the static inside the immediately-invoked lambda is unique to each macro expansion.
+ #define GGML_ENV_STR(name) ([]() -> const char * { static const char * v = getenv(name); return v; }())
+ 
++// ---- TEMPORARY instrumentation for wip/moe-upload-overlap (revert before any commit) ----
++#define META_TRACE(...) do { if (getenv("GGML_STAGE_TRACE")) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
++
+ struct ggml_backend_meta_device;
+ struct ggml_backend_meta_buffer_type;
+ struct ggml_backend_meta_buffer;
+@@ -2522,16 +2527,20 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+     const size_t n_backends = ggml_backend_meta_n_backends(backend);
+ 
++    META_TRACE("META_STAGE_INPUT name=%s\n", input_cpy->name);
+     if (!ggml_backend_buffer_is_meta(input_cpy->buffer) || !ggml_is_contiguous(input_cpy)) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=not_meta_or_contig\n", input_cpy->name);
+         return false;
+     }
+ 
+     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(input_cpy, /*assume_sync =*/ false);
+     if (split_state.n_segments != 1 || split_state.nr[0] != 1) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=nseg=%d nr0=%d\n", input_cpy->name, split_state.n_segments, split_state.nr[0]);
+         return false;
+     }
+     const bool mirrored = split_state.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED;
+     if (!mirrored && (split_state.axis < 0 || split_state.axis >= GGML_MAX_DIMS)) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=axis=%d\n", input_cpy->name, split_state.axis);
+         return false;
+     }
+ 
+@@ -2543,13 +2552,16 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+     const size_t size = ggml_nbytes(input_cpy);
+     const size_t chunk_size_full = mirrored ? size : input_cpy->nb[split_state.axis + 1];
+     if (chunk_size_full == 0) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=chunk_size_full=0\n", input_cpy->name);
+         return false;
+     }
+     const bool gather = !mirrored && chunk_size_full != size;
+     if (!mirrored && !gather && chunk_size_full != size) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=axis1_whole\n", input_cpy->name);
+         return false;
+     }
+     if (gather && (size % chunk_size_full) != 0) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=size%%chunk!=0 size=%zu chunk=%zu\n", input_cpy->name, size, chunk_size_full);
+         return false;
+     }
+     const size_t n_chunks = gather ? size / chunk_size_full : 0;
+@@ -2573,6 +2585,10 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+             simple_backend->iface.stage_upload == nullptr ||
+             simple_backend->iface.stage_wait == nullptr ||
+             (gather && simple_backend->iface.stage_gather == nullptr)) {
++            META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=dev%d_cap simple=%p sb=%p su=%p sw=%p sg=%p gather=%d\n",
++                input_cpy->name, (int) j, (void *) simple_tensor,
++                (void *) simple_backend->iface.stage_buffer, (void *) simple_backend->iface.stage_upload,
++                (void *) simple_backend->iface.stage_wait, (void *) simple_backend->iface.stage_gather, (int) gather);
+             return false;
+         }
+         const size_t chunk_size_j = mirrored ? ggml_nbytes(simple_tensor) : simple_tensor->nb[split_state.axis + 1];
+@@ -2582,6 +2598,7 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+         const size_t copy_bytes = gather ? n_chunks * chunk_size_j : chunk_size_j;
+         void * slot_ptr = simple_backend->iface.stage_buffer(simple_backend, slot, copy_bytes);
+         if (slot_ptr == nullptr) {
++            META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=dev%d_slot_alloc copy_bytes=%zu\n", input_cpy->name, (int) j, copy_bytes);
+             return false;
+         }
+         ggml_backend_meta_context::stage_chunk chunk;
+@@ -2598,11 +2615,13 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+         }
+     }
+     if (entry.chunks.empty() || (!mirrored && offset_j != chunk_size_full)) {
++        META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=offset_j=%zu chunk_size_full=%zu nchunks=%zu\n", input_cpy->name, offset_j, chunk_size_full, entry.chunks.size());
+         return false;
+     }
+     for (auto & chunk : entry.chunks) {
+         if (ggml_backend_meta_stage_ev(backend_ctx, backend_ctx->stage_done_ev, chunk.device, slot) == nullptr ||
+             ggml_backend_meta_stage_ev(backend_ctx, backend_ctx->stage_free_ev, chunk.device, slot) == nullptr) {
++            META_TRACE("META_STAGE_INPUT name=%s ret=0 reason=event_new_fail dev=%d\n", input_cpy->name, (int) chunk.device);
+             return false;
+         }
+     }
+@@ -2637,7 +2656,9 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+                                               chunk.size, backend_ctx->stage_done_ev[chunk.device][slot]);
+         }
+     }
++    const size_t dbg_nchunks = entry.chunks.size();
+     backend_ctx->stage_pending.push_back(std::move(entry));
++    META_TRACE("META_STAGE_INPUT t=%lld name=%s ret=1 chunks=%zu slot=%d\n", (long long) ggml_time_us(), input_cpy->name, dbg_nchunks, slot);
+     return true;
+ }
+ 
+@@ -2747,6 +2768,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+     const size_t n_backends = ggml_backend_meta_n_backends(backend);
+     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+ 
++    META_TRACE("META_GRAPH_COMPUTE t=%lld nnodes=%d uid=%d pending=%zu\n", (long long) ggml_time_us(), cgraph->n_nodes, cgraph->uid, backend_ctx->stage_pending.size());
++    const int64_t dbg_t0 = ggml_time_us();
++
+     // If the previous cgraph had a defined UID it can be used to skip rebuilding the subgraphs per simple backend.
+     const bool needs_rebuild = (cgraph->uid == 0) || (cgraph->uid != backend_ctx->uid);
+ 
+@@ -2846,7 +2870,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+                 }
+             }
+         }
++        const int64_t dbg_t_pending = ggml_time_us();
+         const ggml_backend_meta_stage_guard stage_guard(backend_ctx);
++        META_TRACE("META_GC phase=pending uid=%d nnodes=%d pending_us=%lld\n", cgraph->uid, cgraph->n_nodes, (long long)(dbg_t_pending - dbg_t0));
+ 
+         {
+             // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
+@@ -3320,6 +3346,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+             }
+         }
+     }
++    META_TRACE("META_GC phase=done uid=%d nnodes=%d total_us=%lld\n", cgraph->uid, cgraph->n_nodes, (long long)(ggml_time_us() - dbg_t0));
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 322e448ce..7e55ffabb 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -2429,15 +2429,41 @@ static bool sched_input_gatherable(ggml_backend_sched_t sched, struct ggml_backe
+ // whole-tensor staging moves the device's entire shard every ubatch.  The ring path already prefers the
+ // gather for a routed expert table (`sched_input_gatherable` in `sched_stage_issue`); the meta
+ // backend's `stage_input` path defers routed expert tables to the gather there too.
++// ---- TEMPORARY instrumentation for wip/moe-upload-overlap (revert before any commit) ----
++static bool sched_stage_trace_on(void) {
++    static const bool e = getenv("GGML_STAGE_TRACE") != nullptr;
++    return e;
++}
++#define SCHED_TRACE(...) do { if (sched_stage_trace_on()) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
++
+ static void sched_stage_issue(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split) {
++    const int     dbg_split_id = (int)(split - sched->splits);
++    const int64_t dbg_bt = sched_stage_batch_tokens(split);
++    const int64_t dbg_mn = sched_stage_min_tokens_for(sched, split);
++    const struct ggml_tensor * dbg_n0 = split->graph.n_nodes > 0 ? split->graph.nodes[0] : NULL;
++    int dbg_nhw = 0;
++    for (int i = 0; i < split->n_inputs; i++) {
++        if (sched_stage_is_host_weight(split->inputs[i])) dbg_nhw++;
++    }
++    if (sched_stage_trace_on()) {
++        fprintf(stderr, "SS split=%d backend=%s n_inputs=%d nhw=%d stage_enabled=%d bt=%lld mn=%lld nnodes=%d n0_op=%s n0_ne1=%lld n0_src1_ne1=%lld\n",
++            dbg_split_id, ggml_backend_name(sched->backends[split->backend_id]),
++            split->n_inputs, dbg_nhw, (int) sched->stage_enabled,
++            (long long) dbg_bt, (long long) dbg_mn, split->graph.n_nodes,
++            dbg_n0 ? ggml_op_name(dbg_n0->op) : "-",
++            dbg_n0 ? (long long) dbg_n0->ne[1] : -1LL,
++            (dbg_n0 && dbg_n0->src[1]) ? (long long) dbg_n0->src[1]->ne[1] : -1LL);
++        fflush(stderr);
++    }
+     sched_stage_restore(sched);
+     sched->stage_consumed_n = 0;
+     sched->stage_split_ok = false;
+     if (!sched->stage_enabled || split->n_inputs == 0) {
++        SCHED_TRACE("SS return split=%d reason=disabled_or_no_inputs\n", dbg_split_id);
+         return;
+     }
+-    if (sched_stage_min_tokens_for(sched, split) > 0 &&
+-        sched_stage_batch_tokens(split) < sched_stage_min_tokens_for(sched, split)) {
++    if (dbg_mn > 0 && dbg_bt < dbg_mn) {
++        SCHED_TRACE("SS return split=%d reason=width_gate bt=%lld mn=%lld\n", dbg_split_id, (long long) dbg_bt, (long long) dbg_mn);
+         return;
+     }
+     // A large expert table is always gathered (see `sched_input_gatherable`), so it must not be
+@@ -2448,6 +2474,7 @@ static void sched_stage_issue(ggml_backend_sched_t sched, struct ggml_backend_sc
+         }
+         struct ggml_tensor * in_cpy = tensor_copy(split->inputs[i], split->backend_id, sched->cur_copy);
+         if (sched_input_gatherable(sched, split, in_cpy)) {
++            SCHED_TRACE("SS return split=%d reason=gatherable input=%s\n", dbg_split_id, split->inputs[i]->name);
+             return;
+         }
+     }
+@@ -2466,15 +2493,20 @@ static void sched_stage_issue(ggml_backend_sched_t sched, struct ggml_backend_sc
+         }
+         // A routed expert table is deferred to the gather (see sched_input_gatherable).
+         struct ggml_tensor * input_cpy = tensor_copy(split->inputs[i], split->backend_id, sched->cur_copy);
+-        if (sched_input_gatherable(sched, split, input_cpy)) {
++        const bool gatherable = sched_input_gatherable(sched, split, input_cpy);
++        SCHED_TRACE("SS hostinput split=%d name=%s bytes=%zu gatherable=%d\n",
++                    dbg_split_id, split->inputs[i]->name, ggml_nbytes(split->inputs[i]), (int) gatherable);
++        if (gatherable) {
+             continue;
+         }
+         n_host_inputs++;
+     }
+     if (n_host_inputs == 0 || n_host_inputs > sched->stage_n_slots) {
++        SCHED_TRACE("SS return split=%d reason=n_host_inputs=%d slots=%d\n", dbg_split_id, n_host_inputs, sched->stage_n_slots);
+         return;
+     }
+     if (backend->iface.stage_buffer == NULL) {
++        SCHED_TRACE("SS return split=%d reason=no_stage_buffer n_host_inputs=%d\n", dbg_split_id, n_host_inputs);
+         return;
+     }
+ 
+@@ -2550,6 +2582,7 @@ static void sched_stage_issue(ggml_backend_sched_t sched, struct ggml_backend_sc
+         sched->stage_consumed_n++;
+     }
+     sched->stage_slot_next = (slot_first + n_plan) % sched->stage_n_slots;
++    SCHED_TRACE("SS ring_staged split=%d n_plan=%d\n", dbg_split_id, n_plan);
+     GGML_LOG_DEBUG("%s: batch_tokens=%lld n_inputs=%d staged=%d\n",
+                    __func__, (long long) sched_stage_batch_tokens(split), split->n_inputs, sched->stage_consumed_n);
+ }
+@@ -2596,6 +2629,17 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+     ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
+     struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+ 
++    const bool dbg_hw = sched_stage_is_host_weight(input);
++    const int  dbg_split_id = (int)(split - sched->splits);
++    if (dbg_hw) {
++        SCHED_TRACE("CI split=%d input=%s usage=%d ishost=%d ihw=%d stage_split_ok=%d stage_input=%d\n",
++            dbg_split_id, input->name,
++            (int) ggml_backend_buffer_get_usage(input->buffer),
++            (int) ggml_backend_buffer_is_host(input->buffer),
++            (int) dbg_hw, (int) sched->stage_split_ok,
++            (int) (split_backend->iface.stage_input != NULL));
++    }
++
+     auto & prev_ids_tensor = st.prev_ids_tensor;
+     auto & ids             = st.ids;
+     auto & used_ids        = st.used_ids;
+@@ -2604,12 +2648,17 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+     if ((input->flags & GGML_TENSOR_FLAG_INPUT) ||
+         (sched_sync_graph_inputs() && ggml_backend_sched_graph_input(input) != nullptr)) {
+         // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
++        const int64_t dbg_g0 = ggml_time_us();
+         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+             ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+         } else {
+             ggml_backend_synchronize(split_backend);
+         }
++        const int64_t dbg_g1 = ggml_time_us();
+         ggml_backend_tensor_copy(input, input_cpy);
++        SCHED_TRACE("CI graph_input sync split=%d input=%s sync_us=%lld copy_us=%lld\n",
++            dbg_split_id, input->name, (long long)(dbg_g1 - dbg_g0), (long long)(ggml_time_us() - dbg_g1));
++        if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=graph_input_copy\n", dbg_split_id, input->name);
+     } else {
+         // staged input (issue #50 WIP): wait on the ring slot's upload event, D2D it into the
+         // real split input, then free the slot.  Both the D2D and the compute are on the main
+@@ -2637,6 +2686,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                 }
+                 // redirect mode: input_cpy->data already points at the slot; the slot is freed
+                 // after the split's compute below
++                if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=ring slot=%d mode=%d\n", dbg_split_id, input->name, slot, sched->stage_mode);
+                 return;
+             }
+         }
+@@ -2651,9 +2701,15 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             // beats the device gather (the campaign's own A/B: Q4_K_M ub8192 staging 5283 vs
+             // gather 4035).  The gather serves the below-gate band, where `sched_stage_issue`
+             // skips staging and the copy loop's gather branch runs.  Do not defer this table.
+-            if (split_backend->iface.stage_input(split_backend, input, input_cpy)) {
++            const bool took = split_backend->iface.stage_input(split_backend, input, input_cpy);
++            if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=stage_input took=%d\n", dbg_split_id, input->name, (int) took);
++            if (took) {
+                 return;
+             }
++        } else if (dbg_hw) {
++            SCHED_TRACE("CI split=%d input=%s branch=stage_input_SKIPPED stage_split_ok=%d cb=%d iface=%d\n",
++                dbg_split_id, input->name, (int) sched->stage_split_ok,
++                (int) (sched->callback_eval != NULL), (int) (split_backend->iface.stage_input != NULL));
+         }
+ 
+         // tripwire (issue #50 WIP): a split input that redirect mode pointed at a ring slot must
+@@ -2676,7 +2732,9 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                 ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
+             } else {
++                const int64_t dbg_ts = ggml_time_us();
+                 ggml_backend_synchronize(split_backend);
++                SCHED_TRACE("CI wait_before_overwrite_HOSTSYNC split=%d input=%s us=%lld\n", dbg_split_id, input->name, (long long)(ggml_time_us() - dbg_ts));
+             }
+         };
+ 
+@@ -2712,6 +2770,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             ggml_backend_buffer_is_host(input->buffer) &&
+             split_backend->iface.moe_cache_take_over != NULL) {
+             if (split_backend->iface.moe_cache_take_over(split_backend, input, input_cpy)) {
++                if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=cache_take_over\n", dbg_split_id, input->name);
+                 return;
+             }
+         }
+@@ -2728,6 +2787,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             ggml_backend_t ids_backend = split_backend;
+ 
+             if (ggml_nelements(ids_tensor) == 0) {
++                if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=empty_ids\n", dbg_split_id, input->name);
+                 return;
+             }
+ 
+@@ -2758,6 +2818,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                 // per-op full device synchronize (SCHEDSYNC 1.12 -> ~0.1 ms/call on `-sm tensor`).
+                 if (split_backend->iface.moe_cache_gather(
+                         split_backend, input, input_cpy, ids_tensor, 0, -1)) {
++                    if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=gather\n", dbg_split_id, input->name);
+                     return;
+                 }
+             }
+@@ -2799,6 +2860,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                     // the cache filled its compact slots and staged the slot-remapped ids; the
+                     // consuming op reads the arena (see `moe_cache_get_table`), so the whole
+                     // full-tensor expert copy below is skipped for this input.
++                    if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=cache_update\n", dbg_split_id, input->name);
+                     return;
+                 }
+             }
+@@ -2842,7 +2904,9 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                 last_id = id;
+             }
+             copy_experts(first_id, last_id);
++            if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=copy_experts n_consumers=%d\n", dbg_split_id, input->name, node_n_consumers);
+         } else {
++            if (dbg_hw) SCHED_TRACE("CI split=%d input=%s branch=tensor_copy\n", dbg_split_id, input->name);
+             wait_before_overwrite();
+             // A device-to-device input copy runs on the SOURCE backend's stream (cuda cpy_tensor_async), so it is
+             // not ordered after work already queued on the split backend - including an outbound copy of an
+@@ -2876,11 +2940,17 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
+             // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
+             if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
++                const int64_t dbg_ts = ggml_time_us();
+                 ggml_backend_synchronize(input_backend);
++                SCHED_TRACE("CI generic_HOSTSYNC_in split=%d input=%s us=%lld\n", dbg_split_id, input->name, (long long)(ggml_time_us() - dbg_ts));
+                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
++                    const int64_t dbg_te = ggml_time_us();
+                     ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
++                    SCHED_TRACE("CI generic_HOSTSYNC_ev split=%d input=%s us=%lld\n", dbg_split_id, input->name, (long long)(ggml_time_us() - dbg_te));
+                 } else {
++                    const int64_t dbg_te = ggml_time_us();
+                     ggml_backend_synchronize(split_backend);
++                    SCHED_TRACE("CI generic_HOSTSYNC_dst split=%d input=%s us=%lld\n", dbg_split_id, input->name, (long long)(ggml_time_us() - dbg_te));
+                 }
+                 ggml_backend_tensor_copy(input, input_cpy);
+             }
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+index a443887e4..ea86d95a7 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+@@ -9,8 +9,17 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ 
++// ---- TEMPORARY instrumentation for wip/moe-upload-overlap (revert before any commit) ----
++#define CUDA_STAGE_TRACE(...) do { if (getenv("GGML_STAGE_TRACE")) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
++static cudaStream_t cuda_stage_stream(ggml_backend_cuda_context * cuda_ctx) {
++    static const bool nocopy = getenv("GGML_STAGE_NOCOPYSTREAM") != nullptr;
++    return nocopy ? cuda_ctx->stream() : cuda_ctx->copy_stream();
++}
++
+ void * ggml_backend_cuda_stage_buffer(ggml_backend_t backend, int slot, size_t size) {
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+     ggml_cuda_set_device(cuda_ctx->device);
+@@ -37,7 +46,8 @@ void ggml_backend_cuda_stage_upload(ggml_backend_t backend, void * dst, const vo
+     if (ggml_backend_cuda_stage_from_cache(cuda_ctx, data, 0, size, size, 1, dst, ev, /*defer =*/ !redirect)) {
+         return;
+     }
+-    cudaStream_t s = cuda_ctx->copy_stream();
++    cudaStream_t s = cuda_stage_stream(cuda_ctx);
++    CUDA_STAGE_TRACE("CUDA_STAGE_UPLOAD dev=%d size=%zu copy_stream=%d\n", cuda_ctx->device, size, (int)(s == cuda_ctx->copy_stream()));
+     CUDA_CHECK(cudaMemcpyAsync(dst, data, size, cudaMemcpyHostToDevice, s));
+     CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s));
+ }
+@@ -62,33 +72,42 @@ bool ggml_backend_cuda_stage_gather(ggml_backend_t backend, int slot, const void
+     if (ggml_backend_cuda_stage_from_cache(cuda_ctx, src, offset, width, stride_src, n_copies, dst, ev, /*defer =*/ true)) {
+         return true;
+     }
+-    cudaStream_t s = cuda_ctx->copy_stream();
++    cudaStream_t s = cuda_stage_stream(cuda_ctx);
+     // WIP r42 (stage-1 item 2): a pinned source lets the compacted slice be copied straight with one
+     // 2-D H2D, moving only `total` bytes instead of the whole contiguous range.  The pageable 2-D H2D
+     // was the pathological ROCm case (the campaign's `hipMemcpy2DAsync` fault); this is the pinned
+     // form the source-pinning fix made possible.  `GGML_STAGE_GATHER_SCRATCH=1` forces the old path.
+     static const bool force_scratch = getenv("GGML_STAGE_GATHER_SCRATCH") != nullptr && atoi(getenv("GGML_STAGE_GATHER_SCRATCH")) != 0;
++    const int64_t dbg_t0 = ggml_time_us();
+     if (src_pinned && !force_scratch) {
+         CUDA_CHECK(cudaMemcpy2DAsync(dst, width, (const char *) src + offset, stride_src, width, n_copies, cudaMemcpyHostToDevice, s));
+         CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s));
++        CUDA_STAGE_TRACE("CUDA_GATHER dev=%d path=pinned_2d n_copies=%zu width=%zu stride=%zu total=%zu issue_us=%lld\n",
++            cuda_ctx->device, n_copies, width, stride_src, total, (long long)(ggml_time_us() - dbg_t0));
+         return true;
+     }
+     // A host gather when the per-block compaction is cheap (few copies), else stage the whole
+     // contiguous range and pick this device's `width`-byte block out of every `stride_src` on the copy
+     // stream (the F2D compaction hides with the H2D).
+     const bool host_gather = n_copies <= 4096;
++    CUDA_STAGE_TRACE("CUDA_GATHER dev=%d src_pinned=%d path=%s n_copies=%zu width=%zu stride=%zu total=%zu\n",
++        cuda_ctx->device, (int) src_pinned, host_gather ? "host_gather" : "scratch", n_copies, width, stride_src, total);
+     if (host_gather) {
+         void * pin = cuda_ctx->h2d_pin_buffer(slot, total);
+         if (pin == nullptr) {
+             return false;
+         }
+         // the pinned slot may still be read by the copy that last targeted this ring slot
++        const int64_t dbg_tw = ggml_time_us();
+         CUDA_CHECK(cudaEventSynchronize(cuda_ctx->h2d_pin_ev[slot]));
++        const int64_t dbg_tw1 = ggml_time_us();
+         for (size_t i = 0; i < n_copies; ++i) {
+             memcpy((char *) pin + i*width, (const char *) src + offset + i*stride_src, width);
+         }
+         CUDA_CHECK(cudaMemcpyAsync(dst, pin, total, cudaMemcpyHostToDevice, s));
+         CUDA_CHECK(cudaEventRecord(cuda_ctx->h2d_pin_ev[slot], s));
++        CUDA_STAGE_TRACE("CUDA_GATHER dev=%d path=host_gather wait_us=%lld memcpy_us=%lld issue_us=%lld\n",
++            cuda_ctx->device, (long long)(dbg_tw1 - dbg_tw), (long long)(ggml_time_us() - dbg_tw1), (long long)(ggml_time_us() - dbg_t0));
+     } else {
+         // stage the whole contiguous range, then pick this device's `width`-byte block out of every
+         // `stride_src` (the F2D compaction runs on the copy stream, so it hides with the H2D)
+@@ -99,6 +118,7 @@ bool ggml_backend_cuda_stage_gather(ggml_backend_t backend, int slot, const void
+         }
+         CUDA_CHECK(cudaMemcpyAsync(scratch, src, whole, cudaMemcpyHostToDevice, s));
+         CUDA_CHECK(cudaMemcpy2DAsync(dst, width, (const char *) scratch + offset, stride_src, width, n_copies, cudaMemcpyDeviceToDevice, s));
++        CUDA_STAGE_TRACE("CUDA_GATHER dev=%d path=scratch whole=%zu issue_us=%lld\n", cuda_ctx->device, whole, (long long)(ggml_time_us() - dbg_t0));
+     }
+     CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s));
+     return true;
+@@ -107,7 +127,7 @@ bool ggml_backend_cuda_stage_gather(ggml_backend_t backend, int slot, const void
+ void ggml_backend_cuda_stage_wait(ggml_backend_t backend, ggml_backend_event_t ev) {
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+     ggml_cuda_set_device(cuda_ctx->device);
+-    CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->copy_stream(), (cudaEvent_t) ev->context, 0));
++    CUDA_CHECK(cudaStreamWaitEvent(cuda_stage_stream(cuda_ctx), (cudaEvent_t) ev->context, 0));
+ }
+ 
+ void ggml_backend_cuda_stage_d2d(ggml_backend_t backend, void * dst, const void * src, size_t size) {

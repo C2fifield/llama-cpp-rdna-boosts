@@ -1,0 +1,14 @@
+# moe-upload-overlap layer placement A/B — 2026-10-14
+# gfx1201 2x R9700, ROCm 7.14.1, ~/llama.cpp r62 e909c529a
+# model Qwen3.6-35B-A3B-Q8_0, -ngl 99 -sm tensor -ncmoe 4 -p 4096 -n 0 -b 4096 -ub 4096 -r 3 -t 8 -fa 1
+# MOE_EXPERT_HEATMAP=0 MOE_EXPERT_CACHE_MIB=0
+# knob: wip/moe-layer-stagger/tools/ncmoe-layer-select.patch (applied scratch-only), LLAMA_NCMOE_LAYERS
+# interleaved (rep1 then rep2), pp4096 t/s
+
+FRONT 0,1,2,3        rep1 6586.75 +/- 26.07   rep2 6574.58 +/- 17.42
+MID  18,19,20,21     rep1 6585.98 +/- 20.84   rep2 6570.21 +/- 19.58
+BACK 36,37,38,39     rep1 6572.26 +/- 15.76   rep2 6550.82 +/-  2.70
+
+# host-layer placement is a no-op on the correct r62 path (within ~0.5 %), matching the
+# parked moe-layer-stagger result and the trace finding that an upload is issued only at its
+# own split with no lookahead.
