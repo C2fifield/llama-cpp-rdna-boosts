@@ -1,11 +1,12 @@
 # `moe-upload-overlap` — make the host-expert H2D upload actually overlap compute
 
-**Status: OPEN (seeded 2026-10-14; updated 2026-10-14 after instrumentation).**  The seed's premise is
-refuted — the staged hand-off **does** engage on r62 (`stage_input took=1` for every host table).  See
-**[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md)**: staging is **+41 %** over `GGML_SCHED_STAGE=0`,
-but the transfer stays exposed because there is **no lookahead** and the host is drained per split
-(`inp_pos` / `out_ids` graph-input `event_synchronize`); placement is a no-op.  Next: prototype a
-scheduler prefetch — **report to the maintainer before changing delivery code** (per `AGENTS.md`).
+**Status: OPEN (seeded 2026-10-14; updated 2026-10-14 after instrumentation + the prefetch prototype).**
+The seed's premise is refuted — the staged hand-off **does** engage on r62.  See
+**[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md)**: staging is **+41 %** over `GGML_SCHED_STAGE=0`;
+**BACK placement is +5.7 % over FRONT** (the campaign's "placement is a no-op" was an inert-knob
+artifact — `llama-bench` ignores the `common.h` knob); and an explicit all-up-front prefetch **regresses
+~4 %** because it trades GPU overlap for ~88 ms of scheduler idle, even though concurrent H2D is nearly
+free in isolation.  The open thread is to find and remove that idle before a prefetch can win.
 Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead.
 
 ## 0. Why this exists (and what it replaces)
@@ -94,6 +95,13 @@ graph-input host synchronizes (`inp_pos` 98 ms, `out_ids` 42 ms).  What would ma
 Whatever the fix, keep the r62 corruption fixed (below-gate `-sm tensor -ncmoe` must stay coherent) and
 **report to the maintainer before changing delivery code**.  Owning blocks: 09 (host-resident MoE /
 scheduler / Meta), 10 (`ggml-cuda.cu`).
+
+**Update 2026-10-14 — prototyped.**  `tools/prefetch-prototype.patch` stages every host table at the top
+of the pass; it is bit-identical but **~4 % slower** (BACK: 6654–6695 vs 6927–6958).  The prefetch does
+remove the transfer from the compute (GPU kernel time 3101 vs 3339 ms) yet the pass is longer: ~88 ms of
+scheduler idle appears.  Concurrent H2D is nearly free in isolation (`tools/contendprobe.cpp`), so this
+is **not** a hardware limit — it is a design/idle problem to fix.  Separately, the corrected placement
+A/B puts **BACK at +5.7 % over FRONT** (6944 vs 6570).  See `FINDINGS` §7 and `logs/ab-prefetch.txt`.
 
 ## 4. Repro / instrumentation recipe
 

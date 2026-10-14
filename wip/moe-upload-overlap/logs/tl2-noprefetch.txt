@@ -1,0 +1,108 @@
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 65248 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: yes, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: yes, Wave Size: 32, VRAM: 32624 MiB
+GC_ENTER t=251134328817 nnodes=3532 uid=81 pending=0
+GC_END t=251134453713 uid=81 total_us=124896
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135261976 name=Meta(ROCm0,ROCm1)#blk.36.ffn_gate_exps.weight#0 chunks=2 slot=0
+GC_ENTER t=251135261978 nnodes=1 uid=82 pending=1
+GC_END t=251135262082 uid=82 total_us=104
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135262852 name=Meta(ROCm0,ROCm1)#blk.36.ffn_up_exps.weight#0 chunks=2 slot=1
+GC_ENTER t=251135262852 nnodes=2 uid=83 pending=1
+GC_END t=251135262893 uid=83 total_us=41
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251135263307 name=Meta(ROCm0,ROCm1)#blk.36.ffn_down_exps.weight#0 chunks=2 slot=2
+GC_ENTER t=251135263308 nnodes=100 uid=84 pending=1
+GC_END t=251135263720 uid=84 total_us=412
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135264235 name=Meta(ROCm0,ROCm1)#blk.37.ffn_gate_exps.weight#0 chunks=2 slot=3
+GC_ENTER t=251135264236 nnodes=1 uid=85 pending=1
+GC_END t=251135264269 uid=85 total_us=33
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135265094 name=Meta(ROCm0,ROCm1)#blk.37.ffn_up_exps.weight#0 chunks=2 slot=4
+GC_ENTER t=251135265094 nnodes=2 uid=86 pending=1
+GC_END t=251135265123 uid=86 total_us=29
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251135265638 name=Meta(ROCm0,ROCm1)#blk.37.ffn_down_exps.weight#0 chunks=2 slot=5
+GC_ENTER t=251135265638 nnodes=100 uid=87 pending=1
+GC_END t=251135265924 uid=87 total_us=286
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135266445 name=Meta(ROCm0,ROCm1)#blk.38.ffn_gate_exps.weight#0 chunks=2 slot=6
+GC_ENTER t=251135266445 nnodes=1 uid=88 pending=1
+GC_END t=251135266470 uid=88 total_us=25
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135266983 name=Meta(ROCm0,ROCm1)#blk.38.ffn_up_exps.weight#0 chunks=2 slot=7
+GC_ENTER t=251135266984 nnodes=2 uid=89 pending=1
+GC_END t=251135267009 uid=89 total_us=25
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251135358275 name=Meta(ROCm0,ROCm1)#blk.38.ffn_down_exps.weight#0 chunks=2 slot=8
+GC_ENTER t=251135358275 nnodes=74 uid=90 pending=1
+GC_END t=251135448206 uid=90 total_us=89931
+GC_ENTER t=251135450287 nnodes=28 uid=92 pending=0
+GC_END t=251135546209 uid=92 total_us=95922
+COMPUTE_SPLITS wall_us=1293428
+GC_ENTER t=251135578841 nnodes=3532 uid=275 pending=0
+GC_END t=251135585256 uid=275 total_us=6415
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135586307 name=Meta(ROCm0,ROCm1)#blk.36.ffn_gate_exps.weight#0 chunks=2 slot=9
+GC_ENTER t=251135586308 nnodes=1 uid=276 pending=1
+GC_END t=251135586346 uid=276 total_us=38
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135587028 name=Meta(ROCm0,ROCm1)#blk.36.ffn_up_exps.weight#0 chunks=2 slot=10
+GC_ENTER t=251135587029 nnodes=2 uid=277 pending=1
+GC_END t=251135587055 uid=277 total_us=26
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251135587831 name=Meta(ROCm0,ROCm1)#blk.36.ffn_down_exps.weight#0 chunks=2 slot=11
+GC_ENTER t=251135587832 nnodes=100 uid=278 pending=1
+GC_END t=251135588054 uid=278 total_us=222
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135589212 name=Meta(ROCm0,ROCm1)#blk.37.ffn_gate_exps.weight#0 chunks=2 slot=12
+GC_ENTER t=251135589212 nnodes=1 uid=279 pending=1
+GC_END t=251135589239 uid=279 total_us=27
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135589928 name=Meta(ROCm0,ROCm1)#blk.37.ffn_up_exps.weight#0 chunks=2 slot=13
+GC_ENTER t=251135589929 nnodes=2 uid=280 pending=1
+GC_END t=251135589951 uid=280 total_us=22
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251135592871 name=Meta(ROCm0,ROCm1)#blk.37.ffn_down_exps.weight#0 chunks=2 slot=14
+GC_ENTER t=251135592871 nnodes=100 uid=281 pending=1
+GC_END t=251135593071 uid=281 total_us=200
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135612256 name=Meta(ROCm0,ROCm1)#blk.38.ffn_gate_exps.weight#0 chunks=2 slot=15
+GC_ENTER t=251135612258 nnodes=1 uid=282 pending=1
+GC_END t=251135612334 uid=282 total_us=76
+GATHER dev=0 total=142606336 n_copies=256 width=557056 stride=1114112
+GATHER dev=1 total=142606336 n_copies=256 width=557056 stride=1114112
+STAGE_OK t=251135612350 name=Meta(ROCm0,ROCm1)#blk.38.ffn_up_exps.weight#0 chunks=2 slot=0
+GC_ENTER t=251135612351 nnodes=2 uid=283 pending=1
+GC_END t=251135612390 uid=283 total_us=39
+GATHER dev=0 total=142606336 n_copies=524288 width=272 stride=544
+GATHER dev=1 total=142606336 n_copies=524288 width=272 stride=544
+STAGE_OK t=251136116154 name=Meta(ROCm0,ROCm1)#blk.38.ffn_down_exps.weight#0 chunks=2 slot=1
+GC_ENTER t=251136116154 nnodes=74 uid=284 pending=1
+GC_END t=251136116375 uid=284 total_us=221
+GC_ENTER t=251136142620 nnodes=28 uid=286 pending=0
+GC_END t=251136142682 uid=286 total_us=62
+COMPUTE_SPLITS wall_us=586847
+| model                          |       size |     params | backend    | ngl |  n_cpu_moe | threads | n_batch | n_ubatch |     sm |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ---------: | ------: | ------: | -------: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B Q8_0         |  35.19 GiB |    35.51 B | ROCm       |  99 |          4 |       8 |    4096 |     4096 | tensor |   1 |          pp4096 |       6906.46 ± 0.00 |
+
+build: e909c529a (11583)

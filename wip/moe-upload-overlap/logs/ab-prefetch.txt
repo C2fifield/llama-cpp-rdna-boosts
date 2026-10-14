@@ -1,0 +1,46 @@
+# moe-upload-overlap — prefetch prototype A/B (2026-10-14)
+# gfx1201 2x R9700, ROCm 7.14.1, ~/llama.cpp r62 e909c529a + tools/prefetch-prototype.patch
+# Qwen3.6-35B-A3B-Q8_0, -ngl 99 -sm tensor -ncmoe 4 -p 4096 -n 0 -b 4096 -ub 4096 -r 3 -t 8 -fa 1
+# MOE_EXPERT_HEATMAP=0 MOE_EXPERT_CACHE_MIB=0 GGML_SCHED_STAGE_SLOTS=16
+# host layers via LLAMA_NCMOE_LAYERS (llama-bench knob fixed in the prototype patch)
+
+## placement (the campaign's "no-op" was an artifact: llama-bench ignores the common.h knob)
+#                    real t/s   NOCOPY t/s   transfer cost (real->NOCOPY)
+FRONT 0,1,2,3        6570        7769        0.096 s
+MID   18,19,20,21    6712        7789        0.084 s
+BACK  36,37,38,39    6944        7795        0.064 s
+full -ncmoe 0        7992         -           -
+# BACK is +5.7 % over FRONT (6944 vs 6570) and hides ~43 % of the nominal 0.113 s transfer.
+# repeat: noprefetch BACK 6938/6946, FRONT 6558/6563.
+
+## explicit prefetch (stage every host table at the top of the pass)
+BACK noprefetch (baseline)        6927..6958
+BACK prefetch all                 6654..6695      (-3.8 %)
+BACK noprefetch NOCOPY            7781..7795
+BACK prefetch all NOCOPY          7737..7748      (-0.6 %)
+# prefetched depth sweep (BACK): none 6936, last3 6924, last6 6800, last9 6663, all 6654
+# -> monotonic: the more tables pre-staged, the slower.
+
+## GPU time (GGML_CUDA_BIGTIME; sum of all 720 CUDA child-graph event spans, 4 passes)
+BACK noprefetch real              3338.67 ms
+BACK prefetch real                3100.94 ms   <- prefetch REDUCES GPU kernel time
+BACK noprefetch NOCOPY            3127.51 ms
+BACK prefetch NOCOPY              3125.14 ms
+# -> the prefetch does remove the transfer from the compute; the wall regression is idle, not compute.
+
+## scheduler wall (COMPUTE_SPLITS, -r 1)
+BACK noprefetch  compute_splits 586.8 ms, pass 592 ms, meta-GC span 563 ms -> ~24 ms idle in-scheduler
+BACK prefetch    compute_splits 607.7 ms, pass 614 ms, meta-GC span 496 ms -> ~112 ms idle in-scheduler
+# prefetch: meta span 67 ms SHORTER but pass 22 ms LONGER -> ~88 ms extra idle inside compute_splits.
+
+## hardware control (tools/contendprobe.cpp, one R9700)
+H2D alone (136 MiB pinned)                9.86 ms (14.5 GB/s)
+compute alone (2 GiB read, bandwidth)    80.68 ms
+compute + H2D same stream (serial)        90.52 ms  = 80.68 + 9.86
+compute + H2D copy stream (overlap)       81.35 ms  = compute + 0.7 ms
+# -> concurrent H2D costs essentially nothing on its own; the model regression is NOT hardware contention.
+
+# CONCLUSION: the staged hand-off engages and BACK placement already wins +5.8 %; an explicit
+# all-up-front prefetch regresses because it adds ~0.09 s of scheduler idle even though it lowers the
+# GPU kernel time.  The idle location is the open thread (candidate: pre-pass host cost + slot/D2D
+# ordering); a production-quality prefetch needs to eliminate it before this can be a win.
