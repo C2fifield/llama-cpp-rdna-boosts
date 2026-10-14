@@ -13,7 +13,9 @@ Aug 28, only `buildcache-*` tags)** is a defunct leftover from before the fork r
 **New tooling.**  `scripts/cleanup-ghcr.py` keeps a version when it is inside `--keep-days` (default 7)
 **or** carries a `*-<base>` tag for a `--keep-base`; deletes the rest; dry-run by default (`--apply`
 deletes, parallel via `xargs`/`gh api`).  It retries a GitHub bulk-delete throttle `--attempts` times
-and then reports `deleted=… remaining=…` as a warning — it never fails the build, so
+and then reports `deleted=… remaining=…` as a warning — it never fails the build.  It also keeps any
+untagged manifest created within an hour of a kept tagged one, so a 0-day window can never orphan a
+future multi-arch index's platform children (today's images are single-manifest, so it is inert).  So
 `scripts/build-containers.sh` now runs it automatically on `--push` with `--keep-days 7` and
 `--keep-base $(release.json .base)` (the images just pushed can never be deleted).  `--no-cleanup` opts
 out, `--keep-days N` widens the window.  Requires the `delete:packages` token scope

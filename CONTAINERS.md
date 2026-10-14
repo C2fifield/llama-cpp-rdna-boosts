@@ -275,6 +275,10 @@ prunes them with [`scripts/cleanup-ghcr.py`](scripts/cleanup-ghcr.py):
 * **keep** any version carrying a `*-<base>` tag for the current release's base
   (`--keep-base`, from `release.json`), so the images just pushed can never be
   deleted,
+* **keep** any *untagged* version created within an hour of a kept tagged one
+  (a multi-arch index's platform children are pushed as separate untagged
+  versions; today's images are single-manifest, so this is a guard for the
+  future),
 * **delete** everything else.
 
 ```bash

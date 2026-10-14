@@ -54,6 +54,17 @@ def tags_of(v: dict) -> list[str]:
     return v.get("metadata", {}).get("container", {}).get("tags") or []
 
 
+def ts_of(v: dict) -> datetime:
+    return datetime.fromisoformat(v["created_at"].replace("Z", "+00:00"))
+
+
+# A multi-arch image is an index plus one untagged child version per platform,
+# pushed within seconds of the index.  Keep any untagged version this close to a
+# kept tagged one, so a window of 0 (or a base-only keep) can never orphan the
+# children of a release that is being kept.
+CHILD_GUARD = timedelta(hours=1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -99,8 +110,22 @@ def main() -> int:
           + (f"; bases: {', '.join(args.keep_base)}" if args.keep_base else "")
           + (f"; tags: {', '.join(args.keep_tag)}" if args.keep_tag else ""))
 
-    keep = [(v, is_kept(v)) for v in versions if is_kept(v)]
-    delete = [v for v in versions if not is_kept(v)]
+    def classify(vs: list[dict]) -> tuple[list[tuple[dict, str]], list[dict]]:
+        keep: list[tuple[dict, str]] = []
+        for v in vs:
+            why = is_kept(v)
+            if why:
+                keep.append((v, why))
+        kept_tagged_ts = [ts_of(v) for v, _ in keep if tags_of(v)]
+        for v in vs:
+            if is_kept(v) or tags_of(v):
+                continue
+            if any(abs(ts_of(v) - t) <= CHILD_GUARD for t in kept_tagged_ts):
+                keep.append((v, "child of a kept release"))
+        kept_ids = {v["id"] for v, _ in keep}
+        return keep, [v for v in vs if v["id"] not in kept_ids]
+
+    keep, delete = classify(versions)
     tagged_del = [v for v in delete if tags_of(v)]
     byday = Counter(v["created_at"][:10] for v in delete)
 
@@ -146,7 +171,7 @@ def main() -> int:
         if attempt < args.attempts:
             print(f"    throttled; waiting {args.wait_seconds}s ...", flush=True)
             time.sleep(args.wait_seconds)
-        delete = [v for v in left if not is_kept(v)]
+        delete = classify(left)[1]
 
     print(f"cleanup: deleted={len(versions) - len(left)} remaining={len(left)}")
     if left and throttled:
