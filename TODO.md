@@ -54,6 +54,17 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 59. `ngram-mod` + `draft-mtp-adaptive` halves decode with host-resident MoE experts — PERFORMANCE
+
+**Opened 2026-10-14; scoping.**  On a config with partially or fully host-resident MoE experts
+(`-ncmoe`/`-cmoe`, the expert cache or op-offload path active), the README's recommended
+`--spec-type draft-mtp-adaptive,ngram-mod` combo roughly **halves decode throughput**; dropping
+`ngram-mod` and using plain `draft-mtp-adaptive` restores the expected rate.  The combo is the measured
+best on a fully device-resident model, so the interaction is with the host-expert serve path.
+Documented in the README "Recommended configuration" section.  **Working home:
+`wip/ngram-mod-host-experts/`** (hypotheses: verify width against the per-op host-expert upload, the MoE
+cache band and verify graph recapture, the staging-ring width; bisect plan in that README).
+
 ### 58. `-sm tensor` + DFlash aborts in the Meta split-state build — CORRECTNESS
 
 **RESOLVED (2026-10-13), folded into `v12-097cf33d9-r54` (block 11).**  The aborting op was the DFlash2

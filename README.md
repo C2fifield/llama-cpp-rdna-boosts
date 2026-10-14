@@ -298,6 +298,18 @@ code/prose-neutral with the same recall win.  The small reasoning cost is the pr
 `n-max 9`; a workload with no verbatim recall is marginally better served by plain
 `draft-mtp-adaptive`.
 
+> **Do not combine `ngram-mod` with host-resident MoE experts.**  When MoE experts are partially or
+> fully host-resident (`-ncmoe`/`-cmoe`, i.e. the MoE expert cache or the pinned `ROCm_Host` path is
+> active), adding `ngram-mod` to `draft-mtp-adaptive` **roughly halves decode throughput**.  Dropping
+> `ngram-mod` and keeping plain `--spec-type draft-mtp-adaptive` restores the expected decode rate.
+> The adaptive controller is itself a good fallback for replayed/verbatim content: it drafts deeper
+> when the content is predictable, so it handles replay quickly (not as fast as `ngram-mod`, but far
+> ahead of a halved decode).  On a host-expert config, plain `--spec-type draft-mtp-adaptive` is
+> therefore the recommended pick.  The cause of the interaction is not yet understood; it is tracked
+> in [`wip/ngram-mod-host-experts/`](wip/ngram-mod-host-experts/README.md).  This applies only to
+> host-resident experts: on a fully device-resident model the combo above is still the best general
+> pick.
+
 Guidance:
 
 * **Cap.**  `9` is the general-purpose pick and the optimum on a **single card** (a cap of `6` costs
@@ -306,6 +318,9 @@ Guidance:
 * **`n_match`.**  Keep it `>= 40` **and an integer multiple of the cap** — `9/45`, `8/48`, `6/42`.
   Too short (`nm24`) makes ngram fire on incidental code repeats and lose code throughput; a
   non-multiple (e.g. `nm42` at cap 12) degrades acceptance.
+* **Host-resident experts.**  On a config with host-resident MoE experts (`-ncmoe`/`-cmoe`), skip
+  `ngram-mod` entirely (see the caveat above): the combination roughly halves decode, and plain
+  `--spec-type draft-mtp-adaptive` is the better pick.
 * The combo changes the draft strategy, so it is **opt-in** — the controller default stays plain
   `--spec-type draft-mtp-adaptive`.
 
