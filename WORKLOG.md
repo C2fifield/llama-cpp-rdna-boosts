@@ -63,6 +63,15 @@ repair / host-pool warm order, the decode-identity tally gap, and the now-dead `
 The campaign record (decisions, the phase map, the design Q&A) moved to
 `archive/work/moe-heatmap-persistence/` with a `RESOLUTION.md`.
 
+**Published (2026-10-14).**  The fork's `rdna-boosts` branch was re-cut on the canonical chain and
+force-pushed to the **personal fork** (`git@github.com:stew675/llama.cpp.git`,
+`e1b2a41ed -> a3459aad` with `--force-with-lease`; never upstream).  The ROCm container images were
+built and pushed **locally** with `scripts/build-containers.sh --force --rocm "7.14.1 10.1" --push
+--prune`: 15 tags (full/light/server × 7.14.1/10.1 + their `-097cf33d9` immutable variants +
+`rocm-7.14.1`/`rocm-10.1` + `latest` on 10.1), confirmed present in the GHCR package; the local prune
+removed the built images (base images + ccache kept) and the registry retention prune deleted 0
+versions (the previous base survives the 7-day window).
+
 ## 261014.004 (r59) -- issue #139: the AR spin budget uses the wall clock, and a soft timeout keeps waiting (block 01)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r59` (base `097cf33d9`; canonical tip
