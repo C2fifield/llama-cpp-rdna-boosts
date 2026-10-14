@@ -42,6 +42,14 @@ partial-offload prefill is H2D-bound, so the upload schedule cannot matter).  Th
 `archive/work/meta-split-copy-splice-race/` with a `RESOLUTION.md`; the stagger record stays parked
 under `wip/moe-layer-stagger/`.
 
+**Published (2026-10-14).**  The delivery repo `main` was pushed (`5ba3cc8..dc81bb8`) and the release
+tagged `v12-097cf33d9-r62` (annotated, on the release commit `dc81bb8`); `release.yml` published the
+GitHub Release assets (`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`), and
+`validate.yml` is green on both the tag and `main`.  The fork's `rdna-boosts` branch was force-pushed to
+the personal fork (`7f15fb91d -> e909c529a`, `--force-with-lease`).  The ROCm container images were
+rebuilt and pushed locally (`scripts/build-containers.sh --force --rocm "7.14.1 10.1" --push --prune`):
+15 tags; the registry retention prune deleted 0 versions.
+
 ## 261014.006 (r61) -- the heat map can be frozen (read-only file / `MOE_EXPERT_HEATMAP=load`) (block 09)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r61` (base `097cf33d9`; canonical tip
