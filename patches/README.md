@@ -11,7 +11,25 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r61` (2026-10-14) -- the heat map can be frozen (block 09):**
+> **Current release `v12-097cf33d9-r62` (2026-10-14) -- fix the `-sm tensor` + `-ncmoe` below-gate upload race (block 10):**
+> canonical tip `e909c529a`, net tree `386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed
+> greedy `1c5d32ac537d` (golden), `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP
+> `none == n3` (`89951c23872e`) on 35B-A3B `-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o
+> MUL_MAT_ID` no regression (the same 4 pre-existing upstream `f16 dup=1` fails as r53).  **block 10**
+> (`ggml-cuda.cu`, `ggml_backend_cuda_set_tensor_2d_async`): the compact splice-gather's 1-D H2D now
+> runs on `cuda_ctx->stream()` (the main stream) instead of `cuda_ctx->copy_stream()`.  The scheduler's
+> `wait_before_overwrite()` -- which guards the graph allocator's reuse of the split-input buffer across
+> splits -- is enqueued on the main stream, so the copy-stream H2D could overwrite the buffer while the
+> previous split still read it.  It corrupted the `-sm tensor` + `-ncmoe` below-gate path (ubatch <
+> `sched_stage_min_tokens`: the default `llama-cli` `-ub 512`, and any `GGML_SCHED_STAGE=0`): 35B-A3B
+> `3333…`, gemma4 26B-A4B `<unused32>…`, Flash-Next GSQ `3333…`, `llama-perplexity` `[1]nan…[8]nan`.
+> The pinned gather ring and the single 1-D H2D are unchanged; only the stream moves, and it is
+> perf-neutral (35B-A3B `-ncmoe 20 -ub 2048`: 2487.9 pp / 73.35 tg vs plain 2-D 2495.3 / 73.36 vs
+> mirrored 1501.5 / 21.33); 35B-A3B `-sm tensor -ncmoe 20` PPL is now exactly `-ncmoe 0` (6.1802).  See
+> `../WORKLOG.md` 261014.007 (r62); record `../archive/work/meta-split-copy-splice-race/`.
+>
+> **Previous release `v12-097cf33d9-r61` (2026-10-14) -- the heat map can be frozen (block 09):**
 > canonical tip `7f15fb91d`, net tree `047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`; strict **12/12**
 > `git am` (`validate-set.sh` green).  **block 09** fix on top of r60: the heat map's **file mode is the
 > freeze signal**.  A read-only sidecar is loaded and used to seed, is never overwritten, and is not

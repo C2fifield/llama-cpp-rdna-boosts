@@ -5,13 +5,17 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r61`** (canonical tip `7f15fb91d`, net tree
-`047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r62`** (canonical tip `e909c529a`, net tree
+`386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
-unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), adaptive-MTP `none == n3` on
+`1c5d32ac537d`, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), adaptive-MTP `none == n3` on
 `-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
-pre-existing upstream `f16 dup=1` fails as r53).  r61 makes the heat map's **file mode the freeze
-signal**: a read-only sidecar is loaded and used to seed but never overwritten and never relocated, and
+pre-existing upstream `f16 dup=1` fails as r53).  r62 fixes the `-sm tensor` + `-ncmoe` below-gate
+upload race in **block 10** (`ggml_backend_cuda_set_tensor_2d_async`): the splice-gather's 1-D H2D now
+runs on the main stream, so it is ordered behind the scheduler's `wait_before_overwrite` -- the
+copy-stream H2D could overwrite the reused split-input buffer while the previous split still read it
+(35B-A3B `3333…`, gemma4 `<unused32>…`, Flash-Next GSQ; `llama-perplexity` NaN).  Before it, r61 makes
+the heat map's **file mode the freeze signal**: a read-only sidecar is loaded and used to seed but never overwritten and never relocated, and
 `MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit freeze (`=0` still disables the
 feature).  Before it, r60 added the **persistent cross-run MoE expert heat
 map** to **block 09**: a device-side prefill routing tally, an on-disk `<gguf>.moe-heatmap` sidecar
@@ -30,7 +34,7 @@ return); a DFlash draft no longer re-reserves the target's compute buffers at th
 (5 -> 4 reserves).  Before it, r57 closed the `-Wshadow` gap the container (GCC) build exposed: **block 00**
 (the `llama` C++ target uses `-Wshadow=local` for GNU and `-Wshadow` for clang), **block 09** (the AMX
 buffer type lists the three appended `ggml_backend_buffer_type_i` members) and **block 10** (the
-`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r61 record is `WORKLOG.md` 261014.006;
+`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r62 record is `WORKLOG.md` 261014.007; r61 is `WORKLOG.md` 261014.006;
 r60 is `WORKLOG.md` 261014.005;
 r59 is `WORKLOG.md` 261014.004;
 r58 is `WORKLOG.md` 261014.003; r57 is `WORKLOG.md` 261014.001; r56 is

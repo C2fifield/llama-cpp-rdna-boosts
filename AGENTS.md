@@ -238,6 +238,14 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   dense regression is issues #118 (slab before the weights OOMs a 48 GiB card under `--mmproj`) and #120
   (the chunk cost a dense config +739 MiB and tipped it into shared memory).  The percentage margin
   (`GGML_COMPUTE_BUFFER_MARGIN_PCT`) is deliberately *not* gated (kept for dense).
+- **An upload that writes a scheduler-managed buffer goes on the main stream (r62, block 10).**  The
+  scheduler's `wait_before_overwrite()` (a wait on the previous split's event) guards the graph
+  allocator's reuse of a split-input buffer and is enqueued on the **main** stream.  The compact
+  splice-gather's 1-D H2D ran on `cuda_ctx->copy_stream()` and only ordered the *consumer*, so it could
+  overwrite the buffer while the previous split still read it -- garbage/NaN for `-sm tensor` + `-ncmoe`
+  on the below-gate path (35B-A3B, gemma4, Flash-Next GSQ).  A side stream is only safe with an explicit
+  wait on the main stream recorded *before* this upload; the gather has no such need (it must wait for
+  the reused-buffer read anyway).
 - **The op-offload H2D staging ring (V2.0 block 09; old block 06, r12) has three invariants:** (1) prefill is never
   CUDA-graph captured, so a redirected split input that reaches a copy path aborts (tripwire asserts
   this); (2) the width gate is floored at **64 tokens**; (3) the arena lives **outside** the

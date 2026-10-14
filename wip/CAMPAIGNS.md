@@ -32,9 +32,17 @@ is the signature of a stub, not of a campaign.
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
 | [`moe-layer-stagger/`](moe-layer-stagger/README.md) | stagger the host/device expert-layer split by ratio (even layers device, odd host) instead of the contiguous "first N layers to host", so the H2D expert upload is spread across the prefill instead of exposed as one host-only stretch | **PARKED (2026-10-14) — REFUTED.**  With the page-cache confound removed, four disjoint host sets are identical to 0.1 % at `-ncmoe 24`; prefill is H2D-bound, so the schedule cannot matter.  On the maintainer's call the campaign is parked.  See [`FINDINGS-2026-10-14.md`](moe-layer-stagger/FINDINGS-2026-10-14.md) |
-| [`meta-split-copy-splice-race/`](meta-split-copy-splice-race/README.md) | the `-sm tensor` + `-ncmoe` below-gate upload corruption: the CUDA splice-gather issued its 1-D H2D on `copy_stream()`, escaping the scheduler's main-stream `wait_before_overwrite`, so it raced the previous split's read of the reused split-input buffer (garbage/NaN on 35B-A3B, gemma4, Flash-Next GSQ) | **FIXED + VALIDATED (2026-10-14), awaiting the fold go-ahead.** One line: gather H2D on the main stream. Coherence clean on 3 models, 35B PPL == `-ncmoe 0`, 4B golden `1c5d32ac537d`, prefill-logit PASS, perf-neutral. Folds into **block 10** |
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
+
+**Promoted (r62, 2026-10-14).**  `meta-split-copy-splice-race/` (seeded and fixed the same day) was
+folded into **block 10** and released as `v12-097cf33d9-r62`: the CUDA compact splice-gather issued its
+1-D H2D on `copy_stream()`, but the scheduler's `wait_before_overwrite()` (which guards the graph
+allocator's reuse of the split-input buffer across splits) is on the **main** stream, so the H2D raced
+the previous split's read and corrupted the `-sm tensor` + `-ncmoe` below-gate path (garbage/NaN on
+35B-A3B, gemma4 26B-A4B, Flash-Next GSQ).  One line: gather H2D on the main stream.  The record moved to
+`archive/work/meta-split-copy-splice-race/` (with a `RESOLUTION.md`); the residual is the pre-existing
+upstream `MUL_MAT_ID` `f16 dup=1` fails/spin already tracked in `MANIFESTS.md`.
 
 **Promoted (r60, 2026-10-14).**  `moe-heatmap-persistence/` left `wip/`: the persistent cross-run expert
 heat map (device-side routing tally + on-disk sidecar + seed-at-sizing + heat-ordered layer placement)

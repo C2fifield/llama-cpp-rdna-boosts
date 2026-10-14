@@ -2,8 +2,13 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r61`** (canonical tip `7f15fb91d`, net tree
-`047807d7b2a7aa611c0fd76c3efcaedb23a8ac78`).  r61 makes the heat map's **file mode the freeze signal**:
+**`v12-097cf33d9-r62`** (canonical tip `e909c529a`, net tree
+`386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`).  r62 fixes the `-sm tensor` + `-ncmoe` below-gate upload
+race in **block 10**: `ggml_backend_cuda_set_tensor_2d_async`'s splice-gather issued its 1-D H2D on
+`copy_stream()`, escaping the scheduler's main-stream `wait_before_overwrite`, so it could overwrite the
+reused split-input buffer while the previous split still read it (garbage on 35B-A3B/gemma4/Flash-Next
+GSQ, NaN perplexity); the gather H2D now runs on the main stream.  Before it, r61 makes the heat map's
+**file mode the freeze signal**:
 a read-only sidecar is loaded and used to seed but never overwritten and never relocated, and
 `MOE_EXPERT_HEATMAP=load` (aliases `ro`, `read-only`) is the explicit freeze.  Before it, r60 added the
 **persistent cross-run MoE expert heat map** to **block 09** (device-side prefill routing tally + on-disk

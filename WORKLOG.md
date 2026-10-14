@@ -1,5 +1,47 @@
 # WORKLOG - dated delivery records
 
+## 261014.007 (r62) -- fix the `-sm tensor` + `-ncmoe` below-gate upload race (block 10)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r62` (base `097cf33d9`; canonical tip
+`e909c529a`, net tree `386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`; 12 blocks; `validate-set.sh` green on
+a fresh tarball).  **Block 10** is amended, no new block; block 11 re-cut unchanged on top.
+
+**Bug (correctness).**  `ggml_backend_cuda_set_tensor_2d_async`'s compact splice-gather issued its 1-D
+H2D on `cuda_ctx->copy_stream()`, but the scheduler's `wait_before_overwrite()` -- a wait on the split
+backend's previous-split event, needed because the graph allocator **reuses the split-input buffer
+across splits** -- is enqueued on the **main** stream.  The gather only ordered the *consumer*
+(`cudaStreamWaitEvent(main, s.ev)`), so the H2D could overwrite the split-input buffer while the
+previous split still read it.  It corrupted the `-sm tensor` + `-ncmoe` **below-gate** path (ubatch <
+`sched_stage_min_tokens`, i.e. the default `llama-cli` `-ub 512` and any `GGML_SCHED_STAGE=0`): 35B-A3B
+`3333…`, gemma4 26B-A4B `<unused32>…`, Flash-Next GSQ `3333…`; `llama-perplexity` `[1]nan … [8]nan`
+(`Unexpected negative standard deviation of log(prob)`).  Clean on `-sm layer`, `-ncmoe 0`,
+`GGML_META_SPLIT_COPY=0` (mirrored) and `GGML_CUDA_SPLICE_GATHER=0` (plain 2-D, main stream).  The plain
+2-D arm was always on the main stream, which is why only the gather was wrong.  Independent of the heat
+map (`MOE_EXPERT_HEATMAP=0` and default both fail, no sidecar), the expert cache
+(`MOE_EXPERT_CACHE_MIB=0` and auto both fail), `--lazy-mode` and the load mode; present in the
+`build-r55-ref` tree, so it is not an r60/r61 regression.
+
+**Fix (block 10, +12/-1).**  Use `cuda_ctx->stream()` for the gather's 1-D H2D (the pinned gather ring
+and the single H2D are unchanged; only the stream moves).  The copy stream bought nothing here -- the
+transfer must wait for the reused-buffer read regardless -- and the measurement agrees.
+
+**Validation (gfx1201, 2x R9700, ROCm 7.14.1).**  35B-A3B `-sm tensor -ncmoe 20` PPL = **6.1802**,
+exactly equal to `-ncmoe 0`; gemma4 `-ncmoe 20` finite (1140.85; `-sm layer` 1261.86).  Coherence
+(product env, 32- and 250-token greedy) clean on 35B-A3B, gemma4 26B-A4B and Flash-Next GSQ.  Dense 4B
+`Qwen3.5-Q8_0 -sm tensor` same-seed `1c5d32ac537d` (golden); `gate-prefill-logits.sh` **PASS**
+(0.000707 / 98.755 %, identical to base); adaptive-MTP `none == n3` (`89951c23872e`) on 35B-A3B
+`-sm tensor -ncmoe 99` + auto cache.  Perf-neutral (35B-A3B `-ncmoe 20 -ub 2048`: **2487.9 pp / 73.35
+tg** vs plain 2-D 2495.3 / 73.36 vs mirrored 1501.5 / 21.33 -- the split still beats mirrored by +66 %
+prefill / +244 % decode).  `test-backend-ops -o MUL_MAT_ID`: the same 4 pre-existing upstream `f16
+dup=1` fails as r53 (reproduced identically on `build-r55-ref`) and the accompanying test spin; no
+regression.
+
+**Campaign.**  Found while parking `wip/moe-layer-stagger/` (that hypothesis is refuted: with the
+page-cache confound removed, four disjoint host-layer sets are identical to 0.1 % at `-ncmoe 24`;
+partial-offload prefill is H2D-bound, so the upload schedule cannot matter).  The fix's record moved to
+`archive/work/meta-split-copy-splice-race/` with a `RESOLUTION.md`; the stagger record stays parked
+under `wip/moe-layer-stagger/`.
+
 ## 261014.006 (r61) -- the heat map can be frozen (read-only file / `MOE_EXPERT_HEATMAP=load`) (block 09)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r61` (base `097cf33d9`; canonical tip
