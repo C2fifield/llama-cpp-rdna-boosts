@@ -32,6 +32,15 @@ loads, 0 saves.  The change is on the persistence path only (open/save); it does
 the seed math or any kernel, so same-seed coherence, the prefill-logit gate and the MTP field gate are
 unaffected (r60 results carry).
 
+**Published (2026-10-14).**  The delivery repo `main` was pushed (`c3b6857..92b05b0`) and the release
+tagged `v12-097cf33d9-r61` (annotated, on the release commit `92b05b0`); `release.yml` published the
+GitHub Release assets (`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`), and
+`validate.yml` is green on both the tag and `main`.  The fork's `rdna-boosts` branch was force-pushed to
+the personal fork (`a3459aad -> 7f15fb91d`, `--force-with-lease`).  The ROCm container images were
+rebuilt and pushed locally (`scripts/build-containers.sh --force --rocm "7.14.1 10.1" --push --prune`):
+15 tags, confirmed present in the GHCR package (`latest`/`rocm-10.1` updated 15:36Z); the registry
+retention prune deleted 0 versions (the previous base survives).
+
 ## 261014.005 (r60) -- the persistent cross-run MoE expert heat map (block 09)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r60` (base `097cf33d9`; canonical tip
