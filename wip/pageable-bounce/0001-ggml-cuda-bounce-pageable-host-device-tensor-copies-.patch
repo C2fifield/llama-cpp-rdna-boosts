@@ -1,0 +1,164 @@
+From b74553dd3fbc9d7c6f368d3e9962196a57c5308d Mon Sep 17 00:00:00 2001
+From: bsp2020 <bsp2020@gmail.com>
+Date: Tue, 13 Oct 2026 18:44:51 +0000
+Subject: [PATCH] ggml-cuda: bounce pageable host<->device tensor copies,
+ including strided D2H, through a pinned chunk
+
+On ROCm a copy to or from pageable host memory is slow at any size: a large one runs at ~2 GB/s through the
+runtime staging, a small one still costs ~25 us (1-D) / ~57 us (2-D) on gfx1201.  The server saves a context
+checkpoint (~118 MB of recurrent state in 512 KiB tensors) after every prompt, and its prompt-cache save reads a
+slot state as thousands of small row ranges (twice as many under -sm tensor, one 2-D copy per device).
+
+buffer_get_tensor, buffer_set_tensor (not weights) and buffer_get_tensor_2d now copy pageable host data through
+one reused 64 MiB pinned chunk per device.  A pinned host pointer keeps the direct copy; if the chunk cannot be
+allocated the copy stays direct and the allocation is not retried.  GGML_CUDA_BOUNCE_MIN sets the threshold in
+bytes (default 1 = every size, 0 = off).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cuda/ggml-cuda.cu  | 91 ++++++++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/vendors/hip.h |  5 ++
+ 2 files changed, 96 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 22f1b4dce..c0afb4651 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1072,6 +1072,51 @@ static void ggml_cuda_async_input_wait(int device, cudaStream_t stream) {
+     }
+ }
+ 
++// One reused pinned chunk per device for the bounce of pageable host copies (ggml_cuda_bounce_min).  The caller holds
++// `lock` for as long as it uses the chunk.  Returns nullptr if the chunk
++// cannot be allocated (pinned host memory exhausted; the error is cleared).  A failed allocation is not retried: the
++// bounce runs on every small copy, so a retry per call would put a failing 64 MiB hipHostMalloc on the hot path.
++static constexpr size_t ggml_cuda_pin_chunk_bytes = 64ull << 20;
++
++static char * ggml_cuda_pin_chunk(int device, std::unique_lock<std::mutex> & lock) {
++    static std::mutex mutex[GGML_CUDA_MAX_DEVICES];
++    static void *     buf[GGML_CUDA_MAX_DEVICES] = {};
++    static bool       failed[GGML_CUDA_MAX_DEVICES] = {};
++    lock = std::unique_lock<std::mutex>(mutex[device]);
++    if (buf[device] == nullptr && !failed[device] && cudaMallocHost(&buf[device], ggml_cuda_pin_chunk_bytes) != cudaSuccess) {
++        (void) cudaGetLastError();
++        buf[device]    = nullptr;
++        failed[device] = true;
++    }
++    return (char *) buf[device];
++}
++
++// A copy between the device and pageable host memory is slow on ROCm at any size: a large one runs at ~2 GB/s through
++// the runtime's own staging, and a small one still costs ~25 us (1-D) / ~57 us (2-D) on gfx1201.  The server's context
++// checkpoint (~118 MB of recurrent state in 512 KiB tensors) is saved after every prompt, before the first token, and
++// its prompt-cache save of a slot reads the KV / recurrent state as thousands of small row ranges (twice as many under
++// -sm tensor, one per device), so all such copies bounce through the reused pinned chunk instead.
++// Only a pageable host pointer bounces: a pinned one (e.g. a CUDA_Host graph input) already copies at full speed, so
++// the extra memcpy would be pure overhead.  If the chunk cannot be allocated the copy stays direct.
++// GGML_CUDA_BOUNCE_MIN sets the threshold in bytes (default 1 = every size, 0 or an unparsable value = off).
++static size_t ggml_cuda_bounce_min() {
++    static const size_t v = [] {
++        const char * e = getenv("GGML_CUDA_BOUNCE_MIN");
++        const size_t n = e != nullptr ? (size_t) atoll(e) : (size_t) 1;
++        return n != 0 ? n : SIZE_MAX;
++    }();
++    return v;
++}
++
++static bool ggml_cuda_host_ptr_pageable(const void * ptr) {
++    cudaPointerAttributes attr;
++    if (cudaPointerGetAttributes(&attr, ptr) != cudaSuccess) {
++        (void) cudaGetLastError();   // an unregistered host pointer is an error on some runtimes
++        return true;
++    }
++    return attr.type != cudaMemoryTypeHost && attr.type != cudaMemoryTypeDevice && attr.type != cudaMemoryTypeManaged;
++}
++
+ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+@@ -1081,6 +1126,20 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+         ggml_cuda_async_input_set(ctx->device, (char *) tensor->data + offset, data, size)) {
+         return;
+     }
++    // see ggml_cuda_bounce_min (the context checkpoint restore).  Model weights keep the direct copy: the loader's
++    // uploads stay as they were instead of paying one more memcpy per weight.
++    std::unique_lock<std::mutex> lock;
++    char * pin = nullptr;
++    if (size >= ggml_cuda_bounce_min() && ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
++        ggml_cuda_host_ptr_pageable(data) && (pin = ggml_cuda_pin_chunk(ctx->device, lock)) != nullptr) {
++        for (size_t done = 0; done < size; done += ggml_cuda_pin_chunk_bytes) {
++            const size_t n = std::min(ggml_cuda_pin_chunk_bytes, size - done);
++            memcpy(pin, (const char *) data + done, n);
++            CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset + done, pin, n, cudaMemcpyHostToDevice, cudaStreamPerThread));
++            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++        }
++        return;
++    }
+     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+@@ -1089,6 +1148,19 @@ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, co
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
++    // see ggml_cuda_bounce_min (the server's context checkpoint save)
++    std::unique_lock<std::mutex> lock;
++    char * pin = nullptr;
++    if (size >= ggml_cuda_bounce_min() && ggml_cuda_host_ptr_pageable(data) &&
++        (pin = ggml_cuda_pin_chunk(ctx->device, lock)) != nullptr) {
++        for (size_t done = 0; done < size; done += ggml_cuda_pin_chunk_bytes) {
++            const size_t n = std::min(ggml_cuda_pin_chunk_bytes, size - done);
++            CUDA_CHECK(cudaMemcpyAsync(pin, (const char *) tensor->data + offset + done, n, cudaMemcpyDeviceToHost, cudaStreamPerThread));
++            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++            memcpy((char *) data + done, pin, n);
++        }
++        return;
++    }
+     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+@@ -1134,6 +1206,25 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
++    // A 2-D D2H into pageable memory is slow on ROCm even when small (~57 us per call on gfx1201): under -sm tensor the
++    // server's prompt-cache save reads every split KV / recurrent-state row range this way, thousands of calls per slot.
++    // Pack the rows into the pinned chunk and scatter them on the host instead (see ggml_cuda_bounce_min).
++    std::unique_lock<std::mutex> lock;
++    char * pin = nullptr;
++    if (size > 0 && n_copies > 0 && size <= ggml_cuda_pin_chunk_bytes && size * n_copies >= ggml_cuda_bounce_min() &&
++        ggml_cuda_host_ptr_pageable(data) && (pin = ggml_cuda_pin_chunk(ctx->device, lock)) != nullptr) {
++        const size_t rows = ggml_cuda_pin_chunk_bytes / size;
++        for (size_t e0 = 0; e0 < n_copies; e0 += rows) {
++            const size_t n = std::min(rows, n_copies - e0);
++            CUDA_CHECK(cudaMemcpy2DAsync(pin, size, (const char *) tensor->data + offset + e0 * stride_tensor, stride_tensor,
++                    size, n, cudaMemcpyDeviceToHost, cudaStreamPerThread));
++            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++            for (size_t e = 0; e < n; ++e) {
++                memcpy((char *) data + (e0 + e) * stride_data, pin + e * size, size);
++            }
++        }
++        return;
++    }
+     CUDA_CHECK(cudaMemcpy2DAsync(
+         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+diff --git a/ggml/src/ggml-cuda/vendors/hip.h b/ggml/src/ggml-cuda/vendors/hip.h
+index da7e3da0b..01b655c57 100644
+--- a/ggml/src/ggml-cuda/vendors/hip.h
++++ b/ggml/src/ggml-cuda/vendors/hip.h
+@@ -85,6 +85,11 @@
+ #define cudaLaunchHostFunc hipLaunchHostFunc
+ #define cudaMalloc hipMalloc
+ #define cudaMallocHost(ptr, size) hipHostMalloc(ptr, size, hipHostMallocDefault)
++#define cudaMemoryTypeDevice hipMemoryTypeDevice
++#define cudaMemoryTypeHost hipMemoryTypeHost
++#define cudaMemoryTypeManaged hipMemoryTypeManaged
++#define cudaPointerAttributes hipPointerAttribute_t
++#define cudaPointerGetAttributes hipPointerGetAttributes
+ #define cudaMallocManaged hipMallocManaged
+ #define cudaMemAdvise hipMemAdvise
+ #define cudaMemcpy hipMemcpy
+-- 
+2.53.0
+
