@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261014.002 (docs, tooling) -- GHCR retention: prune old container versions on every `--push`
+
+**No delivery change** (`patches/`, `release.json` and the r57 tag are untouched; no new release).
+
+GHCR keeps every manifest ever pushed — a multi-arch image is an index version plus one version per
+architecture, and each time a moving tag advances the manifest it left behind stays as an untagged
+version — so `ghcr.io/stew675/llama-cpp-rdna-boosts` had grown to **942 versions** (only 18 of them the
+current r57 release, 876 untagged).  A second, larger package, **`llama.cpp` (4,752 versions, Jun 21 →
+Aug 28, only `buildcache-*` tags)** is a defunct leftover from before the fork renaming.
+
+**New tooling.**  `scripts/cleanup-ghcr.py` keeps a version when it is inside `--keep-days` (default 7)
+**or** carries a `*-<base>` tag for a `--keep-base`; deletes the rest; dry-run by default (`--apply`
+deletes, parallel via `xargs`/`gh api`).  It retries a GitHub bulk-delete throttle `--attempts` times
+and then reports `deleted=… remaining=…` as a warning — it never fails the build, so
+`scripts/build-containers.sh` now runs it automatically on `--push` with `--keep-days 7` and
+`--keep-base $(release.json .base)` (the images just pushed can never be deleted).  `--no-cleanup` opts
+out, `--keep-days N` widens the window.  Requires the `delete:packages` token scope
+(`gh auth refresh -h github.com -s delete:packages`).  Docs: `CONTAINERS.md` §Registry cleanup and
+`AGENTS.md`.
+
+**Applied today.**  `llama-cpp-rdna-boosts` **942 → 120 versions** (37 tags): the current base
+`097cf33d9` (r57) plus the previous base `a55e952b8` (Oct 8-12) as a one-release rollback, with the
+retired ROCm lines `7.2`/`7.14`/`10.0` and the old bases (`84e76d8a2`, `ebbb18522`, `d1d3c3396`,
+`790cf51aa`, `9113cc188`) gone.  The defunct `llama.cpp` package went 4,752 → 577 before GitHub's
+secondary bulk-delete limit throttled it; a single `gh api -X DELETE /user/packages/container/llama.cpp`
+finishes it when the limit clears, and the delivery package's remaining excess falls out of the rolling
+window on the next release's `--push`.
+
 ## 261014.001 (r57) -- the `-Wshadow` cleanup was clang-only: scope it to the dangerous class on GCC, fix the two GCC-only sites, and re-confirm the container ccache
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r57` (base `097cf33d9`; canonical tip

@@ -72,7 +72,7 @@ amendment, or a note in the relevant record).
 | `BASELINE.md` | fork point, patch provenance, drift policy |
 | `GREEDY-PURITY.md` | the purity rulebook (index + invariants + per-finding claims); dated narratives/evidence are in `archive/docs/GREEDY-PURITY-FINDINGS.md` under the same `§` numbers |
 | `patches/` | **the delivery set** (0000-0011: block 00 + blocks 01-11) + apply README; block-by-block notes live in `patches/README.md` (the dated notes below the V2.0 header use the pre-V2.0 16-block numbering) |
-| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
+| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `cleanup-ghcr.py` (GHCR version retention; called by `build-containers.sh --push`), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
 | `rdna-boosts-all.patch` | the entire 12-patch net as ONE patch (fork point only) |
 | `benchmarks/` | dated bench records + methodology; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) and **`prefill-logit-methodology.md` = the prefill-logit KLD gate** (run before shipping any prefill-kernel change or release) |
 | `prompts/` | versioned, hash-stable test prompts; sizes/token counts/**sha256** in `prompts/README.md`. A shipped prompt is **never edited in place** (add a new file); a result is only valid against the prompt hash it names |
@@ -363,10 +363,11 @@ Pushing policy.  The fast CI workflows stay: `validate.yml` (per-push patch vali
 
 ```bash
 gh auth refresh -h github.com -s write:packages            # once; podman needs write:packages
+gh auth refresh -h github.com -s delete:packages           # once; the GHCR retention prune needs it
 gh auth token | podman login ghcr.io -u stew675 --password-stdin
 
 ./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
-./scripts/build-containers.sh --rocm "7.14.1 10.1" --push # the full release build
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push # full release build (+ registry prune)
 # fast smoke, no push:
 ./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server
 ```
@@ -390,6 +391,13 @@ whose sources mostly match the previous one recompiles only the delta.
 locally built `ghcr.io/...` images and dangling build layers, keeping the ROCm base images and the ccache
 store so the next build neither re-pulls ~20 GB per line nor recompiles from cold.  Do **not** use
 `podman system prune -a` for this (it takes the base images and ccache with it).
+
+**The push also prunes the GHCR package.**  GHCR keeps every manifest ever pushed (an index plus one
+version per architecture, plus whatever a moving tag left behind), so the package grows without bound;
+`scripts/cleanup-ghcr.py` runs automatically on `--push` and deletes everything outside a rolling
+`--keep-days` window (default **7**, one release cycle) while **always keeping the current base's
+`*-<base>` tags** — the images just pushed can never be deleted.  `--no-cleanup` skips it.  A GitHub
+bulk-delete throttle (secondary rate limit) is a warning, not a failure; re-run the tool to finish.
 
 **Only ROCm 7.14.1 and 10.1 are built by default.**  7.2 (`-complete`) is much slower and is manual-only.
 

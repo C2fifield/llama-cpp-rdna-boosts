@@ -30,6 +30,14 @@
 #   --prune            after a successful --push, remove the locally built
 #                      images and dangling build layers (the base images and
 #                      the ccache store are kept)
+#   --cleanup          (default, with --push) prune the GHCR package's versions
+#                      outside the rolling window, so the registry does not
+#                      accumulate every manifest ever pushed.  Always keeps the
+#                      current release's base tags and --keep-days of history.
+#   --no-cleanup       skip the registry prune
+#   --keep-days N      registry retention window in days (default 7; one
+#                      release cycle, so the previous base survives as a
+#                      rollback)
 #   --prepare-only     prepare + verify the source tree, then exit
 #   --force            recreate --src if it is not the release tree
 #   --no-cache         pass --no-cache to the container engine
@@ -58,6 +66,8 @@ ARCH=""
 TARGETS="full light server"
 PUSH=0
 PRUNE=0
+CLEANUP=1        # GHCR retention runs on --push; --no-cleanup disables it
+KEEP_DAYS=7
 PREPARE_ONLY=0
 FORCE=0
 NO_CACHE=""
@@ -75,6 +85,9 @@ while [ $# -gt 0 ]; do
         --targets)      TARGETS="$2"; shift 2 ;;
         --push)         PUSH=1; shift ;;
         --prune)        PRUNE=1; shift ;;
+        --cleanup)      CLEANUP=1; shift ;;
+        --no-cleanup)   CLEANUP=0; shift ;;
+        --keep-days)    KEEP_DAYS="$2"; shift 2 ;;
         --prepare-only) PREPARE_ONLY=1; shift ;;
         --force)        FORCE=1; shift ;;
         --no-cache)     NO_CACHE="--no-cache"; shift ;;
@@ -86,6 +99,7 @@ done
 if [ "$PRUNE" -eq 1 ] && [ "$PUSH" -ne 1 ]; then
     die "--prune requires --push (refusing to delete images that were not published)"
 fi
+case "$KEEP_DAYS" in ''|*[!0-9]*) die "--keep-days must be a non-negative integer (got: $KEEP_DAYS)" ;; esac
 
 command -v jq >/dev/null || die "jq is required"
 [ -f "$MANIFEST" ] || die "$MANIFEST not found"
@@ -261,4 +275,20 @@ if [ "$PRUNE" -eq 1 ]; then
         "$ENGINE" rmi -f $imgs
     fi
     "$ENGINE" image prune -f
+fi
+
+# Registry retention: GHCR keeps every manifest ever pushed (an index plus one
+# version per architecture, and the manifest a moving tag left behind).  Prune
+# outside the rolling window, always keeping the current release's base tags so
+# the images just pushed can never be deleted.  A GitHub bulk-delete throttle is
+# a warning, not a failure: the images are published either way.  Requires the
+# `delete:packages` token scope (gh auth refresh -h github.com -s delete:packages).
+if [ "$PUSH" -eq 1 ] && [ "$CLEANUP" -eq 1 ]; then
+    echo
+    echo "==> pruning GHCR versions outside the last $KEEP_DAYS days (base $base kept)"
+    if ! python3 "$REPO_DIR/scripts/cleanup-ghcr.py" \
+            --package "${IMAGE##*/}" --keep-days "$KEEP_DAYS" --keep-base "$base" --apply; then
+        echo "WARNING: GHCR cleanup failed; the images are pushed.  Re-run:" >&2
+        echo "  scripts/cleanup-ghcr.py --package ${IMAGE##*/} --keep-days $KEEP_DAYS --keep-base $base --apply" >&2
+    fi
 fi

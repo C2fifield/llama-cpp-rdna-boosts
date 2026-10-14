@@ -261,3 +261,44 @@ release is the waste a bare `podman system prune -a` causes:
 ```bash
 ./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune
 ```
+
+### Registry cleanup (GHCR)
+
+GHCR keeps every manifest ever pushed: a multi-arch image is an index version
+plus one version per architecture, and every time a moving tag advances the
+manifest it left behind stays as an untagged version.  That is thousands of
+unreachable versions per year.  On every `--push`, `build-containers.sh` now
+prunes them with [`scripts/cleanup-ghcr.py`](scripts/cleanup-ghcr.py):
+
+* **keep** any version created within `--keep-days` (default **7**, about one
+  release cycle, so the previous base survives as a rollback), and
+* **keep** any version carrying a `*-<base>` tag for the current release's base
+  (`--keep-base`, from `release.json`), so the images just pushed can never be
+  deleted,
+* **delete** everything else.
+
+```bash
+# normal release: cleanup is on with --push
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune
+
+# opt out, or widen/narrow the window
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune --no-cleanup
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune --keep-days 14
+```
+
+The prune needs a token with the **`delete:packages`** scope (once):
+
+```bash
+gh auth refresh -h github.com -s delete:packages
+```
+
+A GitHub bulk-delete throttle (the secondary rate limit on destructive calls) is
+reported as a warning, not a failure — the images are published either way, and
+re-running finishes the prune.  Without the scope the cleanup is skipped with a
+warning.  The tool is dry-run by default (`--apply` deletes); run it by hand any
+time to see the plan, or to prune a different package (e.g. a defunct one):
+
+```bash
+./scripts/cleanup-ghcr.py --package llama-cpp-rdna-boosts --keep-days 7
+./scripts/cleanup-ghcr.py --package llama-cpp-rdna-boosts --keep-days 7 --apply
+```
