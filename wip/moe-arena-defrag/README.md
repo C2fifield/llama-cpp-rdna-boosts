@@ -1,11 +1,11 @@
 # `moe-arena-defrag` — hotness-aware table placement, heterogeneous expert sizes, and (later) a repack at idle
 
-**Status: OPEN (seeded 2026-10-15); phase 1 selected for the next session, phases 3-4 PARKED.**  Not part
+**Status: OPEN (seeded 2026-10-14); phase 1 selected for the next session, phases 3-4 PARKED.**  Not part
 of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead (see
 `AGENTS.md`).  Seeded from a code review of the movable-boundary slab and the expert-cache arena
 (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/moe-expert-cache.cu`).
 
-**Maintainer decision (2026-10-15): phase 1 only for now.**  The relocate/repack (3/4) "sounds like it
+**Maintainer decision (2026-10-14): phase 1 only for now.**  The relocate/repack (3/4) "sounds like it
 may take multiple sessions to get right"; it is kept below as a scoping note, not as this session's work.
 
 This is the campaign for the maintainer's Q2: *"not all experts are of equal size. How are we handling
@@ -134,7 +134,7 @@ boundary move may not need all the chunks it asks for if the only way to get the
 That is a policy question for the slab (it currently assumes eviction frees everything it needs); worth
 a measurement before coding.
 
-### 2.3 Phase 3 — repack/relocate at decode idle (the real "defrag") — **PARKED (maintainer, 2026-10-15)**
+### 2.3 Phase 3 — repack/relocate at decode idle (the real "defrag") — **PARKED (maintainer, 2026-10-14)**
 
 A `moe_cache_repack_idle()` pass, run where `moe_cache_rearm` already runs (decode idle), that:
 
@@ -166,7 +166,7 @@ Hazards to solve before this is shippable:
   cache-policy change (same-seed output must be identical because the expert *values* are identical;
   admission decisions may differ but the math must not).
 
-### 2.4 Phase 4 — selective (partial) eviction — **PARKED (maintainer, 2026-10-15)**
+### 2.4 Phase 4 — selective (partial) eviction — **PARKED (maintainer, 2026-10-14)**
 
 If phase 3 shows a table is only barely over the boundary, a cheaper primitive is to **shrink it in
 place**: because the arena is unit-rounded, the tail (highest offset) may contain free units; move any
@@ -192,13 +192,13 @@ the boundary.  Keep it on the list but expect phase 1/3 to dominate.
 
 ## 4. Open questions for the maintainer
 
-* **Q2a (RESOLVED 2026-10-15).**  Keep per-layer slot uniformity; phase 1 does not touch slot counts.
+* **Q2a (RESOLVED 2026-10-14).**  Keep per-layer slot uniformity; phase 1 does not touch slot counts.
   A per-table slot count is parked with phases 3-4.
-* **Q2b (RESOLVED 2026-10-15).**  Phase 1 ships on top of campaign 1's persisted map; the fallback is
+* **Q2b (RESOLVED 2026-10-14).**  Phase 1 ships on top of campaign 1's persisted map; the fallback is
   expert-id order, so it is independently testable.  The two are developed together but ship separately.
-* **Q2c (RESOLVED 2026-10-15).**  Phase 3 (repack) is **parked** — multiple sessions, real purity/state
+* **Q2c (RESOLVED 2026-10-14).**  Phase 3 (repack) is **parked** — multiple sessions, real purity/state
   hazards.  Phase 1 (placement reorder) is this session's deliverable.
-* **Q2d (RESOLVED 2026-10-15).**  The placement order is **frozen at sizing** (as today).  A re-arm
+* **Q2d (RESOLVED 2026-10-14).**  The placement order is **frozen at sizing** (as today).  A re-arm
   restores `g_rearm_slots` and does not reshuffle addresses.
 
 ## 5. Gates

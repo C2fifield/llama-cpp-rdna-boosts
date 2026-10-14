@@ -1,6 +1,6 @@
 # `slab-transient-absorption` — move the optional device transients inside the slab so the headroom (and the arena) can grow
 
-**Status: OPEN (seeded 2026-10-15), scoping + findings.**  Not part of the delivery; nothing here may be
+**Status: OPEN (seeded 2026-10-14), scoping + findings.**  Not part of the delivery; nothing here may be
 applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from a code review of
 the movable-boundary slab and the CUDA backend's raw device allocations
 (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/common.cuh`,
@@ -27,7 +27,7 @@ resident experts at the same budget.
 The external floor (hipBLASLt Tensile code objects + workspace) is not controllable and must be
 **measured**, not assumed, before the headroom default can move.
 
-**Phase map (2026-10-15).**  The controlled transients split cleanly by operational phase, which is the
+**Phase map (2026-10-14).**  The controlled transients split cleanly by operational phase, which is the
 deciding question the maintainer asked: the wide-phase ones (FA staging `Q->ne[1] > 8`, H2D-ring
 fallback, MMB shadows `nrows >= 512`) can be allocated/dropped with the wide view exactly like the ring;
 the narrow-phase ones (Q8_1 from mmvq/norm/unary, the per-table remap, the AR scratch) are live on every
@@ -279,11 +279,11 @@ A/B is therefore not a global either/or: each consumer takes the mechanism its p
 
 ## 5. Open questions for the maintainer
 
-* **Q3a (RESOLVED 2026-10-15, pending measurement).**  Hybrid (C), **refined by the phase map (§3.0)**:
+* **Q3a (RESOLVED 2026-10-14, pending measurement).**  Hybrid (C), **refined by the phase map (§3.0)**:
   wide-phase → the existing ring/wide transient region; narrow-phase → a pinned narrow region
   (narrow-2's mechanism); MMB shadows → a capped pinned home that yields only under pressure.  The
   measurement then fixes the region sizes and the new headroom default.  No A-vs-B either/or remains.
-* **Q3b (DEFERRED 2026-10-15).**  Keep `GGML_CUDA_SLAB_HEADROOM_MIB` as is for now, **monitor the slack**
+* **Q3b (DEFERRED 2026-10-14).**  Keep `GGML_CUDA_SLAB_HEADROOM_MIB` as is for now, **monitor the slack**
   as the absorption work lands, and set the default last — once the other campaigns' sizes have stopped
   moving.  (The maintainer: "determining the headroom seems like it's the last thing that should be done
   once everything else is secure".)

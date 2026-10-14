@@ -31,9 +31,20 @@ is the signature of a stub, not of a campaign.
 | [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
-| [`moe-heatmap-persistence/`](moe-heatmap-persistence/README.md) | persist the per-expert heat map across runs and pre-populate the arena at sizing; the in-run `MOE_EXPERT_CACHE_PREFILL_SEED` prior is **dead** (sizing fires before the prompt's routing is tallied, and the default staging path skips the tally hook) and the identity fast path records no heat at all, so the feed must be a **device-side tally (R2)** | **OPEN (seeded 2026-10-15); R2 + persistence implemented and validated (`heatmap-persistence.patch`): +34 % first-turn / +10.3 % 256-token decode on a constrained arena, fills 2.8-4x lower; promotion + `MOE_EXPERT_CACHE_PREFILL_SEED` repair next** |
-| [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-15); phase 1 (placement) selected, phases 3-4 parked** |
-| [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-15); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
+| [`moe-layer-stagger/`](moe-layer-stagger/README.md) | stagger the host/device expert-layer split by ratio (even layers device, odd host) instead of the contiguous "first N layers to host", so the H2D expert upload is spread across the prefill instead of exposed as one host-only stretch | **OPEN (seeded 2026-10-14), scoping + measurement** |
+| [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
+| [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
+
+**Promoted (r60, 2026-10-14).**  `moe-heatmap-persistence/` left `wip/`: the persistent cross-run expert
+heat map (device-side routing tally + on-disk sidecar + seed-at-sizing + heat-ordered layer placement)
+was folded into **block 09** and is **default-on** (`MOE_EXPERT_HEATMAP=0` is the kill switch).  Measured
+on `MOE_EXPERT_CACHE_MIB=4096`: **+34 % decode over a 48-token turn** (38.15 -> 51.30 t/s, hit 0.767 ->
+0.940, fills 11748 -> 2976) and **+10.3 % over 256 tokens** (48.53 -> 53.55 t/s); prefill unchanged.
+Gates: same-seed coherence byte-identical, prefill-logit KLD 0.000707 / 98.755 %, MTP `none == n3`,
+`MUL_MAT_ID` no regression, `validate-set.sh` green.  The record moved to
+`archive/work/moe-heatmap-persistence/` (with a `RESOLUTION.md`); the residuals
+(`MOE_EXPERT_CACHE_PREFILL_SEED` repair, the decode-identity tally gap, the dead `moe_cache_observe`)
+are in `TODO.md`.  See `WORKLOG.md` 261014.005.
 
 **Resolved (r59, 2026-10-14).**  Issue #139 (`@briansp2020`, the internal all-reduce spin timeout) was
 fixed in **block 01**: the spin budget is now wall-clock time (`wall_clock64()` sized by

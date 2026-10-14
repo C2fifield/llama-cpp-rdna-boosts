@@ -80,8 +80,21 @@ the slack up front moves the cost to before the arena is sized.
 | `MOE_EXPERT_CACHE_PROVISIONAL` | `1` | kill-switch | provisional eviction during a pass. |
 | `MOE_EXPERT_CACHE_PREFILL_SEED` | `1` | kill-switch | seed the cache during prefill. |
 | `MOE_EXPERT_CACHE_PREFILL_SEED_N` | `0` | tuning | how many prefill seeds (0 = default). |
+| `MOE_EXPERT_HEATMAP` | `1` | kill-switch | **persistent cross-run expert heat map** (r60, block 09).  On: the cache tallies a long-horizon per-expert use count (device-side on the prefill band, host-side on the eager decode band) and writes it to a sidecar next to the model; the next run seeds the arena with the hottest experts at sizing and allocates the hottest **layers** first (so the work-pool boundary reclaims the coldest).  Measured on `MOE_EXPERT_CACHE_MIB=4096`: **+34 % decode over a 48-token turn** (38.15 -> 51.30 t/s, hit 0.767 -> 0.940, fills 11748 -> 2976) and **+10.3 % over 256 tokens** (48.53 -> 53.55 t/s, fills 19452 -> 6912); prefill unchanged.  It is a placement prior only (the expert bytes are unchanged), so the output is bit-identical.  `0` restores the exact pre-change behaviour. |
+| `MOE_EXPERT_HEATMAP_DIR` | unset | tuning | directory for the sidecar when the model directory is not writable.  Otherwise the fallback order is `$XDG_CACHE_HOME/llama-moe-heatmap`, `$HOME/.cache/llama-moe-heatmap`, `/tmp`. |
+| `MOE_EXPERT_HEATMAP_DEBOUNCE_S` | `60` | tuning | minimum seconds between heat-map writes (the server flushes at turn end; process exit always flushes). |
+| `MOE_EXPERT_HEATMAP_MAX_FAILS` | `3` | tuning | consecutive write failures before persistence is disabled for the session (non-fatal throughout). |
 | `GGML_MOE_CACHE_MAX_TOK` | device MMVQ band (16 on RDNA4; 8 on RDNA3, NVIDIA) | kill-switch | caps the expert-cache **decode/verify band** (routed `MUL_MAT_ID` tokens the cache serves from the arena).  It defaults to the routed-expert MMVQ kernel's own band on the device since r31; `8` restores the pre-r31 band (band widening in `archive/work/moe-cache-band16/`).  A non-numeric value silently yields 1. |
 | `GGML_MOE_GATHER_ONCE` | off | diagnostic | gather each expert once per pass. |
+
+> **Heat map (r60).**  The per-expert heat map is **on by default** whenever the cache is active on
+> host-expert tables (`MOE_EXPERT_CACHE_MIB` auto/positive and a `-ncmoe`/`-cmoe` model).  Its sidecar
+> is `<gguf>.moe-heatmap` (geometry-keyed, atomic `tmp`+`rename`, debounced 60 s, non-fatal on failure);
+> if the model directory is read-only it falls back to `MOE_EXPERT_HEATMAP_DIR` / the XDG cache.  It is
+> a **placement prior only**: the expert bytes are unchanged, so a run's output is bit-identical and
+> `MOE_EXPERT_HEATMAP=0` reproduces the pre-change behaviour exactly.  The in-run
+> `MOE_EXPERT_CACHE_PREFILL_SEED` remains as a second (weaker) seed source; the heat map is applied
+> first.  See `patches/README.md` (block 09, r60) and `archive/work/moe-heatmap-persistence/`.
 
 > **REMOVED — do not reintroduce (2026-10-10, released r40).**  The device-remap path and its whole family
 > (`MOE_EXPERT_CACHE_DEVMAP`, `MOE_EXPERT_CACHE_DEVPOLICY`, `MOE_EXPERT_CACHE_DEVPOLICY_SPLIT`,

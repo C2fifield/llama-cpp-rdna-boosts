@@ -5,10 +5,16 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r59`** (canonical tip `e1b2a41ed`, net tree
-`59b9a7faeb2c975994fabdb2cfb6761a6beda560`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green), whitespace-clean (`git am --whitespace=error-all`), the rebuilt tip tree byte-identical to the
-gated tree, 4B same-seed greedy unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %).  r59
+**`097cf33d9`**, released as **`v12-097cf33d9-r60`** (canonical tip `a3459aad`, net tree
+`ec37675ec797392508e560616d320d8cc09efd86`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
+unchanged, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), adaptive-MTP `none == n3` on
+`-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
+pre-existing upstream `f16 dup=1` fails as r53).  r60 adds the **persistent cross-run MoE expert heat
+map** to **block 09**: a device-side prefill routing tally, an on-disk `<gguf>.moe-heatmap` sidecar
+(atomic, debounced, geometry-keyed), seed-at-sizing as provisional slots, and heat-ordered layer
+placement; default on (`MOE_EXPERT_HEATMAP=0` disables).  Measured +34 % decode over a 48-token turn and
++10.3 % over 256 on a `MOE_EXPERT_CACHE_MIB=4096` host-expert config.  Before it, r59
 lands **issue #139** in **block 01**: the hybrid all-reduce's spin budget is now wall-clock time
 (`wall_clock64()` sized by `hipDeviceAttributeWallClockRate`, because on gfx1201 `clock64()` steps
 backwards while a queue is stopped and wraps the budget), `GGML_CUDA_AR_SPIN_TIMEOUT_MS` is a **soft**
@@ -21,7 +27,8 @@ return); a DFlash draft no longer re-reserves the target's compute buffers at th
 (5 -> 4 reserves).  Before it, r57 closed the `-Wshadow` gap the container (GCC) build exposed: **block 00**
 (the `llama` C++ target uses `-Wshadow=local` for GNU and `-Wshadow` for clang), **block 09** (the AMX
 buffer type lists the three appended `ggml_backend_buffer_type_i` members) and **block 10** (the
-`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r59 record is `WORKLOG.md` 261014.004;
+`size_t >= 0` tautology in `llama-lazy-reader.cpp`).  The r60 record is `WORKLOG.md` 261014.005;
+r59 is `WORKLOG.md` 261014.004;
 r58 is `WORKLOG.md` 261014.003; r57 is `WORKLOG.md` 261014.001; r56 is
 `WORKLOG.md` 261013.007; r55 is `WORKLOG.md` 261013.005; r54 is `WORKLOG.md` 261013.004 (release
 `v12-097cf33d9-r53`, tip `4b27ac644`, tree `4083fd0ebed7c4659bd3254b2ab5a9f9906a209e`); the r52 fold is

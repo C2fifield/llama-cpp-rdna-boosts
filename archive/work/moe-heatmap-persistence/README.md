@@ -1,6 +1,6 @@
 # `moe-heatmap-persistence` — remember the hot expert set across runs and pre-populate the arena
 
-**Status: OPEN (seeded 2026-10-15), scoping + findings.**  Not part of the delivery; nothing here may be
+**Status: OPEN (seeded 2026-10-14), scoping + findings.**  Not part of the delivery; nothing here may be
 applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
 Seeded from a code review of the host-resident MoE expert system
 (`ggml/src/ggml-cuda/moe-expert-cache.{h,cu}`, `ggml/src/ggml-cuda/ggml-cuda-slab.cu`,
@@ -29,7 +29,7 @@ keyed by the model geometry, and load it as the `apply_prefill_seed_locked` rank
 A dedicated manager thread is optional (a low-priority write at decode-idle or process exit is enough);
 the feed is the existing per-op `access_locked` path, which is already under `g_mutex`.
 
-## 0.1 Decisions (maintainer, 2026-10-15)
+## 0.1 Decisions (maintainer, 2026-10-14)
 
 1. **On-disk heat map, default-on when the slab is active.**  Acceptable and desirable.  Enabled by
    default when the MoE expert cache is running against host-expert tables (the movable-boundary slab is
@@ -148,7 +148,7 @@ new thread to the server.
 
 ### F5 — the arena's *table placement* is also hotness-blind (folded out to campaign 2)
 
-Nothing here ranks **tables**; campaign [`../moe-arena-defrag/`](../moe-arena-defrag/README.md) covers
+Nothing here ranks **tables**; campaign [`../../wip/moe-arena-defrag/`](../../wip/moe-arena-defrag/README.md) covers
 the slab placement / boundary-move side.  The two share the heat accumulator, so they should be designed
 together even though they can ship separately.
 
@@ -304,7 +304,7 @@ information to a file") describes a design where the cache has its own writer.  
 * Trigger the flush at **decode idle** (the server's "all slots are idle" / turn end) rather than a
   timer, so a busy server never pays disk I/O.
 
-### 2.6 R2 prototype — implemented and validated (2026-10-15)
+### 2.6 R2 prototype — implemented and validated (2026-10-14)
 
 Patch: [`r2-device-tally.patch`](r2-device-tally.patch) (3 files, +219 lines; `ggml-cuda.cu`,
 `moe-expert-cache.{cu,h}`).  Env-gated **OFF** as a WIP prototype: `MOE_EXPERT_HEATMAP=1` (the
@@ -359,7 +359,7 @@ measurable cost.  The device kernel is a few launches per prefill ubatch; the de
 3. `moe_cache_get_stats` does not expose the heat; the per-turn server seam (`server-context.cpp:737`)
    is the natural flush trigger for the debounced write.
 
-### 2.7 Persistence — implemented and validated (2026-10-15)
+### 2.7 Persistence — implemented and validated (2026-10-14)
 
 Patch: [`heatmap-persistence.patch`](heatmap-persistence.patch) (**R2 + persistence**, +592 lines over
 the three files; it is the canonical prototype — [`r2-device-tally.patch`](r2-device-tally.patch) is
@@ -426,14 +426,14 @@ original question ("stop evicting hot experts at start-up"): the arena no longer
 
 ## 4. Resolved and remaining questions
 
-**Resolved by the maintainer (2026-10-15):** on-disk is acceptable and default-on when the slab is
+**Resolved by the maintainer (2026-10-14):** on-disk is acceptable and default-on when the slab is
 active; sidecar in the model directory; keyed per geometry; non-fatal failures with session
 deactivation after repeated soft-fails; staged writes; 60 s debounce; phase 1 (placement) is the arena
 deliverable.
 
 **Still open:**
 
-* **Q1a (RESOLVED 2026-10-15).**  Read-only model directories (the delivery's container case) **fall back
+* **Q1a (RESOLVED 2026-10-14).**  Read-only model directories (the delivery's container case) **fall back
   to a well-defined writable directory** rather than deactivating.  Chosen: try the model-dir sidecar
   first; if it cannot be opened for write, fall back to `$MOE_EXPERT_HEATMAP_DIR` if set, else
   `$XDG_CACHE_HOME/llama-moe-heatmap/<geometry-digest>` (`$HOME/.cache/...` when `XDG_CACHE_HOME` is
@@ -447,7 +447,7 @@ deliverable.
 * **Q1c — flush trigger.**  Strictly the 60 s debounce, or also the server decode-idle seam?  The
   maintainer asked for debounce; a final flush at `atexit` is mandatory (a 60 s window must not lose the
   last run).  **Proposal:** debounce + `atexit` + optional idle.
-* **Q1d — scope split (REVISED 2026-10-15).**  The heat map, the device-side tally (R2) and the placement
+* **Q1d — scope split (REVISED 2026-10-14).**  The heat map, the device-side tally (R2) and the placement
   (campaign 2) are one dependency chain: **R2 is the feed**, the map is the storage, placement is the
   consumer.  **Recommendation: R2 first**, then the map, then placement.  The map's format/lifecycle can
   be developed in parallel with R2 (only the feed depends on it).
@@ -475,6 +475,6 @@ deliverable.
 * `tools/server/server-context.cpp:737` — the per-turn stats seam.
 * `ENVIRONMENT.md` §1.2.1 — `MOE_EXPERT_CACHE_*`, `MOE_HOST_POOL_*`.
 * `archive/work/moe-expert-cache/` — the feature's own history (session 14 = the seed measurement).
-* Campaigns: [`../moe-arena-defrag/`](../moe-arena-defrag/README.md) (table placement, shares the heat
-  accumulator), [`../host-expert-master-drop/`](../host-expert-master-drop/README.md) (the pool tier the
+* Campaigns: [`../../wip/moe-arena-defrag/`](../../wip/moe-arena-defrag/README.md) (table placement, shares the heat
+  accumulator), [`../../wip/host-expert-master-drop/`](../../wip/host-expert-master-drop/README.md) (the pool tier the
   heat map could pre-warm too).

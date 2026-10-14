@@ -11,7 +11,26 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r59` (2026-10-14) -- issue #139: wall-clock AR spin budget + a soft timeout that keeps waiting (block 01):**
+> **Current release `v12-097cf33d9-r60` (2026-10-14) -- the persistent cross-run MoE expert heat map (block 09):**
+> canonical tip `a3459aad`, net tree `ec37675ec797392508e560616d320d8cc09efd86`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed
+> greedy unchanged, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP `none == n3` on
+> `-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
+> pre-existing upstream `f16 dup=1` fails as r53).  **block 09** (`moe-expert-cache.{cu,h}`,
+> `ggml-cuda.cu`) now learns which experts are hot **across runs** and starts warm:
+> a **device-side prefill routing tally** (`moe_cache_heat_observe`, launched from the *outer*
+> `mul_mat_id` entry so the identity, eager and staged-prefill paths are all covered; the decode band is
+> tallied on the host), an **on-disk sidecar** `<gguf>.moe-heatmap` (`MHT1` records keyed per table
+> geometry; atomic `tmp`+`fsync`+`rename`; 60 s debounce with an exit flush; read-only-model-dir fallback
+> to `MOE_EXPERT_HEATMAP_DIR`/XDG cache; non-fatal, disabling after 3 failures; merge-on-save),
+> **seed-at-sizing** as provisional slots, and **heat-ordered layer placement** (the hottest layers are
+> allocated first, so the work-pool boundary reclaims the coldest).  Default **on**; `MOE_EXPERT_HEATMAP=0`
+> is the kill switch.  Measured (35B-A3B UD-Q4_K_M, `-sm layer -ncmoe 40`, `MOE_EXPERT_CACHE_MIB=4096`):
+> **+34 % decode over a 48-token turn** (38.15 -> 51.30 t/s, hit 0.767 -> 0.940, fills 11748 -> 2976) and
+> **+10.3 % over 256 tokens** (48.53 -> 53.55 t/s, fills 19452 -> 6912); prefill unchanged.  The arena no
+> longer starts cold.  See `../WORKLOG.md` 261014.005 (r60); residuals in `../TODO.md` #64.
+>
+> **Previous release `v12-097cf33d9-r59` (2026-10-14) -- issue #139: wall-clock AR spin budget + a soft timeout that keeps waiting (block 01):**
 > canonical tip `e1b2a41ed`, net tree `59b9a7faeb2c975994fabdb2cfb6761a6beda560`; strict **12/12**
 > `git am` (`validate-set.sh` green), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed greedy byte-identical
 > to r58, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, 2-GPU `-sm tensor` `llama-bench` no

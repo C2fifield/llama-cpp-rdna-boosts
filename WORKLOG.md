@@ -1,5 +1,68 @@
 # WORKLOG - dated delivery records
 
+## 261014.005 (r60) -- the persistent cross-run MoE expert heat map (block 09)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r60` (base `097cf33d9`; canonical tip
+`a3459aada97288b520504f5716c37d628f41a58d`, net tree `ec37675ec797392508e560616d320d8cc09efd86`; 12
+blocks; `validate-set.sh` green on a fresh tarball, checksums + strict `git am` + tree match).  **Block 09**
+is amended (no new block); blocks 10/11 are re-cut unchanged on top (their patch SHAs change with the
+rebase).
+
+The host-resident MoE expert cache now learns **which experts are hot across runs** and starts warm:
+
+- **A device-side prefill routing tally (R2).**  `moe_cache_heat_observe` is launched from the **outer**
+  `ggml_cuda_mul_mat_id` entry (the cache's slot-remap redirect re-enters that function with a stack
+  `src0` whose `buffer` is null, so the outer entry is the one that still carries the graph's true raw
+  ids).  This is what makes the tally cover **every** path: the identity take-over, the eager host-routing
+  path, and the staged prefill that never reaches the host hook.  The decode band is tallied on the host
+  instead (`moe_cache_update_host`, which already iterates the true routing), so the two feeds are
+  band-disjoint, nothing is double-counted, and the decode latency path gains no launch.  Before this a
+  **fully-resident** run recorded no per-expert heat at all (`takeover=1`, `hits=16`); now it produces a
+  full map from the prefill tally (measured: heat total 4.9M, 27873/29952 experts nonzero, top L38
+  e209 = 4554) -- and the prefill routing turned out to be an excellent proxy for the decode hot set
+  (L38 e209: 4571 on a partial run vs 4554 prefill-only).
+- **An on-disk sidecar** `<gguf>.moe-heatmap`, derived from the GGUF path the loader already hands the
+  host pool (`moe_cache_set_host_source`), so no new loader/iface plumbing.  `MHT1` fixed-size records
+  keyed by `(layer, sem_role, n_experts, host_bytes)`; a mismatch (a re-quantised model) is a cold table,
+  never fatal.  Atomic staged write (`<path>.tmp.<pid>` -> `fsync` -> `rename`), debounced
+  (`MOE_EXPERT_HEATMAP_DEBOUNCE_S`, default 60 s) at the server's per-turn `moe_cache_get_stats` seam with
+  a mandatory process-exit flush, and merge-on-save (a long EWMA across runs).  A non-writable model
+  directory (the container case) falls back to `MOE_EXPERT_HEATMAP_DIR`, else the XDG cache.  Persistence
+  failures are non-fatal and disable it for the session after `MOE_EXPERT_HEATMAP_MAX_FAILS` (default 3).
+- **A seed at sizing.**  `apply_heat_seed_locked` bulk-admits the top-`slots` experts as **provisional**
+  slots (they yield to a real hot expert immediately), applied before the in-run prefill seed.
+- **Heat-ordered layer placement** (the `moe-arena-defrag` campaign's phase 1): `alloc_all_locked`
+  allocates layers in **descending heat**, so the hottest sit highest in VA and are the last the
+  work-pool boundary reaches; the order is frozen at sizing and falls back to ascending layer when no
+  heat is present.
+
+Env (all documented in `ENVIRONMENT.md` §1.2): `MOE_EXPERT_HEATMAP` (**default 1**, kill switch),
+`MOE_EXPERT_HEATMAP_DIR`, `MOE_EXPERT_HEATMAP_DEBOUNCE_S`, `MOE_EXPERT_HEATMAP_MAX_FAILS`.
+
+**Measured (35B-A3B UD-Q4_K_M, `-sm layer -ncmoe 40`, `MOE_EXPERT_CACHE_MIB=4096`, 5256-token prompt,
+same seed).**  The arena no longer starts cold:
+
+| turn | run | hit rate | fills | decode t/s |
+|---|---|---:|---:|---:|
+| 48 tok | cold (no map) | 0.7674 | 11748 | 38.15 |
+| 48 tok | warm (seeded) | **0.9402** | **2976** | **51.30 (+34 %)** |
+| 256 tok | cold (no map) | 0.9060 | 19452 | 48.53 |
+| 256 tok | warm (seeded) | **0.9561** | **6912** | **53.55 (+10.3 %)** |
+
+Prefill is unchanged (1050 vs 1059 t/s) and the seed cost lands in the warmup/sizing phase, not the
+measured turn.
+
+**Gates.**  Same-seed coherence heat-on vs heat-off **byte-identical**; `scripts/gate-prefill-logits.sh`
+**PASS** (mean KLD **0.000707**, same-top-p **98.755 %**, exactly the recorded base); adaptive-MTP purity
+on the field config (`-sm tensor -ncmoe 99`, auto cache) `none == n3` **identical**;
+`test-backend-ops -o MUL_MAT_ID` the same **4 pre-existing** upstream `f16 dup=1` fails as the r53
+baseline (documented), no regression; `scripts/validate-set.sh` green.
+
+**Residuals** (deliberately not promoted) are `TODO.md` #64: the `MOE_EXPERT_CACHE_PREFILL_SEED`
+repair / host-pool warm order, the decode-identity tally gap, and the now-dead `moe_cache_observe`.
+The campaign record (decisions, the phase map, the design Q&A) moved to
+`archive/work/moe-heatmap-persistence/` with a `RESOLUTION.md`.
+
 ## 261014.004 (r59) -- issue #139: the AR spin budget uses the wall clock, and a soft timeout keeps waiting (block 01)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r59` (base `097cf33d9`; canonical tip
