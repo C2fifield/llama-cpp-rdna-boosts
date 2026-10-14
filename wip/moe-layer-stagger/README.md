@@ -1,8 +1,18 @@
 # `moe-layer-stagger` — interleave the host- and device-resident MoE expert layers to hide H2D upload
 
-**Status: OPEN (seeded 2026-10-14), scoping + findings.**  Not part of the delivery; nothing here may be
+**Status: REFUTED (2026-10-14) — layer placement has no prefill effect; and the chosen basis
+(`-sm tensor` + `-ncmoe`) is a corrupt path.**  Result, data, method and the correctness blocker:
+[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md).  Not part of the delivery; nothing here may be
 applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from the maintainer's
 observation that the partial-offload split is a contiguous "first N layers to host, the rest to device".
+
+**Headline:** with the page-cache confound removed (run from a tmpfs model copy), four disjoint host
+sets (`0..23`, even, odd, `24..47`) are identical to 0.1 % at `-ncmoe 24`; the earlier "+12 % for
+stagger" was page-cache warm-up.  Partial-offload prefill is bound by the H2D of the whole host table
+per ubatch (~52-67 ms per host layer, over a PCIe **x4** switch link), so the *schedule* cannot matter —
+only fewer bytes (`-ub`, a correct gather, residency).  Separately, `-sm tensor -ncmoe > 0` emits
+garbage/NaN on 35B-A3B, gemma4 26B-A4B and Flash-Next GSQ unless `GGML_META_SPLIT_COPY=0` or
+`-sm layer` is used; this blocks the campaign's tensor-split basis.
 
 ## 0. The idea
 
