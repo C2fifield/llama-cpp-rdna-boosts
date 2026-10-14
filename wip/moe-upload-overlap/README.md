@@ -1,0 +1,128 @@
+# `moe-upload-overlap` — make the host-expert H2D upload actually overlap compute
+
+**Status: OPEN (seeded 2026-10-14), first measurements + instrumentation, cause not yet pinned.**
+Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead
+(see `AGENTS.md`).
+
+## 0. Why this exists (and what it replaces)
+
+`wip/moe-layer-stagger/` (now parked) asked whether *striding* the host/device layer split helps.  It
+does not — but chasing it produced the real finding:
+
+> **The host-expert upload is not overlapped with compute at all.**  Staggering (or any prefetch) can
+> only help once the ring transfer and the compute are travelling concurrently; today the transfer is
+> simply added to the compute time, so there is nothing to overlap and no schedule to improve.
+
+The maintainer's framing, and this campaign's thesis: *the H2D staging ring cannot improve anything
+unless the compute + ring transfer occur concurrently.*
+
+## 1. Measured (gfx1201, 2× R9700, ROCm 7.14.1, r62 `e909c529a`, cache off, heatmap off)
+
+Model `Qwen3.6-35B-A3B-Q8_0`: 41 layers (40 trunk + nextn), 256 experts, **816 MiB routed experts per
+layer**.  `-sm tensor`, `-p 4096 -b 4096 -ub 4096 -r 3 -fa 1 -t 8` (one ubatch ⇒ one upload/host layer):
+
+| config | pp4096 t/s | time |
+|---|---:|---:|
+| `-ncmoe 0` (full residency) | 8013 | 0.511 s |
+| `-ncmoe 4`, host `{0,1,2,3}` | 6587 | 0.622 s |
+| `-ncmoe 4`, host `{18,19,20,21}` | 6583 | 0.622 s |
+| `-ncmoe 4`, host `{36,37,38,39}` | 6585 | 0.622 s |
+
+`-sm layer` is the same (full-res 6716; `-ncmoe 4` `{0..3}` 5141 vs `{36..39}` 5146).
+
+* **Placement is a no-op in both split modes.**  Moving 4 host layers from the front to the back
+  changes nothing, so the upload is not being hidden behind the 36 device layers' compute.
+* **The added cost is exactly the raw transfer.**  +0.111 s for 4 layers = 4 × 816 MiB = 3.4 GB,
+  ~1.7 GB/card at ~15 GB/s ≈ 0.11 s.  Per layer that is a flat **23–27 ms**, i.e. `bytes / link-rate`,
+  with no threshold or curvature (`-ncmoe` 0/4/8/12/16/20 → 8013/6581/5742/5082/4560/4127 t/s).
+* **It is additive, not overlapped:** `T(partial) ≈ T(full) + bytes/rate`.  Per-layer compute is
+  `c ≈ 0.511/40 ≈ 12.8 ms`; the upload is `u ≈ 23–27 ms`.  Perfect overlap would put `-ncmoe 4` at
+  `max(compute, upload) ≈ 0.51 s` (i.e. ≈ full residency).  It measures 0.62 s.
+* **The `-ub` lever is the same effect in reverse:** at `-ub 2048` the tables are re-uploaded per
+  ubatch, so the bill doubles (`-ncmoe 20 -ub 2048` 2494 vs `-ub 4096` 4122 t/s).  That is buying the
+  loss back by moving fewer bytes, not by overlapping.
+
+## 2. Instrumentation evidence (r62 tree; prints added to `ggml-backend.cpp` / `ggml-backend-meta.cpp`)
+
+1. In `ggml_backend_sched_copy_input`, every host expert tensor prints
+   `usage=1 ishost=1 ishw=1` — `blk.0.ffn_{gate,up,down}_exps.weight` … — so
+   `sched_stage_is_host_weight()` **is** true for them.
+2. **But** in `sched_stage_issue`, `n_host_inputs == 0` for **every** split: 242 `DBGSS` scans
+   (121 splits), zero with a host-weight input, in **both** `-sm tensor` and `-sm layer`.  And the meta
+   `stage_input` (the `-sm tensor` staging entry point) is **never called**.
+3. `meta_graph_compute` is called once per split (first split `n_nodes=3532`, then 99/99/73/28…).
+
+So the staged hand-off that is *supposed* to overlap is not engaging, and the tables leave through the
+synchronous copy path.  **Unresolved:** how (1) and (2) can both be true.  Candidates, in order:
+
+* **Gate misfire.**  `sched_stage_batch_tokens(split)` reads the token count from
+  `split->graph.nodes[0]` (a `MUL_MAT_ID`'s `src[2]`, else `src[1]->ne[1]`).  If the split that carries
+  the expert tables starts on a node whose `ne[1]` is small/0, the width gate skips the split *before*
+  the host-input count, so the expert split never reports `n_host_inputs > 0`.
+* **Split identity.**  The expert inputs seen in `copy_input` may belong to a split whose
+  `sched_stage_issue` ran in an earlier iteration/order (allocation-order dependent).
+* **Ring capacity.**  `n_host_inputs > GGML_SCHED_STAGE_SLOTS` (default 8) skips the split.  On this
+  model gate/up/down are three separate tables per layer, so any split merging ≥3 layers' experts
+  (≥9 inputs) would be skipped — but we see zero host inputs even for `-ncmoe 1` (3 inputs), so this is
+  not the whole story.
+
+**Next step is a correlation, not a theory:** print the split index + the computed gate/tokens in both
+`sched_stage_issue` and `copy_input`, and a counter of which copy branch each expert input takes
+(`stage_input` / ring / `copy_experts` / generic `tensor_copy`).  The instrumentation recipe is in §4.
+
+## 3. Fix directions (once the path is known)
+
+* **If the tables go through `copy_experts` → `ggml_backend_meta_set_tensor_async` → the compact
+  splice-gather:** r62 moved that H2D to the **main stream** (it was a `copy_stream()` race — see
+  `archive/work/meta-split-copy-splice-race/`).  That is correct, but it serialises the transfer by
+  construction.  The fix is **not** to move it back; it is to route these tables through the
+  event-ordered ring / meta `stage_input` path so the overlap is safe (upload N on the copy stream,
+  `done` event, D2D into the split input on the main stream, then compute N).
+* **If the gate is the blocker:** make `sched_stage_batch_tokens` find the real `MUL_MAT_ID` of the
+  split (it already scans for the consumer elsewhere) rather than trusting `nodes[0]`.
+* **If ring capacity is the blocker:** the number of host inputs per split is a model property
+  (3 tables/layer here); either raise `GGML_SCHED_STAGE_SLOTS` for this shape or stage per input.
+* Whatever the fix, keep the r62 corruption fixed (below-gate `-sm tensor -ncmoe` must stay coherent).
+
+## 4. Repro / instrumentation recipe
+
+```bash
+M=/llm/models/Qwen3.6/35B-A3B/Q8_0/Qwen3.6-35B-A3B-Q8_0.gguf
+B=~/llama.cpp/build-rocm-hybrid/bin/llama-bench
+C="MOE_EXPERT_HEATMAP=0 MOE_EXPERT_CACHE_MIB=0 HIP_VISIBLE_DEVICES=0,1 LD_LIBRARY_PATH=/opt/rocm-7.14-gfx120X/lib"
+env $C $B -m $M -ngl 99 -sm tensor -ncmoe 4 -p 4096 -n 0 -b 4096 -ub 4096 -r 3 -t 8 -fa 1 -o md
+# add LLAMA_NCMOE_LAYERS=<list> (knob: wip/moe-layer-stagger/tools/ncmoe-layer-select.patch) to place the host layers.
+```
+
+Instrumentation (temporary, revert after): print `input->name` + `usage`/`ishost`/`sched_stage_is_host_weight`
+at the top of `ggml_backend_sched_copy_input` (`ggml-backend.cpp:~2597`); print the split index,
+`n_inputs`, `sched->stage_enabled`, and `n_host_inputs`/`stage_n_slots` at each `return` in
+`sched_stage_issue` (`:2432`); a print at the top of `ggml_backend_meta_stage_input`
+(`ggml-backend-meta.cpp:2521`); and one at `ggml_backend_meta_graph_compute` (`:2745`).
+
+## 5. Ceiling and the hard floor
+
+Overlap can at best make `T = max(total_compute, total_upload)`; it can never beat the link.  On this
+box the exposed upload at `-ncmoe 20 -ub 4096` is ~0.46 s of which ~`n_host × min(u,c)` is recoverable:
+`20 × 12.8 ms ≈ 0.26 s` → **up to ~+20 %** (`-ub 4096`) and relatively more at `-ub 2048` (upload
+doubles).  So this is a real but bounded win — and it must not trade away the r62 correctness.
+
+## 6. Gates (a promotion must clear all)
+
+Same-seed coherence (the affected models from r62: 35B-A3B, gemma4 26B-A4B, Flash-Next GSQ);
+`scripts/gate-prefill-logits.sh` (**KLD ≤ 0.005 / top-p ≥ 98 %** — the upload is data movement, the
+numerics must not change); adaptive-MTP `none == n3` on `-sm tensor -ncmoe 99` + auto cache;
+`llama-batched-bench -npl 1,4,8` decode not regressed; the r62 below-gate corruption repro stays clean;
+`scripts/validate-set.sh` green if promoted.
+
+## 7. Pointers
+
+* Transfer path: `ggml/src/ggml-backend.cpp` `sched_stage_issue` (`:2432`), `ggml_backend_sched_copy_input`
+  (`:2597`), `sched_stage_min_tokens_for`/`sched_stage_batch_tokens` (`:2251`/`:2289`);
+  `ggml/src/ggml-backend-meta.cpp` `ggml_backend_meta_stage_input` (`:2521`),
+  `ggml_backend_meta_graph_compute` (`:2745`);
+  `ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu` `stage_upload`/`stage_gather`/`stage_wait`/`stage_d2d`;
+  `ggml/src/ggml-cuda/ggml-cuda.cu` `ggml_backend_cuda_set_tensor_2d_async` (`:3720`, the r62 fix).
+* r62 record: `archive/work/meta-split-copy-splice-race/`, `WORKLOG.md` 261014.007 (block 10).
+* Parked/refuted: `wip/moe-layer-stagger/FINDINGS-2026-10-14.md`.
+* Delivery block owners: block 09 (host-resident MoE / scheduler / Meta), block 10 (`ggml-cuda.cu`).
