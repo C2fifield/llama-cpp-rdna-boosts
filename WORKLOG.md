@@ -1,5 +1,57 @@
 # WORKLOG - dated delivery records
 
+## 261014.003 (r58) -- PR #150: the DFlash layer-input preset (folded into blocks 02 + 11)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r58` (base `097cf33d9`; canonical tip
+`369a835bfee0a5d511082acc27afc3e69ab4d9dd`, net tree `84c1089798ace45224456cfb147e6e6fb9fabaff`; 12
+blocks; `validate-set.sh` green; whitespace-clean under `git am --whitespace=error-all`).  PR #150
+(`@overdoingism`, `wip/dflash-layer-inp-preset`) is folded in, **no new block**, split by concern:
+
+- **block 02** (`common/common.cpp`): in `common_init_result`, before the target context is created,
+  read the configured draft GGUF's `<arch>.target_layers` (metadata-only `gguf_init_from_file`) and call
+  `llama_model_set_embeddings_layer_inp_preset()`; the preset is cleared right after
+  `llama_init_from_model`, so a later MTP context from the same model does not inherit it.  Gated on
+  `params.speculative.has_dft()` plus a `draft-dflash`/`draft-dspark` type.
+- **block 11** (`src/llama-context.cpp`, `src/llama-ext.h`, `src/llama-model.{h,cpp}`): the model-side
+  preset storage + `llama_model_set_embeddings_layer_inp_preset()`; the `llama_context` ctor applies the
+  preset to `cparams.embeddings_layer_inp` before its first `sched_reserve()`; and
+  `set_embeddings_layer_inp()` returns early when the flag does not change (a real change still asks for
+  the reserve upstream's comment requires, so the EAGLE3 path is unchanged).
+
+**Why.**  A DFlash draft calls `llama_set_embeddings_layer_inp()` for its target layers when it
+attaches, *after* the target context was reserved and warmed up.  The flag change forced a `sched_reserve()`
+that builds a new scheduler, so every compute buffer was freed and reallocated at the first request, the
+main one larger because the extraction became a graph output (on the reporter's Windows box the growth
+landed in shared GPU memory and prefill fell to ~200 t/s; Linux reclaims the freed block so the net cost
+is only the growth).
+
+**Finding (fixed in the fold, behaviour-neutral).**  The PR's
+`llama_model_set_embeddings_layer_inp_preset()` did `vector.assign(lids, lids + n)`; the clear call passes
+`nullptr, 0`, i.e. `assign(nullptr, nullptr)` — technically UB pointer arithmetic.  The folded version
+guards `n == 0` -> `clear()`.
+
+**Gates (gfx1201, 2x R9700, ROCm 7.14.1, `~/llama.cpp/build-rocm-hybrid`).**  Build `all` green (clang).
+DFlash2 (`Qwen3.8-27B-UD-Q5_K_M` target + `Qwen3.8-27B-DFlash2-Q4_K_M` drafter, `--spec-type draft-dflash
+--spec-draft-n-max 3 -sm layer -c 16384 -ub 1280 -ctk q8_0 -ctv q8_0`, `prompts/prose-rdna-boosts.txt`):
+**5 -> 4 reserves**; the target context's first reserve is already sized for the extraction (target
+ROCm0/ROCm1/Host 842.88/622.84/411.30 -> 897.88/705.34/411.30 MiB) and the first-request re-reserve is
+gone; the greedy continuation is **byte-identical** at n=512 and draft acceptance is identical
+(62/42 at n=64).  4B `Qwen3.5-Q8_0` 3-GPU `-sm tensor` same-seed greedy **byte-identical** to r57.
+`scripts/gate-prefill-logits.sh` **PASS** (mean KLD **0.000707**, same-top-p **98.755 %**, exactly the r57
+values).  `scripts/validate-set.sh` strict 12/12, tree `84c10897`; the whole set applies
+`--whitespace=error-all` clean.
+
+**Note on the split.**  `common/common.cpp` lands in **block 02** as the maintainer chose (the draft-setup
+concern), with the API in **block 11**; block 02 therefore references a symbol declared in block 11, an
+intermediate-block compile ordering with the same shape as the existing block 09 -> 11
+`ggml_backend_buffer_type_i` members (the applied set builds; per-block standalone builds were never a
+contract).
+
+**Docs.**  `README.md`, `MANIFESTS.md`, `BASELINE.md` and `patches/README.md` current-state headers
+updated.  The PR record moves to `archive/work/dflash-layer-inp-preset/` with a `RESOLUTION.md` (the
+upstream patch is preserved verbatim); `wip/CAMPAIGNS.md` records the resolution.  No new environment
+variable.
+
 ## 261014.002 (docs, tooling) -- GHCR retention: prune old container versions on every `--push`
 
 **No delivery change** (`patches/`, `release.json` and the r57 tag are untouched; no new release).

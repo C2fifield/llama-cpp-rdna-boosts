@@ -2,12 +2,16 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r57`** (canonical tip `a300075f7`, net tree
-`8a56fb31267ecc523c423845662d76571f934a51`).  r57 scopes the `-Wshadow` gate to `-Wshadow=local` on
+**`v12-097cf33d9-r58`** (canonical tip `369a835bf`, net tree
+`84c1089798ace45224456cfb147e6e6fb9fabaff`).  r58 folds PR #150 (DFlash layer-input preset) into
+**block 02** (the draft-setup read of `<arch>.target_layers` and the preset call) and **block 11** (the
+preset API/storage, the `llama_context` ctor apply and the `set_embeddings_layer_inp()` early return);
+a DFlash draft no longer frees and reallocates the target's compute buffers at the first request
+(5 -> 4 reserves).  Before it, r57 scoped the `-Wshadow` gate to `-Wshadow=local` on
 GCC (the container host compiler) in block 00 and fixes the two GCC-only sites it exposed (the AMX
 buffer-type initializer, block 09; the `size_t >= 0` assert, block 10).  The applied tree
 is not tree-identical to the 16-block r50 set (Phase 1 redistributed the concerns; Phase 2 moved each
-into a self-contained function/file).  See `WORKLOG.md` 261014.001 (r57), 261013.007 (r56),
+into a self-contained function/file).  See `WORKLOG.md` 261014.003 (r58), 261014.001 (r57), 261013.007 (r56),
 261013.005 (r55), 261013.004 (r54), 261013.003 (r53) and 261013.002 (r52).  The entries below are the
 **pre-V2.0 (16-block) provenance history**:
 

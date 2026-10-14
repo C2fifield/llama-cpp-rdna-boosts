@@ -22,7 +22,7 @@ commit**.
 - **#139** (below), started only after #150 is done: same flow; if it lands, cut **`v12-097cf33d9-r59`**
   (use r58 instead only if #150 produced no release).
 
-## 1. PR #150 — `wip/dflash-layer-inp-preset` (@overdoingism)
+## Step 1 (do first, fully) — PR #150 `wip/dflash-layer-inp-preset` (@overdoingism)
 
 <https://github.com/stew675/llama-cpp-rdna-boosts/pull/150>. It adds `wip/dflash-layer-inp-preset/` with
 one `git am` patch cut against **r56** (now r57), touching `common/common.cpp`, `src/llama-context.cpp`,
@@ -48,7 +48,7 @@ the flag does not change. Both halves are required (the preset alone still re-re
 - Fold into the owning block: **DFlash is block 11**; the `common/common.cpp` draft-setup hunk might belong
   to **block 02** (adaptive MTP) — decide and say why. Then respond on the PR, merge/close, archive.
 
-## 2. Issue #139 — AR spin timeout leaves a call unreduced (@briansp2020)
+## Step 2 (only after #150 is closed) — issue #139 AR spin timeout leaves a call unreduced (@briansp2020)
 
 <https://github.com/stew675/llama-cpp-rdna-boosts/issues/139>. Two independent root causes, both with data
 in the issue; the fix belongs in **block 01** (`ggml/src/ggml-cuda/allreduce-hip.cu`).

@@ -1,4 +1,4 @@
-From a300075f706e59b7adfcab73242c2578c52f6fc1 Mon Sep 17 00:00:00 2001
+From 369a835bfee0a5d511082acc27afc3e69ab4d9dd Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -35,10 +35,13 @@ reference tip af0595360 (release.json.tree) exactly.
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
- src/llama-context.cpp                         |  54 ++++-
+ src/llama-context.cpp                         |  65 ++++-
+ src/llama-ext.h                               |   6 +
+ src/llama-model.cpp                           |   8 +
+ src/llama-model.h                             |   3 +
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 26 files changed, 601 insertions(+), 88 deletions(-)
+ 29 files changed, 629 insertions(+), 88 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -1011,10 +1014,35 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index c9cb98456..8e9fd895e 100644
+index c9cb98456..72cc5139f 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -3616,9 +3616,57 @@ public:
+@@ -310,6 +310,11 @@ llama_context::llama_context(
+     // +1: id n_layer() taps the output of the last layer ("input" of the head)
+     cparams.embeddings_layer_inp.resize(hparams.n_layer() + 1, false);
+     embd_layer_inp.resize(hparams.n_layer() + 1);
++    for (const int32_t lid : model.embeddings_layer_inp_preset) {
++        if (lid >= 0 && (size_t) lid < cparams.embeddings_layer_inp.size()) {
++            cparams.embeddings_layer_inp[lid] = true;
++        }
++    }
+ 
+     cparams.ctx_type          = params.ctx_type;
+     cparams.rope_scaling_type = params.rope_scaling_type;
+@@ -1649,6 +1654,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+ 
+     GGML_ASSERT(lid <= model.hparams.n_layer());
+ 
++    if (cparams.embeddings_layer_inp[lid] == enable) {
++        // unchanged (preset at context creation): the reserved graph has it already, and a reserve would free and
++        // allocate all compute buffers again
++        return;
++    }
++
+     cparams.embeddings_layer_inp[lid] = enable;
+ 
+     // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
+@@ -3616,9 +3627,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
@@ -1075,6 +1103,56 @@ index c9cb98456..8e9fd895e 100644
          }
      }
  
+diff --git a/src/llama-ext.h b/src/llama-ext.h
+index 9ac8eff63..170efb75a 100644
+--- a/src/llama-ext.h
++++ b/src/llama-ext.h
+@@ -164,6 +164,12 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
+ // returns the number of extracted layers from target model
+ LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
+ 
++// layers whose input embeddings contexts created from this model extract from the start (as if
++// llama_set_embeddings_layer_inp(ctx, lid, true) had been called before the context's first graph reserve).
++// For a target whose draft will turn the extraction on (DFlash): the compute buffers are then sized for it once,
++// instead of being freed and allocated again, larger, at the first decode after the draft attaches.
++LLAMA_API void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n);
++
+ // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
+ // returns total number of elements or 0 on error
+ // if out is nullptr, returns the number of tokens without writing to out
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 7d2af8622..01db67736 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -4089,6 +4089,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+     return (uint32_t) model->target_layer_ids.size();
+ }
+ 
++void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n) {
++    if (n == 0) {
++        model->embeddings_layer_inp_preset.clear();
++    } else {
++        model->embeddings_layer_inp_preset.assign(lids, lids + n);
++    }
++}
++
+ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
+     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
+         return 0;
+diff --git a/src/llama-model.h b/src/llama-model.h
+index 50731dfce..c345789c3 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -764,6 +764,9 @@ struct llama_model {
+     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
+     std::vector<int32_t> target_layer_ids;
+ 
++    // layers whose input embeddings new contexts extract from the start (llama_model_set_embeddings_layer_inp_preset)
++    std::vector<int32_t> embeddings_layer_inp_preset;
++
+     std::vector<llama_layer> layers;
+ 
+     //Dense linear projections for SentenceTransformers models like embeddinggemma
 diff --git a/src/llama.cpp b/src/llama.cpp
 index f031e6555..5c77bb1fa 100644
 --- a/src/llama.cpp

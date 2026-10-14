@@ -31,6 +31,14 @@ is the signature of a stub, not of a campaign.
 | [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
 
+**Resolved (r58, 2026-10-14).**  Contributor PR #150 (`@overdoingism`, `dflash-layer-inp-preset`) was
+merged and folded into the blocks that own each concern, then archived with a `RESOLUTION.md` under
+`archive/work/dflash-layer-inp-preset/`: the draft-setup half reads the draft GGUF's
+`<arch>.target_layers` and presets them before the target context exists (**block 02**), and the
+context half adds the preset API/storage, applies it before the first reserve and skips a no-op
+`set_embeddings_layer_inp()` reserve (**block 11**).  A DFlash draft no longer frees and reallocates the
+target's compute buffers at the first request (5 -> 4 reserves).  See `WORKLOG.md` 261014.003.
+
 **Resolved (r56, 2026-10-13).**  Four contributor PRs (#146-#149) were merged and folded into the
 blocks that own each concern, then archived with a `RESOLUTION.md` each under `archive/work/`:
 `rdna4-mmq-select-j/` (block 08), `pageable-bounce/` (block 09), `hc-mix-bf16-16/` (block 10) and

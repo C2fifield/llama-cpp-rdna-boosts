@@ -11,7 +11,22 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r57` (2026-10-14) -- `-Wshadow` scoped to the dangerous class on GCC (block 00) + two GCC-only warning fixes (blocks 09/10):**
+> **Current release `v12-097cf33d9-r58` (2026-10-14) -- DFlash layer-input preset (block 02) + context consumption (block 11):**
+> canonical tip `369a835bf`, net tree `84c1089798ace45224456cfb147e6e6fb9fabaff`; strict **12/12**
+> `git am` (`validate-set.sh` green), whitespace-clean (`git am --whitespace=error-all`), 4B
+> `Qwen3.5-Q8_0` same-seed greedy byte-identical, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS.
+> PR #150 (`@overdoingism`, `wip/dflash-layer-inp-preset`) is split by concern: **block 02** reads the
+> draft GGUF's `<arch>.target_layers` in `common_init_result` and presets them on the target model before
+> the target context exists; **block 11** adds `llama_model_set_embeddings_layer_inp_preset()` (the model
+> storage plus the `llama-ext.h`/`llama-model.{h,cpp}` declaration), applies the preset in the
+> `llama_context` ctor before its first reserve, and makes `set_embeddings_layer_inp()` return early when
+> the flag is unchanged.  A DFlash draft turns extraction on *after* the target context was reserved and
+> warmed up, which used to re-reserve the graph at the first request; the target's compute buffer is now
+> sized for the extraction from the start (5 -> 4 reserves; 842.88/622.84 -> 897.88/705.34 MiB at
+> `-c 16384`), and DFlash2 text and draft acceptance are unchanged (62/42 at n=64).  See `../WORKLOG.md`
+> 261014.003 (r58).
+>
+> **Previous release `v12-097cf33d9-r57` (2026-10-14) -- `-Wshadow` scoped to the dangerous class on GCC (block 00) + two GCC-only warning fixes (blocks 09/10):**
 > canonical tip `a300075f7`, net tree `8a56fb31267ecc523c423845662d76571f934a51`; strict **12/12**
 > `git am` (`validate-set.sh` green), build `all` green with **0** warnings, 4B `Qwen3.5-Q8_0` same-seed
 > greedy byte-identical to r56.  Three blocks amended, **no new block**: **00** (the `llama` C++ target

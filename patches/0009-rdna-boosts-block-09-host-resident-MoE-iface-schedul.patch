@@ -1,4 +1,4 @@
-From 6973119dac92e5b2334732d02c25a3a331ae4239 Mon Sep 17 00:00:00 2001
+From 8f4223d867e639e43f6440d083846e421b7f9b02 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -111,7 +111,7 @@ index f5b40e985..31a97cf82 100644
          {"-lzm", "--lazy-mode"}, "MODE",
          "on-demand reading of certain tensors, for example per-layer embeddings (default: auto)\n"
 diff --git a/common/common.cpp b/common/common.cpp
-index eb1091108..1fdc10d5a 100644
+index ca4fe36b4..5ce5ccc40 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -1366,6 +1366,23 @@ common_init_result::common_init_result(common_params & params, bool model_only)
@@ -135,10 +135,10 @@ index eb1091108..1fdc10d5a 100644
 +        llama_model_moe_cache_preflight(model, aux_bytes);
 +    }
 +
-     llama_context * lctx = llama_init_from_model(model, cparams);
-     if (lctx == NULL) {
-         COM_ERR("failed to create context with model '%s'\n", params.model.path.c_str());
-@@ -1748,6 +1765,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
+     // a DFlash draft turns on the extraction of some target layers' inputs when it attaches, after this context and its
+     // warm-up: take those layers from the draft's GGUF now, so the first graph reserve already sizes the compute
+     // buffers for them (otherwise they are freed and allocated again, larger, at the first request)
+@@ -1771,6 +1788,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
      mparams.split_mode      = params.split_mode;
      mparams.load_mode       = params.load_mode;
      mparams.lazy_mode = params.lazy_mode;
@@ -146,7 +146,7 @@ index eb1091108..1fdc10d5a 100644
      mparams.tensor_split    = params.tensor_split;
      mparams.check_tensors   = params.check_tensors;
      mparams.use_extra_bufts = !params.no_extra_bufts;
-@@ -1811,6 +1829,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+@@ -1834,6 +1852,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
      cparams.op_offload        = !params.no_op_offload;
      cparams.swa_full          = params.swa_full;
      cparams.kv_unified        = params.kv_unified;

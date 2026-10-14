@@ -34,7 +34,12 @@ host<->device tensor-copy bounce (**block 09**), the BF16 hyper-connection mixer
 tokens (**block 10**) and merged-span state saves (**block 11**).  **`r57`** scopes the `-Wshadow` gate to
 GCC's `-Wshadow=local` (the container compiles host C++ with GCC, whose `-Wshadow` is a superset of
 clang's) and fixes the two GCC-only sites it revealed — the AMX buffer-type initializer (**block 09**)
-and an always-true `size_t >= 0` assert (**block 10**).
+and an always-true `size_t >= 0` assert (**block 10**).  **`r58`** folds PR #150 (`@overdoingism`,
+`wip/dflash-layer-inp-preset`) in two blocks: the draft-setup half (**block 02**) presets the DFlash
+layers read from the draft GGUF before the target context exists, and the context half (**block 11**)
+adds the preset API, applies it before the first reserve and skips the reserve when
+`set_embeddings_layer_inp()` is a no-op — so a DFlash draft no longer forces a free+reallocate of the
+target's compute buffers at the first request.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
