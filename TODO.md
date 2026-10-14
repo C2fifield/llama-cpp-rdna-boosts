@@ -84,7 +84,13 @@ R2 also repairs the host-pool warm order, which is currently id-ordered.  **R2 i
 2026-10-15** (patch `wip/moe-heatmap-persistence/r2-device-tally.patch`, env `MOE_EXPERT_HEATMAP=1`):
 a fully-resident run now yields a full heat map (heat total 4.9M, 27873/29952 experts nonzero, top L38
 e209=4554) where before it recorded nothing (`hits=16`); prefill cost unchanged (1050.0 vs 1049.2 t/s),
-decode band gains no launch.  Persistence is the next increment.
+decode band gains no launch.  **Persistence implemented + validated 2026-10-15**
+(`wip/moe-heatmap-persistence/heatmap-persistence.patch` = R2 + the on-disk map: sidecar
+`<gguf>.moe-heatmap`, atomic tmp+rename, 60 s debounce, read-only fallback, merge-on-save; seeded as
+provisional slots at sizing + heat-ordered layer placement).  Measured on `MOE_EXPERT_CACHE_MIB=4096`:
+**+34 % decode over a 48-token turn** (38.15 → 51.30 t/s, hit 0.767 → 0.940, fills 11748 → 2976) and
+**+10.3 % over 256 tokens** (48.53 → 53.55 t/s, fills 19452 → 6912).  Promotion (default-on, the
+`MOE_EXPERT_CACHE_PREFILL_SEED` repair) is the next increment.
 
 ### 61. Hotness-aware MoE arena placement and a phase-3 idle repack — PERFORMANCE
 

@@ -359,6 +359,54 @@ measurable cost.  The device kernel is a few launches per prefill ubatch; the de
 3. `moe_cache_get_stats` does not expose the heat; the per-turn server seam (`server-context.cpp:737`)
    is the natural flush trigger for the debounced write.
 
+### 2.7 Persistence — implemented and validated (2026-10-15)
+
+Patch: [`heatmap-persistence.patch`](heatmap-persistence.patch) (**R2 + persistence**, +592 lines over
+the three files; it is the canonical prototype — [`r2-device-tally.patch`](r2-device-tally.patch) is
+the earlier R2-only snapshot and is a subset).  Env: `MOE_EXPERT_HEATMAP=1` (the WIP gate).
+
+**What it does.**
+
+* **Sidecar path:** `<gguf>.moe-heatmap`, derived in `moe_cache_set_host_source` from the GGUF path the
+  loader already passes for the host pool — no new iface/loader plumbing.  If the model directory is
+  not writable (probe = create+unlink a `.probe`), fall back to `MOE_EXPERT_HEATMAP_DIR`, else
+  `$XDG_CACHE_HOME/llama-moe-heatmap/<stem>.moe-heatmap` (`$HOME/.cache` then `/tmp`).
+* **Format:** `MHT1` + u32 version + u32 n_tables, then fixed-size records
+  `{i32 layer; char role[64]; u32 n_experts; u64 host_bytes; u32 heat[n_experts]}`.  A table is matched
+  at registration by `(layer, sem_role, n_experts, host_bytes)`; a mismatch is skipped (a cold table),
+  never fatal.  ~150 KB for a 120-table / 256-expert model.
+* **Atomic staged write:** `<path>.tmp.<pid>` → `fsync` → `rename` over `<path>` (the old file survives a
+  failed write).  A failure increments a counter; after `MOE_EXPERT_HEATMAP_MAX_FAILS` (default 3)
+  persistence is **disabled for the session** with one final warning.
+* **Debounce:** `MOE_EXPERT_HEATMAP_DEBOUNCE_S` (default 60 s), checked at the server's per-turn
+  `moe_cache_get_stats` seam; `moe_cache_report` (process exit) is the mandatory backstop.
+* **Merge:** at save, the session heat is added into the loaded prior (saturating), so the map is a long
+  EWMA across runs rather than last-run-wins.
+* **Seed:** `apply_heat_seed_locked(t)` runs at sizing *before* the (inert) prefill seed and bulk-admits
+  the top-`slots` experts by persisted heat as **provisional** slots (count 0, so they yield to a real
+  hot expert immediately).  `apply_heat_seed_locked` is silent about identity tables and no-ops when no
+  prior exists.
+* **Placement (campaign 2 phase 1):** `alloc_all_locked` now allocates layers in **descending heat**
+  order, so the hottest layers sit highest in VA and are the last the work-pool boundary reaches.
+  Frozen at sizing; the order falls back to ascending layer when no heat is present.
+
+**Measured (35B-A3B UD-Q4_K_M, `-sm layer -ncmoe 40`, `MOE_EXPERT_CACHE_MIB=4096`, 5256-token prompt,
+same seed).**
+
+| turn length | run | hit rate | fills | colds | decode t/s |
+|---|---|---:|---:|---:|---:|
+| 48 tok | cold (no map) | 0.7674 | 11748 | 63 | **38.15** |
+| 48 tok | warm (seeded) | **0.9402** | **2976** | 63 | **51.30** (+34 %) |
+| 256 tok | cold (no map) | 0.9060 | 19452 | 4089 | **48.53** |
+| 256 tok | warm (seeded) | **0.9561** | **6912** | 4089 | **53.55** (+10.3 %) |
+
+The gain is the cold-start transient: the warm arena begins with the previous run's hot set resident,
+so the first tokens are hits instead of fills (fills down 4× over 48 tokens, 2.8× over 256).  Prefill is
+unchanged (1050 vs 1059 t/s) and the seed cost lands in the warmup/sizing phase, not the measured turn.
+
+This is the first observable end-to-end win from the campaign, and it is the direct answer to the
+original question ("stop evicting hot experts at start-up"): the arena no longer starts cold.
+
 ## 3. Hypotheses / work to do
 
 1. **H1 (first-turn win).**  With a persisted heat map, a cold server start on a repeated workload
