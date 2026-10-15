@@ -25,7 +25,7 @@ generic kernel stays as the `n_expert_used == 0` fallback.  Recovered: fully-res
 8357), `-ncmoe 4` **6859** (r65 6522 -- the kept r66 `mmq`/`mmf` changes beat r65).  Correctness:
 `test-backend-ops -o MUL_MAT_ID -p dup=1` **16/16**, full `-o MUL_MAT_ID` **947/947**.
 
-**Block-09 host-expert fixes (from the `wip/block09-cache-ring-arming` handover).**
+**Block-09 host-expert fixes (from the `archive/work/block09-cache-ring-arming/` handover).**
 
 1. **Cache completeness (block 09, `moe-expert-cache.cu`).**  The deferred arena sizing compares the
    **total** registered host-expert bytes against the preflight total instead of each device's even
