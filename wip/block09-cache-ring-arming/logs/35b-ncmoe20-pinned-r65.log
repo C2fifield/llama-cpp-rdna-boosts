@@ -1,0 +1,201 @@
+0.00.016.078 I srv  llama_server: initializing ...
+0.00.016.085 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.016.259 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.017.497 I srv    load_model: loading model '/llm/models/Qwen3.6/35B-A3B/Q8_0/Qwen3.6-35B-A3B-Q8_0.gguf'
+0.00.203.057 W model has unused tensor blk.40.attn_norm.weight (size = 8192 bytes) -- ignoring
+0.00.203.062 W model has unused tensor blk.40.post_attention_norm.weight (size = 8192 bytes) -- ignoring
+0.00.203.066 W model has unused tensor blk.40.attn_q.weight (size = 17825792 bytes) -- ignoring
+0.00.203.067 W model has unused tensor blk.40.attn_k.weight (size = 1114112 bytes) -- ignoring
+0.00.203.068 W model has unused tensor blk.40.attn_v.weight (size = 1114112 bytes) -- ignoring
+0.00.203.073 W model has unused tensor blk.40.attn_output.weight (size = 8912896 bytes) -- ignoring
+0.00.203.074 W model has unused tensor blk.40.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.00.203.075 W model has unused tensor blk.40.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.00.203.077 W model has unused tensor blk.40.ffn_gate_inp.weight (size = 1048576 bytes) -- ignoring
+0.00.203.078 W model has unused tensor blk.40.ffn_down_exps.weight (size = 285212672 bytes) -- ignoring
+0.00.203.081 W model has unused tensor blk.40.ffn_gate_exps.weight (size = 285212672 bytes) -- ignoring
+0.00.203.082 W model has unused tensor blk.40.ffn_up_exps.weight (size = 285212672 bytes) -- ignoring
+0.00.203.084 W model has unused tensor blk.40.ffn_gate_inp_shexp.weight (size = 4096 bytes) -- ignoring
+0.00.203.085 W model has unused tensor blk.40.ffn_gate_shexp.weight (size = 1114112 bytes) -- ignoring
+0.00.203.087 W model has unused tensor blk.40.ffn_up_shexp.weight (size = 1114112 bytes) -- ignoring
+0.00.203.090 W model has unused tensor blk.40.ffn_down_shexp.weight (size = 1114112 bytes) -- ignoring
+0.00.203.093 W model has unused tensor blk.40.nextn.eh_proj.weight (size = 8912896 bytes) -- ignoring
+0.00.203.094 W model has unused tensor blk.40.nextn.enorm.weight (size = 8192 bytes) -- ignoring
+0.00.203.096 W model has unused tensor blk.40.nextn.hnorm.weight (size = 8192 bytes) -- ignoring
+0.00.203.102 W model has unused tensor blk.40.nextn.shared_head_norm.weight (size = 8192 bytes) -- ignoring
+0.12.500.586 W GRAPH_RESERVE ctx=0x5587ca909780 is_draft=0 n_tokens=2048
+0.12.503.278 W COMPUTE_ALLOC 1280.0 MiB dev=0 slab_on=1 flag=1
+0.12.510.006 W SLAB_INIT dev=0 free=21.95 GiB reserve=4.00 GiB headroom=4.00 GiB aux=0.00 GiB size(VA)=17.94 GiB mapped=17.94 GiB boundary=1.25 GiB va_spare=0.00 GiB chunk=64.0 MiB ring_req=4.03 GiB
+0.12.510.009 W ggml_cuda_slab_init_locked: device 0: slab 17.94 GiB (chunk 64.0 MiB): work 1.25 GiB + arena 16.69 GiB (4.00 GiB reserve, 0.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.12.510.013 W COMPUTE_ALLOC 1280.0 MiB dev=1 slab_on=1 flag=1
+0.12.516.870 W SLAB_INIT dev=1 free=21.95 GiB reserve=4.00 GiB headroom=4.00 GiB aux=0.00 GiB size(VA)=17.94 GiB mapped=17.94 GiB boundary=1.25 GiB va_spare=0.00 GiB chunk=64.0 MiB ring_req=4.03 GiB
+0.12.516.873 W ggml_cuda_slab_init_locked: device 1: slab 17.94 GiB (chunk 64.0 MiB): work 1.25 GiB + arena 16.69 GiB (4.00 GiB reserve, 0.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.12.517.415 W GRAPH_RESERVE ctx=0x5587ca909780 is_draft=0 n_tokens=4
+0.12.518.623 W GRAPH_RESERVE ctx=0x5587ca909780 is_draft=0 n_tokens=2048
+0.12.519.555 I cmn          init: llama threadpool init, n_threads = 7
+0.13.392.205 W WORK_RELEASE dev=0 off=0.0 MiB need=1280.0 MiB found=1 live_needs=0 boundary=1280.0 narrow_floor=0.0
+0.13.392.207 W WORK_RELEASE dev=1 off=0.0 MiB need=1280.0 MiB found=1 live_needs=0 boundary=1280.0 narrow_floor=0.0
+0.13.394.274 W GRAPH_RESERVE ctx=0x5587ca909780 is_draft=0 n_tokens=1
+0.13.395.114 W COMPUTE_ALLOC 1280.0 MiB dev=0 slab_on=1 flag=1
+0.13.395.116 W WORK_ALLOC dev=0 need=1280.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1280.0 ring=4160.0 boundary=1280.0
+0.13.395.119 W COMPUTE_ALLOC 1280.0 MiB dev=1 slab_on=1 flag=1
+0.13.395.119 W WORK_ALLOC dev=1 need=1280.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1280.0 ring=4160.0 boundary=1280.0
+0.13.409.353 W alloc_all_locked: MoE expert cache (auto): arena 16320.0 MiB of 16320.0 MiB host experts (100.0% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+0.13.421.052 W alloc_table_locked: layer=20 role=blk.20.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.433.169 W alloc_table_locked: layer=20 role=blk.20.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.445.083 W alloc_table_locked: layer=20 role=blk.20.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.457.013 W alloc_table_locked: layer=20 role=blk.20.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.471.089 W alloc_table_locked: layer=20 role=blk.20.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.485.365 W alloc_table_locked: layer=20 role=blk.20.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.497.465 W alloc_table_locked: layer=24 role=blk.24.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.511.792 W alloc_table_locked: layer=24 role=blk.24.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.526.181 W alloc_table_locked: layer=24 role=blk.24.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.540.434 W alloc_table_locked: layer=24 role=blk.24.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.556.887 W alloc_table_locked: layer=24 role=blk.24.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.573.113 W alloc_table_locked: layer=24 role=blk.24.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.587.243 W alloc_table_locked: layer=26 role=blk.26.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.601.237 W alloc_table_locked: layer=26 role=blk.26.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.615.558 W alloc_table_locked: layer=26 role=blk.26.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.629.789 W alloc_table_locked: layer=26 role=blk.26.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.646.228 W alloc_table_locked: layer=26 role=blk.26.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.662.750 W alloc_table_locked: layer=26 role=blk.26.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.676.848 W alloc_table_locked: layer=35 role=blk.35.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.690.775 W alloc_table_locked: layer=35 role=blk.35.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.705.146 W alloc_table_locked: layer=35 role=blk.35.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.719.438 W alloc_table_locked: layer=35 role=blk.35.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.735.717 W alloc_table_locked: layer=35 role=blk.35.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.752.032 W alloc_table_locked: layer=35 role=blk.35.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.766.038 W alloc_table_locked: layer=37 role=blk.37.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.780.039 W alloc_table_locked: layer=37 role=blk.37.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.794.295 W alloc_table_locked: layer=37 role=blk.37.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.808.664 W alloc_table_locked: layer=37 role=blk.37.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.824.967 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.841.353 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.853.450 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.867.880 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.882.192 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.896.501 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.912.705 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.929.038 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.943.053 W alloc_table_locked: layer=39 role=blk.39.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.957.119 W alloc_table_locked: layer=39 role=blk.39.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.971.480 W alloc_table_locked: layer=39 role=blk.39.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.13.985.760 W alloc_table_locked: layer=39 role=blk.39.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.002.138 W alloc_table_locked: layer=39 role=blk.39.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.018.599 W alloc_table_locked: layer=39 role=blk.39.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.032.551 W alloc_table_locked: layer=31 role=blk.31.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.046.527 W alloc_table_locked: layer=31 role=blk.31.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.060.577 W alloc_table_locked: layer=31 role=blk.31.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.074.858 W alloc_table_locked: layer=31 role=blk.31.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.091.189 W alloc_table_locked: layer=31 role=blk.31.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.107.555 W alloc_table_locked: layer=31 role=blk.31.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.121.549 W alloc_table_locked: layer=29 role=blk.29.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.135.557 W alloc_table_locked: layer=29 role=blk.29.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.149.584 W alloc_table_locked: layer=29 role=blk.29.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.163.909 W alloc_table_locked: layer=29 role=blk.29.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.180.425 W alloc_table_locked: layer=29 role=blk.29.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.196.772 W alloc_table_locked: layer=29 role=blk.29.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.210.845 W alloc_table_locked: layer=22 role=blk.22.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.224.880 W alloc_table_locked: layer=22 role=blk.22.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.239.086 W alloc_table_locked: layer=22 role=blk.22.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.252.995 W alloc_table_locked: layer=22 role=blk.22.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.269.344 W alloc_table_locked: layer=22 role=blk.22.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.285.798 W alloc_table_locked: layer=22 role=blk.22.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.299.794 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.313.802 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.328.199 W alloc_table_locked: layer=36 role=blk.36.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.342.021 W alloc_table_locked: layer=36 role=blk.36.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.358.340 W alloc_table_locked: layer=36 role=blk.36.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.374.761 W alloc_table_locked: layer=36 role=blk.36.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.388.820 W alloc_table_locked: layer=33 role=blk.33.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.402.889 W alloc_table_locked: layer=33 role=blk.33.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.417.177 W alloc_table_locked: layer=33 role=blk.33.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.431.044 W alloc_table_locked: layer=33 role=blk.33.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.447.495 W alloc_table_locked: layer=33 role=blk.33.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.463.967 W alloc_table_locked: layer=33 role=blk.33.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.478.053 W alloc_table_locked: layer=34 role=blk.34.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.491.936 W alloc_table_locked: layer=34 role=blk.34.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.506.263 W alloc_table_locked: layer=34 role=blk.34.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.520.516 W alloc_table_locked: layer=34 role=blk.34.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.536.693 W alloc_table_locked: layer=34 role=blk.34.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.553.065 W alloc_table_locked: layer=34 role=blk.34.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.567.060 W alloc_table_locked: layer=23 role=blk.23.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.580.943 W alloc_table_locked: layer=23 role=blk.23.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.595.213 W alloc_table_locked: layer=23 role=blk.23.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.609.431 W alloc_table_locked: layer=23 role=blk.23.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.625.669 W alloc_table_locked: layer=23 role=blk.23.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.642.052 W alloc_table_locked: layer=23 role=blk.23.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.656.123 W alloc_table_locked: layer=30 role=blk.30.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.669.986 W alloc_table_locked: layer=30 role=blk.30.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.684.285 W alloc_table_locked: layer=30 role=blk.30.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.698.586 W alloc_table_locked: layer=30 role=blk.30.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.714.726 W alloc_table_locked: layer=30 role=blk.30.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.731.111 W alloc_table_locked: layer=30 role=blk.30.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.745.102 W alloc_table_locked: layer=27 role=blk.27.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.758.998 W alloc_table_locked: layer=27 role=blk.27.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.773.339 W alloc_table_locked: layer=27 role=blk.27.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.787.567 W alloc_table_locked: layer=27 role=blk.27.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.803.721 W alloc_table_locked: layer=27 role=blk.27.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.820.127 W alloc_table_locked: layer=27 role=blk.27.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.834.173 W alloc_table_locked: layer=28 role=blk.28.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.848.031 W alloc_table_locked: layer=28 role=blk.28.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.862.398 W alloc_table_locked: layer=28 role=blk.28.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.876.645 W alloc_table_locked: layer=28 role=blk.28.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.892.779 W alloc_table_locked: layer=28 role=blk.28.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.909.123 W alloc_table_locked: layer=28 role=blk.28.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.923.147 W alloc_table_locked: layer=32 role=blk.32.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.937.021 W alloc_table_locked: layer=32 role=blk.32.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.951.324 W alloc_table_locked: layer=32 role=blk.32.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.965.644 W alloc_table_locked: layer=32 role=blk.32.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.981.797 W alloc_table_locked: layer=32 role=blk.32.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.14.998.170 W alloc_table_locked: layer=32 role=blk.32.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.012.255 W alloc_table_locked: layer=25 role=blk.25.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.026.305 W alloc_table_locked: layer=25 role=blk.25.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.040.567 W alloc_table_locked: layer=25 role=blk.25.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.054.764 W alloc_table_locked: layer=25 role=blk.25.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.071.199 W alloc_table_locked: layer=25 role=blk.25.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.087.220 W alloc_table_locked: layer=25 role=blk.25.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.101.168 W alloc_table_locked: layer=21 role=blk.21.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.115.047 W alloc_table_locked: layer=21 role=blk.21.ffn_gate_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.129.356 W alloc_table_locked: layer=21 role=blk.21.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.143.637 W alloc_table_locked: layer=21 role=blk.21.ffn_up_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.159.810 W alloc_table_locked: layer=21 role=blk.21.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.176.165 W alloc_table_locked: layer=21 role=blk.21.ffn_down_exps.weight is FULLY RESIDENT (256/256 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+0.15.188.579 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'true'
+0.15.188.638 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+0.15.190.982 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.15.191.007 I srv  llama_server: model loaded
+0.15.191.009 I srv  llama_server: listening on http://0.0.0.0:8036
+0.15.954.694 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.15.954.771 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.19.479.420 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   8192, progress = 0.26, t =   3.52 s / 2324.22 tokens per second
+0.20.367.887 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  10240, progress = 0.33, t =   4.41 s / 2320.38 tokens per second
+0.21.266.859 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  12288, progress = 0.39, t =   5.31 s / 2313.23 tokens per second
+0.22.174.906 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  14336, progress = 0.46, t =   6.22 s / 2304.79 tokens per second
+0.23.090.353 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  16384, progress = 0.52, t =   7.14 s / 2296.11 tokens per second
+0.24.018.752 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  18432, progress = 0.59, t =   8.06 s / 2285.73 tokens per second
+0.24.955.167 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  20480, progress = 0.65, t =   9.00 s / 2275.46 tokens per second
+0.25.902.352 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  22528, progress = 0.72, t =   9.95 s / 2264.68 tokens per second
+0.26.860.056 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  24576, progress = 0.78, t =  10.91 s / 2253.60 tokens per second
+0.27.828.526 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  26624, progress = 0.85, t =  11.87 s / 2242.26 tokens per second
+0.28.806.491 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  28672, progress = 0.91, t =  12.85 s / 2230.99 tokens per second
+0.30.165.645 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  29453, progress = 0.93, t =  14.21 s / 2072.57 tokens per second
+0.31.156.282 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  31497, progress = 1.00, t =  15.20 s / 2071.97 tokens per second
+0.32.654.503 I slot print_timing: id  3 | task 0 | prompt eval time =   15290.99 ms / 31501 tokens (    0.49 ms per token,  2060.10 tokens per second)
+0.32.654.505 I slot print_timing: id  3 | task 0 |        eval time =    1408.72 ms /   128 tokens (   11.09 ms per token,    90.15 tokens per second)
+0.32.654.506 I slot print_timing: id  3 | task 0 |       total time =   16699.71 ms / 31629 tokens
+0.32.654.507 I slot print_timing: id  3 | task 0 |    graphs reused =        126
+0.32.654.508 I slot print_timing: id  3 | task 0 |   graph reallocs =         16    /     0        (same size) / (changed size)
+0.32.654.515 I slot print_timing: id  3 | task 0 |   MoE arena = 1.0000 (   32 hit /    32 reaches this turn), arena 16320.0 MiB
+0.32.654.891 I slot      release: id  3 | task 0 | stop processing: n_tokens = 31628, truncated = 0
+0.32.679.173 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.996
+0.32.679.225 I slot launch_slot_: id  3 | task 145 | processing task, is_child = 0
+0.34.130.478 I slot print_timing: id  3 | task 145 | prompt eval time =     156.70 ms /     4 tokens (   39.17 ms per token,    25.53 tokens per second)
+0.34.130.481 I slot print_timing: id  3 | task 145 |        eval time =    1294.55 ms /   128 tokens (   10.19 ms per token,    98.10 tokens per second)
+0.34.130.481 I slot print_timing: id  3 | task 145 |       total time =    1451.25 ms /   132 tokens
+0.34.130.482 I slot print_timing: id  3 | task 145 |    graphs reused =        252
+0.34.130.482 I slot print_timing: id  3 | task 145 |   graph reallocs =         16    /     0        (same size) / (changed size)
+0.34.130.848 I slot      release: id  3 | task 145 | stop processing: n_tokens = 31628, truncated = 0
+0.34.131.511 I srv    operator(): operator(): cleaning up before exit...
+0.34.131.814 W ~llama_context:        CPU compute buffer size of  64.4844 MiB, does not match expectation of   0.2976 MiB
+0.34.604.832 W WORK_RELEASE dev=0 off=0.0 MiB need=1280.0 MiB found=1 live_needs=0 boundary=1280.0 narrow_floor=1536.0
+0.34.604.835 W WORK_RELEASE dev=1 off=0.0 MiB need=1280.0 MiB found=1 live_needs=0 boundary=1280.0 narrow_floor=1536.0

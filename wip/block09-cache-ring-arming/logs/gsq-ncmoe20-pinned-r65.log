@@ -1,0 +1,67 @@
+0.00.017.335 I srv  llama_server: initializing ...
+0.00.017.341 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.017.521 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.018.760 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.59.716.760 W resolve_fused_ops: derived kq mask flash attention was not used in the probe graph, set to disabled
+0.59.716.762 W resolve_fused_ops: derived kq mask flash attention not supported, set to disabled
+0.59.716.762 W resolve_fused_ops: note: the derived kq mask is implemented by the MMA and the tile flash attention kernels; it is disabled here because neither served this graph (or the node did not reach the GPU)
+0.59.719.301 W GRAPH_RESERVE ctx=0x55bb683f3220 is_draft=0 n_tokens=2048
+0.59.723.033 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+0.59.728.200 W SLAB_INIT dev=0 free=17.52 GiB reserve=4.00 GiB headroom=4.00 GiB aux=0.00 GiB size(VA)=13.50 GiB mapped=13.50 GiB boundary=1.50 GiB va_spare=0.00 GiB chunk=64.0 MiB ring_req=6.00 GiB
+0.59.728.203 W ggml_cuda_slab_init_locked: device 0: slab 13.50 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 12.00 GiB (4.00 GiB reserve, 0.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.59.728.208 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+0.59.733.177 W SLAB_INIT dev=1 free=17.24 GiB reserve=4.00 GiB headroom=4.00 GiB aux=0.00 GiB size(VA)=13.19 GiB mapped=13.19 GiB boundary=1.50 GiB va_spare=0.00 GiB chunk=64.0 MiB ring_req=6.00 GiB
+0.59.733.179 W ggml_cuda_slab_init_locked: device 1: slab 13.19 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 11.69 GiB (4.00 GiB reserve, 0.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.59.733.741 W GRAPH_RESERVE ctx=0x55bb683f3220 is_draft=0 n_tokens=4
+0.59.735.523 W GRAPH_RESERVE ctx=0x55bb683f3220 is_draft=0 n_tokens=2048
+0.59.737.273 I cmn          init: llama threadpool init, n_threads = 7
+1.00.594.711 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=0.0
+1.00.594.714 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=0.0
+1.00.597.448 W GRAPH_RESERVE ctx=0x55bb683f3220 is_draft=0 n_tokens=1
+1.00.598.574 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.00.598.576 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1536.0 ring=6144.0 boundary=1536.0
+1.00.598.579 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.00.598.580 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1536.0 ring=6144.0 boundary=1536.0
+1.00.677.497 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 131072, kv_unified = 'true'
+1.00.677.552 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+1.00.680.235 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.00.680.260 I srv  llama_server: model loaded
+1.00.680.264 I srv  llama_server: listening on http://0.0.0.0:8036
+1.01.068.241 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+1.01.068.327 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+1.02.265.863 W optional device allocation refused: 1274 MiB total against 2221 MiB free (the movable-boundary slab is active; the cap is 50%).  The caller falls back.  Raise GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT to allow.
+1.05.641.905 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   4138, progress = 0.13, t =   4.57 s / 904.77 tokens per second
+1.07.327.226 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   6186, progress = 0.20, t =   6.26 s / 988.36 tokens per second
+1.09.157.191 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   8234, progress = 0.26, t =   8.09 s / 1017.95 tokens per second
+1.10.947.228 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  10282, progress = 0.33, t =   9.88 s / 1040.81 tokens per second
+1.12.741.337 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  12330, progress = 0.39, t =  11.67 s / 1056.29 tokens per second
+1.14.498.062 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  14378, progress = 0.46, t =  13.43 s / 1070.61 tokens per second
+1.16.296.005 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  16426, progress = 0.52, t =  15.23 s / 1078.70 tokens per second
+1.18.046.157 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  18474, progress = 0.59, t =  16.98 s / 1088.13 tokens per second
+1.19.844.087 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  20522, progress = 0.65, t =  18.78 s / 1093.01 tokens per second
+1.21.646.748 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  22570, progress = 0.72, t =  20.58 s / 1096.78 tokens per second
+1.23.507.999 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  24618, progress = 0.78, t =  22.44 s / 1097.08 tokens per second
+1.25.399.982 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  26666, progress = 0.85, t =  24.33 s / 1095.94 tokens per second
+1.27.270.311 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  28714, progress = 0.91, t =  26.20 s / 1095.87 tokens per second
+1.28.604.622 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  29495, progress = 0.94, t =  27.54 s / 1071.13 tokens per second
+1.30.468.180 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  31539, progress = 1.00, t =  29.40 s / 1072.76 tokens per second
+1.34.791.023 I slot print_timing: id  3 | task 0 | n_gen =    100, tg =  23.82 t/s, tg_3s =  24.06 t/s
+1.35.933.641 I slot print_timing: id  3 | task 0 | prompt eval time =   29567.26 ms / 31543 tokens (    0.94 ms per token,  1066.82 tokens per second)
+1.35.933.644 I slot print_timing: id  3 | task 0 |        eval time =    5298.02 ms /   128 tokens (   41.72 ms per token,    23.97 tokens per second)
+1.35.933.645 I slot print_timing: id  3 | task 0 |       total time =   34865.29 ms / 31671 tokens
+1.35.933.646 I slot print_timing: id  3 | task 0 |    graphs reused =        126
+1.35.933.647 I slot print_timing: id  3 | task 0 |   graph reallocs =         14    /     0        (same size) / (changed size)
+1.35.933.995 I slot      release: id  3 | task 0 | stop processing: n_tokens = 31670, truncated = 0
+1.35.960.036 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.996
+1.35.960.091 I slot launch_slot_: id  3 | task 146 | processing task, is_child = 0
+1.40.197.916 I slot print_timing: id  3 | task 146 | n_gen =    100, tg =  24.54 t/s, tg_3s =  24.79 t/s
+1.41.337.054 I slot print_timing: id  3 | task 146 | prompt eval time =     203.40 ms /     4 tokens (   50.85 ms per token,    19.67 tokens per second)
+1.41.337.058 I slot print_timing: id  3 | task 146 |        eval time =    5173.55 ms /   128 tokens (   40.74 ms per token,    24.55 tokens per second)
+1.41.337.059 I slot print_timing: id  3 | task 146 |       total time =    5376.95 ms /   132 tokens
+1.41.337.059 I slot print_timing: id  3 | task 146 |    graphs reused =        252
+1.41.337.060 I slot print_timing: id  3 | task 146 |   graph reallocs =         14    /     0        (same size) / (changed size)
+1.41.337.422 I slot      release: id  3 | task 146 | stop processing: n_tokens = 31670, truncated = 0
+1.41.338.120 I srv    operator(): operator(): cleaning up before exit...
+1.41.338.479 W ~llama_context:        CPU compute buffer size of 100.8596 MiB, does not match expectation of   0.3152 MiB
+1.41.831.009 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=1792.0
+1.41.831.012 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=1792.0

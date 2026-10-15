@@ -1,0 +1,399 @@
+0.00.016.171 I srv  llama_server: initializing ...
+0.00.016.177 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.016.357 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.017.601 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/IQ4_NL/Qwen3.8-Flash-Next-IQ4_NL-PROJFIX-00001-of-00009.gguf'
+0.00.186.758 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.12.064.521 W resolve_fused_ops: derived kq mask flash attention was not used in the probe graph, set to disabled
+0.12.064.523 W resolve_fused_ops: derived kq mask flash attention not supported, set to disabled
+0.12.064.524 W resolve_fused_ops: note: the derived kq mask is implemented by the MMA and the tile flash attention kernels; it is disabled here because neither served this graph (or the node did not reach the GPU)
+0.12.067.559 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=2048
+0.12.072.266 W COMPUTE_ALLOC 1792.0 MiB dev=0 slab_on=1 flag=1
+0.12.079.894 W SLAB_INIT dev=0 free=28.28 GiB reserve=8.00 GiB headroom=4.00 GiB aux=4.00 GiB size(VA)=24.25 GiB mapped=20.25 GiB boundary=1.75 GiB va_spare=4.00 GiB chunk=64.0 MiB ring_req=6.00 GiB
+0.12.079.896 W ggml_cuda_slab_init_locked: device 0: slab 20.25 GiB (chunk 64.0 MiB): work 1.75 GiB + arena 18.50 GiB (8.00 GiB reserve, 4.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.12.079.900 W COMPUTE_ALLOC 1792.0 MiB dev=1 slab_on=1 flag=1
+0.12.087.376 W SLAB_INIT dev=1 free=28.28 GiB reserve=8.00 GiB headroom=4.00 GiB aux=4.00 GiB size(VA)=24.25 GiB mapped=20.25 GiB boundary=1.75 GiB va_spare=4.00 GiB chunk=64.0 MiB ring_req=6.00 GiB
+0.12.087.378 W ggml_cuda_slab_init_locked: device 1: slab 20.25 GiB (chunk 64.0 MiB): work 1.75 GiB + arena 18.50 GiB (8.00 GiB reserve, 4.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.12.087.883 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=1
+0.12.089.879 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=2048
+0.12.091.646 I cmn          init: llama threadpool init, n_threads = 7
+0.13.132.311 I common_speculative_init_result: loading draft model '/llm/models/Qwen3.8/Flash-Next/IQ4_NL/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+0.14.211.625 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=512
+0.14.213.592 W COMPUTE_ALLOC 512.0 MiB dev=0 slab_on=1 flag=1
+0.14.213.952 W ggml_cuda_slab_narrow2_floor_locked: device 0: narrow-2 (MTP draft compute) pinned at [23.75, 24.25] GiB (0.50 GiB); the arena now tops out at 18.50 GiB
+0.14.213.954 W NARROW2_ALLOC dev=0 need=512.0 MiB off=24320.0 MiB live=1
+0.14.213.956 W COMPUTE_ALLOC 512.0 MiB dev=1 slab_on=1 flag=1
+0.14.214.409 W ggml_cuda_slab_narrow2_floor_locked: device 1: narrow-2 (MTP draft compute) pinned at [23.75, 24.25] GiB (0.50 GiB); the arena now tops out at 18.50 GiB
+0.14.214.410 W NARROW2_ALLOC dev=1 need=512.0 MiB off=24320.0 MiB live=1
+0.14.214.458 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=1
+0.14.214.548 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=512
+0.14.214.650 W NARROW2_RELEASE dev=0 need=512.0 MiB off=24320.0 MiB live=0
+0.14.214.651 W NARROW2_RELEASE dev=1 need=512.0 MiB off=24320.0 MiB live=0
+0.14.214.701 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'false'
+0.14.214.743 W set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU
+0.14.214.744 W spec common_specu: backend offload failed for seq_id=0; using CPU sampler
+0.14.218.023 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=512
+0.14.218.088 W COMPUTE_ALLOC 512.0 MiB dev=0 slab_on=1 flag=1
+0.14.218.089 W NARROW2_ALLOC dev=0 need=512.0 MiB off=24320.0 MiB live=1
+0.14.218.091 W COMPUTE_ALLOC 512.0 MiB dev=1 slab_on=1 flag=1
+0.14.218.091 W NARROW2_ALLOC dev=1 need=512.0 MiB off=24320.0 MiB live=1
+0.14.218.126 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=1
+0.14.218.197 W GRAPH_RESERVE ctx=0x5594d9d1e280 is_draft=1 n_tokens=512
+0.14.221.898 W COMPUTE_ALLOC 1.2 MiB dev=0 slab_on=1 flag=0
+0.14.221.906 W COMPUTE_ALLOC 1.2 MiB dev=1 slab_on=1 flag=0
+0.14.232.710 I srv  llama_server: model loaded
+0.14.232.716 I srv  llama_server: listening on http://0.0.0.0:8035
+0.15.006.912 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.15.007.046 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.15.014.346 W WORK_RELEASE dev=0 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+0.15.014.347 W WORK_RELEASE dev=1 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+0.15.015.582 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=2048
+0.15.017.279 W COMPUTE_ALLOC 2048.0 MiB dev=0 slab_on=1 flag=1
+0.15.017.282 W WORK_ALLOC dev=0 need=2048.0 MiB narrow=0 ret_off=7936.0 MiB narrow_floor=1792.0 ring=6144.0 boundary=1792.0
+0.15.017.288 W COMPUTE_ALLOC 2048.0 MiB dev=1 slab_on=1 flag=1
+0.15.017.288 W WORK_ALLOC dev=1 need=2048.0 MiB narrow=0 ret_off=7936.0 MiB narrow_floor=1792.0 ring=6144.0 boundary=1792.0
+0.15.017.752 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=1
+0.15.019.711 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=2048
+0.19.539.898 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2048, progress = 0.03, t =   4.31 s / 474.85 tokens per second
+0.22.715.791 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4096, progress = 0.06, t =   7.53 s / 544.04 tokens per second
+0.25.777.939 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   6144, progress = 0.09, t =  10.59 s / 580.08 tokens per second
+0.28.834.013 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   8192, progress = 0.12, t =  13.65 s / 600.33 tokens per second
+0.31.892.902 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  10240, progress = 0.15, t =  16.70 s / 613.09 tokens per second
+0.34.952.622 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  12288, progress = 0.18, t =  19.76 s / 621.89 tokens per second
+0.38.016.981 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  14336, progress = 0.21, t =  22.82 s / 628.24 tokens per second
+0.41.078.814 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  16384, progress = 0.24, t =  25.88 s / 633.02 tokens per second
+0.44.146.097 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  18432, progress = 0.27, t =  28.94 s / 636.81 tokens per second
+0.47.214.654 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  20480, progress = 0.30, t =  32.01 s / 639.70 tokens per second
+0.50.293.085 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  22528, progress = 0.33, t =  35.09 s / 642.05 tokens per second
+0.53.364.929 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  24576, progress = 0.36, t =  38.16 s / 643.96 tokens per second
+0.56.449.220 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  26624, progress = 0.39, t =  41.24 s / 645.61 tokens per second
+0.59.527.952 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  28672, progress = 0.42, t =  44.32 s / 646.92 tokens per second
+1.02.618.394 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  30720, progress = 0.45, t =  47.40 s / 648.06 tokens per second
+1.05.710.939 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  32768, progress = 0.48, t =  50.50 s / 648.89 tokens per second
+1.08.796.114 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  34816, progress = 0.51, t =  53.59 s / 649.63 tokens per second
+1.11.868.087 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  36864, progress = 0.54, t =  56.67 s / 650.48 tokens per second
+1.14.946.611 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  38912, progress = 0.57, t =  59.75 s / 651.29 tokens per second
+1.18.017.459 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  40960, progress = 0.60, t =  62.82 s / 652.01 tokens per second
+1.21.087.404 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  43008, progress = 0.63, t =  65.89 s / 652.71 tokens per second
+1.24.157.902 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  45056, progress = 0.66, t =  68.96 s / 653.35 tokens per second
+1.27.229.113 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  47104, progress = 0.69, t =  72.03 s / 653.93 tokens per second
+1.30.316.897 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  49152, progress = 0.72, t =  75.12 s / 654.32 tokens per second
+1.33.397.936 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  51200, progress = 0.75, t =  78.20 s / 654.75 tokens per second
+1.36.474.705 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  53248, progress = 0.78, t =  81.28 s / 655.15 tokens per second
+1.39.547.780 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  55296, progress = 0.81, t =  84.35 s / 655.56 tokens per second
+1.42.616.311 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  57344, progress = 0.84, t =  87.42 s / 655.98 tokens per second
+1.45.686.155 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  59392, progress = 0.87, t =  90.49 s / 656.35 tokens per second
+1.48.757.057 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  61440, progress = 0.90, t =  93.56 s / 656.71 tokens per second
+1.51.830.373 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  63488, progress = 0.93, t =  96.63 s / 657.01 tokens per second
+1.54.900.847 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  65536, progress = 0.96, t =  99.70 s / 657.32 tokens per second
+1.58.923.742 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  66182, progress = 0.97, t = 103.88 s / 637.10 tokens per second
+2.03.028.793 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  68226, progress = 1.00, t = 107.80 s / 632.89 tokens per second
+2.03.094.809 W WORK_RELEASE dev=0 off=7936.0 MiB need=2048.0 MiB found=1 live_needs=0 boundary=9984.0 narrow_floor=1792.0
+2.03.094.811 W WORK_RELEASE dev=1 off=7936.0 MiB need=2048.0 MiB found=1 live_needs=0 boundary=9984.0 narrow_floor=1792.0
+2.03.100.973 W GRAPH_RESERVE ctx=0x5594c2d50070 is_draft=0 n_tokens=8
+2.03.102.352 W COMPUTE_ALLOC 1792.0 MiB dev=0 slab_on=1 flag=1
+2.03.102.355 W WORK_ALLOC dev=0 need=1792.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=6144.0 boundary=9984.0
+2.03.102.362 W COMPUTE_ALLOC 1792.0 MiB dev=1 slab_on=1 flag=1
+2.03.102.362 W WORK_ALLOC dev=1 need=1792.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=6144.0 boundary=9984.0
+2.03.254.574 W ggml_cuda_slab_extend: device 0: slab grew by 0.38 GiB into the reserve the model did not need (now 20.62 GiB: work 1.75 GiB + arena 18.88 GiB; 4.00 GiB left free AFTER this mapping, which is GGML_CUDA_SLAB_HEADROOM_MIB -- not extra headroom)
+2.03.254.582 W alloc_all_locked: MoE expert cache (auto): arena 37589.1 MiB of 64800.0 MiB host experts (58.0% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+2.03.269.199 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.282.728 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.299.123 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.310.272 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.320.304 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.333.145 W apply_heat_seed_locked: layer=10 role=blk.10.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.348.705 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.362.436 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.379.024 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.390.659 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.400.728 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.413.500 W apply_heat_seed_locked: layer=11 role=blk.11.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.426.747 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.439.993 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.456.634 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.467.989 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.477.999 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.490.869 W apply_heat_seed_locked: layer=14 role=blk.14.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.506.935 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.520.696 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.537.327 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.548.896 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.558.917 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.571.761 W apply_heat_seed_locked: layer=17 role=blk.17.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.587.871 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.601.611 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.618.260 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.629.835 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.639.854 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.652.629 W apply_heat_seed_locked: layer=23 role=blk.23.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.665.820 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.679.033 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.695.889 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.707.253 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.717.296 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.730.115 W apply_heat_seed_locked: layer=26 role=blk.26.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.745.760 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.759.494 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.776.079 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.787.675 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.797.710 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.810.485 W apply_heat_seed_locked: layer=13 role=blk.13.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.826.526 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.840.246 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.857.091 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.868.700 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.878.740 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.891.517 W apply_heat_seed_locked: layer=27 role=blk.27.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.904.727 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.917.955 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.934.565 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.945.923 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.955.927 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.968.711 W apply_heat_seed_locked: layer=9 role=blk.9.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.984.741 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.03.998.468 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.015.338 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.026.923 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.036.942 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.049.690 W apply_heat_seed_locked: layer=25 role=blk.25.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.065.803 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.079.523 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.096.129 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.107.743 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.117.741 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.130.479 W apply_heat_seed_locked: layer=20 role=blk.20.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.143.684 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.156.899 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.173.487 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.184.866 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.194.903 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.207.689 W apply_heat_seed_locked: layer=8 role=blk.8.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.223.675 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.237.365 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.253.948 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.265.561 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.275.723 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.288.359 W apply_heat_seed_locked: layer=24 role=blk.24.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.304.388 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.318.112 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.334.935 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.346.509 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.356.544 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.369.330 W apply_heat_seed_locked: layer=29 role=blk.29.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.382.775 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.395.756 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.412.130 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.423.505 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.433.500 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.446.325 W apply_heat_seed_locked: layer=30 role=blk.30.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.459.530 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.472.741 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.489.329 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.500.704 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.510.750 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.523.577 W apply_heat_seed_locked: layer=19 role=blk.19.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.539.555 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.553.282 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.569.885 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.581.463 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.591.658 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.604.295 W apply_heat_seed_locked: layer=18 role=blk.18.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.617.279 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.630.271 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.646.659 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.658.038 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.668.123 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.680.785 W apply_heat_seed_locked: layer=6 role=blk.6.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.696.910 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.710.623 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.727.229 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.738.797 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.748.793 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.761.526 W apply_heat_seed_locked: layer=28 role=blk.28.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.777.552 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.791.281 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.808.120 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.819.672 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.829.672 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.842.410 W apply_heat_seed_locked: layer=12 role=blk.12.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.855.812 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.868.789 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.885.149 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.896.548 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.906.570 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.919.393 W apply_heat_seed_locked: layer=16 role=blk.16.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.935.397 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.949.336 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.966.112 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.977.710 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.04.987.744 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.000.524 W apply_heat_seed_locked: layer=21 role=blk.21.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.013.771 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.026.993 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.043.599 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.054.978 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.064.976 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.077.739 W apply_heat_seed_locked: layer=7 role=blk.7.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.093.766 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.107.494 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.124.338 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.135.944 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.145.949 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.158.685 W apply_heat_seed_locked: layer=22 role=blk.22.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.171.889 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.185.094 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.201.910 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.213.290 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.223.325 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.236.149 W apply_heat_seed_locked: layer=5 role=blk.5.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.251.742 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.265.430 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.282.257 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.293.776 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.303.748 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.316.532 W apply_heat_seed_locked: layer=40 role=blk.40.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.329.748 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.342.981 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.359.592 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.370.964 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.380.969 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.393.740 W apply_heat_seed_locked: layer=15 role=blk.15.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.409.777 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.423.496 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.440.382 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.451.953 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.461.962 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.474.743 W apply_heat_seed_locked: layer=33 role=blk.33.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.490.799 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.504.483 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.521.365 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.532.907 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.542.867 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.555.607 W apply_heat_seed_locked: layer=38 role=blk.38.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.571.564 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.585.255 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.602.091 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.613.623 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.623.574 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.636.352 W apply_heat_seed_locked: layer=41 role=blk.41.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.651.982 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.665.679 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.682.293 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.693.812 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.703.766 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.716.486 W apply_heat_seed_locked: layer=39 role=blk.39.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.729.692 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.742.902 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.759.488 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.770.857 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.780.889 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.793.671 W apply_heat_seed_locked: layer=34 role=blk.34.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.809.665 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.823.392 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.840.218 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.851.803 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.861.839 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.874.581 W apply_heat_seed_locked: layer=35 role=blk.35.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.888.027 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.901.012 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.917.401 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.928.791 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.938.797 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.951.577 W apply_heat_seed_locked: layer=4 role=blk.4.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.964.768 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.977.978 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.05.994.565 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.005.929 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.015.951 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.028.741 W apply_heat_seed_locked: layer=32 role=blk.32.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.044.744 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.058.438 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.075.262 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.086.858 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.096.889 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.109.632 W apply_heat_seed_locked: layer=37 role=blk.37.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.125.661 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.139.336 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.156.142 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.167.676 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.177.731 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.190.360 W apply_heat_seed_locked: layer=43 role=blk.43.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.203.738 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.217.147 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.233.528 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.245.371 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.255.477 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.268.088 W apply_heat_seed_locked: layer=31 role=blk.31.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.284.050 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.297.771 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.314.614 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.326.202 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.336.210 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.348.994 W apply_heat_seed_locked: layer=36 role=blk.36.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.364.971 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.378.654 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.395.480 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.407.031 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.416.976 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.429.715 W apply_heat_seed_locked: layer=44 role=blk.44.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.442.906 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.456.111 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.472.925 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.484.364 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.494.522 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.507.193 W apply_heat_seed_locked: layer=2 role=blk.2.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.522.896 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.536.581 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.553.158 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.564.677 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.574.651 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.587.439 W apply_heat_seed_locked: layer=42 role=blk.42.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.603.454 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.617.393 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.634.183 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.645.765 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.655.796 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.668.580 W apply_heat_seed_locked: layer=3 role=blk.3.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.684.547 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.698.228 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.715.027 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.726.566 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.736.545 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.749.333 W apply_heat_seed_locked: layer=45 role=blk.45.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.762.724 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.775.687 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.792.066 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.803.378 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.813.406 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.826.072 W apply_heat_seed_locked: layer=46 role=blk.46.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.839.037 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.852.004 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.868.365 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.879.738 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.889.772 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.902.602 W apply_heat_seed_locked: layer=0 role=blk.0.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.915.812 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.929.042 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.945.639 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.956.980 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.966.980 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.979.761 W apply_heat_seed_locked: layer=1 role=blk.1.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.06.995.815 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.07.009.492 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.07.026.329 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.07.037.840 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_gate_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.07.047.796 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_up_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.07.060.534 W apply_heat_seed_locked: layer=47 role=blk.47.ffn_down_exps.weight heat-seeded 294/294 slots from the persisted map (512 experts)
+2.08.484.953 I slot print_timing: id  0 | task 0 | prompt eval time =  112399.87 ms / 68230 tokens (    1.65 ms per token,   607.03 tokens per second)
+2.08.484.956 I slot print_timing: id  0 | task 0 |        eval time =    1078.01 ms /    32 tokens (   34.77 ms per token,    28.76 tokens per second)
+2.08.484.956 I slot print_timing: id  0 | task 0 |       total time =  113477.88 ms / 68262 tokens
+2.08.484.958 I slot print_timing: id  0 | task 0 |    graphs reused =          8
+2.08.484.959 I slot print_timing: id  0 | task 0 |   graph reallocs =         30    /     1        (same size) / (changed size)
+2.08.484.962 I slot print_timing: id  0 | task 0 | draft acceptance = 0.58333 (   21 accepted /    36 generated), mean len =  3.33
+2.08.494.745 I slot print_timing: id  0 | task 0 |   MoE arena = 0.8889 (127794 hit / 143760 reaches this turn), arena 37209.4 MiB
+2.08.495.500 I slot      release: id  0 | task 0 | stop processing: n_tokens = 68261, truncated = 0
+2.08.497.181 I srv    operator(): operator(): cleaning up before exit...
+2.08.827.670 W NARROW2_RELEASE dev=0 need=512.0 MiB off=24320.0 MiB live=0
+2.08.827.673 W NARROW2_RELEASE dev=1 need=512.0 MiB off=24320.0 MiB live=0
+2.09.279.860 W WORK_RELEASE dev=0 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+2.09.279.864 W WORK_RELEASE dev=1 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
