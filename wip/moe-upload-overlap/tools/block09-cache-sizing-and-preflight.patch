@@ -1,0 +1,228 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index f2257358b..2d02f46dd 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -1097,6 +1097,22 @@ void ggml_cuda_slab_arm() {
+     g_slab_armed = true;
+ }
+ 
++// Undo a previous arm.  The MoE preflight runs at MODEL LOAD (universal, aux 0) and again from `common`
++// with the draft/MTP aux; if the second, better-informed call declines the cache (auto floor), the slab
++// must not stay armed for a cache that is off (it would withhold the VRAM the decline was protecting).
++// Safe only before a slab exists; a live slab is left alone.
++void ggml_cuda_slab_disarm() {
++    {
++        std::lock_guard<std::mutex> lock(g_slab_mutex);
++        for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++            if (g_slabs[d].inited) {
++                return;   // a live slab owns its mappings; do not yank the gate out from under it
++            }
++        }
++    }
++    g_slab_armed = false;
++}
++
+ bool ggml_cuda_slab_compute_enabled() {
+     return g_slab_compute_enabled;
+ }
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+index 7ab668f15..e9984b68e 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
++++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+@@ -88,6 +88,7 @@ void   ggml_cuda_slab_arena_free (int device, void * ptr, size_t size);
+ 
+ // Phase-2 (item 6b): slab state accessors used by the device wrappers in ggml-cuda.cu.
+ void   ggml_cuda_slab_arm();
++void   ggml_cuda_slab_disarm();
+ bool   ggml_cuda_slab_compute_enabled();
+ void   ggml_cuda_slab_set_compute_narrow2(bool enable);
+ size_t ggml_cuda_slab_headroom_bytes();
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index 0bdfd09e5..a59c99bc3 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -265,6 +265,37 @@ int                                 g_uniform_slots = -1;       // the decided p
+ // it after a compute-buffer drop returned the VRAM.  -1 = the layer was not cacheable at sizing time.
+ int                                 g_rearm_slots[512];
+ bool                                g_sized           = false;  // the deferred sizing has run
++// WIP moe-upload-overlap: the per-device host-expert bytes the preflight reported, so the deferred
++// arena sizing can WAIT until every host table has registered.  Without this, a pass that primes only a
++// SUBSET of the host tables latches the sizing on that subset -- e.g. a prefill's bulk ubatch is served
++// by the H2D staging ring (which does not register cache tables) while the final 1-token ubatch reaches
++// the decode hook and primes only the last host layer.  See `moe_cache_tables_complete_locked`.
++int64_t                             g_preflight_device_bytes[GGML_CUDA_MAX_DEVICES] = {0};
++bool                                g_preflight_device_seen [GGML_CUDA_MAX_DEVICES] = {false};
++// The aux (draft/MTP) estimate the early auto floor last used.  The preflight now runs once at model
++// load (aux 0, before the speculative params are known) and again from `common` with the real estimate;
++// a LARGER estimate re-runs the floor instead of latching the load-time answer.
++static size_t                       g_preflight_aux = 0;
++
++// WIP moe-upload-overlap: a host table the cache can NEVER hold (an unaddressable split slice) must not
++// keep the deferred sizing waiting for bytes it will never see.  Keyed on the host master + device, so
++// the repeated presentations of one table subtract once.
++static std::set<std::pair<const void *, int>> g_unregisterable_keys;
++static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device, int n_experts, size_t expert_bytes) {
++    if (weight == nullptr || device < 0 || device >= GGML_CUDA_MAX_DEVICES || n_experts <= 0 || expert_bytes == 0) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(g_mutex);
++    if (!g_unregisterable_keys.insert(std::make_pair((const void *) weight->data, device)).second) {
++        return;   // already subtracted
++    }
++    const int64_t b = (int64_t) n_experts * (int64_t) expert_bytes;
++    if (g_preflight_device_bytes[device] > b) {
++        g_preflight_device_bytes[device] -= b;
++    } else {
++        g_preflight_device_bytes[device] = 0;
++    }
++}
+ // Bumped by every entry point that can write an arena or a device slot map (the decode-band hooks, sizing, re-arm,
+ // eviction).  The cache-aware staging orders its copy stream after the compute stream only when this moved since its
+ // last staging on that device: during a prefill nothing writes, so the staging keeps overlapping the compute.
+@@ -2242,6 +2273,27 @@ void alloc_table_locked(table_t & t, int slots) {
+ // (moe_cache_floor_active).
+ bool g_floor_active = false;
+ 
++// WIP moe-upload-overlap: true when the registered host tables account for at least the per-device
++// bytes the preflight reported for every device it saw.  A pass can reach the decode hook with only a
++// SUBSET of the host tables registered (a prefill's staged bulk ubatch plus a non-staged 1-token tail),
++// and the deferred sizing must not latch on that subset or the not-yet-seen tables get no arena forever.
++// An unseen device / an absent preflight is treated as complete (the pre-existing behaviour).
++static bool moe_cache_tables_complete_locked() {
++    int64_t registered[GGML_CUDA_MAX_DEVICES] = {0};
++    for (const table_t & t : g_tables) {
++        if (t.device >= 0 && t.device < GGML_CUDA_MAX_DEVICES) {
++            registered[t.device] += (int64_t) t.n_experts * (int64_t) t.expert_bytes;
++        }
++    }
++    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++        if (g_preflight_device_seen[d] && g_preflight_device_bytes[d] > 0 &&
++            registered[d] < g_preflight_device_bytes[d]) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ // Deferred, budget-adaptive, UNIFORM sizing.  Every table gets the same slot count
+ // `budget / total_expert_bytes`, so an expert resident for gate is resident for up and down too and
+ // the effective (all-roles) hit rate is set by the shared slot count, not by the smallest table.
+@@ -2252,14 +2304,19 @@ void alloc_all_locked() {
+     if (g_sized) {
+         return;
+     }
+-    g_sized = true;
+     g_floor_active = g_enabled && !g_tables.empty();
+     // Already disabled before the first graph (the slab could not give the cache a usable arena, or an
+     // explicit `MOE_EXPERT_CACHE_MIB=0`): nothing to size.  See `moe_cache_disable_streaming` for why the
+     // decision has to be made that early.
+     if (!g_enabled) {
++        g_sized = true;
+         return;
+     }
++    // WIP moe-upload-overlap: do not latch the sizing on a partial table set (see the helper above).
++    if (!moe_cache_tables_complete_locked()) {
++        return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
++    }
++    g_sized = true;
+     // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
+     // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
+     // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash
+@@ -2674,6 +2731,19 @@ bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserv
+     if (!g_enabled) {
+         return false;
+     }
++    // WIP moe-upload-overlap: remember the per-device host-expert bytes so the deferred arena sizing can
++    // wait until every host table has registered (see `moe_cache_tables_complete_locked`).  Recorded for
++    // the explicit-budget path too (`g_auto` false returns below).
++    if (device >= 0 && device < GGML_CUDA_MAX_DEVICES && host_expert_bytes > 0) {
++        std::lock_guard<std::mutex> lock(g_mutex);
++        // `max`: a second model (a separate MTP/draft head) may preflight the same devices with a
++        // smaller host-expert set; the cache is process-global and both models' tables register, so
++        // never let the smaller one lower the bar the deferred sizing waits for.
++        if ((int64_t) host_expert_bytes > g_preflight_device_bytes[device]) {
++            g_preflight_device_bytes[device] = (int64_t) host_expert_bytes;
++        }
++        g_preflight_device_seen [device] = true;
++    }
+     // The pool's AUTO budget is a fraction of the MoE host expert bytes.  This runs once per host-expert
+     // device, before the context, and is the only place that sees them all; accumulate here regardless of
+     // the cache's own auto/explicit mode.
+@@ -2683,10 +2753,14 @@ bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserv
+     if (!g_auto) {
+         return true;   // an explicit MOE_EXPERT_CACHE_MIB is used verbatim; no early floor
+     }
+-    if (g_preflight_done) {
+-        return g_enabled;   // latch: the first call (target context, before the draft) decides
++    // The floor is a one-time early decision, but the aux estimate is only known from `common` (after the
++    // model load).  Re-run it when a larger aux arrives so the load-time aux-0 answer cannot silently
++    // keep a cache that the with-draft projection would have declined.
++    if (g_preflight_done && aux_reserve_bytes <= g_preflight_aux) {
++        return g_enabled;   // latch: the call with the largest aux so far decides
+     }
+     g_preflight_done = true;
++    g_preflight_aux = std::max(g_preflight_aux, aux_reserve_bytes);
+     size_t free_b = 0, total_b = 0;
+     device_guard dg(device);
+     if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+@@ -3735,6 +3809,9 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
+                           __func__, name_layer(weight), name_role(weight).c_str(),
+                           host_bytes, expert_bytes, slice_off, host_pitch, split_axis);
+         }
++        // WIP moe-upload-overlap: this table can never enter the arena; drop it from the expected bytes
++        // so the deferred sizing is not blocked waiting for it.
++        moe_cache_note_unregisterable(weight, device, n_experts, expert_bytes);
+         return false;
+     }
+     // Register the table with the cache even though this pass uploads through the gather.  The
+@@ -3856,6 +3933,9 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+                           __func__, layer, name_role(weight).c_str(),
+                           host_bytes, expert_bytes, slice_off, host_pitch, split_axis);
+         }
++        // WIP moe-upload-overlap: this table can never enter the arena; drop it from the expected bytes
++        // so the deferred sizing is not blocked waiting for it.
++        moe_cache_note_unregisterable(weight, device, n_experts, expert_bytes);
+         return false;
+     }
+     const int table = moe_cache_table(weight, layer, name_role(weight).c_str(), n_experts, expert_bytes,
+diff --git a/src/llama.cpp b/src/llama.cpp
+index 5c77bb1fa..f025505b0 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -478,6 +478,20 @@ static struct llama_model * llama_model_load_from_file_impl(
+         return nullptr;
+     }
+ 
++    // Preflight the MoE expert cache / movable-boundary slab HERE so every consumer arms it.  This used
++    // to run only from `common_init_from_params`, which `llama-bench` (and tests, and API users) bypass,
++    // so llama-bench never armed the slab for ANY host-layer placement.  The draft/MTP aux estimate is
++    // only known from `common`, which calls the preflight again with the real value (the floor re-runs
++    // when the aux grows); the embedded MTP head is known here via `params.load_mtp`.
++    if (model != nullptr) {
++        size_t aux_bytes = 0;
++        if (params.load_mtp) {
++            const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
++            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
++        }
++        llama_model_moe_cache_preflight(model, aux_bytes);
++    }
++
+     return model;
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index a20d14750..0ab8512b8 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -6154,6 +6204,11 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
+         // Dense models never reach here (`llama_model_moe_cache_preflight` skips an empty host-expert map),
+         // which is what keeps the slab off them.  Runs before the context, so before any compute buffer.
+         ggml_cuda_slab_arm();
++    } else {
++        // The preflight now runs once at model load (universal, aux 0) and again from `common` with the
++        // draft/MTP aux; if the better-informed call declines the cache, undo the earlier arm so a
++        // cache-off run does not still withhold VRAM for an arena it will never use.
++        ggml_cuda_slab_disarm();
+     }
+     return on;
+ }

@@ -1,17 +1,27 @@
 # `moe-upload-overlap` — rear-fill the host-resident experts (was: make the H2D upload overlap compute)
 
-**Status: OPEN (seeded 2026-10-14; pivoted 2026-10-14).  START WITH
-[`HANDOVER-2026-10-14.md`](HANDOVER-2026-10-14.md).**  The original goal (overlap the H2D upload with
-compute) is a dead end: the staged hand-off already engages, and an explicit all-up-front prefetch
-**regresses ~4 %**.  The real finding is the **placement default**: `-ncmoe N` currently hosts the FIRST N
-layers, which is the worst placement on both axes.  The campaign now targets **hosting the LAST N layers**
-(`[n_layer-N, n_layer)`), implemented scratch-only as `LLAMA_NCMOE_FROM_END=N`
-(`tools/rear-fill-prototype.patch`).
+**Status: DECODE BLOCKER FIXED in scratch (2026-10-14) — see [`FIX-2026-10-14.md`](FIX-2026-10-14.md).**
+The blocker was **not** the slab: it is a premature arena-sizing latch (`alloc_all_locked` sized on the
+6 tables a prefill's 1-token tail ubatch primed), plus a second, independent `llama-bench`-only gap
+(`llama-bench` never calls the MoE-cache preflight, so it never arms the slab for *any* placement).
+With the universal preflight (in `llama_model_load_from_file`) + the robust deferred sizing
+(`tools/block09-cache-sizing-and-preflight.patch`), both placements reach full residency
+(60 tables / 4080 MiB/device) and **rear >= front on prefill and decode**.  The fix is cut for **block
+09** (maintainer's decision).  Nothing is in `patches/` and nothing has been applied to the fork branch.
 
 * **Prefill wins**: `pp4096` `0–19` = 4136 vs `20–39` = **4309 (+4 %)** at `-ncmoe 20`.
-* **Decode is BLOCKED**: for the tail host set the movable-boundary slab does not arm, the expert cache
-  falls back to 816 MiB / 6 tables (of 60) and `tg500` collapses ~87 → ~30 t/s.  Finding + fixing this is
-  the next session's job (block 09).  `llama-cli` arms fine; `llama-bench` does not.
+* **Decode blocker FIXED** in scratch: `LLAMA_NCMOE_FROM_END=20` now reaches **60 tables /
+  4080 MiB per device** and `tg500` is 87.8 vs the front's 83.9 (`pp512` 849 vs 654, universal
+  preflight).  Root cause: the arena sizing latched on the one layer a prefill's non-staged 1-token tail
+  primed (the bulk prefill is staged and does not register tables); `llama-bench`'s two prefill passes
+  made it fire before the decode registered the rest.  Full write-up + validation in
+  [`FIX-2026-10-14.md`](FIX-2026-10-14.md).
+* **MTP re-verified**: 35B embedded head `none == draft-mtp n3` bit-identical (+83 %); GSQ-RCO
+  Qwen3.8-Flash-Next + separate MTP head coherent and bit-identical front vs tail.
+* **`-sm layer` tail prefill does NOT regress** (clean `pp4096`: tail 2799 vs front 2429).
+* **NEW (not this change):** `-lm none` + `-sm tensor` + `-ncmoe` aborts during model load at
+  `ggml-backend-meta.cpp:1783` on all three models; the delivery's `gate-qwen4exp-quant-coherence.sh`
+  hardcodes `-lm none`.  Flagged for the maintainer (`FIX` §4h/§7).
 
 Earlier corrected results are in [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md): staging is +41 % over
 `GGML_SCHED_STAGE=0`; the campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench`
