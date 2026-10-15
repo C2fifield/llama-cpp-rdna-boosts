@@ -1,3 +1,28 @@
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 6ad3c8668..68dccf8ab 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -2328,8 +2330,18 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
+             row_stride = tensor->nb[2];
+         }
+         if (row_stride > 0 && offset % row_stride == 0) {
+-            ggml_backend_tensor_set(tensor, data, offset, size);
+-            return;
++            // Only the sync setter's expressible shapes may take this fast path: whole rows (axis 0/1),
++            // or whole rows plus the scheduler's <=512-byte MMQ tail pad (axis 1).  A mid-row range
++            // with an arbitrary size -- the loader's pinned async-upload chunks -- must fall through to
++            // the accumulator below, or `ggml_backend_meta_buffer_set_tensor`'s `size % row_stride`
++            // assert fires (axis 0) / the axis-1 tail path writes the remainder as a bogus pad.
++            const bool whole_rows = (size % row_stride == 0);
++            const bool tail_pad   = (split_state.axis == GGML_BACKEND_SPLIT_AXIS_1) &&
++                                    (size % row_stride > 0) && (size % row_stride <= 512);
++            if (whole_rows || tail_pad) {
++                ggml_backend_tensor_set(tensor, data, offset, size);
++                return;
++            }
+         }
+         if (offset == 0 && size == total) {
+             ggml_backend_tensor_set(tensor, data, 0, size);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 index f2257358b..2d02f46dd 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
@@ -37,6 +62,22 @@ index 7ab668f15..e9984b68e 100644
  bool   ggml_cuda_slab_compute_enabled();
  void   ggml_cuda_slab_set_compute_narrow2(bool enable);
  size_t ggml_cuda_slab_headroom_bytes();
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index a20d14750..0ab8512b8 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -6154,6 +6204,11 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
+         // Dense models never reach here (`llama_model_moe_cache_preflight` skips an empty host-expert map),
+         // which is what keeps the slab off them.  Runs before the context, so before any compute buffer.
+         ggml_cuda_slab_arm();
++    } else {
++        // The preflight now runs once at model load (universal, aux 0) and again from `common` with the
++        // draft/MTP aux; if the better-informed call declines the cache, undo the earlier arm so a
++        // cache-off run does not still withhold VRAM for an arena it will never use.
++        ggml_cuda_slab_disarm();
+     }
+     return on;
+ }
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 index 0bdfd09e5..a59c99bc3 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
@@ -185,6 +226,31 @@ index 0bdfd09e5..a59c99bc3 100644
          return false;
      }
      const int table = moe_cache_table(weight, layer, name_role(weight).c_str(), n_experts, expert_bytes,
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 4ce04f8f7..1eed6fe21 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1721,6 +1748,20 @@ bool llama_model_loader::load_all_data(
+             return nullptr;
+         }
+ 
++        // The Meta device (under `-sm tensor`) splits a tensor across its simple devices.  Its async
++        // uploader handles row-aligned writes (and the scheduler's <=512-byte MMQ tail pad) but a
++        // mid-row write is either accumulated in full (segmented tensors) or dispatched per device; the
++        // chunked pinned-upload pipeline below reads fixed 1 MiB pieces that are NOT row-aligned for a
++        // quantized tensor (e.g. blk.0.ssm_out.weight, q8_0, row stride 4352 B).  A non-mmap load
++        // (`--load-mode none`) therefore aborted in `ggml_backend_meta_buffer_set_tensor`.  For a Meta
++        // device read the whole tensor and write it once (always aligned); the async overlap is lost
++        // only on the non-mmap `-sm tensor` path.
++        if (ggml_backend_dev_is_meta(dev)) {
++            LLAMA_LOG_DEBUG("%s: device %s is a Meta device; using whole-tensor uploads\n", func,
++                ggml_backend_dev_name(dev));
++            return nullptr;
++        }
++
+         if (buft != ggml_backend_dev_buffer_type(dev)) {
+             LLAMA_LOG_DEBUG("%s: buffer type %s is not the default buffer type for device %s for async uploads\n", func,
+                 ggml_backend_buft_name(buft), ggml_backend_dev_name(dev));
 diff --git a/src/llama.cpp b/src/llama.cpp
 index 5c77bb1fa..f025505b0 100644
 --- a/src/llama.cpp
@@ -210,19 +276,3 @@ index 5c77bb1fa..f025505b0 100644
      return model;
  }
  
-diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index a20d14750..0ab8512b8 100644
---- a/ggml/src/ggml-cuda/ggml-cuda.cu
-+++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -6154,6 +6204,11 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
-         // Dense models never reach here (`llama_model_moe_cache_preflight` skips an empty host-expert map),
-         // which is what keeps the slab off them.  Runs before the context, so before any compute buffer.
-         ggml_cuda_slab_arm();
-+    } else {
-+        // The preflight now runs once at model load (universal, aux 0) and again from `common` with the
-+        // draft/MTP aux; if the better-informed call declines the cache, undo the earlier arm so a
-+        // cache-off run does not still withhold VRAM for an arena it will never use.
-+        ggml_cuda_slab_disarm();
-     }
-     return on;
- }

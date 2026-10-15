@@ -19,9 +19,13 @@ With the universal preflight (in `llama_model_load_from_file`) + the robust defe
 * **MTP re-verified**: 35B embedded head `none == draft-mtp n3` bit-identical (+83 %); GSQ-RCO
   Qwen3.8-Flash-Next + separate MTP head coherent and bit-identical front vs tail.
 * **`-sm layer` tail prefill does NOT regress** (clean `pp4096`: tail 2799 vs front 2429).
-* **NEW (not this change):** `-lm none` + `-sm tensor` + `-ncmoe` aborts during model load at
-  `ggml-backend-meta.cpp:1783` on all three models; the delivery's `gate-qwen4exp-quant-coherence.sh`
-  hardcodes `-lm none`.  Flagged for the maintainer (`FIX` §4h/§7).
+* **NEW (r54 regression, FIXED):** `-lm none` + `-sm tensor` aborted during model load at
+  `ggml-backend-meta.cpp` on all models.  Root cause: r54's block-09 "segmented host-resident expert
+  upload" added a sync fast path (`offset % row_stride == 0`) that misrouted the non-mmap loader's
+  mid-row 1 MiB chunks; the r54 promotion did **not** re-run `gate-qwen4exp-quant-coherence.sh`, which
+  is why the earlier gate passes (r41-r53) stopped being valid.  Fixed (Meta = whole-tensor upload +
+  tightened async fast path); the gate is green again (IQ3_XXS/IQ4_NL/Q4_K_M, 0 `////`, gather
+  ON == OFF).  Details: `FIX` §4h.
 
 Earlier corrected results are in [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md): staging is +41 % over
 `GGML_SCHED_STAGE=0`; the campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench`
