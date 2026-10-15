@@ -1,4 +1,4 @@
-From 6b54e57be9c87a8d86d69431b53eb4aa4beb3edc Mon Sep 17 00:00:00 2001
+From c536e97035c121fbd17477f05e5a870986607d64 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -39,13 +39,14 @@ fills were written, which left a -Wmissing-field-initializers warning.
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
- src/llama-context.cpp                         |  65 ++++-
+ src/llama-context.cpp                         | 113 ++++++++-
+ src/llama-context.h                           |   4 +
  src/llama-ext.h                               |   6 +
  src/llama-model.cpp                           |   8 +
  src/llama-model.h                             |   3 +
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 29 files changed, 631 insertions(+), 88 deletions(-)
+ 30 files changed, 683 insertions(+), 88 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -1020,7 +1021,7 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 6ab35e5ac..4a929f1e8 100644
+index 6ab35e5ac..bfac0264d 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -310,6 +310,11 @@ llama_context::llama_context(
@@ -1048,7 +1049,69 @@ index 6ab35e5ac..4a929f1e8 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -3676,9 +3687,57 @@ public:
+@@ -1886,6 +1897,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         }
+     }
+ 
++    // wip/slab-ring-region (early narrow floor): the ring is one meta-unit with the WIDE (prefill) work
++    // view, and the slab can only place it once the always-resident NARROW (decode/verify) floor is pinned.
++    // That used to happen only inside the `drop_now` block below (the prefill -> decode transition), so
++    // the FIRST prefill -- exactly the pass the ring exists for -- ran with `ring_region == 0` and fell
++    // back to a raw cudaMalloc bounded by the slab's optional-allocation cap (measured: the 70K-token
++    // IQ4_NL prefill runs `WORK_ALLOC ... narrow_floor=0.0 ring=0.0`, and the ring is only carved
++    // afterwards).  Measure the narrow layout once with a size-only reserve and pin the floor BEFORE the
++    // first wide view is placed, so the ring is carved for that prefill too.  The size-only reserve is
++    // the same probe the `drop_now` path already uses (`split_only`, no allocation).
++    if (!slab_narrow_pinned && !model.moe_host_expert_bytes.empty() &&
++            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
++        slab_narrow_pinned = true;
++        const uint32_t n_rs_seqs = std::max<uint32_t>(1, ubatch.n_seqs);
++        size_t narrow_sizes[16] = {0};
++        if (graph_reserve(cparams.n_rs_batch, n_rs_seqs, cparams.n_rs_batch, mctx, /*split_only=*/true,
++                          narrow_sizes, kq_mask_packed_reachable()) != nullptr) {
++            size_t narrow_bytes = 0;
++            for (int i = 0; i < 16; i++) {
++                if (narrow_sizes[i] > narrow_bytes) {
++                    narrow_bytes = narrow_sizes[i];
++                }
++            }
++            if (narrow_bytes > 0) {
++                for (const auto & kv : model.moe_host_expert_bytes) {
++                    ggml_backend_dev_slab_narrow_floor(kv.first, narrow_bytes);
++                }
++                for (size_t d = 0; d < model.devices.size(); ++d) {
++                    if (!model.devices[d].is_meta) {
++                        ggml_backend_dev_slab_narrow_floor(model.devices[d].dev, narrow_bytes);
++                    }
++                }
++            }
++        }
++    }
++
+     // wip/slab-ring-region: the H2D staging ring is one meta-unit with the WIDE (prefill) compute layout.
+     // It is armed for a wide pass (>= the staging gate floor, 64 tokens) and disarmed for a narrow one, so
+     // a decode-only stretch returns its hole to the arena.  This runs BEFORE the drop's cache re-arm, so a
+@@ -1902,6 +1948,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+                 ggml_backend_dev_slab_ring_set(model.devices[d].dev, ring_arm);
+             }
+         }
++        // wip/slab-ring-region (prefill arming): the WIDE (prefill) view is what places the ring -- the
++        // slab arms it when `boundary >= narrow_floor + ring_region` -- but the scheduler REUSES the
++        // previous compute buffer whenever the new layout fits, and for these models the prefill and the
++        // narrow (decode/verify) layout are the same size.  A prefill that follows a decode therefore
++        // reused the narrow buffer at base 0, never re-placed a wide view, and the carved ring stayed
++        // unarmed (`ring_slot_capacity() == 0`) -- the H2D staging fell back to a capped cudaMalloc and
++        // the prefill streamed.  Release the narrow layout on a narrow -> wide transition so the prefill
++        // re-reserves above the ring (`ring_set` has already marked the request wide).  Symmetric with the
++        // `drop_now` wide -> narrow transition below; consecutive prefill ubatches (`n_tokens_prev >= 64`)
++        // keep the wide buffer.
++        if (ring_arm && n_tokens_prev < 64) {
++            ggml_backend_sched_drop_buffers(sched.get());
++        }
+     }
+     if (drop_now) {
+         ggml_backend_sched_drop_buffers(sched.get());
+@@ -3676,9 +3735,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
@@ -1109,6 +1172,21 @@ index 6ab35e5ac..4a929f1e8 100644
          }
      }
  
+diff --git a/src/llama-context.h b/src/llama-context.h
+index c5287b533..d7176b7ec 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -478,6 +478,10 @@ private:
+     // without need (see the drop decision in `process_ubatch`).  Only written when a backend reports a slab
+     // (`ggml_backend_dev_slab_work_size` != 0), so it stays empty on non-slab backends.
+     std::map<ggml_backend_dev_t, size_t> slab_narrow_boundary;
++    // wip/slab-ring-region: the narrow (decode/verify) work floor was pinned before the first wide view
++    // was placed, so the slab could carve the H2D staging ring for the first prefill (not only after the
++    // first prefill -> decode transition).
++    bool slab_narrow_pinned = false;
+ 
+     // env: LLAMA_GRAPH_REUSE_DISABLE
+     bool graph_reuse_disable = false;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
 index 9ac8eff63..170efb75a 100644
 --- a/src/llama-ext.h

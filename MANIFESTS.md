@@ -5,12 +5,21 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r66`** (canonical tip `6b54e57be`, net tree
-`4397ae5570b724d0896d1ad3a48298aaccbab47a`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean, 4B same-seed greedy identical to r65 (only the build-id and
-timing lines differ), `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %),
-`test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16 (previously failing/paging),
-`LLAMA_ALL_WARNINGS=ON` build with no `-Wshadow` warnings.  r66 folds the upstream **MUL_MAT_ID
+**`097cf33d9`**, released as **`v12-097cf33d9-r67`** (canonical tip `c536e9703`, net tree
+`3ccabe1522d480cef2001ee87712d56acef0d1eb`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %),
+`gate-qwen4exp-quant-coherence.sh` PASS, adaptive-MTP `none == draft-mtp n3` byte-identical on prose and
+mixed, width purity `none == n1 == n3 == n7`, `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16, full
+`-o MUL_MAT_ID` 947/947.  r67 fixes the r63..r66 host-expert regressions.  **Block 10** restores the
+batched, duplicate-correct `mm_ids_helper` template path (the r66 generic helper processes one token per
+warp iteration with two warp reductions per token, ~20-23 % of the fully-resident 35B-A3B prefill:
+6430 -> 8243 t/s, r65 8357).  **Block 09** sizes the expert cache from the **total** registered host
+bytes, so the uneven `-sm tensor` split no longer leaves the arena unsized (GSQ `-ncmoe 48` decode
+14.8 -> 62 t/s).  **Block 10** (`ggml-cuda.cu`) bounces any pageable source on the weight upload (the
+`-lm none` + `-sm tensor` SDMA0 fault, issue #137 class).  **Blocks 10/11** pin the narrow floor before
+the first prefill and place a prefill ubatch (`n_tokens >= 64`) **above** the ring even when its buffer
+is no longer than the narrow floor, so the carved H2D ring arms (GSQ `-ncmoe 48` prefill 645 -> 687 t/s,
+r65 651).  Before it, r66 folds the upstream **MUL_MAT_ID
 duplicate-ids fix** into **block 00** (generic upstream foundation; `mm_ids_helper` keeps every repeated
 occurrence, the routed MMQ tile loop iterates the expanded per-expert column list, the non-compact MMF
 path is removed, the host fallback emits every match), caches the hot-path **environment reads** per

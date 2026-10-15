@@ -6,10 +6,13 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r54`, 2026-10-13):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `c816fc32c`, net tree
-**`71f524a5215acdbdcb4b951d04e387366479d31f`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r54 folds the WIP-cleanup code changes into the blocks that own them: a clean
+**Current state (release `v12-097cf33d9-r67`, 2026-10-15):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `c536e9703`, net tree
+**`3ccabe1522d480cef2001ee87712d56acef0d1eb`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r67 fixes the r63..r66 host-expert regressions (the r66 MUL_MAT_ID helper prefill
+regression, the cache arena sizing on an uneven split, the pageable `-lm none` weight upload, and the
+carved-but-unarmed H2D ring); see `WORKLOG.md` 261015.005.  The paragraph below records the older r54
+state.  r54 folds the WIP-cleanup code changes into the blocks that own them: a clean
 DFlash2 `-sm tensor` rejection (**block 11**, TODO #58; real fix re-seeded as
 `wip/dflash-meta-split-impl/`) and the segmented host-resident expert upload fix that lifts the gemma4
 `-sm tensor` rejection (**block 09**; the async-perf follow-up is `wip/meta-segmented-upload-async/`).
@@ -53,6 +56,15 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 #42, #44/#39/#38, and now #35) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
 
 ## Active (kept compact: only what this repo will work on next)
+
+### 65. IQ4_NL field (MTP) + `--host-experts pool` decode collapses — MEMORY
+
+The Qwen3.8-Flash-Next IQ4_NL 70K field config (`--n-cpu-moe 48`, MTP n7, `--cache-ram 16384`)
+decodes at **2.1 t/s** in `--host-experts pool` against the handover's recorded 13.7, while prefill is
+fine (**497**), the H2D ring is armed and there are **0 faults**.  The non-MTP `-ncmoe 36/48` pool decode
+(18-40) matches the handover's ~2.4x pool penalty, so this reads as a **pool memory shortfall** specific
+to the 70K/MTP config.  Parked by the maintainer (2026-10-15) to debug after r67; `WORKLOG.md`
+261015.005.
 
 ### 59. `ngram-mod` + `draft-mtp-adaptive` halves decode with host-resident MoE experts — PERFORMANCE
 

@@ -12,10 +12,22 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r66`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r67`**.
 
-r66 folds the upstream MUL_MAT_ID duplicate-ids fix into block 00, caches the hot-path environment
-reads in their owner blocks, and completes the -Wshadow sweep.
+r67 fixes the host-resident-expert regressions the r63..r66 window introduced.  It restores the
+MUL_MAT_ID router helper's batched template path (the r66 duplicate-ids fix had made it ~20 % slower on
+prefill while remaining duplicate-correct), so the 35B-A3B fully-resident prefill is back to **8243**
+t/s (r65 8357); it sizes the expert cache from the **total** registered host bytes so the uneven
+`-sm tensor` split no longer leaves the arena unsized (GSQ decode 14.8 -> 62 t/s); it bounces any
+pageable source on the weight upload so `--load-mode none` + `-sm tensor` no longer faults; and it pins
+the narrow work floor before the first prefill and places a prefill ubatch **above** the ring, so the
+carved H2D staging ring actually arms (GSQ `-ncmoe 48` prefill 645 -> 687 t/s).  All three DoD models
+load and run with 0 faults in both `--host-experts pinned` and `pool`, the prefill ring is active on all
+three, and the standing gates are green (`WORKLOG.md` 261015.005).  One residual is parked for later:
+the IQ4_NL field (MTP) config is very slow in `pool` mode (TODO #65).
+
+Before it, r66 folds the upstream MUL_MAT_ID duplicate-ids fix into block 00, caches the hot-path
+environment reads in their owner blocks, and completes the -Wshadow sweep.
 
 Before it, r65 merges five contributor PRs from `@briansp2020`, each folded into the block that owns its concern
 (blocks 06/07/08/09/10, no new block): a pinned output buffer under

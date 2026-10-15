@@ -1,5 +1,83 @@
 # WORKLOG - dated delivery records
 
+## 261015.005 (r67) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r67` (base `097cf33d9`; canonical tip
+`c536e9703`, net tree `3ccabe1522d480cef2001ee87712d56acef0d1eb`; 12 blocks; `validate-set.sh` green on
+a fresh tarball -- strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:**
+blocks 09/10/11 are amended.  Because block 10's refactor owns `ggml-cuda.cu`, `ggml-cuda-slab.cu` and
+`mmid.cu`, and block 11 last touches `llama-context.*`, each fix is folded into the last block that owns
+the file -- **09** `moe-expert-cache.cu`; **10** `mmid.cu`, `ggml-cuda-slab.cu`, `ggml-cuda.cu`; **11**
+`llama-context.{h,cpp}`.  No block bodies outside those three change.
+
+**r66 prefill regression -- root cause and fix (block 10, `mmid.cu`).**  The r66 block-00 MUL_MAT_ID
+duplicate-ids fix replaced `mm_ids_helper`'s specialized templates with a generic kernel that processes
+**one token per warp iteration with two warp reductions per token** (`warp_reduce_sum` +
+`warp_prefix_inclusive_sum`) and reads `ids` twice; that is ~8x the r65 helper cost, and it runs once per
+MoE MUL_MAT_ID.  Bisection (35B-A3B Q8_0, `-t 8 -fa on -ub 4096 -p 4096`, fully resident): r65
+**8357** -> r66 **6430** t/s; dense 27B unaffected (1971 -> 1974, so MUL_MAT_ID-only); reverting the 5
+MUL_MAT_ID files recovered it (8386); `mmid.cu` alone reproduced it (6473); `mmq`/`mmf` alone did not
+(8337).  Fix: restore the `n_expert_used` {2,4,6,8,10,16,32} template fast path, **duplicate-correct**
+-- `warp_size/neu_padded` tokens per iteration and the per-token count/rank from
+`warp_reduce_sum<neu_padded>` / `warp_prefix_inclusive_sum<neu_padded>` inside the token's padded lane
+group, so every repeated `(token, iex)` occurrence is its own compact row in `(token, iex)` order; the
+generic kernel stays as the `n_expert_used == 0` fallback.  Recovered: fully-resident **8243** t/s (r65
+8357), `-ncmoe 4` **6859** (r65 6522 -- the kept r66 `mmq`/`mmf` changes beat r65).  Correctness:
+`test-backend-ops -o MUL_MAT_ID -p dup=1` **16/16**, full `-o MUL_MAT_ID` **947/947**.
+
+**Block-09 host-expert fixes (from the `wip/block09-cache-ring-arming` handover).**
+
+1. **Cache completeness (block 09, `moe-expert-cache.cu`).**  The deferred arena sizing compares the
+   **total** registered host-expert bytes against the preflight total instead of each device's even
+   `bytes/n_dev` guess.  On the GSQ 40/60 split the per-device gate never latched, so the arena was
+   never sized and every step streamed (GSQ `-ncmoe 48`: 14.8 -> 62 t/s).
+2. **Pageable weight source (block 10, `ggml-cuda.cu`).**  `ggml_backend_cuda_buffer_set_tensor`
+   bounces **any** pageable source, dropping the `usage != WEIGHTS` exemption, so the `-lm none` +
+   `-sm tensor` Meta whole-tensor upload no longer issues a bare `cudaMemcpyAsync` from anonymous
+   memory (the SDMA0 fault, issue #137 class; IQ4_NL 5/5 clean loads).  A pinned source still copies
+   directly.
+3. **Early narrow floor + ring arming (block 10 `ggml-cuda-slab.cu`, block 11 `llama-context.*`).**
+   The narrow (verify) floor is pinned before the first prefill (not only at the prefill->decode drop),
+   and a prefill ubatch (`n_tokens >= 64`) is placed **above** the ring even when its compute buffer is
+   no larger than the narrow floor -- the 35B-A3B / GSQ layouts are size-independent, so a size-only
+   test left the carved ring unarmed and the H2D staging fell back to a capped `cudaMalloc`.  A
+   narrow->wide transition drops the reused narrow buffer so the prefill actually re-reserves; the width
+   threshold is `< 64` to match the ring gate (GSQ's first prefill ubatch is 42 tokens).  Proof:
+   `WORK_ALLOC ... narrow=0 ret_off=narrow_floor+ring_region` on all three models and
+   `ring_slot_capacity > 0`.  GSQ `-ncmoe 48` prefill **645 -> 687** t/s (r65 651).
+
+**DoD matrix (gfx1201, 2x R9700, `tools/dod.sh`, `-b/-ub 2048`, 31.5K prompt; 0 faults; ring armed on
+all three; "field 70K" = the IQ4_NL 70K MTP n7 config).**
+
+| model | ncmoe | host | pp t/s | tg t/s | r65 pp |
+|---|---|---|---:|---:|---:|
+| 35B-A3B Q8_0 | 20 | pinned | **2057** | 98.0 | 2052 |
+| 35B-A3B Q8_0 | 20 | pool | **2057** | 97.8 | -- |
+| GSQ-IQ3_XXS | 20 | pinned | **1102** | 61.9 | 1067 |
+| GSQ-IQ3_XXS | 20 | pool | **1101** | 61.9 | -- |
+| GSQ-IQ3_XXS | 48 | pinned | **687** | 57.8 | 651 |
+| GSQ-IQ3_XXS | 48 | pool | **697** | 57.8 | -- |
+| IQ4_NL | 36 | pinned | **611** | 42.3 / 49.2 | 583 |
+| IQ4_NL | 36 | pool | **602** | 18.2 / 40.5 | -- |
+| IQ4_NL field 70K | 48 | pinned | **615.8** | 32.4 | 434 |
+| IQ4_NL field 70K | 48 | pool | 497 | 2.1 (see residual) | -- |
+
+**Gates.**  `gate-prefill-logits.sh` **PASS** (0.000707 / 98.755 %, identical to the recorded base);
+`gate-qwen4exp-quant-coherence.sh` **PASS** (IQ3_XXS/IQ4_NL/Q4_K_M gather-transparent, 0 `////`;
+IQ4_XS absent); adaptive-MTP `none == draft-mtp n3` **byte-identical** on prose (`49eea5e81393`) and the
+phase-switching mixed prompt (`5571e0424738`), 104.6 -> 194.4 / 106.5 -> 182.6 t/s; width purity GSQ
+`none == n1 == n3 == n7` (`7c709bb0c6fa`, 0 `////`); `test-backend-ops -o MUL_MAT_ID` **947/947**;
+`validate-set.sh` green; `git diff --check` clean.
+
+**Residual (TODO #65).**  IQ4_NL `--host-experts pool` on the 70K field (MTP n7) config decodes at
+**2.1** t/s against the handover's recorded 13.7, with the prefill fine (497), the ring armed and 0
+faults.  The non-MTP `-ncmoe 36/48` pool decode (18-40) matches the handover's ~2.4x pool penalty, so
+this reads as a pool **memory shortfall** on that specific config; debug later.
+
+**Published (2026-10-15).**  See the delivery repo push, the annotated tag `v12-097cf33d9-r67`, the
+personal-fork `rdna-boosts` refresh and the locally rebuilt ROCm container images in the release notes
+of the tag.
+
 ## 261015.004 (docs, campaign closure) -- archive `moe-layer-stagger` as refuted/superseded (tail-set host residency covers the win)
 
 **No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; no release).

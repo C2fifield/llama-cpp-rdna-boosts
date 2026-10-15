@@ -11,7 +11,27 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r66` (2026-10-15) -- upstream MUL_MAT_ID duplicate-ids fix (block 00), env-read caching, -Wshadow sweep:**
+> **Current release `v12-097cf33d9-r67` (2026-10-15) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression:**
+> canonical tip `c536e9703`, net tree `3ccabe1522d480cef2001ee87712d56acef0d1eb`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** are amended, no new block.
+> **The r66 MUL_MAT_ID duplicate-ids fix regressed the prefill ~20-23 %**: its generic `mm_ids_helper`
+> processed one token per warp iteration with two warp reductions per token (~8x the r65 helper cost).
+> Block 10 restores the `n_expert_used` {2,4,6,8,10,16,32} template fast path, duplicate-correct
+> (`warp_size/neu_padded` tokens per iteration, per-token count/rank from `warp_reduce_sum<neu_padded>`
+> / `warp_prefix_inclusive_sum<neu_padded>`), keeping the generic kernel as the fallback.  Fully
+> resident 35B-A3B **6430 -> 8243** t/s (r65 8357); `test-backend-ops -o MUL_MAT_ID -p dup=1`
+> **16/16**, full **947/947**.  The block-09 host-expert fixes: the cache arena sizing compares the
+> **total** registered host-expert bytes (the even per-device guess never latched on the GSQ 40/60
+> split: 14.8 -> 62 t/s); `ggml_backend_cuda_buffer_set_tensor` bounces any pageable source (the
+> `-lm none` + `-sm tensor` SDMA0 fault, issue #137 class); the narrow floor is pinned before the first
+> prefill and a prefill ubatch (`n_tokens >= 64`) is placed **above** the ring even when its buffer is no
+> longer than the narrow floor, so the carved ring actually arms (`WORK_ALLOC ... narrow=0
+> ret_off=narrow_floor+ring_region`).  GSQ `-ncmoe 48` prefill **645 -> 687** t/s (r65 651).  Gates:
+> prefill-logit **0.000707 / 98.755 %**, quant-coherence PASS, MTP `none == n3` on prose+mixed, width
+> purity `none == n1 == n3 == n7`, `MUL_MAT_ID` 947/947.  Residual: IQ4_NL field pool decode
+> (TODO #65).  See `../WORKLOG.md` 261015.005.
+>
+> **Previous release `v12-097cf33d9-r66` (2026-10-15) -- upstream MUL_MAT_ID duplicate-ids fix (block 00), env-read caching, -Wshadow sweep:**
 > canonical tip `6b54e57be`, net tree `4397ae5570b724d0896d1ad3a48298aaccbab47a`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), 4B same-seed greedy identical to r65 (only the
 > build-id/timing lines differ), `gate-prefill-logits.sh` **PASS** (mean KLD **0.000707** / same-top-p

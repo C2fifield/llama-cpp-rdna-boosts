@@ -1,4 +1,4 @@
-From 6d1cd9573a86ecede177b30202a4dac6c217aced Mon Sep 17 00:00:00 2001
+From a2e6ff7c6ab6cb73e9914e36b3c29419061fb404 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -49,7 +49,7 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  ggml/src/ggml-cuda/ggml-cuda.cu          | 2493 +++++++++++-
  ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu   | 4636 ++++++++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu   | 4647 ++++++++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h    |  301 ++
  ggml/src/ggml-cuda/norm.cu               |   35 +
  ggml/src/ggml-cuda/norm.cuh              |    1 +
@@ -84,7 +84,7 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  src/llama.cpp                            |   16 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   65 +-
- 59 files changed, 12875 insertions(+), 381 deletions(-)
+ 59 files changed, 12886 insertions(+), 381 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -8702,10 +8702,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..ff7cf2a61
+index 000000000..703590962
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4636 @@
+@@ -0,0 +1,4647 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -10981,25 +10981,36 @@ index 000000000..ff7cf2a61
 +// (moe_cache_floor_active).
 +bool g_floor_active = false;
 +
-+// WIP moe-upload-overlap: true when the registered host tables account for at least the per-device
-+// bytes the preflight reported for every device it saw.  A pass can reach the decode hook with only a
-+// SUBSET of the host tables registered (a prefill's staged bulk ubatch plus a non-staged 1-token tail),
-+// and the deferred sizing must not latch on that subset or the not-yet-seen tables get no arena forever.
-+// An unseen device / an absent preflight is treated as complete (the pre-existing behaviour).
++// WIP moe-upload-overlap: true when every host expert table the preflight saw has registered.  A pass
++// can reach the decode hook with only a SUBSET of the host tables registered (a prefill's staged bulk
++// ubatch does not register cache tables, and a non-staged 1-token tail primes only the last host
++// layer), and the deferred sizing must not latch on that subset or the not-yet-seen tables get no arena
++// forever.
++//
++// The invariant is the TOTAL host-expert bytes, NOT the per-device bytes.  A table registers once per
++// device and the sum of its per-device slices is its host bytes, so the registered total reaches the
++// preflight total iff the full set has registered.  The per-device split is decided by the meta backend
++// at graph-build time and is not necessarily even -- `moe_host_expert_account` can only guess
++// `bytes / n_dev`, while the real split of a 640-wide expert FFN dim here is 256/384 (measured gfx1201,
++// qwen4exp, `-sm tensor`: 40 %/60 %).  Comparing per device against that guess never completes on such
++// a split, so the arena is never sized (g_sized stays false) and the cache never serves a byte.  A
++// partial pass (one host layer = 6 tables) stays far below the total, so this still catches the
++// prefill-tail latch it was written for.  An absent preflight is treated as complete (the pre-existing
++// behaviour).
 +static bool moe_cache_tables_complete_locked() {
-+    int64_t registered[GGML_CUDA_MAX_DEVICES] = {0};
++    int64_t registered = 0;
 +    for (const table_t & t : g_tables) {
 +        if (t.device >= 0 && t.device < GGML_CUDA_MAX_DEVICES) {
-+            registered[t.device] += (int64_t) t.n_experts * (int64_t) t.expert_bytes;
++            registered += (int64_t) t.n_experts * (int64_t) t.expert_bytes;
 +        }
 +    }
++    int64_t expected = 0;
 +    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
-+        if (g_preflight_device_seen[d] && g_preflight_device_bytes[d] > 0 &&
-+            registered[d] < g_preflight_device_bytes[d]) {
-+            return false;
++        if (g_preflight_device_seen[d] && g_preflight_device_bytes[d] > 0) {
++            expected += g_preflight_device_bytes[d];
 +        }
 +    }
-+    return true;
++    return registered >= expected;
 +}
 +
 +// Deferred, budget-adaptive, UNIFORM sizing.  Every table gets the same slot count

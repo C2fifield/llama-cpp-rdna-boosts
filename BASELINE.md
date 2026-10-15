@@ -2,16 +2,21 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r66`** (canonical tip `6b54e57be`, net tree
-`4397ae5570b724d0896d1ad3a48298aaccbab47a`).  r66 folds the upstream **MUL_MAT_ID duplicate-ids fix**
-into **block 00** (generic upstream foundation; every repeated expert occurrence is its own compact row,
-the routed MMQ tile loop iterates the expanded column list, the non-compact MMF path is removed, and the
-host fallback emits every match), caches the hot-path **environment reads** per owner block
-(00/05/08/09/10; `GGML_ENV_STR` caches the value rather than the MSVC-reused getenv pointer), and
-completes the **`-Wshadow` sweep** in block 00.  Gates: `validate-set.sh` strict 12/12 green, 4B
-same-seed greedy identical to r65, `gate-prefill-logits.sh` 0.000707 / 98.755 %,
-`test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16 (was failing and
-page-faulting), `LLAMA_ALL_WARNINGS=ON` build clean.  Before it, r65 merges five `@briansp2020` PRs into
+**`v12-097cf33d9-r67`** (canonical tip `c536e9703`, net tree
+`3ccabe1522d480cef2001ee87712d56acef0d1eb`).  r67 fixes the r63..r66 host-expert regressions:
+**block 10** restores the batched, duplicate-correct `mm_ids_helper` template path (r66's generic helper
+cost ~20-23 % of the fully-resident 35B-A3B prefill: 6430 -> 8243 t/s, r65 8357); **block 09** sizes the
+expert cache from the **total** registered host bytes so the uneven `-sm tensor` split no longer leaves
+the arena unsized (GSQ `-ncmoe 48` decode 14.8 -> 62 t/s); **block 10** bounces any pageable source on
+the weight upload (the `-lm none` + `-sm tensor` SDMA0 fault, issue #137 class); **blocks 10/11** pin the
+narrow floor before the first prefill and place a prefill ubatch (`n_tokens >= 64`) above the ring so it
+arms (GSQ `-ncmoe 48` prefill 645 -> 687 t/s).  Gates: `validate-set.sh` strict 12/12 green,
+`gate-prefill-logits.sh` 0.000707 / 98.755 %, `gate-qwen4exp-quant-coherence.sh` PASS, adaptive-MTP
+`none == draft-mtp n3` byte-identical on prose and mixed, width purity `none == n1 == n3 == n7`,
+`test-backend-ops -o MUL_MAT_ID -p dup=1` 16/16 (full 947/947).  Before it, r66 folds the upstream
+**MUL_MAT_ID duplicate-ids fix** into **block 00** (generic upstream foundation; every repeated expert
+occurrence is its own compact row) and caches the hot-path **environment reads**.  Before it, r65 merges
+five `@briansp2020` PRs into
 their owner blocks:
 the pinned output buffer under `-sm tensor` (`LLAMA_OUTPUT_PINNED=0`, **block 09**), the second
 scheduler for the MTP draft's output graphs (`LLAMA_DRAFT_SCHED2=0`, **blocks 09 + 10**), the Q4_K/Q6_K
