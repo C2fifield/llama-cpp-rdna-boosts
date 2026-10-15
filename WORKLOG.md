@@ -74,9 +74,13 @@ phase-switching mixed prompt (`5571e0424738`), 104.6 -> 194.4 / 106.5 -> 182.6 t
 faults.  The non-MTP `-ncmoe 36/48` pool decode (18-40) matches the handover's ~2.4x pool penalty, so
 this reads as a pool **memory shortfall** on that specific config; debug later.
 
-**Published (2026-10-15).**  See the delivery repo push, the annotated tag `v12-097cf33d9-r67`, the
-personal-fork `rdna-boosts` refresh and the locally rebuilt ROCm container images in the release notes
-of the tag.
+**Published (2026-10-15).**  The delivery repo `main` was pushed (`dd12631..07e5bf0`) and the release
+tagged **`v12-097cf33d9-r67`** (annotated).  The personal fork's `rdna-boosts` branch was force-pushed
+to the same tree (`2273b0b33 -> 1597d80f4`, `--force-with-lease`, fork only) from a clean
+`scripts/apply-all.sh` checkout at the base (applied tree `3ccabe15...`; same-seed coherence and
+gate-prefill-logits PASS on that checkout).  The ROCm container images (7.14.1 + 10.1) are rebuilt and
+pushed locally with `scripts/build-containers.sh --rocm "7.14.1 10.1" --push` (log
+`/tmp/containers-r67.log`); issue #161 has the public write-up.
 
 ## 261015.004 (docs, campaign closure) -- archive `moe-layer-stagger` as refuted/superseded (tail-set host residency covers the win)
 
