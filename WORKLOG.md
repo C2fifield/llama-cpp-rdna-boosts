@@ -1,5 +1,37 @@
 # WORKLOG - dated delivery records
 
+## 261015.004 (docs, campaign closure) -- archive `moe-layer-stagger` as refuted/superseded (tail-set host residency covers the win)
+
+**No delivery change** (`patches/`, `release.json`, `rdna-boosts-all.patch` untouched; no release).
+TODO item **63** is **closed as refuted**, and `wip/moe-layer-stagger/` moves to
+`archive/work/moe-layer-stagger/` with a `RESOLUTION.md`.
+
+The campaign proposed **striding** the host/device expert-layer split (even layers device, odd host at
+a 50:50 split) so the H2D expert upload would be spread across the prefill instead of exposed as one
+contiguous host-only stretch.  Two things settle it:
+
+1. **Placement is a no-op.**  With the page-cache confound removed (run from a tmpfs model copy; the
+   disk-backed first pass drifted 1168 -> 1500 t/s, +28 %, purely from warm-up), four **disjoint** host
+   sets (`0..23`, even, odd, `24..47`) are identical to **0.1 %** at `-ncmoe 24` (`-ub 2048`:
+   pp4096 1578.8 / 1576.8 / 1578.8 / 1578.6).  Partial-offload prefill is bound by the H2D of the whole
+   host table per ubatch (~52-67 ms per host layer, 21.4 GiB per ubatch at ~15-18 GB/s against a PCIe
+   **x4** upstream link), so the *schedule* cannot matter -- only fewer bytes (`-ub`: **+37 %** from
+   `2048 -> 4096`), a correct gather, or residency.  The ring does not lead the upload (split N's upload
+   overlaps split N-1's compute, one deep), and a deeper pipeline cannot beat the link.
+2. **The wished-for speedup is already the delivery's.**  **r63** makes `-ncmoe N` host the **last N**
+   trunk layers (rear-fill) instead of the first N -- the tail layers carry the colder routing and have
+   preceding resident compute to overlap the upload with.  Measured 35B-A3B Q8_0, 2x R9700, `-ncmoe 20`:
+   `pp4096` **4264 vs 4120**, `tg500` **87.5 vs 82.6**, `pp512` **871 vs 635** (`WORKLOG.md` 261014.008).
+   A per-layer stride generalises nothing on top of that.
+
+The `-sm tensor` + `-ncmoe` corruption found while running the campaign (garbage/NaN on 35B-A3B, gemma4
+26B-A4B, Flash-Next GSQ unless `GGML_META_SPLIT_COPY=0` or `-sm layer`) was fixed in **r62** and folded
+into block 10; it is unrelated to the stagger question and is not a residual of this closure.
+
+**Artefacts.**  `archive/work/moe-layer-stagger/{README.md,RESOLUTION.md,FINDINGS-2026-10-14.md}` plus
+`logs/` and the env-gated scratch knob `tools/ncmoe-layer-select.patch` (inert unless set).  Nothing was
+promoted; `TODO.md` #63 and `wip/CAMPAIGNS.md` are updated, and the `wip/` entry is deleted with no stub.
+
 ## 261015.003 (r66) -- upstream MUL_MAT_ID duplicate-ids fix (block 00), env-read caching, -Wshadow sweep
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r66` (base `097cf33d9`; canonical tip

@@ -1,10 +1,25 @@
 # `moe-layer-stagger` — interleave the host- and device-resident MoE expert layers to hide H2D upload
 
-**Status: PARKED (2026-10-14) — REFUTED.**  Layer placement has no prefill effect; and the chosen basis
-(`-sm tensor` + `-ncmoe`) is a corrupt path.**  Result, data, method and the correctness blocker:
-[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md).  Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from the maintainer's
-observation that the partial-offload split is a contiguous "first N layers to host, the rest to device".
+> **ARCHIVED 2026-10-15 — CAMPAIGN CLOSED, REFUTED (no code change).**  The stagger hypothesis does
+> not work, and its intended win is already covered by the delivery's tail-set host residency.
+> * **Layer placement is a no-op.**  With the page-cache confound removed (run from a tmpfs model
+>   copy), four disjoint host sets (`0..23`, even, odd, `24..47`) are identical to 0.1 % at `-ncmoe 24`;
+>   partial-offload prefill is bound by the H2D of the whole host table per ubatch, so the *schedule*
+>   cannot matter — only fewer bytes (`-ub`, a correct gather, residency).  The original "+12 % for
+>   stagger" was page-cache warm-up.
+> * **The wished-for speedup is now the delivery's own.**  `-ncmoe N` hosts the **last N** trunk layers
+>   (rear-fill, **r63**): the tail carries the colder routing and has preceding resident compute to
+>   overlap the upload with.  Measured 35B-A3B Q8_0, 2x R9700, `-ncmoe 20`: `pp4096` **4264 vs 4120**,
+>   `tg500` **87.5 vs 82.6**, `pp512` **871 vs 635** (`WORKLOG.md` 261014.008).  A per-layer stride
+>   generalises nothing on top of that.
+> * The chosen basis (`-sm tensor` + `-ncmoe`) corruption found during this campaign was fixed in r62
+>   and is unrelated to the stagger question.
+>
+> Result, data, method and the correctness history: [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md).
+> **Not part of the delivery**; nothing here was promoted (no release change), and nothing may be
+> applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from the maintainer's
+> observation that the partial-offload split is a contiguous "first N layers to host, the rest to device".
+> Resolution: [`RESOLUTION.md`](RESOLUTION.md).
 
 **Headline:** with the page-cache confound removed (run from a tmpfs model copy), four disjoint host
 sets (`0..23`, even, odd, `24..47`) are identical to 0.1 % at `-ncmoe 24`; the earlier "+12 % for
@@ -105,7 +120,7 @@ bandwidth-bound, a staggered split beats the contiguous split at the same host b
   `:1481`/`:1523` (the host-expert byte map).
 * `ggml/src/ggml-backend.cpp:2365` (`sched_stage_issue`), the slab ring region
   (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`), `patches/README.md` block 09.
-* Related campaigns: [`../moe-cpu-overlap/`](../moe-cpu-overlap/README.md) (the CPU-vs-GPU overlap
+* Related campaigns: [`../../wip/moe-cpu-overlap/`](../../wip/moe-cpu-overlap/README.md) (the CPU-vs-GPU overlap
   question — a different axis: it overlaps CPU *compute* of misses; this one overlaps the H2D *upload*
   against device compute), [`../moe-heatmap-persistence/`](../moe-heatmap-persistence/README.md) (the
   expert cache is orthogonal: it decides which *experts* are resident, not which *layers* are host).

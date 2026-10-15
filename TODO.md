@@ -98,12 +98,20 @@ phases are parked (multi-session, purity/state hazards).
 
 ### 63. Stagger the host/device MoE expert-layer split by ratio — PERFORMANCE
 
+**CLOSED (2026-10-15), REFUTED / SUPERSEDED — no code change.**  The stagger hypothesis does not hold:
+with the page-cache confound removed (tmpfs model copy), four disjoint host-layer sets (`0..23`, even,
+odd, `24..47`) are identical to 0.1 % at `-ncmoe 24` — partial-offload prefill is H2D-bound, so the
+upload *schedule* cannot matter and a stride generalises nothing.  The speedup the item wanted is
+already delivered by **r63**'s tail-set host residency (`-ncmoe N` hosts the last N trunk layers;
+`WORKLOG.md` 261014.008).  Record moved to `archive/work/moe-layer-stagger/` (with a `RESOLUTION.md`);
+the `wip/` entry is deleted with no stub.  The body below is the original finding, kept for history.
+
 **Opened 2026-10-14; scoping + findings.**  `-ncmoe N` keeps the experts of the **first N contiguous**
 layers on the host (`llm_add_n_cpu_ffn_overrides`, `common/common.h:1274`); there is no stride/ratio
 knob.  Hypothesis: spreading the host layers evenly (e.g. even device / odd host at a 50:50 split)
 lets each layer's H2D expert upload hide behind a neighbouring layer's device compute, instead of the
-contiguous stretch being an exposed bandwidth-bound run.  **Working home:
-`wip/moe-layer-stagger/`** (design options, the per-layer upload/compute measurement, and the
+contiguous stretch being an exposed bandwidth-bound run.  **Working home (historical):
+`archive/work/moe-layer-stagger/`** (design options, the per-layer upload/compute measurement, and the
 scheduler-split + purity gotchas).
 
 ### 62. Absorb the controlled raw-`cudaMalloc` transients into the movable-boundary slab — MEMORY
