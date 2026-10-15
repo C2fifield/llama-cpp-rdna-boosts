@@ -1,5 +1,58 @@
 # WORKLOG - dated delivery records
 
+## 261015.003 (r66) -- upstream MUL_MAT_ID duplicate-ids fix (block 00), env-read caching, -Wshadow sweep
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r66` (base `097cf33d9`; canonical tip
+`6b54e57be`, net tree `4397ae5570b724d0896d1ad3a48298aaccbab47a`; 12 blocks; `validate-set.sh` green
+on a fresh tarball -- strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:**
+each change is folded into the block that owns its concern.
+
+**MUL_MAT_ID duplicate expert ids -- block 00 (foundation).**  The delivery carried the upstream CUDA/HIP
+duplicate-ids bug until now (recorded as the unfiled `upstream/UPSTREAM-PR-mul-mat-id-dup.{md,patch}`):
+`mm_ids_helper` kept one compact column per `(token, expert)` pair, so a token whose id row repeated an
+expert left the compact `ids_src1` tail uninitialised -- the MMQ path then read it in
+`quantize_mmq_q8_1_cuda` (wrong results for f16/q8_0/q4_0, then a GPU page fault), and the MMQ/MMF
+column-tile grids were sized from the token count.  The fix (every occurrence is its own compact row;
+the routed MMQ tile loop iterates the expanded per-expert column list; the non-compact MMF path is
+gone; the host sorted fallback emits every match) is applied to **block 00** as a generic upstream
+foundation fix, since block 00 touches none of its files and every later MUL_MAT_ID block (06-10)
+then builds on correct duplicate handling.  The qwen4exp 512x10 fast path (block 10) keeps its own
+per-occurrence atomics and is merged onto the new generic helper.
+
+**Environment reads cached to internal state -- blocks 00/05/08/09/10.**  getenv() takes a lock and
+rescans the environment block on Windows, so every behaviour-affecting read that sat on a hot path is
+now resolved once into a function-local static (or value) instead of per call:
+
+| owner block | reads |
+|---|---|
+| 00 (generic upstream hygiene) | `GGML_CUDA_CUBLAS_COMPUTE_TYPE` (per cuBLAS matmul; cached as the parsed enum), `GGML_CUDA_ENABLE_UNIFIED_MEMORY` (per device alloc), `GGML_CUDA_REGISTER_HOST`, `GGML_CUDA_NO_PINNED`, `LLAMA_GRAPH_INPUT_DEBUG` (per graph input object), `LLAMA_BATCH_DEBUG` (per batch) |
+| 05 | `GGML_CUDA_FA_WMMA_256`, `GGML_CUDA_FA_WMMA_MAX_HEAD` |
+| 08 | `GGML_CUDA_MMQ_J_MAX`, `GGML_Q6_COMPACT_J` (in the shared `ggml_cuda_mmq_select_J`, per MUL_MAT(_ID)) |
+| 09 | `GGML_SCHED_STAGE`, `LLAMA_DROP_COMPUTE_BUFFERS`, `GGML_CUDA_WORK_ALLOC_DEBUG` + `GGML_CUDA_CACHE_GEOM_DEBUG` (new `common.cuh` helpers), `GGML_CUDA_POOL_MIN_FREE_MIB`, `MOE_EXPERT_CACHE_VALIDATE_LAYER` |
+| 10 | `LLAMA_QSA_PLE_HOSTGATHER`, `GGML_CUDA_GDN_CHUNKED`, `GGML_CUDA_GDN_CHUNKED_BF16`, `GGML_CUDA_QSA_SLICES`, `GGML_CUDA_SPLICE_GATHER`, the `GDN_DBG_SKIP_*` diagnostics, and the slab `GGML_CUDA_WORK_ALLOC_DEBUG` sites |
+
+`GGML_ENV_STR` (blocks 09) now caches the **value** in a `std::string` rather than the `getenv()`
+pointer: the MSVC CRT returns a buffer that the next getenv() call overwrites, so a cached `const char *`
+is not safe on Windows (this affects `GGML_SCHED_STAGE`, `GGML_SCHED_EVENTS`, `GGML_SCHED_MODE`, ...).
+The same pointer-cache class in `gated_delta_net.cu`, `fattn.cu`, `fattn-qsa.cu`, `ggml-cuda.cu` and
+`moe-expert-cache.cu` is converted to a value.  No environment variable changes its name, default or
+two-idiom semantics.
+
+**-Wshadow sweep -- block 00.**  The block-00 `-Wshadow` enablement missed nine upstream shadowing
+declarations the clang/GCC host build reports; all are renamed in **block 00** (they are present at the
+fork point): `step35.cpp` (per-layer `n_embd_k_gqa`/`n_embd_v_gqa`), `llama-moe-cache.cpp` (`init_ctx`),
+`llama-vocab.cpp` (`_try_copy`), `llama-quant.cpp` (`layer_info`), `llama-model.cpp`
+(`make_gpu_buft_list`, `get_tensor`).  **Block 11** also fills the newly appended `slab_compute_plain`
+device-iface entry (NULL) in the CPU and RPC device interfaces -- the field was appended by block 09 after
+those iface fills were written -- clearing the last two `-Wmissing-field-initializers` warnings.
+
+**Gates.**  `validate-set.sh` green (strict 12/12, tree `4397ae55`); build clean with
+`LLAMA_ALL_WARNINGS=ON` (`-Wshadow`) and no shadow warnings; `test-backend-ops -o MUL_MAT_ID -p 'dup=1'`
+**16/16** (was failing + page-faulting), `-o MUL_MAT_ID` full **ROCm0 OK**, `MUL_MAT`/`MUL_MAT_ID`
+`type_a=q4_K`/`q6_K` all OK; `gate-prefill-logits.sh` **PASS** (mean KLD **0.000707** / same-top-p
+**98.755 %**, identical to the recorded gfx1201 base); `llama-cli` 4B Q8_0 `-sm tensor` same-seed
+greedy identical to r65 (the only diff is the build-id and timing lines).
+
 ## 261015.002 (r65) -- five contributor PRs merged (draft-sched2, output-pinned, mmvq vecdot ALU, gfx1100 MMB tile + Q4_K rpb)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r65` (base `097cf33d9`; canonical tip

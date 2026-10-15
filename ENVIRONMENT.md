@@ -22,6 +22,13 @@ Two idioms are used in the code and they are **not** interchangeable:
 
 The tables below say which one each variable uses, because guessing wrong is a classic time sink.
 
+Every behaviour-affecting variable is also resolved **once** (into a function-local static or value) on
+first use, so setting one after the process has started has no effect.  This is deliberate: `getenv()`
+takes a lock and rescans the environment block on Windows, and several hot paths (per matmul, per
+device allocation, per graph input, per batch) would otherwise read it thousands of times.  It also
+avoids caching a `const char *` returned by `getenv()` across calls, which is unsafe on Windows because
+the MSVC CRT reuses its buffer for the next `getenv()`.
+
 ## The short answer: what you actually need
 
 **Nothing.** Every feature the delivery ships is default-on, and this is deliberate policy (see

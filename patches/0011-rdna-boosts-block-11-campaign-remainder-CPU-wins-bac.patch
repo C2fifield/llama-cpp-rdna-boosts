@@ -1,4 +1,4 @@
-From 1cee2637c956accfe5c0da65da5604901546fb6a Mon Sep 17 00:00:00 2001
+From 6b54e57be9c87a8d86d69431b53eb4aa4beb3edc Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -11,6 +11,10 @@ stage_gather / moe_cache_* / slab_* NULL iface fills, the DFlash F1 model
 (src/models/dflash.cpp + common/speculative.cpp), and the FA per-(ncols,head)
 template-instance build grouping.  With this block the Phase-1 tree equals the
 reference tip af0595360 (release.json.tree) exactly.
+
+Also fill the newly appended slab_compute_plain device-iface entry (NULL) in the CPU and RPC device
+interfaces, matching the other optional slab_* fills: the field was appended by block 09 after these
+fills were written, which left a -Wmissing-field-initializers warning.
 ---
  common/sampling.cpp                           | 224 +++++++++++++++++-
  common/speculative.cpp                        |  97 ++++++++
@@ -20,7 +24,7 @@ reference tip af0595360 (release.json.tree) exactly.
  ggml/src/ggml-cann/ggml-cann.cpp              |   1 +
  ggml/src/ggml-cpu/arch-fallback.h             |   1 -
  ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++++
- ggml/src/ggml-cpu/ggml-cpu.cpp                |   7 +-
+ ggml/src/ggml-cpu/ggml-cpu.cpp                |   8 +-
  ggml/src/ggml-cpu/repack.cpp                  |   3 +
  .../template-instances/generate_cu_files.py   |  46 ++--
  ggml/src/ggml-et/ggml-et.cpp                  |   1 +
@@ -28,7 +32,7 @@ reference tip af0595360 (release.json.tree) exactly.
  ggml/src/ggml-metal/ggml-metal.cpp            |   1 +
  ggml/src/ggml-opencl/ggml-opencl.cpp          |   1 +
  ggml/src/ggml-openvino/ggml-openvino.cpp      |   1 +
- ggml/src/ggml-rpc/ggml-rpc.cpp                |   8 +
+ ggml/src/ggml-rpc/ggml-rpc.cpp                |   9 +
  ggml/src/ggml-sycl/ggml-sycl.cpp              |   1 +
  ggml/src/ggml-virtgpu/ggml-backend.cpp        |   1 +
  ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   1 +
@@ -41,7 +45,7 @@ reference tip af0595360 (release.json.tree) exactly.
  src/llama-model.h                             |   3 +
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 29 files changed, 629 insertions(+), 88 deletions(-)
+ 29 files changed, 631 insertions(+), 88 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -746,7 +750,7 @@ index ea54cfe44..a7d8182c3 100644
      const int qk = QK8_0;
      const int nb = n / qk;
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 05f74e0fa..c242ba6fe 100644
+index 05f74e0fa..e36d9b422 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
@@ -766,7 +770,7 @@ index 05f74e0fa..c242ba6fe 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -699,6 +700,10 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+@@ -699,6 +700,11 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -774,6 +778,7 @@ index 05f74e0fa..c242ba6fe 100644
 +    /* .slab_compute_narrow2 = */ nullptr,
 +    /* .moe_cache_set_host_pool   = */ nullptr,
 +    /* .moe_cache_set_host_source = */ nullptr,
++    /* .slab_compute_plain   = */ nullptr,
  };
  
  // CPU backend - backend (reg)
@@ -909,7 +914,7 @@ index d5106a568..7f8e826f9 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index 80f094dab..c8d2d85dd 100644
+index 80f094dab..1011e8b3c 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -1114,6 +1114,9 @@ static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
@@ -930,7 +935,7 @@ index 80f094dab..c8d2d85dd 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -2918,6 +2922,10 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+@@ -2918,6 +2922,11 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -938,6 +943,7 @@ index 80f094dab..c8d2d85dd 100644
 +    /* .slab_compute_narrow2 = */ nullptr,
 +    /* .moe_cache_set_host_pool   = */ nullptr,
 +    /* .moe_cache_set_host_source = */ nullptr,
++    /* .slab_compute_plain   = */ nullptr,
  };
  
  // backend reg interface
@@ -1014,7 +1020,7 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 62bca96b1..4a8fc5bf9 100644
+index 6ab35e5ac..4a929f1e8 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -310,6 +310,11 @@ llama_context::llama_context(
@@ -1042,7 +1048,7 @@ index 62bca96b1..4a8fc5bf9 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -3670,9 +3681,57 @@ public:
+@@ -3676,9 +3687,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
@@ -1121,7 +1127,7 @@ index 9ac8eff63..170efb75a 100644
  // returns total number of elements or 0 on error
  // if out is nullptr, returns the number of tokens without writing to out
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 64f255cdd..3625dd018 100644
+index 2f4b0d2a4..aa0dfeb3d 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -4090,6 +4090,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {

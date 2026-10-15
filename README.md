@@ -12,9 +12,12 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r65`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r66`**.
 
-r65 merges five contributor PRs from `@briansp2020`, each folded into the block that owns its concern
+r66 folds the upstream MUL_MAT_ID duplicate-ids fix into block 00, caches the hot-path environment
+reads in their owner blocks, and completes the -Wshadow sweep.
+
+Before it, r65 merges five contributor PRs from `@briansp2020`, each folded into the block that owns its concern
 (blocks 06/07/08/09/10, no new block): a pinned output buffer under
 `-sm tensor` (`LLAMA_OUTPUT_PINNED=0`), a second scheduler for the MTP draft context's graphs with
 outputs (`LLAMA_DRAFT_SCHED2=0`), fewer instructions in the Q4_K / Q6_K mmvq dot products, and two

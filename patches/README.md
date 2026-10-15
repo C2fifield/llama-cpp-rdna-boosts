@@ -11,7 +11,24 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r65` (2026-10-15) -- five contributor PRs merged into their owner blocks (06/07/08/09/10, no new block):**
+> **Current release `v12-097cf33d9-r66` (2026-10-15) -- upstream MUL_MAT_ID duplicate-ids fix (block 00), env-read caching, -Wshadow sweep:**
+> canonical tip `6b54e57be`, net tree `4397ae5570b724d0896d1ad3a48298aaccbab47a`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), 4B same-seed greedy identical to r65 (only the
+> build-id/timing lines differ), `gate-prefill-logits.sh` **PASS** (mean KLD **0.000707** / same-top-p
+> **98.755 %**, identical to the recorded base), `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` **16/16**
+> (was failing and page-faulting), `-o MUL_MAT_ID` full **ROCm0 OK**, `MUL_MAT`/`MUL_MAT_ID`
+> `type_a=q4_K`/`q6_K` all OK,
+> and an `LLAMA_ALL_WARNINGS=ON` build with **no warnings** (block 00 completes the `-Wshadow` sweep and
+> block 11 fills the new `slab_compute_plain` iface entry in the CPU/RPC device interfaces).  **Block 00** gains the generic
+> upstream **MUL_MAT_ID duplicate-ids fix** (`mm_ids_helper` keeps every repeated occurrence as its own
+> compact row, the routed MMQ tile loop walks the expanded per-expert column list, the non-compact MMF
+> path is removed, and the host sorted fallback emits every match) plus the remaining upstream
+> **`-Wshadow`** renames (`step35.cpp`, `llama-moe-cache.cpp`, `llama-vocab.cpp`, `llama-quant.cpp`,
+> `llama-model.cpp`).  The hot-path **environment reads** are resolved once into function-local statics in
+> the block that owns each read (00/05/08/09/10); `GGML_ENV_STR` (block 09) now caches the value rather
+> than the getenv pointer, which the MSVC CRT overwrites on the next call.  See `../WORKLOG.md` 261015.003.
+>
+> **Previous release `v12-097cf33d9-r65` (2026-10-15) -- five contributor PRs merged into their owner blocks (06/07/08/09/10, no new block):**
 > canonical tip `5b2be1be3`, net tree `5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy identical
 > to r64, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS (identical to base), rule-5

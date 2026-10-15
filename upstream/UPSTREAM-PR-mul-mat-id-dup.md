@@ -3,7 +3,10 @@
 **Status:** prepared 2026-10-13; applies clean (`git apply --check`) to the fork point `097cf33d9` and
 to current upstream master `1b70350c9`.  Validated on gfx1201 / ROCm 7.14.1.  **Not filed.**
 
-**Where it lives in the delivery:** nowhere — the delivery ships **pure** on this bug.  The campaign
+**Where it lives in the delivery:** **folded into block 00** as of `v12-097cf33d9-r66` as a generic
+upstream foundation fix (block 00 touches none of its files, and every later MUL_MAT_ID block 06-10 then
+builds on correct duplicate handling).  This file remains the standalone upstream candidate; **filing it
+upstream is still the maintainer's call.**  The campaign
 record and the reproduction are `archive/work/upstream-mul-mat-id-dup/` (formerly
 `wip/upstream-mul-mat-id-dup/`).  Do **not** add this to `patches/`.
 

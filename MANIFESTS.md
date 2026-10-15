@@ -5,11 +5,17 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r65`** (canonical tip `5b2be1be3`, net tree
-`5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
-identical to r64, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), rule-5 `llama-batched-bench`
-B=1/4/8 no worse than r64, MTP acceptance and text identical across arms.  r65 merges five
+**`097cf33d9`**, released as **`v12-097cf33d9-r66`** (canonical tip `6b54e57be`, net tree
+`4397ae5570b724d0896d1ad3a48298aaccbab47a`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean, 4B same-seed greedy identical to r65 (only the build-id and
+timing lines differ), `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %),
+`test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16 (previously failing/paging),
+`LLAMA_ALL_WARNINGS=ON` build with no `-Wshadow` warnings.  r66 folds the upstream **MUL_MAT_ID
+duplicate-ids fix** into **block 00** (generic upstream foundation; `mm_ids_helper` keeps every repeated
+occurrence, the routed MMQ tile loop iterates the expanded per-expert column list, the non-compact MMF
+path is removed, the host fallback emits every match), caches the hot-path **environment reads** per
+owner block (00/05/08/09/10; `GGML_ENV_STR` now caches the value, not the MSVC-reused pointer), and
+completes the **`-Wshadow` sweep** in block 00.  Before it, r65 merges five
 `@briansp2020` PRs into their owner blocks (06/07/08/09/10): `LLAMA_OUTPUT_PINNED` (pinned output buffer
 under `-sm tensor`, block 09), `LLAMA_DRAFT_SCHED2` (a second scheduler for the MTP draft's output
 graphs, blocks 09 + 10), the Q4_K/Q6_K mmvq vecdot instruction reductions (block 07), and two gfx1100

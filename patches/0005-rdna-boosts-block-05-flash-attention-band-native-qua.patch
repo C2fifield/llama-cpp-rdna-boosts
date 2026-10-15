@@ -1,4 +1,4 @@
-From 65c0b39447ceddae2a9ac99bbedabbfdc69d54fe Mon Sep 17 00:00:00 2001
+From 4b2263986c65a5f588e7b1f6a5782ee762a94e0a Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 16:03:33 -0500
 Subject: [PATCH 05/11] rdna-boosts: block 05: flash-attention band, native
@@ -13,6 +13,9 @@ The per-context fattn_stage prefill arena (and its RDNA3_5 prefill band split)
 is deferred to block 10 slab-moe: here a native-capable operand is read natively
 at every width and the F16 staging copy for a non-native type goes to the node's
 reserved scratch (the pre-arena behaviour).
+
+Env-read hygiene (no behaviour change): resolve GGML_CUDA_FA_WMMA_256 / GGML_CUDA_FA_WMMA_MAX_HEAD
+once into values rather than caching the getenv() pointer (unsafe on Windows).
 ---
  docs/build.md                                 |   2 +-
  ggml/CMakeLists.txt                           |   2 +-
@@ -27,7 +30,7 @@ reserved scratch (the pre-arena behaviour).
  ggml/src/ggml-cuda/fattn-tile.cu              |  29 +
  ggml/src/ggml-cuda/fattn-tile.cuh             | 323 ++++++--
  ggml/src/ggml-cuda/fattn-vec.cuh              |  13 +-
- ggml/src/ggml-cuda/fattn.cu                   | 201 ++++-
+ ggml/src/ggml-cuda/fattn.cu                   | 207 ++++-
  ggml/src/ggml-cuda/ggml-cuda.cu               |  82 ++
  ...stance-ncols1_1-ncols2_16-dkq192-dv128.cu} |   1 -
  ...nstance-ncols1_1-ncols2_16-dkq576-dv512.cu |   5 +
@@ -301,7 +304,7 @@ reserved scratch (the pre-arena behaviour).
  src/llama-kv-cache.cpp                        | 182 +++++
  src/llama-kv-cache.h                          |  14 +
  tests/test-backend-ops.cpp                    | 156 +++-
- 287 files changed, 4269 insertions(+), 545 deletions(-)
+ 287 files changed, 4275 insertions(+), 545 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-rdna.cuh
  rename ggml/src/ggml-cuda/template-instances/{fattn-mma-f16-instance-ncols1_1-ncols2_16.cu => fattn-mma-f16-instance-ncols1_1-ncols2_16-dkq192-dv128.cu} (79%)
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16-dkq576-dv512.cu
@@ -3801,7 +3804,7 @@ index 57a285565..00c09842c 100644
  
  template <int D, ggml_type type_K, ggml_type type_V>
 diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
-index aefc67522..4d2e71803 100644
+index aefc67522..331db01c3 100644
 --- a/ggml/src/ggml-cuda/fattn.cu
 +++ b/ggml/src/ggml-cuda/fattn.cu
 @@ -190,6 +190,17 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_con
@@ -3966,7 +3969,7 @@ index aefc67522..4d2e71803 100644
      for (const ggml_tensor * t : {Q, K, V, mask}) {
          if (t == nullptr || ggml_is_quantized(t->type)) {
              continue;
-@@ -697,25 +764,63 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+@@ -697,25 +764,69 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
      }
  
      // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
@@ -3992,11 +3995,17 @@ index aefc67522..4d2e71803 100644
 +    // pp2048 +3.6%, pp4096 +6.7%, decode neutral. Set GGML_CUDA_FA_WMMA_256=0 to force
 +    // the WMMA path off for heads > 128 (e.g. to compare against the tile kernel), or
 +    // GGML_CUDA_FA_WMMA_MAX_HEAD to override the cap.
-+    static const char * wmma_256_env = getenv("GGML_CUDA_FA_WMMA_256");
-+    const bool wmma_256 = wmma_256_env == nullptr || std::atoi(wmma_256_env) != 0;
++    // read once as values: a cached getenv() pointer is unsafe on Windows (the CRT buffer is reused)
++    static const bool wmma_256 = [] {
++        const char * e = getenv("GGML_CUDA_FA_WMMA_256");
++        return e == nullptr || std::atoi(e) != 0;
++    }();
 +    // GGML_CUDA_FA_WMMA_MAX_HEAD overrides the per-arch cap (experiment/escape hatch).
-+    static const char * wmma_max_env = getenv("GGML_CUDA_FA_WMMA_MAX_HEAD");
-+    const int wmma_max_head = wmma_max_env ? std::atoi(wmma_max_env) : (wmma_256 && GGML_CUDA_CC_IS_RDNA4(cc) ? 576 : wmma_256 && GGML_CUDA_CC_IS_RDNA3_0(cc) ? 256 : wmma_256 && GGML_CUDA_CC_IS_RDNA3_5(cc) ? 320 : 128);
++    static const int wmma_max_env = [] {
++        const char * e = getenv("GGML_CUDA_FA_WMMA_MAX_HEAD");
++        return e != nullptr ? std::atoi(e) : -1;
++    }();
++    const int wmma_max_head = wmma_max_env >= 0 ? wmma_max_env : (wmma_256 && GGML_CUDA_CC_IS_RDNA4(cc) ? 576 : wmma_256 && GGML_CUDA_CC_IS_RDNA3_0(cc) ? 256 : wmma_256 && GGML_CUDA_CC_IS_RDNA3_5(cc) ? 320 : 128);
 +    // Whole decode/verify band (n_q = 1 included) on WMMA with the folded GQA group, default on.
 +    // GGML_CUDA_FA_WMMA_256=0 / GGML_CUDA_FA_WMMA_MAX_HEAD stay the escape hatches, so they must
 +    // disable this exactly like the generic head>128 WMMA band below.
@@ -4044,7 +4053,7 @@ index aefc67522..4d2e71803 100644
      return BEST_FATTN_KERNEL_TILE;
  }
  
-@@ -736,17 +841,36 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
+@@ -736,17 +847,36 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
  
      switch (kernel) {
          case BEST_FATTN_KERNEL_TILE: {
@@ -4091,7 +4100,7 @@ index aefc67522..4d2e71803 100644
          case BEST_FATTN_KERNEL_VEC: {
              const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
              need_f16_K = K->type == GGML_TYPE_F32 || f16_fallback;
-@@ -780,5 +904,16 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
+@@ -780,5 +910,16 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
  }
  
  bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
@@ -4110,7 +4119,7 @@ index aefc67522..4d2e71803 100644
 +    return true;
  }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 1cde69ace..a391986fb 100644
+index bda04bc63..cda66f1bf 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -73,6 +73,7 @@
@@ -4121,7 +4130,7 @@ index 1cde69ace..a391986fb 100644
  #include <array>
  #include <atomic>
  #include <charconv>
-@@ -4876,6 +4877,26 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph
+@@ -4887,6 +4888,26 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph
  static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
      bool graph_evaluated_or_captured = false;
  
@@ -4148,7 +4157,7 @@ index 1cde69ace..a391986fb 100644
      // flag used to determine whether it is an integrated_gpu
      const bool integrated            = ggml_cuda_info().devices[cuda_ctx->device].integrated;
  
-@@ -5042,12 +5063,21 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -5053,12 +5074,21 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                  GGML_UNUSED(integrated);
  #endif  // NDEBUG
  
@@ -4170,7 +4179,7 @@ index 1cde69ace..a391986fb 100644
                  if (!is_concurrent_event_active) {
                      try_launch_concurrent_event(node);
                 }
-@@ -5101,6 +5131,58 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+@@ -5112,6 +5142,58 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
          graph_evaluated_or_captured = true;
  #endif  // USE_CUDA_GRAPH
      }
@@ -8131,7 +8140,7 @@ index acf17e7f0..51b0f02b0 100644
      }
  
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index e15d78450..75b4d0f75 100644
+index f2d7d6e73..0a12fc537 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
 @@ -47,6 +47,7 @@ enum llm_graph_type {
@@ -8142,7 +8151,7 @@ index e15d78450..75b4d0f75 100644
      LLM_FUSED_OP_GDN_AR,
      LLM_FUSED_OP_GDN_CH,
      LLM_FUSED_OP_LIGHTNING_INDEXER,
-@@ -408,6 +409,39 @@ public:
+@@ -412,6 +413,39 @@ public:
      const llama_kv_cache_context * mctx;
  };
  
@@ -8182,7 +8191,7 @@ index e15d78450..75b4d0f75 100644
  class llm_graph_input_attn_k_dsa : public llm_graph_input_i {
  public:
      llm_graph_input_attn_k_dsa(
-@@ -1008,6 +1042,13 @@ struct llm_graph_qkv {
+@@ -1012,6 +1046,13 @@ struct llm_graph_qkv {
      ggml_tensor * v; // [n_embd_head, n_head_kv, n_tokens]
  };
  
@@ -8196,7 +8205,7 @@ index e15d78450..75b4d0f75 100644
  struct llm_graph_context {
      const llm_arch arch;
  
-@@ -1065,6 +1106,12 @@ struct llm_graph_context {
+@@ -1069,6 +1110,12 @@ struct llm_graph_context {
  
      llm_graph_result * res;
  
@@ -8209,7 +8218,7 @@ index e15d78450..75b4d0f75 100644
      ggml_context * ctx0 = nullptr;
      ggml_cgraph  * gf   = nullptr;
  
-@@ -1266,6 +1313,19 @@ struct llm_graph_context {
+@@ -1270,6 +1317,19 @@ struct llm_graph_context {
  
      llm_graph_input_attn_kv * build_attn_inp_kv() const;
  

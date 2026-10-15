@@ -1,4 +1,4 @@
-From d2219388f57968139c99f22b139dbe0d7559e705 Mon Sep 17 00:00:00 2001
+From 053557e1f4bb2278e829165ad059d81de0720d57 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:38 -0500
 Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
@@ -14,29 +14,54 @@ Groundwork block (multiple base-level concerns, by design):
 - ggml-alloc: release view sources whose views are never consumed (W4)
 
 Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
+
+Also carries two generic upstream foundation changes:
+- the upstream MUL_MAT_ID duplicate-ids fix (upstream/UPSTREAM-PR-mul-mat-id-dup.patch):
+  mm_ids_helper keeps every occurrence of a repeated expert id as its own compact row,
+  the MMQ/MMF column-tile grids loop over the expanded per-expert column list, and the
+  host sorted fallback emits every match.  Fixes the test-backend-ops MUL_MAT_ID dup=1
+  failures and the quantize_mmq_q8_1 page fault.  Applied here so every later MUL_MAT_ID
+  block builds on correct duplicate handling.
+- cache the pre-existing upstream env reads that sit on hot paths in function-local
+  statics: GGML_CUDA_CUBLAS_COMPUTE_TYPE (per cuBLAS matmul),
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY (per device allocation), GGML_CUDA_REGISTER_HOST,
+  GGML_CUDA_NO_PINNED, LLAMA_GRAPH_INPUT_DEBUG (per graph input) and LLAMA_BATCH_DEBUG
+  (per batch).  getenv() is expensive on Windows.
+
+Also extend the -Wshadow sweep to the remaining upstream shadowing declarations the clang
+build reports (all present at the fork point): step35.cpp per-layer n_embd_k_gqa/n_embd_v_gqa,
+llama-moe-cache.cpp init_ctx, llama-vocab.cpp _try_copy, llama-quant.cpp layer_info, and
+llama-model.cpp make_gpu_buft_list / get_tensor.
 ---
  common/speculative.cpp                        |  10 +-
  ggml/src/ggml-alloc.c                         |  35 ++
  ggml/src/ggml-backend-meta.cpp                |   7 +-
  ggml/src/ggml-cpu/llamafile/sgemm.cpp         |   8 +-
  ggml/src/ggml-cuda/fattn-common.cuh           |  10 +-
+ ggml/src/ggml-cuda/ggml-cuda.cu               |  36 +-
+ ggml/src/ggml-cuda/mmf.cu                     |   2 +-
+ ggml/src/ggml-cuda/mmf.cuh                    |  30 +-
+ ggml/src/ggml-cuda/mmid.cu                    | 195 ++------
+ ggml/src/ggml-cuda/mmq.cu                     |   7 +-
+ ggml/src/ggml-cuda/mmq.cuh                    |  96 ++--
  .../vulkan-shaders/flash_attn.comp            |  29 +-
  .../vulkan-shaders/flash_attn_cm1.comp        |  49 +-
  src/CMakeLists.txt                            |  18 +
- src/llama-batch.cpp                           |  56 ++-
+ src/llama-batch.cpp                           |  64 +--
  src/llama-context.cpp                         | 139 ++++--
  src/llama-grammar.cpp                         |   6 +-
  src/llama-graph.cpp                           | 258 +++++------
+ src/llama-graph.h                             |   8 +-
  src/llama-kv-cache-dsv4.cpp                   |   8 +-
  src/llama-kv-cache.cpp                        |  56 +--
  src/llama-memory-recurrent.cpp                |  14 +-
  src/llama-mmap.cpp                            |  14 +-
  src/llama-model-loader.cpp                    |  12 +-
- src/llama-model.cpp                           | 422 +++++++++---------
- src/llama-moe-cache.cpp                       |  24 +-
- src/llama-quant.cpp                           |   2 +-
+ src/llama-model.cpp                           | 428 +++++++++---------
+ src/llama-moe-cache.cpp                       |  28 +-
+ src/llama-quant.cpp                           |  10 +-
  src/llama-sampler.cpp                         |  60 +--
- src/llama-vocab.cpp                           |  22 +-
+ src/llama-vocab.cpp                           |  30 +-
  src/llama.cpp                                 |  40 +-
  src/models/bert.cpp                           |  42 +-
  src/models/deci.cpp                           |  32 +-
@@ -53,9 +78,10 @@ Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
  src/models/nanbeige.cpp                       |   4 +-
  src/models/neo-bert.cpp                       |  26 +-
  src/models/openelm.cpp                        |  14 +-
+ src/models/step35.cpp                         |  16 +-
  src/models/vllm-decision2.cpp                 |   8 +-
  src/models/wavtokenizer-dec.cpp               |  64 +--
- 40 files changed, 931 insertions(+), 734 deletions(-)
+ 48 files changed, 1111 insertions(+), 978 deletions(-)
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
 index c5043a4a8..226473421 100644
@@ -188,6 +214,572 @@ index 41d948335..2ea7cac83 100644
 +            const int nblocks_total = ntiles_dst_eff * parallel_blocks_test;
              const int nwaves = (nblocks_total + blocks_per_wave - 1) / blocks_per_wave;
              const int efficiency_percent = 100 * nblocks_total / (nwaves*blocks_per_wave);
+ 
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 957908f65..b4cb68702 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -141,7 +141,9 @@ int ggml_cuda_get_device() {
+ static cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
+     ggml_cuda_set_device(device);
+     cudaError_t err;
+-    if (getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr) {
++    // read once: the single device-allocation choke point, and getenv() is expensive on Windows
++    static const bool unified_memory = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
++    if (unified_memory) {
+         err = cudaMallocManaged(ptr, size);
+ #if defined(GGML_USE_HIP)
+         if (err == hipSuccess) {
+@@ -1642,21 +1644,30 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
+         compute_type = GGML_TYPE_F32;
+     }
+ 
+-    const char * env_c = getenv("GGML_CUDA_CUBLAS_COMPUTE_TYPE");
+-    if (env_c != nullptr) {
++    // Parse GGML_CUDA_CUBLAS_COMPUTE_TYPE once: this runs for every cuBLAS matmul, and getenv() is
++    // expensive on Windows (whose getenv returns a pointer that must not be retained across calls).
++    static const ggml_type cublas_compute_type_env = []() -> ggml_type {
++        const char * env_c = getenv("GGML_CUDA_CUBLAS_COMPUTE_TYPE");
++        if (env_c == nullptr) {
++            return GGML_TYPE_COUNT;
++        }
+         std::string env_cpp = env_c;
+         for (char & c : env_cpp) {
+             c = std::tolower(c);
+         }
+         if (env_cpp == "f32" || env_cpp == "fp32") {
+-            compute_type = GGML_TYPE_F32;
++            return GGML_TYPE_F32;
+         } else if (env_cpp == "f16" || env_cpp == "fp16") {
+-            compute_type = GGML_TYPE_F16;
++            return GGML_TYPE_F16;
+         } else if (env_cpp == "bf16") {
+-            compute_type = GGML_TYPE_BF16;
++            return GGML_TYPE_BF16;
+         } else if (env_cpp != "auto") {
+             GGML_LOG_WARN("%s: unknown value for GGML_CUDA_CUBLAS_COMPUTE_TYPE: %s", __func__, env_cpp.c_str());
+         }
++        return GGML_TYPE_COUNT;
++    }();
++    if (cublas_compute_type_env != GGML_TYPE_COUNT) {
++        compute_type = cublas_compute_type_env;
+     }
+ 
+     constexpr size_t max_src0_convert_size = 512ull * 1024 * 1024;
+@@ -2066,11 +2077,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+             for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                 const int32_t expert_to_use = *(const int32_t *)(ids_host.data() + i12*ids->nb[1] + iex*ids->nb[0]);
+                 assert(expert_to_use >= 0 && expert_to_use < ne02);
++                // an id may repeat within a row: each occurrence is a separate dst column with its own src1 column
+                 if (expert_to_use == i02) {
+                     ids_from_sorted_host[i12*n_expert_used + iex] = ids_to_sorted_host.size();
+                     ids_to_sorted_host.push_back(i12*ne11 + iex % ne11);
+                     tokens_per_expert[i02]++;
+-                    break;
+                 }
+             }
+         }
+@@ -5138,7 +5149,8 @@ void ggml_backend_cuda_get_device_memory(int device, size_t * free, size_t * tot
+ }
+ 
+ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
+-    if (getenv("GGML_CUDA_REGISTER_HOST") == nullptr) {
++    static const bool register_host = getenv("GGML_CUDA_REGISTER_HOST") != nullptr;
++    if (!register_host) {
+         return false;
+     }
+ 
+@@ -5161,7 +5173,8 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
+ }
+ 
+ void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
+-    if (getenv("GGML_CUDA_REGISTER_HOST") == nullptr) {
++    static const bool register_host = getenv("GGML_CUDA_REGISTER_HOST") != nullptr;
++    if (!register_host) {
+         return;
+     }
+ 
+@@ -5288,7 +5301,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
+     CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
+ 
+     // Check if UMA is explicitly enabled via environment variable
+-    bool uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
++    static const bool uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
+     bool is_uma = prop.integrated > 0 || uma_env;
+ 
+     if (is_uma) {
+@@ -5330,7 +5343,8 @@ static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_back
+     props->device_id   = ctx->pci_bus_id.empty() ? nullptr : ctx->pci_bus_id.c_str();
+     ggml_backend_cuda_device_get_memory(dev, &props->memory_free, &props->memory_total);
+ 
+-    bool host_buffer = getenv("GGML_CUDA_NO_PINNED") == nullptr;
++    static const bool no_pinned = getenv("GGML_CUDA_NO_PINNED") != nullptr;
++    bool host_buffer = !no_pinned;
+ #ifdef GGML_CUDA_NO_PEER_COPY
+     bool events = false;
+ #else
+diff --git a/ggml/src/ggml-cuda/mmf.cu b/ggml/src/ggml-cuda/mmf.cu
+index 646a5899c..eeac36dd2 100644
+--- a/ggml/src/ggml-cuda/mmf.cu
++++ b/ggml/src/ggml-cuda/mmf.cu
+@@ -69,7 +69,7 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
+         nchannels_y      = ids->ne[0];
+     }
+ 
+-    if (ids && ncols_dst > 16) {
++    if (ids) {
+         const int64_t n_expert_used = ids->ne[0];
+         const int64_t n_experts     = ne02;
+         const int64_t n_tokens      = ne12;
+diff --git a/ggml/src/ggml-cuda/mmf.cuh b/ggml/src/ggml-cuda/mmf.cuh
+index 879a86527..c3f792487 100644
+--- a/ggml/src/ggml-cuda/mmf.cuh
++++ b/ggml/src/ggml-cuda/mmf.cuh
+@@ -357,12 +357,6 @@ static __global__ void mul_mat_f_ids(
+     const int ncols_expert = expert_end - expert_start;
+ 
+     const int tiles_for_expert = (ncols_expert + cols_per_block - 1) / cols_per_block;
+-    const int tile_idx = blockIdx.z;
+-    if (tile_idx >= tiles_for_expert) {
+-        return;
+-    }
+-
+-    const int col_base = tile_idx * cols_per_block;
+ 
+     GGML_UNUSED(channel_ratio);
+ 
+@@ -383,10 +377,18 @@ static __global__ void mul_mat_f_ids(
+ 
+     //const float2 * y2 = (const float2 *) y;
+ 
+-    tile_C C[ntA][ntB];
+-
+     T * tile_xy = (T *) compute_base + threadIdx.y*(tile_A::I * tile_k_padded);
+ 
++    // One block covers a tile per stride: an expert's compact column count can exceed the grid width when ids repeat
++    // within a token's row, so keep the tight grid and loop until the expert's tiles are exhausted.
++    for (int tile_idx = blockIdx.z; tile_idx < tiles_for_expert; tile_idx += gridDim.z) {
++    if (tile_idx != static_cast<int>(blockIdx.z)) {
++        if (nwarps > 1) { __syncthreads(); } else { ggml_cuda_syncwarp(); }
++    }
++    const int col_base = tile_idx * cols_per_block;
++
++    tile_C C[ntA][ntB];
++
+     for (int col = threadIdx.y*warp_size + threadIdx.x; col < ncols; col += nwarps*warp_size) {
+         tile_A A[ntA][warp_size / tile_A::J];
+ #pragma unroll
+@@ -549,7 +551,7 @@ static __global__ void mul_mat_f_ids(
+         const int j = j0 + threadIdx.y;
+ 
+         if (j0 + nwarps > cols_per_block && j >= cols_per_block) {
+-            return;
++            continue;
+         }
+ 
+         float sum[rows_per_block/warp_size] = {0.0f};
+@@ -579,6 +581,7 @@ static __global__ void mul_mat_f_ids(
+         }
+     }
+     }
++    }
+ #else
+     GGML_UNUSED_VARS(x, y, ids_src_compact, ids_dst_compact, expert_bounds, dst,
+         ncols, ncols_dst_total, nchannels_dst, stride_row, stride_col_y, stride_col_dst,
+@@ -600,9 +603,12 @@ static inline void mul_mat_f_switch_ids(
+         const mmf_ids_data * ids_data) {
+     const bool has_ids_data = ids_data && ids_data->ids_src_compact;
+ 
+-    // Use the compact-ids kernel only for larger tiles; for small ncols_dst (< 16)
+-    // we prefer the normal mul_mat_f path with has_ids=true.
+-    if (has_ids_data && ncols_dst > 16) {
++    // Use the compact-ids kernel for every MUL_MAT_ID: the non-compact mul_mat_f path keeps a single slot per token,
++    // so it cannot represent repeated ids within a token's row.  The compact kernel maps every (token, slot) occurrence
++    // to its own row.  For small ncols_dst the extra expert-bounds read is negligible.
++    if (has_ids_data) {
++        // The grid keeps the tight ncols_dst width; the kernel loops over the extra column tiles that appear when ids
++        // repeat within a token's row (an expert's compact column count can then exceed ncols_dst).
+         const int max_tiles = (int) ((ncols_dst + cols_per_block - 1) / cols_per_block);
+         if (max_tiles == 0) {
+             return;
+diff --git a/ggml/src/ggml-cuda/mmid.cu b/ggml/src/ggml-cuda/mmid.cu
+index 12ae14ce9..cdb5b5972 100644
+--- a/ggml/src/ggml-cuda/mmid.cu
++++ b/ggml/src/ggml-cuda/mmid.cu
+@@ -1,179 +1,78 @@
+ #include "common.cuh"
+ #include "mmid.cuh"
+ 
+-// To reduce shared memory use, store "it" and "iex_used" with 22/10 bits each.
+-struct mm_ids_helper_store {
+-    uint32_t data;
+-
+-    __device__ mm_ids_helper_store(const uint32_t it, const uint32_t iex_used) {
+-        data = (it & 0x003FFFFF) | (iex_used << 22);
+-    }
+-
+-    __device__ uint32_t it() const {
+-        return data & 0x003FFFFF;
+-    }
+-
+-    __device__ uint32_t iex_used() const {
+-        return data >> 22;
+-    }
+-};
+-static_assert(sizeof(mm_ids_helper_store) == 4, "unexpected size for mm_ids_helper_store");
+-
+-// the generic path passes 0, which needs no padding since it never groups lanes by token
+-template <int n> struct mm_ids_pow2 { static constexpr int value = 2*mm_ids_pow2<(n + 1)/2>::value; };
+-template <>      struct mm_ids_pow2<1> { static constexpr int value = 1; };
+-template <>      struct mm_ids_pow2<0> { static constexpr int value = 1; };
+-
+ // Helper function for mul_mat_id, converts ids to a more convenient format.
+ // ids_src1 describes how to permute the flattened column indices of src1 in order to get a compact src1 tensor sorted by expert.
+ // ids_dst describes the same mapping but for the dst tensor.
+ // The upper and lower bounds for the ith expert in the compact src1 tensor are stored in expert_bounds[i:i+1].
+-template <int n_expert_used_template>
++//
++// An expert id may repeat within a token's row; every occurrence is an independent destination column and gets its own
++// compact row (the Vulkan backend handles the same case in its prepass).  Pass 1 counts the columns of the lower-indexed
++// experts (nex_prev), pass 2 writes this expert's columns in (token, iex) order directly to the compact arrays.  No
++// per-token staging buffer is used, so the kernel's shared-memory need does not grow with n_tokens*n_expert_used.
+ __launch_bounds__(ggml_cuda_get_physical_warp_size(), 1)
+ static __global__ void mm_ids_helper(
+         const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
+-        const int n_tokens, const int n_expert_used_var, const int nchannels_y, const int si1, const int sis1, const bool write_inverse) {
++        const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1, const bool write_inverse) {
+     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+-    const int n_expert_used = n_expert_used_template == 0 ? n_expert_used_var : n_expert_used_template;
+     const int expert = blockIdx.x;
++    const int lane   = threadIdx.x;
+ 
+-    extern __shared__ char data_mm_ids_helper[];
+-    mm_ids_helper_store * store = (mm_ids_helper_store *) data_mm_ids_helper;
+-
+-    int nex_prev   = 0; // Number of columns for experts with a lower index.
+-    int it_compact = 0; // Running index for the compact slice of this expert.
+-
+-    if constexpr (n_expert_used_template == 0) {
+-        // Generic implementation:
+-        for (int it = 0; it < n_tokens; ++it) {
+-            int iex_used = -1; // The index at which the expert is used, if any.
+-            for (int iex = threadIdx.x; iex < n_expert_used; iex += warp_size) {
+-                const int expert_used = ids[it*si1 + iex];
+-                nex_prev += expert_used < expert;
+-                if (expert_used == expert) {
+-                    iex_used = iex;
+-                }
+-            }
+-
+-            if (iex_used != -1) {
+-                store[it_compact] = mm_ids_helper_store(it, iex_used);
+-            }
+-
+-            if (warp_reduce_any<warp_size>(iex_used != -1)) {
+-                it_compact++;
+-            }
++    // Pass 1: number of compact columns for the experts with a lower index.
++    int nex_prev = 0;
++    for (int it = 0; it < n_tokens; ++it) {
++        for (int iex = lane; iex < n_expert_used; iex += warp_size) {
++            nex_prev += ids[it*si1 + iex] < expert;
+         }
+-    } else {
+-        // Implementation optimized for specific numbers of experts used:
+-        // a warp holds a whole number of token slots, so the slot count is padded to a power of 2
+-        constexpr int neu_padded = mm_ids_pow2<n_expert_used_template>::value;
+-        static_assert(neu_padded <= warp_size && warp_size % neu_padded == 0, "bad n_expert_used");
+-        for (int it0 = 0; it0 < n_tokens; it0 += warp_size/neu_padded) {
+-            const int it = it0 + threadIdx.x / neu_padded;
+-
+-            const int iex = threadIdx.x % neu_padded; // The index at which the expert is used, if any.
+-            const int expert_used = (neu_padded == n_expert_used || iex < n_expert_used) && it < n_tokens ?
+-                ids[it*si1 + iex] : INT_MAX;
+-            const int iex_used = expert_used == expert ? iex : -1;
+-            nex_prev += expert_used < expert;
+-
+-            // Whether the threads at this token position have used the expert:
+-            const int it_compact_add_self = warp_reduce_any<neu_padded>(iex_used != -1);
++    }
++    nex_prev = warp_reduce_sum<warp_size>(nex_prev);
+ 
+-            // Do a scan over threads at lower token positions in warp to get the correct index for writing data:
+-            int it_compact_add_lower = 0;
+-#pragma unroll
+-            for (int offset = neu_padded; offset < warp_size; offset += neu_padded) {
+-                const int tmp = __shfl_up_sync(0xFFFFFFFF, it_compact_add_self, offset, warp_size);
+-                if (threadIdx.x >= static_cast<unsigned int>(offset)) {
+-                    it_compact_add_lower += tmp;
++    // Pass 2: write this expert's columns, one per matching (token, iex) pair, in (token, iex) order.
++    int it_compact = 0;
++    for (int it = 0; it < n_tokens; ++it) {
++        int lane_count = 0;
++        for (int iex = lane; iex < n_expert_used; iex += warp_size) {
++            lane_count += ids[it*si1 + iex] == expert;
++        }
++        const int tok_count = warp_reduce_sum<warp_size>(lane_count);
++        const int lane_base = warp_prefix_inclusive_sum<int, warp_size>(lane_count) - lane_count;
++
++        int j = 0;
++        for (int iex = lane; iex < n_expert_used; iex += warp_size) {
++            if (ids[it*si1 + iex] == expert) {
++                const int pos = nex_prev + it_compact + lane_base + j;
++                ids_dst[pos] = it*n_expert_used + iex;
++                // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
++                if (write_inverse) {
++                    ids_src1[it*n_expert_used + iex] = pos;
++                } else {
++                    ids_src1[pos] = it*sis1 + iex % nchannels_y;
+                 }
++                ++j;
+             }
+-
+-            if (iex_used != -1) {
+-                store[it_compact + it_compact_add_lower] = mm_ids_helper_store(it, iex_used);
+-            }
+-
+-            // The thread with the highest index in the warp always has the sum over the whole warp, use it to increment all threads:
+-            it_compact += __shfl_sync(0xFFFFFFFF, it_compact_add_lower + it_compact_add_self, warp_size - 1, warp_size);
+         }
++        it_compact += tok_count;
+     }
+-    nex_prev = warp_reduce_sum<warp_size>(nex_prev);
+-    ggml_cuda_syncwarp();
+ 
+-    for (int itc = threadIdx.x; itc < it_compact; itc += warp_size) {
+-        const mm_ids_helper_store store_it = store[itc];
+-        const int it       = store_it.it();
+-        const int iex_used = store_it.iex_used();
+-        ids_dst[nex_prev + itc] = it*n_expert_used + iex_used;
+-        // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
+-        if (write_inverse) {
+-            ids_src1[it*n_expert_used + iex_used] = nex_prev + itc;
+-        } else {
+-            ids_src1[nex_prev + itc] = it*sis1 + iex_used % nchannels_y;
++    if (lane == 0) {
++        expert_bounds[expert] = nex_prev;
++        if (expert == static_cast<int>(gridDim.x) - 1) {
++            expert_bounds[gridDim.x] = nex_prev + it_compact;
+         }
+     }
+-
+-    if (threadIdx.x != 0) {
+-        return;
+-    }
+-
+-    expert_bounds[expert] = nex_prev;
+-
+-    if (expert < static_cast<int>(gridDim.x) - 1) {
+-        return;
+-    }
+-
+-    expert_bounds[gridDim.x] = nex_prev + it_compact;
+ }
+ 
+-template <int n_expert_used_template>
+-static void launch_mm_ids_helper(
++void ggml_cuda_launch_mm_ids_helper(
+         const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
+-        const int n_experts, const int n_tokens, const int n_expert_used_var, const int nchannels_y, const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
+-    GGML_ASSERT(n_tokens          < (1 << 22) && "too few bits in mm_ids_helper_store");
+-    GGML_ASSERT(n_expert_used_var < (1 << 10) && "too few bits in mm_ids_helper_store");
++        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
++    GGML_ASSERT(n_tokens >= 0 && n_expert_used >= 0);
++    GGML_ASSERT((int64_t) n_tokens * n_expert_used < (int64_t) 1 << 31);
+ 
+-    const int id = ggml_cuda_get_device();
+-    const int warp_size = ggml_cuda_info().devices[id].warp_size;
+-    const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
+-    CUDA_SET_SHARED_MEMORY_LIMIT(mm_ids_helper<n_expert_used_template>, smpbo);
++    const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+ 
+     const dim3 num_blocks(n_experts, 1, 1);
+     const dim3 block_size(warp_size, 1, 1);
+-    const size_t nbytes_shared = n_tokens*sizeof(mm_ids_helper_store);
+-    GGML_ASSERT(nbytes_shared <= smpbo);
+-    mm_ids_helper<n_expert_used_template><<<num_blocks, block_size, nbytes_shared, stream>>>
+-        (ids, ids_src1, ids_dst, expert_bounds, n_tokens, n_expert_used_var, nchannels_y, si1, sis1, write_inverse);
++    mm_ids_helper<<<num_blocks, block_size, 0, stream>>>(
++        ids, ids_src1, ids_dst, expert_bounds, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse);
+ }
+ 
+-void ggml_cuda_launch_mm_ids_helper(
+-        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
+-        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
+-    switch (n_expert_used) {
+-        case  2:
+-            launch_mm_ids_helper< 2>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case  4:
+-            launch_mm_ids_helper< 4>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case  6:
+-            launch_mm_ids_helper< 6>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case  8:
+-            launch_mm_ids_helper< 8>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case 10:
+-            launch_mm_ids_helper<10>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case 16:
+-            launch_mm_ids_helper<16>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        case 32:
+-            launch_mm_ids_helper<32>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-        default:
+-            launch_mm_ids_helper< 0>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+-            break;
+-    }
+-}
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 91b89999e..b7499f57b 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -342,13 +342,18 @@ void ggml_cuda_mul_mat_q(
+     const int64_t s13 = ne12*s12;
+ 
+     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.
++    // ncols_max is the column-tile grid width: an expert's compact column count can exceed ne12 when ids repeat within a
++    // token's row (every occurrence is its own column).  The non-stream-k kernel keeps the tight ne12 grid and loops over
++    // the remaining column tiles, so it stays fast for the common case; the stream-k kernel derives the tile index from
++    // the flat k-space, so it needs the full worst-case width to visit every column.
++    const bool stream_k = ggml_cuda_mmq_get_config(src0->type, J_best, fallback, cc, prec_src1).stream_k;
+     const mmq_args args = {
+         src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
+         src1_scale.ptr,
+         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
+         ne02, ne02, s02, s12, s2,
+         ne03, ne13, s03, s13, s3,
+-        ne12, J_best};
++        stream_k ? ne_get_rows : ne12, J_best};
+ 
+     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
+ }
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+index d3e7b75ea..ccd32f809 100644
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -995,69 +995,73 @@ static __global__ void mul_mat_q(
+         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
+         const int wt = tmp2.x;
+         const int zt = tmp2.y;
+-        const int jt = blockIdx.y;
+         const int it = blockIdx.x;
+ 
+-        // Defaults for regular matrix multiplication:
+-        int col_low    = 0;
+-        int col_high   = ncols_dst;
+-        int col_diff   = ncols_dst;
+-        int offset_y       = wt*stride_sample_y   + zt*stride_channel_y;
+-        int offset_dst     = wt*stride_sample_dst + zt*stride_channel_dst + jt*J*stride_col_dst;
+-        int offset_y_scale;
+-        if constexpr (type == GGML_TYPE_NVFP4) {
+-            offset_y_scale = wt*nchannels_y.z*ncols_y + zt*ncols_y;
+-        } else {
+-            GGML_UNUSED(offset_y_scale);
+-        }
+-
++        int col_low  = 0;
++        int col_high = ncols_dst;
+         if (ids_dst) {
+             col_low  = expert_bounds[zt + 0];
+             col_high = expert_bounds[zt + 1];
+-            col_diff = col_high - col_low;
++        }
++        const int col_diff = col_high - col_low;
++        const int ntiles   = (col_diff + J - 1) / J;
++        const int jt_step  = (int) ntx.z; // ntx is a fastdiv triple <mp, L, divisor>
+ 
+-            offset_y   = 0;
+-            offset_dst = 0;
++        const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + fastdiv(zt, channel_ratio)*stride_channel_x + it*I*stride_row_x;
++
++        // One block covers a column tile per stride.  When ids repeat within a token's row an expert's compact column count
++        // can exceed the grid width, so keep the tight grid and loop until the expert's columns are exhausted.
++        for (int jt = blockIdx.y; jt < ntiles; jt += jt_step) {
++            int offset_y   = wt*stride_sample_y   + zt*stride_channel_y;
++            int offset_dst = wt*stride_sample_dst + zt*stride_channel_dst + jt*J*stride_col_dst;
++            int offset_y_scale;
+             if constexpr (type == GGML_TYPE_NVFP4) {
+-                offset_y_scale = 0;
++                offset_y_scale = wt*nchannels_y.z*ncols_y + zt*ncols_y;
++            } else {
++                GGML_UNUSED(offset_y_scale);
+             }
+ 
+-            if (jt*J >= col_diff) {
+-                return;
+-            }
++            if (ids_dst) {
++                offset_y   = 0;
++                offset_dst = 0;
++                if constexpr (type == GGML_TYPE_NVFP4) {
++                    offset_y_scale = 0;
++                }
+ 
+-            // __syncthreads(); // There is no previous tile that could cause a race condition.
++                // A later iteration must not overwrite the previous tile's ids_dst_shared while it may still be read.
++                if (jt != static_cast<int>(blockIdx.y)) {
++                    __syncthreads();
++                }
+ #pragma unroll
+-            for (int j0 = 0; j0 < J; j0 += nwarps*warp_size) {
+-                const int j = j0 + threadIdx.y*warp_size + threadIdx.x;
++                for (int j0 = 0; j0 < J; j0 += nwarps*warp_size) {
++                    const int j = j0 + threadIdx.y*warp_size + threadIdx.x;
+ 
+-                if (j0 + nwarps*warp_size > J && j >= J) {
+-                    break;
+-                }
++                    if (j0 + nwarps*warp_size > J && j >= J) {
++                        break;
++                    }
+ 
+-                ids_dst_shared[j] = ids_dst[col_low + jt*J + j];
++                    ids_dst_shared[j] = ids_dst[col_low + jt*J + j];
++                }
++                __syncthreads();
+             }
+-            __syncthreads();
+-        }
+-
+-        offset_y   += (col_low + jt*J)*(sizeof(block_q8_1_mmq)/sizeof(int));
+-        offset_dst += it*I;
+-        const float * y_scale_tile = nullptr;
+-        if constexpr (type == GGML_TYPE_NVFP4) {
+-            offset_y_scale += col_low + jt*J;
+-            y_scale_tile = y_scale ? y_scale + offset_y_scale : nullptr;
+-        }
+ 
+-        const int tile_x_max_i = nrows_x  - it*I - 1;
+-        const int tile_y_max_j = col_diff - jt*J - 1;
++            offset_y   += (col_low + jt*J)*(sizeof(block_q8_1_mmq)/sizeof(int));
++            offset_dst += it*I;
++            const float * y_scale_tile = nullptr;
++            if constexpr (type == GGML_TYPE_NVFP4) {
++                offset_y_scale += col_low + jt*J;
++                y_scale_tile = y_scale ? y_scale + offset_y_scale : nullptr;
++            }
+ 
+-        const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + fastdiv(zt, channel_ratio)*stride_channel_x + it*I*stride_row_x;
++            const int tile_x_max_i = nrows_x  - it*I - 1;
++            const int tile_y_max_j = col_diff - jt*J - 1;
+ 
+-        constexpr bool fixup = false;
+-        mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1>
+-            (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+-             stride_row_x, ncols_y, stride_col_dst,
+-             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
++            constexpr bool fixup = false;
++            mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1>
++                (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
++                 stride_row_x, ncols_y, stride_col_dst,
++                 tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
++        }
+         return;
+     }
  
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
 index 2c5e85908..479dd90b2 100644
@@ -387,10 +979,25 @@ index 97250c2e8..9c51939fd 100644
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
 diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
-index 3c4b52008..284fba517 100644
+index 3c4b52008..0d1967d5c 100644
 --- a/src/llama-batch.cpp
 +++ b/src/llama-batch.cpp
-@@ -27,11 +27,11 @@ llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd, bool allow_mixed
+@@ -13,8 +13,12 @@
+ #include <sstream>
+ 
+ llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd, bool allow_mixed) : n_pos_per_embd(n_pos_per_embd), allow_mixed(allow_mixed) {
+-    const char * LLAMA_BATCH_DEBUG = getenv("LLAMA_BATCH_DEBUG");
+-    debug = LLAMA_BATCH_DEBUG ? atoi(LLAMA_BATCH_DEBUG) : 0;
++    // read once: an allocr is constructed per batch, and getenv() is expensive on Windows
++    static const int batch_debug = [] {
++        const char * env = getenv("LLAMA_BATCH_DEBUG");
++        return env != nullptr ? atoi(env) : 0;
++    }();
++    debug = batch_debug;
+ 
+     seq_pos.resize(LLAMA_MAX_SEQ);
+     seq_cpl.resize(LLAMA_MAX_SEQ);
+@@ -27,11 +31,11 @@ llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd, bool allow_mixed
  
  bool llama_batch_allocr::init(
          const llama_batch_ext & batch_inp,
@@ -404,7 +1011,7 @@ index 3c4b52008..284fba517 100644
      this->n_embd       = batch_inp.n_embd > 0 ? batch_inp.n_embd : batch_inp.n_embd_inp;
      this->n_embd_state = batch_inp.n_embd_state;
      this->n_seq_max    = batch_inp.n_seq_max;
-@@ -275,10 +275,10 @@ bool llama_batch_allocr::init(
+@@ -275,10 +279,10 @@ bool llama_batch_allocr::init(
          for (int32_t i = 0; i < batch.n_tokens; ++i) {
              seq_set_t cur;
              for (int32_t s = 0; s < batch.n_seq_id[i]; ++s) {
@@ -418,7 +1025,7 @@ index 3c4b52008..284fba517 100644
              }
  
              seq_set.push_back(cur);
-@@ -468,24 +468,24 @@ bool llama_batch_allocr::init(
+@@ -468,24 +472,24 @@ bool llama_batch_allocr::init(
          }
  
          for (int32_t i = 0; i < batch.n_tokens; ++i) {
@@ -451,7 +1058,7 @@ index 3c4b52008..284fba517 100644
              }
          }
      }
-@@ -565,12 +565,12 @@ std::vector<int32_t> & llama_batch_allocr::get_out_ids() {
+@@ -565,12 +569,12 @@ std::vector<int32_t> & llama_batch_allocr::get_out_ids() {
      return out_ids;
  }
  
@@ -468,7 +1075,7 @@ index 3c4b52008..284fba517 100644
  }
  
  void llama_batch_allocr::split_reset() {
-@@ -932,10 +932,10 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+@@ -932,10 +936,10 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
          }
  
          for (int s = 0; s < udata->n_seq_id[i]; ++s) {
@@ -482,7 +1089,7 @@ index 3c4b52008..284fba517 100644
          }
  
          if (udata->output[i]) {
-@@ -987,8 +987,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+@@ -987,8 +991,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
      return res;
  }
  
@@ -493,7 +1100,7 @@ index 3c4b52008..284fba517 100644
          LLAMA_LOG_DEBUG("%s:   equal_seqs   = %d\n", __func__, ubatch.equal_seqs());
          LLAMA_LOG_DEBUG("%s:   n_tokens     = %d\n", __func__, ubatch.n_tokens);
          LLAMA_LOG_DEBUG("%s:   n_seq_tokens = %d\n", __func__, ubatch.n_seq_tokens);
-@@ -1028,28 +1028,26 @@ void llama_batch_allocr::ubatch_print(const llama_ubatch & ubatch, int debug) {
+@@ -1028,28 +1032,26 @@ void llama_batch_allocr::ubatch_print(const llama_ubatch & ubatch, int debug) {
          LLAMA_LOG_DEBUG("%s:   type       = %p\n", __func__, (void *) ubatch.type);
          LLAMA_LOG_DEBUG("%s:   n_outputs  = %d\n", __func__, n_outputs);
  
@@ -1529,6 +2136,25 @@ index fe3d03c02..acf17e7f0 100644
          ggml_view_1d(ctx0, mctx_cur->get_r_l(il), hparams.n_embd_r()*n_seqs, hparams.n_embd_r()*kv_head*ggml_element_size(mctx_cur->get_r_l(il)))
      );
  }
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index e15d78450..f2d7d6e73 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -106,8 +106,12 @@ struct llm_graph_params;
+ class llm_graph_input_i {
+ public:
+     llm_graph_input_i() {
+-        const char * LLAMA_GRAPH_INPUT_DEBUG = getenv("LLAMA_GRAPH_INPUT_DEBUG");
+-        debug = LLAMA_GRAPH_INPUT_DEBUG ? atoi(LLAMA_GRAPH_INPUT_DEBUG) : 0;
++        // read once: a graph input object is constructed on every decode; getenv() is expensive on Windows
++        static const int input_debug = [] {
++            const char * env = getenv("LLAMA_GRAPH_INPUT_DEBUG");
++            return env != nullptr ? atoi(env) : 0;
++        }();
++        debug = input_debug;
+     }
+ 
+     virtual ~llm_graph_input_i() = default;
 diff --git a/src/llama-kv-cache-dsv4.cpp b/src/llama-kv-cache-dsv4.cpp
 index f8caae9d6..3909c4990 100644
 --- a/src/llama-kv-cache-dsv4.cpp
@@ -1875,9 +2501,22 @@ index 6cc0b2028..238ab0ba1 100644
              auto * event = ggml_backend_event_new(dev);
              if (!event) {
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 6872589fa..44315b2c2 100644
+index 6872589fa..450f94c37 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
+@@ -1190,9 +1190,9 @@ static buft_list_t make_gpu_buft_list(ggml_backend_dev_t dev, llama_split_mode s
+             ggml_backend_reg_get_proc_address(reg, "ggml_backend_split_buffer_type");
+         if (ggml_backend_split_buffer_type_fn) {
+             size_t dev_index = [&]() {
+-                auto * reg = ggml_backend_dev_backend_reg(dev);
+-                for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); ++i) {
+-                    if (ggml_backend_reg_dev_get(reg, i) == dev) {
++                auto * reg_l = ggml_backend_dev_backend_reg(dev);
++                for (size_t i = 0; i < ggml_backend_reg_dev_count(reg_l); ++i) {
++                    if (ggml_backend_reg_dev_get(reg_l, i) == dev) {
+                         return i;
+                     }
+                 }
 @@ -1333,13 +1333,13 @@ llama_model::~llama_model() {
      }
  }
@@ -2599,8 +3238,8 @@ index 6872589fa..44315b2c2 100644
      auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
 -            [name](const std::pair<std::string, ggml_tensor *> & it) {
 -                return it.first == name;
-+            [name_l](const std::pair<std::string, ggml_tensor *> & it) {
-+                return it.first == name_l;
++            [name_l](const std::pair<std::string, ggml_tensor *> & kv) {
++                return kv.first == name_l;
              });
      if (it == tensors_by_name.end()) {
          return nullptr;
@@ -2969,7 +3608,7 @@ index 6872589fa..44315b2c2 100644
  }
  
 diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
-index f22d986dc..2e7da079e 100644
+index f22d986dc..20599acfb 100644
 --- a/src/llama-moe-cache.cpp
 +++ b/src/llama-moe-cache.cpp
 @@ -30,20 +30,20 @@ struct moe_cache_lru {
@@ -3003,6 +3642,18 @@ index f22d986dc..2e7da079e 100644
      }
  
      // move slot s to the tail (most recently used)
+@@ -331,9 +331,9 @@ struct llama_moe_cache::impl {
+             throw std::runtime_error("MoE cache is too small to hold the experts of one token");
+         }
+ 
+-        auto init_ctx = [](size_t n_tensors) {
++        auto init_ctx = [](size_t n_tensors_l) {
+             ggml_init_params params = {
+-                /*.mem_size   =*/ n_tensors*ggml_tensor_overhead(),
++                /*.mem_size   =*/ n_tensors_l*ggml_tensor_overhead(),
+                 /*.mem_buffer =*/ nullptr,
+                 /*.no_alloc   =*/ true,
+             };
 @@ -459,14 +459,14 @@ struct llama_moe_cache::impl {
          log_stats();
      }
@@ -3021,9 +3672,31 @@ index f22d986dc..2e7da079e 100644
          }
          return l.slot_map;
 diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
-index 9c6066796..a956eaba7 100644
+index 9c6066796..d3ee8bebb 100644
 --- a/src/llama-quant.cpp
 +++ b/src/llama-quant.cpp
+@@ -458,17 +458,17 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type
+         return i_layer < n_layers/8 || i_layer >= 7*n_layers/8 || (i_layer - n_layers/8)%3 == 2;
+     };
+     const int n_expert = std::max(1, (int)qs.model.hparams.n_expert);
+-    auto layer_info = [n_expert] (int i_layer, int n_layer, const char * name) {
++    auto layer_info = [n_expert] (int i_layer, int n_layer, const char * name_l) {
+         if (n_expert > 1) {
+             // Believe it or not, "experts" in the FFN of Mixtral-8x7B are not consecutive, but occasionally randomly
+             // sprinkled in the model. Hence, simply dividing i_ffn_down by n_expert does not work
+             // for getting the current layer as I initially thought, and we need to resort to parsing the
+             // tensor name.
+-            if (sscanf(name, "blk.%d.", &i_layer) != 1) {
+-                throw std::runtime_error(format("Failed to determine layer for tensor %s", name));
++            if (sscanf(name_l, "blk.%d.", &i_layer) != 1) {
++                throw std::runtime_error(format("Failed to determine layer for tensor %s", name_l));
+             }
+             if (i_layer < 0 || i_layer >= n_layer) {
+-                throw std::runtime_error(format("Bad layer %d for tensor %s. Must be in [0, %d)", i_layer, name, n_layer));
++                throw std::runtime_error(format("Bad layer %d for tensor %s. Must be in [0, %d)", i_layer, name_l, n_layer));
+             }
+         }
+         return std::make_pair(i_layer, n_layer);
 @@ -836,7 +836,7 @@ static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float *
  
              // validate the quantized data
@@ -3199,7 +3872,7 @@ index 521c5718e..8a14e9389 100644
      }
  }
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index dbadaf100..b0c9d9daa 100644
+index dbadaf100..318810345 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -29,19 +29,19 @@
@@ -3264,6 +3937,30 @@ index dbadaf100..b0c9d9daa 100644
          case LLAMA_VOCAB_TYPE_SPM:
              tokenizer = std::make_unique<llm_tokenizer_spm>(vocab);
              break;
+@@ -3814,19 +3814,19 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
+ 
+     // copy piece chars to output text buffer
+     // skip up to 'lstrip' leading spaces before copying
+-    auto _try_copy = [=] (const char * token, size_t size) -> int32_t {
++    auto _try_copy = [=] (const char * token_str, size_t size) -> int32_t {
+         if (size >= static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+             GGML_ABORT("invalid token size: %zu exceeds int32_t limit", size);
+         }
+ 
+-        for (int32_t i = 0; i < lstrip && size && *token == ' '; ++i) {
+-            token++;
++        for (int32_t i = 0; i < lstrip && size && *token_str == ' '; ++i) {
++            token_str++;
+             size--;
+         }
+         if (length < (int32_t)size) {
+             return -(int32_t) size;
+         }
+-        memcpy(buf, token, size);
++        memcpy(buf, token_str, size);
+         return (int32_t) size;
+     };
+ 
 diff --git a/src/llama.cpp b/src/llama.cpp
 index 9beb14841..fedcabcf9 100644
 --- a/src/llama.cpp
@@ -4095,6 +4792,54 @@ index 13120bd32..22f514ca0 100644
      }
  }
  
+diff --git a/src/models/step35.cpp b/src/models/step35.cpp
+index bd43d9ae8..2c9808cfa 100644
+--- a/src/models/step35.cpp
++++ b/src/models/step35.cpp
+@@ -60,9 +60,9 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
+     auto load_block_trunk = [&](int i, int flags) {
+         auto & layer = layers[i];
+ 
+-        const uint32_t n_head_l      = hparams.n_head(i);
+-        const uint32_t n_embd_k_gqa  = hparams.n_embd_k_gqa(i);
+-        const uint32_t n_embd_v_gqa  = hparams.n_embd_v_gqa(i);
++        const uint32_t n_head_l        = hparams.n_head(i);
++        const uint32_t n_embd_k_gqa_l  = hparams.n_embd_k_gqa(i);
++        const uint32_t n_embd_v_gqa_l  = hparams.n_embd_v_gqa(i);
+ 
+         layer.attn_norm   = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, flags);
+         layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, TENSOR_NOT_REQUIRED);
+@@ -76,7 +76,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
+             layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_rot_max/2}, TENSOR_NOT_REQUIRED | (i != 0 ? TENSOR_DUPLICATED : 0));
+         }
+ 
+-        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head_l, n_embd_k_gqa, n_embd_v_gqa, flags);
++        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head_l, n_embd_k_gqa_l, n_embd_v_gqa_l, flags);
+         layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_v * n_head_l, n_embd}, flags);
+ 
+         // head-wise attention gate (Step35 self_attn.g_proj)
+@@ -106,9 +106,9 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
+     auto load_block_mtp = [&](int i) {
+         auto & layer = layers[i];
+ 
+-        const uint32_t n_head_l      = hparams.n_head(i);
+-        const uint32_t n_embd_k_gqa  = hparams.n_embd_k_gqa(i);
+-        const uint32_t n_embd_v_gqa  = hparams.n_embd_v_gqa(i);
++        const uint32_t n_head_l        = hparams.n_head(i);
++        const uint32_t n_embd_k_gqa_l  = hparams.n_embd_k_gqa(i);
++        const uint32_t n_embd_v_gqa_l  = hparams.n_embd_v_gqa(i);
+ 
+         // The MTP block is a full Step3p5 decoder layer (mtp_block) plus the
+         // NextN-specific wiring (enorm/hnorm/eh_proj + optional shared head).
+@@ -128,7 +128,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
+             layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_rot_max/2}, TENSOR_NOT_REQUIRED | TENSOR_DUPLICATED);
+         }
+ 
+-        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head_l, n_embd_k_gqa, n_embd_v_gqa, mtp_flags);
++        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head_l, n_embd_k_gqa_l, n_embd_v_gqa_l, mtp_flags);
+         layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_v * n_head_l, n_embd}, mtp_flags);
+ 
+         layer.wqkv_gate = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "weight", i), {n_embd, n_head_l}, TENSOR_NOT_REQUIRED);
 diff --git a/src/models/vllm-decision2.cpp b/src/models/vllm-decision2.cpp
 index bbac808de..20fb0c00b 100644
 --- a/src/models/vllm-decision2.cpp

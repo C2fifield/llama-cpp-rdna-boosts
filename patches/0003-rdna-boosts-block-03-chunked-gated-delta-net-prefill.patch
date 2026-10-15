@@ -1,4 +1,4 @@
-From 007a6300c36cd3e60ca36634511f686db2220f03 Mon Sep 17 00:00:00 2001
+From 87cf7dd1f59a4a01d7b3189163b6e5d68db566fb Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 03/11] rdna-boosts: block 03: chunked gated-delta-net prefill
@@ -3301,7 +3301,7 @@ index 08489a4be..5711521f5 100644
  
      // computed before each graph build
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 44315b2c2..647929451 100644
+index 450f94c37..d0680fe21 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -2892,6 +2892,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params_l

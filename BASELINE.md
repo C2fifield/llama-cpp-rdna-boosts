@@ -2,8 +2,17 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r65`** (canonical tip `5b2be1be3`, net tree
-`5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`).  r65 merges five `@briansp2020` PRs into their owner blocks:
+**`v12-097cf33d9-r66`** (canonical tip `6b54e57be`, net tree
+`4397ae5570b724d0896d1ad3a48298aaccbab47a`).  r66 folds the upstream **MUL_MAT_ID duplicate-ids fix**
+into **block 00** (generic upstream foundation; every repeated expert occurrence is its own compact row,
+the routed MMQ tile loop iterates the expanded column list, the non-compact MMF path is removed, and the
+host fallback emits every match), caches the hot-path **environment reads** per owner block
+(00/05/08/09/10; `GGML_ENV_STR` caches the value rather than the MSVC-reused getenv pointer), and
+completes the **`-Wshadow` sweep** in block 00.  Gates: `validate-set.sh` strict 12/12 green, 4B
+same-seed greedy identical to r65, `gate-prefill-logits.sh` 0.000707 / 98.755 %,
+`test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16 (was failing and
+page-faulting), `LLAMA_ALL_WARNINGS=ON` build clean.  Before it, r65 merges five `@briansp2020` PRs into
+their owner blocks:
 the pinned output buffer under `-sm tensor` (`LLAMA_OUTPUT_PINNED=0`, **block 09**), the second
 scheduler for the MTP draft's output graphs (`LLAMA_DRAFT_SCHED2=0`, **blocks 09 + 10**), the Q4_K/Q6_K
 mmvq vecdot instruction reductions (**block 07**), and two gfx1100 ports (the Q4_K-only 128x256 MMB

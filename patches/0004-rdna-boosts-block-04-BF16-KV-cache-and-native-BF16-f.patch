@@ -1,4 +1,4 @@
-From 7282921f2ea446e81210c877e5b6aeaa44609597 Mon Sep 17 00:00:00 2001
+From 6db68f92eccb85f8826927f9750a4134cfda3711 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 04/11] rdna-boosts: block 04: BF16 KV cache and native-BF16
@@ -1191,10 +1191,10 @@ index bb34e01f3..aefc67522 100644
              need_f16_K = true;
              need_f16_V = true;
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 212339e83..1cde69ace 100644
+index 924313277..bda04bc63 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -3238,7 +3238,7 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
+@@ -3249,7 +3249,7 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
          return false;
      }
  
@@ -1203,7 +1203,7 @@ index 212339e83..1cde69ace 100644
          return false;
      }
  
-@@ -3251,9 +3251,9 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
+@@ -3262,9 +3262,9 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
          return false;
      }
  
