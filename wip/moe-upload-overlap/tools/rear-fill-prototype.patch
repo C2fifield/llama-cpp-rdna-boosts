@@ -1,0 +1,520 @@
+diff --git a/common/common.h b/common/common.h
+index eee2e20c9..a4552fa1c 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -20,6 +20,7 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <cstdio>
++#include <cstdlib>
+ 
+ #if defined(_WIN32) && !defined(_WIN32_WINNT)
+ #define _WIN32_WINNT 0x0A00
+@@ -1274,7 +1275,55 @@ inline llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
+ inline void llm_add_n_cpu_ffn_overrides(int n, const char * ffn_regex, std::vector<llama_model_tensor_buft_override> & overrides) {
+     // keep strings alive and avoid leaking memory by storing them in a static list
+     static std::list<std::string> buft_override_strings;
+-    for (int i = 0; i < n; ++i) {
++    // WIP moe-layer-stagger: select WHICH layers take the host-expert path.  Default is the historical
++    // contiguous `0..n-1`.  Selection knobs (experimental, never ship as-is):
++    //   LLAMA_NCMOE_LAYERS=1,3,5,...  explicit layer index list (overrides the count from -ncmoe)
++    //   LLAMA_NCMOE_STRIDE=S          layers `offset + k*S` for k in 0..n-1
++    //   LLAMA_NCMOE_OFFSET=O          phase shift for the stride form
++    //   LLAMA_NCMOE_DEBUG=1           print the selected set to stderr
++    std::vector<int> layers;
++    const char * env_layers = getenv("LLAMA_NCMOE_LAYERS");
++    if (env_layers != nullptr && env_layers[0] != '\0') {
++        const char * p = env_layers;
++        while (*p != '\0') {
++            char * end = nullptr;
++            const long v = strtol(p, &end, 10);
++            if (end == p) {
++                break;
++            }
++            layers.push_back((int) v);
++            p = end;
++            while (*p == ',' || *p == ' ') {
++                ++p;
++            }
++        }
++    } else {
++        int stride = 1;
++        int offset = 0;
++        if (const char * e = getenv("LLAMA_NCMOE_STRIDE")) {
++            const int v = atoi(e);
++            if (v > 0) {
++                stride = v;
++            }
++        }
++        if (const char * e = getenv("LLAMA_NCMOE_OFFSET")) {
++            const int v = atoi(e);
++            if (v >= 0) {
++                offset = v;
++            }
++        }
++        for (int k = 0; k < n; ++k) {
++            layers.push_back(offset + k * stride);
++        }
++    }
++    if (getenv("LLAMA_NCMOE_DEBUG") != nullptr) {
++        std::string sel;
++        for (int i : layers) {
++            sel += std::to_string(i) + " ";
++        }
++        fprintf(stderr, "llm_add_n_cpu_ffn_overrides: host layers (n=%d) = [%s]\n", n, sel.c_str());
++    }
++    for (int i : layers) {
+         buft_override_strings.push_back(llm_ffn_block_regex(i, ffn_regex));
+         overrides.push_back({buft_override_strings.back().c_str(), ggml_backend_cpu_buffer_type()});
+     }
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 6ad3c8668..fe9128f8a 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -6,6 +6,8 @@
+ #include "ggml-cpp.h"
+ #include "ggml-moe-weighted-reduction.h"
+ 
++#include <cstdio>
++
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
+@@ -2522,7 +2524,20 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+     const size_t n_backends = ggml_backend_meta_n_backends(backend);
+ 
++    // WIP moe-upload-overlap prototype: the scheduler's prefetch pre-pass may already have staged this
++    // tensor; a second staging would overwrite its slot.  Idempotent when the prefetch flag is on.
++    static const bool prefetch_enabled = getenv("GGML_SCHED_STAGE_PREFETCH") != nullptr;
++    if (prefetch_enabled) {
++        for (const auto & e : backend_ctx->stage_pending) {
++            if (e.tensor == input_cpy) {
++                return true;
++            }
++        }
++    }
++    const bool dbg_stage = getenv("GGML_STAGE_TRACE") != nullptr;
++
+     if (!ggml_backend_buffer_is_meta(input_cpy->buffer) || !ggml_is_contiguous(input_cpy)) {
++        if (dbg_stage) { fprintf(stderr, "STAGE_FAIL name=%s reason=not_meta_or_contig\n", input_cpy->name); fflush(stderr); }
+         return false;
+     }
+ 
+@@ -2573,6 +2588,7 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+             simple_backend->iface.stage_upload == nullptr ||
+             simple_backend->iface.stage_wait == nullptr ||
+             (gather && simple_backend->iface.stage_gather == nullptr)) {
++            if (dbg_stage) { fprintf(stderr, "STAGE_FAIL name=%s reason=dev%d_cap simple=%p\n", input_cpy->name, (int) j, (void *) simple_tensor); fflush(stderr); }
+             return false;
+         }
+         const size_t chunk_size_j = mirrored ? ggml_nbytes(simple_tensor) : simple_tensor->nb[split_state.axis + 1];
+@@ -2598,6 +2614,7 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+         }
+     }
+     if (entry.chunks.empty() || (!mirrored && offset_j != chunk_size_full)) {
++        if (dbg_stage) { fprintf(stderr, "STAGE_FAIL name=%s reason=offset_j=%zu chunk_full=%zu\n", input_cpy->name, offset_j, chunk_size_full); fflush(stderr); }
+         return false;
+     }
+     for (auto & chunk : entry.chunks) {
+@@ -2637,7 +2654,9 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+                                               chunk.size, backend_ctx->stage_done_ev[chunk.device][slot]);
+         }
+     }
++    const size_t dbg_nchunks = entry.chunks.size();
+     backend_ctx->stage_pending.push_back(std::move(entry));
++    if (dbg_stage) { fprintf(stderr, "STAGE_OK t=%lld name=%s chunks=%zu slot=%d\n", (long long) ggml_time_us(), input_cpy->name, dbg_nchunks, slot); fflush(stderr); }
+     return true;
+ }
+ 
+@@ -2724,12 +2743,14 @@ static void ggml_backend_meta_graph_optimize(ggml_backend_t backend,
+ // lets a later upload reuse the slot through `stage_wait`.
+ struct ggml_backend_meta_stage_guard {
+     ggml_backend_meta_context * ctx;
+-    explicit ggml_backend_meta_stage_guard(ggml_backend_meta_context * ctx) : ctx(ctx) {}
++    std::vector<ggml_backend_meta_context::stage_entry> * drained;
++    ggml_backend_meta_stage_guard(ggml_backend_meta_context * ctx,
++            std::vector<ggml_backend_meta_context::stage_entry> * drained) : ctx(ctx), drained(drained) {}
+     ~ggml_backend_meta_stage_guard() {
+         // A/B: `GGML_STAGE_NO_RESTORE=1` leaves `simple_tensor->data` pointing at the ring slot.  If the
+         // output then becomes coherent, the restore was clobbering the pointer before the kernels read it.
+         static const bool no_restore = getenv("GGML_STAGE_NO_RESTORE") != nullptr;
+-        for (auto & entry : ctx->stage_pending) {
++        for (auto & entry : *drained) {
+             for (auto & chunk : entry.chunks) {
+                 ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(entry.tensor, chunk.device);
+                 if (simple_tensor != nullptr && !no_restore) {
+@@ -2738,7 +2759,8 @@ struct ggml_backend_meta_stage_guard {
+                 ggml_backend_event_record(ctx->stage_free_ev[chunk.device][entry.slot], chunk.backend);
+             }
+         }
+-        ctx->stage_pending.clear();
++        // Only the entries this split consumed are freed; prefetched entries for later splits stay in
++        // `ctx->stage_pending` (WIP moe-upload-overlap).
+     }
+ };
+ 
+@@ -2746,6 +2768,11 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+     GGML_ASSERT(cgraph->grads == nullptr);
+     const size_t n_backends = ggml_backend_meta_n_backends(backend);
+     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
++    const int64_t dbg_t0 = ggml_time_us();
++    if (getenv("GGML_STAGE_TRACE")) {
++        fprintf(stderr, "GC_ENTER t=%lld nnodes=%d uid=%d pending=%zu\n", (long long) dbg_t0, cgraph->n_nodes, cgraph->uid, backend_ctx->stage_pending.size());
++        fflush(stderr);
++    }
+ 
+     // If the previous cgraph had a defined UID it can be used to skip rebuilding the subgraphs per simple backend.
+     const bool needs_rebuild = (cgraph->uid == 0) || (cgraph->uid != backend_ctx->uid);
+@@ -2821,7 +2848,28 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+         // happen before any child graph is launched, and the guard below undoes them once they all
+         // are.  The lookup is redone here rather than cached because a rebuild replaces the simple
+         // tensors.
+-        for (auto & entry : backend_ctx->stage_pending) {
++        // WIP moe-upload-overlap prototype: drain only the entries this split consumes; a prefetched
++        // entry for a later split stays pending.  Without the prefetch flag `stage_pending` holds only
++        // the current split's entry, so this partition is a no-op.
++        std::vector<ggml_backend_meta_context::stage_entry> stage_drained;
++        for (auto it = backend_ctx->stage_pending.begin(); it != backend_ctx->stage_pending.end(); ) {
++            bool belongs = false;
++            for (int i = 0; i < cgraph->n_nodes && !belongs; i++) {
++                for (int s = 0; s < GGML_MAX_SRC; s++) {
++                    if (cgraph->nodes[i]->src[s] == it->tensor) {
++                        belongs = true;
++                        break;
++                    }
++                }
++            }
++            if (belongs) {
++                stage_drained.push_back(std::move(*it));
++                it = backend_ctx->stage_pending.erase(it);
++            } else {
++                ++it;
++            }
++        }
++        for (auto & entry : stage_drained) {
+             for (auto & chunk : entry.chunks) {
+                 ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(entry.tensor, chunk.device);
+                 GGML_ASSERT(simple_tensor != nullptr);
+@@ -2846,7 +2894,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+                 }
+             }
+         }
+-        const ggml_backend_meta_stage_guard stage_guard(backend_ctx);
++        const ggml_backend_meta_stage_guard stage_guard(backend_ctx, &stage_drained);
+ 
+         {
+             // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
+@@ -3320,6 +3368,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+             }
+         }
+     }
++    if (getenv("GGML_STAGE_TRACE")) {
++        fprintf(stderr, "GC_END t=%lld uid=%d total_us=%lld\n", (long long) ggml_time_us(), cgraph->uid, (long long)(ggml_time_us() - dbg_t0));
++        fflush(stderr);
++    }
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 322e448ce..05f840419 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -2890,18 +2890,72 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+ 
+ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+     GGML_ASSERT(sched);
++    const int64_t dbg_cs0 = ggml_time_us();
+     struct ggml_backend_sched_split * splits = sched->splits;
+ 
+     int prev_backend_id = -1;
+     ggml_backend_sched_copy_state st;
++    int64_t dbg_t_issue = 0, dbg_t_copy = 0, dbg_t_gc = 0;
++
++    // WIP moe-upload-overlap prototype (GGML_SCHED_STAGE_PREFETCH=1): issue every host-weight upload
++    // for the pass at the top, so the per-device copy streams fill while the device-resident layers'
++    // compute runs and the host tables are already in their slots by the time their split is reached.
++    // Requires GGML_SCHED_STAGE_SLOTS >= the number of host tables (no intra-pass slot reuse), because
++    // a slot's free event only fires once its consumer has drained it.  A backend that owns staging via
++    // `stage_input` (the meta backend) is driven here; the ring path is unchanged.
++    {
++        static const bool prefetch = getenv("GGML_SCHED_STAGE_PREFETCH") != nullptr && atoi(getenv("GGML_SCHED_STAGE_PREFETCH")) != 0;
++        if (prefetch && sched->stage_enabled) {
++            const int64_t dbg_pre0 = ggml_time_us();
++            // GGML_SCHED_STAGE_PREFETCH_N limits the pre-stage to the LAST N host tables (default: all).
++            const char * depth_env = getenv("GGML_SCHED_STAGE_PREFETCH_N");
++            const int depth = depth_env != nullptr ? atoi(depth_env) : 0;
++            struct dbg_item { ggml_backend_t backend; ggml_tensor * input; ggml_tensor * input_cpy; };
++            std::vector<dbg_item> items;
++            for (int split_id = 0; split_id < sched->n_splits; split_id++) {
++                struct ggml_backend_sched_split * split = &splits[split_id];
++                ggml_backend_t split_backend = sched->backends[split->backend_id];
++                if (split_backend->iface.stage_input == NULL) {
++                    continue;
++                }
++                for (int input_id = 0; input_id < split->n_inputs; input_id++) {
++                    struct ggml_tensor * input = split->inputs[input_id];
++                    if (!ggml_backend_sched_is_host_weight(input)) {
++                        continue;
++                    }
++                    struct ggml_tensor * input_cpy = tensor_copy(input, split->backend_id, sched->cur_copy);
++                    if (sched_input_gatherable(sched, split, input_cpy)) {
++                        continue;
++                    }
++                    items.push_back({ split_backend, input, input_cpy });
++                }
++            }
++            const int first = (depth > 0 && depth < (int) items.size()) ? (int) items.size() - depth : 0;
++            int dbg_true = 0, dbg_false = 0;
++            for (int k = first; k < (int) items.size(); k++) {
++                if (items[k].backend->iface.stage_input(items[k].backend, items[k].input, items[k].input_cpy)) {
++                    dbg_true++;
++                } else {
++                    dbg_false++;
++                }
++            }
++            if (getenv("GGML_STAGE_TRACE")) {
++                fprintf(stderr, "PREFETCH pass n_splits=%d total=%zu staged_true=%d staged_false=%d depth=%d us=%lld\n",
++                        sched->n_splits, items.size(), dbg_true, dbg_false, depth, (long long)(ggml_time_us() - dbg_pre0));
++                fflush(stderr);
++            }
++        }
++    }
+ 
+     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
+         struct ggml_backend_sched_split * split = &splits[split_id];
+         int split_backend_id = split->backend_id;
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
+ 
++        const int64_t dbg_ti0 = ggml_time_us();
+         sched_stage_issue(sched, split);
+-
++        dbg_t_issue += ggml_time_us() - dbg_ti0;
++        const int64_t dbg_tc0 = ggml_time_us();
+         // ensure the previous split's async work has completed before we start
+         // this split, the allocator may have reused buffer regions across splits
+         if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
+@@ -2924,9 +2978,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], st);
+             }
+         }
++        dbg_t_copy += ggml_time_us() - dbg_tc0;
+ 
+         if (!sched->callback_eval) {
++            const int64_t dbg_b = ggml_time_us();
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
++            dbg_t_gc += ggml_time_us() - dbg_b;
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+             }
+@@ -2980,6 +3037,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         prev_backend_id = split_backend_id;
+     }
+ 
++    const int64_t dbg_t_wall = ggml_time_us() - dbg_cs0;
++    if (getenv("GGML_STAGE_TRACE")) {
++        fprintf(stderr, "COMPUTE_SPLITS wall_us=%lld issue_us=%lld copy_us=%lld gc_us=%lld other_us=%lld\n",
++            (long long) dbg_t_wall, (long long) dbg_t_issue, (long long) dbg_t_copy, (long long) dbg_t_gc,
++            (long long)(dbg_t_wall - dbg_t_issue - dbg_t_copy - dbg_t_gc));
++        fflush(stderr);
++    }
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+index a443887e4..bea735c4f 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+@@ -9,6 +9,8 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ 
+ void * ggml_backend_cuda_stage_buffer(ggml_backend_t backend, int slot, size_t size) {
+@@ -55,6 +57,18 @@ bool ggml_backend_cuda_stage_gather(ggml_backend_t backend, int slot, const void
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+     ggml_cuda_set_device(cuda_ctx->device);
+     const size_t total = width * n_copies;                 // the device's compacted slice
++    if (getenv("GGML_STAGE_TRACE")) {
++        fprintf(stderr, "GATHER dev=%d total=%zu n_copies=%zu width=%zu stride=%zu\n",
++                cuda_ctx->device, total, n_copies, width, stride_src);
++        fflush(stderr);
++    }
++    // WIP moe-upload-overlap timing-only switch: keep the staging structure but move no bytes, to
++    // separate the transfer cost from the graph-fragmentation / D2D / sync overhead.  NOT correct.
++    if (getenv("GGML_STAGE_NOCOPY") != nullptr) {
++        cudaStream_t s0 = cuda_ctx->copy_stream();
++        CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s0));
++        return true;
++    }
+     void * dst = cuda_ctx->h2d_stage_buffer(slot, total);
+     if (dst == nullptr) {
+         return false;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index a20d14750..612d36fd1 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2428,6 +2428,55 @@ static bool    g_cgc_reg = false;
+ static const bool g_cgc_on       = getenv("GGML_CUDA_GCDBG") != nullptr;
+ static const bool g_op_timing_on = getenv("GGML_CUDA_OP_TIMING") != nullptr;
+ static const bool g_stream_dbg_on = getenv("GGML_STREAMDBG") != nullptr;
++// WIP moe-upload-overlap: non-serializing GPU time of large child graphs (env GGML_CUDA_BIGTIME).
++// Records an event pair on the stream around each large graph_compute; a static destructor syncs once
++// and prints the sum.  No per-call host sync, so the async pipeline and the copy-stream overlap are
++// preserved (unlike GGML_CUDA_OP_TIMING, which syncs per call).
++#ifdef GGML_USE_HIP
++#define BIG_EV_CREATE(e)      hipEventCreate(e)
++#define BIG_EV_ELAPSED(m,a,b) hipEventElapsedTime(m,a,b)
++#define BIG_EV_DESTROY(e)     hipEventDestroy(e)
++#else
++#define BIG_EV_CREATE(e)      cudaEventCreate(e)
++#define BIG_EV_ELAPSED(m,a,b) cudaEventElapsedTime(m,a,b)
++#define BIG_EV_DESTROY(e)     cudaEventDestroy(e)
++#endif
++struct big_gpu_timer {
++    std::vector<cudaEvent_t> starts, ends;
++    void dump() {
++        if (starts.empty()) { fprintf(stderr, "BIGGPU (none)\n"); return; }
++        cudaDeviceSynchronize();
++        double total = 0;
++        for (size_t i = 0; i < starts.size(); i++) {
++            float ms = 0.0f;
++            if (BIG_EV_ELAPSED(&ms, starts[i], ends[i]) == cudaSuccess) total += ms;
++            BIG_EV_DESTROY(starts[i]);
++            BIG_EV_DESTROY(ends[i]);
++        }
++        fprintf(stderr, "BIGGPU total_ms=%.2f calls=%zu\n", total, starts.size());
++    }
++};
++static big_gpu_timer g_big_gpu_timer;
++static bool g_big_gpu_reg = false;
++static const bool g_big_gpu_on = getenv("GGML_CUDA_BIGTIME") != nullptr;
++struct big_gpu_guard {
++    cudaStream_t s;
++    cudaEvent_t a = nullptr, b = nullptr;
++    bool on;
++    big_gpu_guard(cudaStream_t s, bool on) : s(s), on(on) {
++        if (on) {
++            if (!g_big_gpu_reg) { g_big_gpu_reg = true; atexit([]() { g_big_gpu_timer.dump(); }); }
++            BIG_EV_CREATE(&a); BIG_EV_CREATE(&b); cudaEventRecord(a, s);
++        }
++    }
++    ~big_gpu_guard() {
++        if (on) {
++            cudaEventRecord(b, s);
++            g_big_gpu_timer.starts.push_back(a);
++            g_big_gpu_timer.ends.push_back(b);
++        }
++    }
++};
+ static const int  g_mmb_mark_log = getenv("GGML_CUDA_MMB_MARK_LOG") ? atoi(getenv("GGML_CUDA_MMB_MARK_LOG")) : 0;
+ // Meta/op-offload A/B switch.  This sits on the per-copy staging path (thousands of calls per pass
+ // under -sm tensor), so it is resolved once instead of per call.
+@@ -4448,6 +4497,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+ 
+     ggml_cuda_set_device(cuda_ctx->device);
++    const big_gpu_guard big_gpu_guard_inst(cuda_ctx->stream(), g_big_gpu_on && cgraph->n_nodes > 0);
+     ggml_cuda_async_input_wait(cuda_ctx->device, cuda_ctx->stream());
+     const ggml_cuda_async_input_done_guard async_input_done { cuda_ctx->device, cuda_ctx->stream() };
+ 
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 4ce04f8f7..40be44ea4 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1312,12 +1312,39 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+ 
+         ggml_backend_buffer_type_t buft = nullptr;
+ 
++        // WIP moe-upload-overlap: host the LAST N trunk layers' MoE experts instead of the first N.
++        // `LLAMA_NCMOE_FROM_END=<N>` re-targets the `-ncmoe` CPU-expert overrides to the tail.  The
++        // bound is strictly `[n_layer - N, n_layer)` -- the appended nextn/MTP head (`tn.bid >=
++        // n_layer`) is excluded by construction, so an embedded MTP layer is never offloaded.
++        static const char * dbg_ncmoe_end_env = getenv("LLAMA_NCMOE_FROM_END");
++        static const int  dbg_ncmoe_end = dbg_ncmoe_end_env ? atoi(dbg_ncmoe_end_env) : -1;
++        llama_model_tensor_buft_override dbg_tail_ov[2] = { { nullptr, nullptr }, { nullptr, nullptr } };
++        const llama_model_tensor_buft_override * dbg_tb_ov = tensor_buft_overrides;
++        if (dbg_ncmoe_end > 0 && op == GGML_OP_MUL_MAT_ID && hparams.n_layer() > 0 &&
++                tn.bid >= (int) hparams.n_layer() - dbg_ncmoe_end &&
++                tn.bid <  (int) hparams.n_layer()) {
++            if (getenv("GGML_STAGE_TRACE")) {
++                fprintf(stderr, "NCMOE_TAIL host blk.%d (n_layer=%d N=%d)\n", (int) tn.bid, (int) hparams.n_layer(), dbg_ncmoe_end);
++                fflush(stderr);
++            }
++            dbg_tail_ov[0].pattern = ".*";
++            dbg_tail_ov[0].buft    = ggml_backend_cpu_buffer_type();
++            dbg_tb_ov = dbg_tail_ov;
++        }
++
+         // check overrides
+-        if (tensor_buft_overrides) {
++        if (dbg_tb_ov) {
+             std::string tensor_name = tn.str();
+-            for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
++            for (const auto * overrides = dbg_tb_ov; overrides->pattern != nullptr; ++overrides) {
+                 std::regex pattern(overrides->pattern);
+                 if (std::regex_search(tensor_name, pattern)) {
++                    // WIP: the per-layer `blk.<i>` `-ncmoe` patterns are re-targeted to the tail above;
++                    // skip them so the front layers are not also hosted.  (Strictly `blk.`-prefixed +
++                    // `_exps`, so the all-layers `--cpu-moe` override and `--override-tensor` are kept.)
++                    if (dbg_ncmoe_end > 0 && overrides->buft == ggml_backend_cpu_buffer_type() &&
++                            std::string(overrides->pattern).rfind("blk\\.", 0) == 0) {
++                        continue;
++                    }
+                     // The appended nextn/MTP layer(s) are the SPECULATIVE head, not the trunk.  A CPU
+                     // expert override from the main model (`-ncmoe`/`-cmoe`) must never offload them: the
+                     // patterns are `blk.<i>` for i in 0..N-1, so `-ncmoe 99` matches
+diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
+index 38cc8d780..8c16cb909 100644
+--- a/tools/llama-bench/llama-bench.cpp
++++ b/tools/llama-bench/llama-bench.cpp
+@@ -1324,10 +1324,42 @@ struct cmd_params_instance {
+             }
+             merged.insert(merged.end(), first, last);
+ 
+-            patterns.reserve((size_t) n_cpu_moe);
+-            merged.reserve(merged.size() + (size_t) n_cpu_moe + 1);
+-
+-            for (int i = 0; i < n_cpu_moe; ++i) {
++            // WIP moe-upload-overlap / moe-layer-stagger: honor LLAMA_NCMOE_LAYERS / _STRIDE / _OFFSET
++            // so llama-bench can actually place the host layers (inert unless set).
++            std::vector<int> host_layers;
++            const char * env_layers = getenv("LLAMA_NCMOE_LAYERS");
++            if (env_layers != nullptr && env_layers[0] != '\0') {
++                const char * p = env_layers;
++                while (*p != '\0') {
++                    char * end = nullptr;
++                    const long v = strtol(p, &end, 10);
++                    if (end == p) {
++                        break;
++                    }
++                    host_layers.push_back((int) v);
++                    p = end;
++                    while (*p == ',' || *p == ' ') {
++                        ++p;
++                    }
++                }
++            } else {
++                int stride = 1, offset = 0;
++                if (const char * e = getenv("LLAMA_NCMOE_STRIDE")) { const int v = atoi(e); if (v > 0) stride = v; }
++                if (const char * e = getenv("LLAMA_NCMOE_OFFSET")) { const int v = atoi(e); if (v >= 0) offset = v; }
++                for (int k = 0; k < n_cpu_moe; ++k) {
++                    host_layers.push_back(offset + k*stride);
++                }
++            }
++            if (getenv("LLAMA_NCMOE_DEBUG") != nullptr) {
++                std::string sel;
++                for (int i : host_layers) {
++                    sel += std::to_string(i) + " ";
++                }
++                fprintf(stderr, "llama-bench: host layers (ncmoe=%d) = [%s]\n", n_cpu_moe, sel.c_str());
++            }
++            patterns.reserve(host_layers.size());
++            merged.reserve(merged.size() + host_layers.size() + 1);
++            for (int i : host_layers) {
+                 patterns.push_back(llm_ffn_block_regex(i, LLM_FFN_EXPS_REGEX));
+                 merged.push_back({ patterns.back().c_str(),
+                                 ggml_backend_cpu_buffer_type() });

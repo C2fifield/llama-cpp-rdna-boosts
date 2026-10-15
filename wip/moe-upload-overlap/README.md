@@ -1,15 +1,22 @@
-# `moe-upload-overlap` — make the host-expert H2D upload actually overlap compute
+# `moe-upload-overlap` — rear-fill the host-resident experts (was: make the H2D upload overlap compute)
 
-**Status: OPEN (seeded 2026-10-14; updated 2026-10-14 after instrumentation + the prefetch prototype).**
-The seed's premise is refuted — the staged hand-off **does** engage on r62.  See
-**[`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md)**: staging is **+41 %** over `GGML_SCHED_STAGE=0`;
-**the delivery's default `-ncmoe N` (first N layers host) is the worst placement**: matched-count A/Bs
-show FRONT is ~1.5 % (3 layers) / ~2.5 % (20 layers) slower than MID/REAR for prefill, and with a
-budget-limited expert cache REAR is **+12.5 % decode** and moves ~45 % fewer host bytes/token than FRONT.
-The campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench` ignores the `common.h`
-knob); the first "BACK +5.7 %" reading was byte-confounded (dense blk.39/blk.40).  An explicit all-up-front
-prefetch **regresses ~4 %** (pre-pass host cost), even though concurrent H2D is nearly free in isolation.
-The open thread is the placement default (report-only — needs the heatmap ON and the full gates).
+**Status: OPEN (seeded 2026-10-14; pivoted 2026-10-14).  START WITH
+[`HANDOVER-2026-10-14.md`](HANDOVER-2026-10-14.md).**  The original goal (overlap the H2D upload with
+compute) is a dead end: the staged hand-off already engages, and an explicit all-up-front prefetch
+**regresses ~4 %**.  The real finding is the **placement default**: `-ncmoe N` currently hosts the FIRST N
+layers, which is the worst placement on both axes.  The campaign now targets **hosting the LAST N layers**
+(`[n_layer-N, n_layer)`), implemented scratch-only as `LLAMA_NCMOE_FROM_END=N`
+(`tools/rear-fill-prototype.patch`).
+
+* **Prefill wins**: `pp4096` `0–19` = 4136 vs `20–39` = **4309 (+4 %)** at `-ncmoe 20`.
+* **Decode is BLOCKED**: for the tail host set the movable-boundary slab does not arm, the expert cache
+  falls back to 816 MiB / 6 tables (of 60) and `tg500` collapses ~87 → ~30 t/s.  Finding + fixing this is
+  the next session's job (block 09).  `llama-cli` arms fine; `llama-bench` does not.
+
+Earlier corrected results are in [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md): staging is +41 % over
+`GGML_SCHED_STAGE=0`; the campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench`
+ignores the `common.h` knob); the first "BACK +5.7 %" reading was byte-confounded; and `blk.39` is a
+full-attention trunk layer, **not** dense.
 Not part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead.
 
 ## 0. Why this exists (and what it replaces)
