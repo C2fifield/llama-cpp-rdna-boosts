@@ -1,4 +1,4 @@
-From 63d07b3d5cf9b622f16ca379ee905d58fafd36a0 Mon Sep 17 00:00:00 2001
+From 9c51049669652a9af8587d2eb50507d64fcc1c73 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:04:08 -0500
 Subject: [PATCH 08/11] rdna-boosts: block 08: fused kernels (old-08 fusions +
@@ -37,9 +37,9 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/mmq-vec-dot.cuh            |   16 +-
  ggml/src/ggml-cuda/mmq.cu                     |  403 +++-
  ggml/src/ggml-cuda/mmq.cuh                    |  439 +++-
- ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |   91 +
+ ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |  103 +
  ggml/src/ggml-cuda/mmvq-rdna.cuh              |   66 +
- ggml/src/ggml-cuda/mmvq.cu                    | 1898 +++++++++++++++--
+ ggml/src/ggml-cuda/mmvq.cu                    | 1899 +++++++++++++++--
  ggml/src/ggml-cuda/mmvq.cuh                   |   31 +
  ggml/src/ggml-cuda/moe-weighted-reduction.cu  |  246 ++-
  ggml/src/ggml-cuda/moe-weighted-reduction.cuh |    3 +-
@@ -61,7 +61,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/unary.cu                   |  224 ++
  ggml/src/ggml-cuda/unary.cuh                  |   12 +
  tests/test-backend-ops.cpp                    |    2 +-
- 35 files changed, 5154 insertions(+), 437 deletions(-)
+ 35 files changed, 5167 insertions(+), 437 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cu
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cuh
  create mode 100644 ggml/src/ggml-cuda/mmvq-rdna-params.cuh
@@ -2472,10 +2472,10 @@ index d3e7b75ea..65f495cdf 100644
  bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
 diff --git a/ggml/src/ggml-cuda/mmvq-rdna-params.cuh b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
 new file mode 100644
-index 000000000..ec5b8677e
+index 000000000..a722da7df
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,103 @@
 +#pragma once
 +
 +#include "common.cuh"
@@ -2528,7 +2528,19 @@ index 000000000..ec5b8677e
 +    return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K || type == GGML_TYPE_IQ4_XS ||
 +           type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S;
 +}
++// gfx1100 (RDNA3_0) rows per block for a Q4_K verify batch (ncols_dst 2..8), same row-block
++// decomposition as the RDNA4 rule below: each row's accumulation is unchanged (bit-identical).
++// gfx1100 sweep (nwarps 1/2/4/8 x rows 1/2/4, Qwen3.8-27B Q4_K_M, MTP n-max 3): 4 rows at
++// nwarps 1 is the fastest bit-identical point (~+7 % MTP decode), greedy text unchanged;
++// nwarps > 1 changes the K-split order and was no faster.  The multi-row guard in mmvq.cu is only
++// compiled for types where RDNA4 also takes >1 row: extend it before adding other types here.
++#ifndef GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB
++#define GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB 4
++#endif
 +static constexpr __host__ __device__ int calc_rows_per_block_weight(ggml_type type, int ncols_dst, int table_id, bool small_k, int nwarps) {
++    if (table_id == MMVQ_PARAMETERS_RDNA3_0 && type == GGML_TYPE_Q4_K && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
++        return GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB;
++    }
 +    if (table_id == MMVQ_PARAMETERS_RDNA4 && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
 +        // Multi-row blocks only pay off for one-wave blocks: the 8-wave Q8_0 short-K block
 +        // (calc_nwarps_weight) was measured slower at every row count (K = 2880, 8 tokens:
@@ -2640,7 +2652,7 @@ index 000000000..511afb0b8
 +    return 0;
 +}
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index a5cea7cb4..56dc2fa13 100644
+index a5cea7cb4..91fcddeaf 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -124,6 +124,8 @@ enum mmvq_parameter_table_id {
@@ -3721,7 +3733,7 @@ index a5cea7cb4..56dc2fa13 100644
          mul_mat_vec_q_moe_launch<type>(
              vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, nrows_x,
              stride_row_x, stride_col_y, stride_col_dst,
-@@ -1230,92 +1823,257 @@ static void mul_mat_vec_q_switch_ncols_dst(
+@@ -1230,92 +1823,258 @@ static void mul_mat_vec_q_switch_ncols_dst(
      }
  
      switch (ncols_dst) {
@@ -3880,10 +3892,11 @@ index a5cea7cb4..56dc2fa13 100644
 +#if defined(GGML_USE_HIP)
 +                constexpr int c_rpb_weight = calc_rows_per_block_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, false, 1);
 +                if constexpr (c_rpb_weight > 1) {
-+                    // the rows the launch will actually use (Q8_0 short-K: 8-warp blocks take fewer rows)
-+                    const int rpb_w = calc_rows_per_block_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, false,
-+                        calc_nwarps_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, long_k));
-+                    if (table_id == MMVQ_PARAMETERS_RDNA4 &&
++                    // the rows the launch will actually use (Q8_0 short-K: 8-warp blocks take fewer rows;
++                    // RDNA3_0 Q4_K: GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB)
++                    const int rpb_w = calc_rows_per_block_weight(type, c_ncols_dst, table_id, false,
++                        calc_nwarps_weight(type, c_ncols_dst, table_id, long_k));
++                    if ((table_id == MMVQ_PARAMETERS_RDNA4 || table_id == MMVQ_PARAMETERS_RDNA3_0) && rpb_w > 1 &&
 +                        (nrows_x % rpb_w != 0 || nrows_x < rpb_w * GGML_MMVQ_RDNA4_WEIGHT_MIN_BLOCKS)) {
 +                        if (long_k) {
 +                            launch_ksplit_rpb(ncols_tag, std::integral_constant<int, 1>{}, std::true_type{});
@@ -4049,7 +4062,7 @@ index a5cea7cb4..56dc2fa13 100644
          } break;
          default:
              GGML_ABORT("fatal error");
-@@ -1508,8 +2266,8 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1508,8 +2267,8 @@ void ggml_cuda_mul_mat_vec_q(
          GGML_ASSERT( !ids || dst->ne[2] <= get_mmvq_mmid_max_batch(src0->type, cc));
          GGML_ASSERT(  ids || dst->ne[1] == 1);
          // Scale fusion is only allowed for NVFP4 currently as the cost of checking this at run-time in the prologue is
@@ -4060,7 +4073,7 @@ index a5cea7cb4..56dc2fa13 100644
  
          if (fusion->shared_up) {
              GGML_ASSERT(ids && fusion->gate && fusion->shared_gate && fusion->shared_dst);
-@@ -1547,9 +2305,23 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1547,9 +2306,23 @@ void ggml_cuda_mul_mat_vec_q(
          if (fusion->x_scale) {
              GGML_ASSERT(fusion->x_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->x_scale));
@@ -4085,7 +4098,7 @@ index a5cea7cb4..56dc2fa13 100644
          if (fusion->gate_scale) {
              GGML_ASSERT(fusion->gate_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->gate_scale));
-@@ -1558,10 +2330,17 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1558,10 +2331,17 @@ void ggml_cuda_mul_mat_vec_q(
          }
          fusion_local.glu_op = fusion->glu_op;
          fusion_local.glu_limit = fusion->glu_limit;
@@ -4105,7 +4118,7 @@ index a5cea7cb4..56dc2fa13 100644
          const size_t size_data  = ggml_nbytes(src0);
          const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
          if (size_alloc > size_data) {
-@@ -1572,12 +2351,22 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1572,12 +2352,22 @@ void ggml_cuda_mul_mat_vec_q(
      }
  
      const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
@@ -4134,7 +4147,7 @@ index a5cea7cb4..56dc2fa13 100644
      }
  
      const int64_t s01 = src0->nb[1] / ts_src0;
-@@ -1603,12 +2392,565 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1603,12 +2393,565 @@ void ggml_cuda_mul_mat_vec_q(
      const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
  
      mul_mat_vec_q_switch_type(
@@ -4701,7 +4714,7 @@ index a5cea7cb4..56dc2fa13 100644
  void ggml_cuda_op_mul_mat_vec_q(
      ggml_backend_cuda_context & ctx,
      const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
-@@ -1639,3 +2981,159 @@ void ggml_cuda_op_mul_mat_vec_q(
+@@ -1639,3 +2982,159 @@ void ggml_cuda_op_mul_mat_vec_q(
  
      GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
  }

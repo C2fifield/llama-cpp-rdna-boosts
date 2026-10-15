@@ -2,8 +2,15 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r64`** (canonical tip `5eeff4da5`, net tree
-`ca68f3ed0557d9cb2168f8b4773ab32476f84feb`).  r64 folds the r63 residuals: **block 09** splices an
+**`v12-097cf33d9-r65`** (canonical tip `5b2be1be3`, net tree
+`5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`).  r65 merges five `@briansp2020` PRs into their owner blocks:
+the pinned output buffer under `-sm tensor` (`LLAMA_OUTPUT_PINNED=0`, **block 09**), the second
+scheduler for the MTP draft's output graphs (`LLAMA_DRAFT_SCHED2=0`, **blocks 09 + 10**), the Q4_K/Q6_K
+mmvq vecdot instruction reductions (**block 07**), and two gfx1100 ports (the Q4_K-only 128x256 MMB
+dense tile in **block 06** and 4 rows per block for a Q4_K verify batch in **block 08**).
+Gates: `validate-set.sh` green, `gate-prefill-logits.sh` 0.000707 / 98.755 %, rule-5
+`llama-batched-bench` B=1/4/8 no worse than r64, MTP acceptance and text identical.  Before it, r64
+folds the r63 residuals: **block 09** splices an
 arbitrary segmented Meta write (no `offset % row_stride` classifier, no accumulator; byte-identical on
 current callers) and the Gemma4 26B-A4B front/tail drift is proven a near-tie and accepted; **block 10**
 owns the CUDA splice-gather ring in `ggml_backend_cuda_context` (torn down with its streams) and drops

@@ -12,7 +12,18 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r64`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r65`**.
+
+r65 merges five contributor PRs from `@briansp2020`, each folded into the block that owns its concern
+(blocks 06/07/08/09/10, no new block): a pinned output buffer under
+`-sm tensor` (`LLAMA_OUTPUT_PINNED=0`), a second scheduler for the MTP draft context's graphs with
+outputs (`LLAMA_DRAFT_SCHED2=0`), fewer instructions in the Q4_K / Q6_K mmvq dot products, and two
+gfx1100 ports (the Q4_K-only 128x256 MMB dense tile, and 4 rows per block for a Q4_K verify batch).
+Measured on gfx1201: +5.3 % MTP decode on Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS (2 GPUs, `-sm tensor`,
+`-n 3000`) from the output/scheduler pair, and +0.8 % on the dense 27B; outputs and acceptance are
+unchanged, the prefill-logit gate is 0.000707 / 98.755 %, and `validate-set.sh` is green.  The two
+gfx1100 changes are no-ops on gfx1201.  Records: `WORKLOG.md` 261015.002, `archive/work/{output-pinned,
+draft-sched2,rdna3-mmvq-vecdot-alu,rdna3-mmb-tile-spill,rdna3-mmvq-q4k-rpb}/`.
 
 r64 rounds out the r63 host-expert upload work: block 09 now accepts an arbitrary segmented Meta
 write (head partial row + full rows + tail partial row), and block 10 owns the CUDA splice-gather

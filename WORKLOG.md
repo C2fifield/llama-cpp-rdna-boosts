@@ -1,5 +1,70 @@
 # WORKLOG - dated delivery records
 
+## 261015.002 (r65) -- five contributor PRs merged (draft-sched2, output-pinned, mmvq vecdot ALU, gfx1100 MMB tile + Q4_K rpb)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r65` (base `097cf33d9`; canonical tip
+`1cee2637c`, net tree `5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`; 12 blocks; `validate-set.sh` green on
+a fresh tarball).  **No new block**: each PR is folded into the block that owns its concern, so the
+delivery stays a 12-block set.  PR #155 -> **block 06** (MMB), PR #156 -> **block 08** (the verify
+rows-per-block rule and the file that defines it), PR #159 -> **block 07** (k-quant mmvq/VDR vecdot),
+PR #157 -> **block 09** (the Meta output buffer), and PR #154 -> **blocks 09 and 10** (`sched_alt`, the
+per-scheduler meta view slot and the scheduler/meta API in block 09; the slab `compute_plain` wiring in
+block 10, which owns `ggml-cuda-slab.cu`).  Their records are archived under `archive/work/`; none was
+ever listed in `wip/CAMPAIGNS.md` (they arrived as PRs).
+
+**PR #157 `output-pinned` (block 09).**  `output_reserve` uses the first simple device's pinned host
+buffer type when the output device is a meta (tensor-split) device with no host buffer type of its own
+(`LLAMA_OUTPUT_PINNED=0` kill-switch; the meta device's own `get_host_buffer_type` is unchanged).  Under
+`-sm tensor` the output buffer was pageable, so every per-step D2H read of the logits/embeddings/MTP
+hidden state blocked the host until the GPU finished.  Record: `archive/work/output-pinned/`.
+
+**PR #154 `draft-sched2` (blocks 09 + 10).**  The MTP draft context's graphs with outputs run on a second
+scheduler (`llama_context::sched_alt`), swapped into `sched` only for the duration of a `decode`/`encode`
+and swapped back by a scope guard, so the no-output ingest graph and the 1-token draft-step graph both
+stay allocated and reused instead of being re-split/re-allocated every cycle.  Supporting: a per-scheduler
+meta view slot (`ggml_backend_meta_set_view_slot`, so two live graphs do not clear each other's external
+views) and a new optional device-iface entry `slab_compute_plain` (the second scheduler's small COMPUTE
+buffer bypasses the slab and the chunk quantization).  `LLAMA_DRAFT_SCHED2=0` kill-switch.  Record:
+`archive/work/draft-sched2/`.
+
+**PR #159 `rdna3-mmvq-vecdot-alu` (block 07).**  Two output-preserving instruction reductions in the
+mmvq dot products: the Q4_K VDR-2 mins term becomes `(d8 * float(dot2)) * float(m)` (both forms are a
+single rounding of the same exact value, and the two factors are separately column- and row-dependent so
+a multi-row/multi-column block computes each once), with the 6-bit scales/mins packed into one word; and
+the HIP-only Q6_K VDR-2 unpack replaces `(vil | 16*h) - 32` with one `v_perm_b32` lookup plus an OR.
+Record: `archive/work/rdna3-mmvq-vecdot-alu/`.
+
+**PR #155 `rdna3-mmb-tile-spill` (block 06) and PR #156 `rdna3-mmvq-q4k-rpb` (block 08, gfx1100).**  A per-arch
+`mmb_arch_cfg.big_q4k_only` (set for RDNA3_0) keeps the 128x256 MMB dense tile only for Q4_K, so the
+other weight types take the non-spilling 128x128 tile and a spilling MMB kernel can no longer coexist
+with the spilling head-256 WMMA FA kernel under WSL2 (the
+`HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION` fault); and `calc_rows_per_block_weight` returns 4 rows per
+block for a Q4_K verify batch on the RDNA3_0 table (bit-identical, the q8_1 columns load once per
+block).  Both are runtime no-ops on gfx1201.  Records: `archive/work/rdna3-mmb-tile-spill/`,
+`archive/work/rdna3-mmvq-q4k-rpb/`.
+
+**Gates (integration build, gfx1201).**  Coherence 4B `-sm tensor` identical to the r64 binary
+(`f051d98e4e30`, 64-token arm); prefill-logit **PASS** (mean KLD 0.000707, same-top-p 98.755 %,
+identical to the recorded base); rule-5 `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (dense
+Qwen3.8-27B UD-Q4_K_XL, q8_0 KV, 3 GPUs) B=1 `28.51 -> 29.12`, B=4 `102.85 -> 108.81`, B=8
+`180.29 -> 188.96` t/s; `test-backend-ops -o MUL_MAT`/`-o MUL_MAT_ID` with `type_a=q4_K`/`q6_K` OK (the
+full `MUL_MAT_ID` `quantize_mmq_q8_1` fault is pre-existing: it reproduces identically on the r64
+binary).  MTP gate on Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS + shared `mtp-Qwen3.8-Flash-Next-shared-Q8_0`
+(`-sm tensor`, q8_0 KV, `-lm none`, `-ot per_layer_token_embd.*=CPU`, 2 GPUs, `-n 3000`, prose):
+acceptance `0.81673` identical in every arm, generated text `5d51438c7a26` identical, generation r64
+`132.75` -> r65 `139.85` t/s (+5.3 %).  Attribution arms: `LLAMA_OUTPUT_PINNED=0` `135.1`,
+`LLAMA_DRAFT_SCHED2=0` `137.8`; draft graph reallocations `1068 -> 34`.  Dense Qwen3.8-27B UD-Q4_K_XL
+1-GPU MTP `-n 3000`: r64 `69.45` -> `70.0` t/s with the scheduler/output arms off (the vecdot
+changes), +0.8 %.
+
+**35B MTP purity.**  Qwen3.6-35B-A3B Q8_0, `-sm tensor -ncmoe 99`, `-n 3000`, `--reasoning off`:
+`--spec-type none` and `--spec-type draft-mtp --spec-draft-n-max 3` are byte-identical on prose
+(`756a77245352`) and on the phase-switching mixed prompt (`50ba4c2c795f`).
+
+**Open caveats carried forward.**  PR #155/#156 are validated on gfx1100/WSL2 by the reporter only
+(native Linux gfx1100 not tested; one model); PR #159 patch 0001 is shared code and CUDA was not built,
+so its nvcc bit-identity rests on the single-rounding argument.
+
 ## 261015.001 (r64) -- segmented Meta writes, splice-gather ring ownership, qwen4exp image+MTP
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r64` (base `097cf33d9`; canonical tip

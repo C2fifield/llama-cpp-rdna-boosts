@@ -2037,10 +2037,10 @@ index 81cce2e2a..b7ec31448 100644
  // returns false if using multiple buffers and a re-allocation is needed (call ggml_gallocr_reserve_n first to set the node buffers)
  GGML_API bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph);
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index 7a65d8121..c38dbcde3 100644
+index 7a65d8121..d2b7da0c6 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -44,6 +44,62 @@ extern "C" {
+@@ -44,6 +44,66 @@ extern "C" {
      GGML_API bool                  ggml_backend_buft_is_host         (ggml_backend_buffer_type_t buft);
      GGML_API ggml_backend_dev_t    ggml_backend_buft_get_device      (ggml_backend_buffer_type_t buft);
  
@@ -2090,6 +2090,10 @@ index 7a65d8121..c38dbcde3 100644
 +    // No-op for a backend without a slab.
 +    GGML_API void                  ggml_backend_dev_slab_compute_narrow2(ggml_backend_dev_t dev, bool enable);
 +
++    // allocate this context's COMPUTE buffers outside the slab and without the chunk quantization (a buffer the
++    // slab never serves, e.g. the MTP draft's second scheduler).  No-op for a backend without a slab.
++    GGML_API void                  ggml_backend_dev_slab_compute_plain(ggml_backend_dev_t dev, bool enable);
++
 +    // OPEN 2 (TODO #42): the size of the device's movable-boundary slab WORK region, or 0 when it has no
 +    // slab.  `llama_context` uses it to right-size the compute reserve to the observed workload.
 +    GGML_API size_t                ggml_backend_dev_slab_work_size(ggml_backend_dev_t dev);
@@ -2103,7 +2107,7 @@ index 7a65d8121..c38dbcde3 100644
      //
      // Backend buffer
      //
-@@ -342,6 +398,11 @@ extern "C" {
+@@ -342,6 +402,11 @@ extern "C" {
      GGML_API void                 ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes);
      GGML_API bool                 ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph); // returns success
  
@@ -2115,12 +2119,16 @@ index 7a65d8121..c38dbcde3 100644
      GGML_API int                  ggml_backend_sched_get_n_backends(ggml_backend_sched_t sched);
      GGML_API ggml_backend_t       ggml_backend_sched_get_backend(ggml_backend_sched_t sched, int i);
  
-@@ -430,6 +491,15 @@ extern "C" {
+@@ -430,6 +495,19 @@ extern "C" {
      GGML_API ggml_backend_dev_t ggml_backend_meta_device(
          ggml_backend_dev_t * devs, size_t n_devs, ggml_backend_meta_get_split_state_t get_split_state, void * get_split_state_ud);
  
 +    // returns true if the device was created by ggml_backend_meta_device()
 +    GGML_API bool ggml_backend_dev_is_meta(ggml_backend_dev_t dev);
++
++    // Select the view slot (0 or 1) of the meta buffers' external views.  A context that keeps two graphs allocated at
++    // once (two schedulers) gives each its own slot, set around the graph's allocation, inputs, compute and outputs.
++    GGML_API void ggml_backend_meta_set_view_slot(int slot);
 +
 +    // number of "simple" devices wrapped by a meta device
 +    GGML_API size_t ggml_backend_meta_dev_n_devs(ggml_backend_dev_t dev);
@@ -2658,7 +2666,7 @@ index b0c067b49..8d0a8249a 100644
  #ifndef NDEBUG
          GGML_LOG_DEBUG("%s: graph has different number of nodes\n", __func__);
 diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
-index dc7367dec..dd50b3b76 100644
+index dc7367dec..e9387af3c 100644
 --- a/ggml/src/ggml-backend-impl.h
 +++ b/ggml/src/ggml-backend-impl.h
 @@ -30,6 +30,26 @@ extern "C" {
@@ -2809,7 +2817,7 @@ index dc7367dec..dd50b3b76 100644
      };
  
      struct ggml_backend {
-@@ -216,6 +334,70 @@ extern "C" {
+@@ -216,6 +334,75 @@ extern "C" {
          ggml_backend_event_t (*event_new)         (ggml_backend_dev_t dev);
          void                 (*event_free)        (ggml_backend_dev_t dev, ggml_backend_event_t event);
          void                 (*event_synchronize) (ggml_backend_dev_t dev, ggml_backend_event_t event);
@@ -2877,11 +2885,16 @@ index dc7367dec..dd50b3b76 100644
 +        // so every backend that does not set them is zero-initialized.
 +        void (*moe_cache_set_host_pool)(ggml_backend_dev_t dev, bool on);
 +        void (*moe_cache_set_host_source)(ggml_backend_dev_t dev, const void * tensor_data, const char * path, size_t offs, int n_experts, size_t host_bytes, size_t total_bytes);
++
++        // (optional) allocate this context's COMPUTE buffers outside the slab and without the chunk
++        // quantization: for a buffer the slab never serves (the MTP draft's second scheduler).  Appended like
++        // the fields above, so backends that do not set it are zero-initialized.
++        void (*slab_compute_plain)(ggml_backend_dev_t dev, bool enable);
      };
  
      struct ggml_backend_device {
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index 86748b689..7557cc5be 100644
+index 86748b689..f4ec2482a 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
 @@ -4,6 +4,7 @@
@@ -3005,7 +3018,7 @@ index 86748b689..7557cc5be 100644
  static bool ggml_backend_meta_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
      GGML_ASSERT(ggml_backend_dev_is_meta(dev));
      ggml_backend_dev_t dev_buft = ggml_backend_buft_get_device(buft);
-@@ -177,6 +246,22 @@ static bool ggml_backend_meta_device_supports_buft(ggml_backend_dev_t dev, ggml_
+@@ -177,6 +246,30 @@ static bool ggml_backend_meta_device_supports_buft(ggml_backend_dev_t dev, ggml_
      return true;
  }
  
@@ -3025,10 +3038,18 @@ index 86748b689..7557cc5be 100644
 +    }
 +}
 +
++static void ggml_backend_meta_device_slab_compute_plain(ggml_backend_dev_t dev, bool enable) {
++    // forward to the simple devices: the meta device owns no slab of its own
++    ggml_backend_meta_device_context * ctx = (ggml_backend_meta_device_context *) dev->context;
++    for (ggml_backend_dev_t d : ctx->simple_devs) {
++        ggml_backend_dev_slab_compute_plain(d, enable);
++    }
++}
++
  static const ggml_backend_device_i ggml_backend_meta_device_iface = {
      /* .get_name             = */ ggml_backend_meta_device_get_name,
      /* .get_description      = */ ggml_backend_meta_device_get_description,
-@@ -189,23 +274,35 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
+@@ -189,23 +282,36 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
      /* .buffer_from_host_ptr = */ nullptr,
      /* .supports_op          = */ ggml_backend_meta_device_supports_op,
      /* .supports_buft        = */ ggml_backend_meta_device_supports_buft,
@@ -3052,6 +3073,7 @@ index 86748b689..7557cc5be 100644
 +    /* .slab_compute_narrow2 = */ ggml_backend_meta_device_slab_compute_narrow2,
 +    /* .moe_cache_set_host_pool   = */ nullptr,
 +    /* .moe_cache_set_host_source = */ nullptr,
++    /* .slab_compute_plain   = */ ggml_backend_meta_device_slab_compute_plain,
  };
  
 -static bool ggml_backend_dev_is_meta(ggml_backend_dev_t dev) {
@@ -3071,7 +3093,7 @@ index 86748b689..7557cc5be 100644
      GGML_ASSERT(ggml_backend_dev_is_meta(meta_dev));
      const ggml_backend_meta_device_context * meta_dev_ctx = (const ggml_backend_meta_device_context *) meta_dev->context;
      GGML_ASSERT(index < meta_dev_ctx->simple_devs.size());
-@@ -289,6 +386,7 @@ static ggml_backend_buffer_type_t ggml_backend_meta_buft_simple_buft(ggml_backen
+@@ -289,6 +395,7 @@ static ggml_backend_buffer_type_t ggml_backend_meta_buft_simple_buft(ggml_backen
  }
  
  static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size);
@@ -3079,7 +3101,7 @@ index 86748b689..7557cc5be 100644
  
  static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_backend_buffer_type_t buft, ggml_tensor ** tensors, int n_tensors);
  
-@@ -312,6 +410,34 @@ static size_t ggml_backend_meta_buffer_type_get_max_size(ggml_backend_buffer_typ
+@@ -312,6 +419,34 @@ static size_t ggml_backend_meta_buffer_type_get_max_size(ggml_backend_buffer_typ
      return max_size;
  }
  
@@ -3114,7 +3136,7 @@ index 86748b689..7557cc5be 100644
  static size_t ggml_backend_meta_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
      const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
      size_t max_alloc_size = 0;
-@@ -341,6 +467,9 @@ static const struct ggml_backend_buffer_type_i ggml_backend_meta_buffer_type_ifa
+@@ -341,6 +476,9 @@ static const struct ggml_backend_buffer_type_i ggml_backend_meta_buffer_type_ifa
      /* .get_alloc_size      = */ ggml_backend_meta_buffer_type_get_alloc_size,
      /* .get_alloc_size_n    = */ NULL,
      /* .is_host             = */ ggml_backend_meta_buffer_type_is_host,
@@ -3124,7 +3146,7 @@ index 86748b689..7557cc5be 100644
  };
  
  bool ggml_backend_buft_is_meta(ggml_backend_buffer_type_t buft) {
-@@ -402,7 +531,7 @@ static ggml_backend_buffer_type_t ggml_backend_meta_device_get_host_buffer_type(
+@@ -402,7 +540,7 @@ static ggml_backend_buffer_type_t ggml_backend_meta_device_get_host_buffer_type(
  // Container to hold the tensor slices per simple ggml backend buffer.
  struct ggml_backend_meta_simple_tensor_container {
      std::vector<ggml_context_ptr> ctxs;
@@ -3133,7 +3155,39 @@ index 86748b689..7557cc5be 100644
  
      ggml_backend_meta_simple_tensor_container(const ggml_init_params & params, const int n_simple) {
          ctxs.reserve(n_simple);
-@@ -430,10 +559,43 @@ struct ggml_backend_meta_buffer_context {
+@@ -413,6 +551,16 @@ struct ggml_backend_meta_simple_tensor_container {
+     ggml_backend_meta_simple_tensor_container() {}
+ };
+ 
++// The external views of a buffer live in a rotating pair of containers that assumes ONE live graph: a rebuild
++// clears the container the previous graph used.  A second live graph (a second scheduler of the same context)
++// selects its own view slot, so the two graphs keep separate pairs and do not clear each other's views.
++static int g_meta_view_slot = 0;
++
++void ggml_backend_meta_set_view_slot(int slot) {
++    GGML_ASSERT(slot >= 0 && slot < 2);
++    g_meta_view_slot = slot;
++}
++
+ struct ggml_backend_meta_buffer_context {
+     // FIXME
+     // Most tensors can simply be stored statically in their own buffer.
+@@ -421,39 +569,87 @@ struct ggml_backend_meta_buffer_context {
+     // Current solution: rotating set of 2 "compute" containers to hold external views, works correctly for llama.cpp.
+     // Long-term: tie the lifetime of external views to the meta backend executing the graph instead,
+     //     currently not possible due to graph-external operations in the backend scheduler.
++    // stc_compute[slot][2]: one rotating pair per view slot (see g_meta_view_slot); slot 1 is created on first use
++    static constexpr int n_view_slots = 2;
+     ggml_backend_meta_simple_tensor_container stc_static;
+-    ggml_backend_meta_simple_tensor_container stc_compute[2];
+-    int stc_compute_index      = 0;
+-    int stc_compute_index_next = 0;
++    ggml_backend_meta_simple_tensor_container stc_compute[n_view_slots][2];
++    int stc_compute_index     [n_view_slots] = {0};
++    int stc_compute_index_next[n_view_slots] = {0};
++    ggml_init_params stc_compute_params;
+     std::vector<ggml_backend_buffer_ptr> bufs;
+ 
      // FIXME
      // The size of the split state cache is unbounded and can theoretically grow infinitely large.
      // However, it is also expensive to build and clearing it on every rebuild in ggml_backend_meta_graph_compute is too expensive.
@@ -3180,7 +3234,15 @@ index 86748b689..7557cc5be 100644
  
      ggml_backend_meta_buffer_context(
              ggml_backend_meta_simple_tensor_container & stc_static,
-@@ -445,8 +607,6 @@ struct ggml_backend_meta_buffer_context {
+             ggml_backend_meta_simple_tensor_container & stc_compute_0,
+             ggml_backend_meta_simple_tensor_container & stc_compute_1,
++            const ggml_init_params & stc_compute_params,
+             const std::vector<ggml_backend_buffer_t> & bufs)
+-            : stc_static(std::move(stc_static)), stc_compute{std::move(stc_compute_0), std::move(stc_compute_1)} {
++            : stc_static(std::move(stc_static)), stc_compute_params(stc_compute_params) {
++        stc_compute[0][0] = std::move(stc_compute_0);
++        stc_compute[0][1] = std::move(stc_compute_1);
+         this->bufs.reserve(bufs.size());
          for (ggml_backend_buffer_t buf : bufs) {
              this->bufs.emplace_back(buf);
          }
@@ -3189,7 +3251,26 @@ index 86748b689..7557cc5be 100644
      }
  
      ggml_backend_meta_simple_tensor_container & get_simple_tensor_container(const ggml_tensor * tensor) {
-@@ -794,6 +954,26 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+         if (stc_static.simple_tensors.find(tensor) != stc_static.simple_tensors.end()) {
+             return stc_static;
+         }
+-        return stc_compute[stc_compute_index];
++        return compute_container(stc_compute_index[g_meta_view_slot]);
++    }
++
++    // container `index` of the current view slot, created on the slot's first use
++    ggml_backend_meta_simple_tensor_container & compute_container(int index) {
++        const int slot = g_meta_view_slot;
++        if (slot > 0 && stc_compute[slot][0].ctxs.empty()) {
++            for (auto & stc : stc_compute[slot]) {
++                stc = ggml_backend_meta_simple_tensor_container(stc_compute_params, (int) bufs.size());
++            }
++        }
++        return stc_compute[slot][index];
+     }
+ };
+ 
+@@ -794,6 +990,26 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
          return {GGML_BACKEND_SPLIT_AXIS_1, {0}, {1}, 1};
      };
  
@@ -3216,7 +3297,7 @@ index 86748b689..7557cc5be 100644
      auto handle_lightning_indexer = [&](
              const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
          for (size_t i = 0; i < 4; i++) {
-@@ -835,7 +1015,19 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -835,7 +1051,19 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
          if (ggml_nelements(tensor) == 0) {
              return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
          }
@@ -3237,7 +3318,7 @@ index 86748b689..7557cc5be 100644
              ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
              const ggml_backend_meta_device_context * dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
              ggml_backend_meta_split_state ret = dev_ctx->get_split_state(tensor, dev_ctx->get_split_state_ud);
-@@ -1021,6 +1213,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1021,6 +1249,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_FLASH_ATTN_EXT: {
                  split_state = handle_flash_attn_ext(src_ss);
              } break;
@@ -3278,7 +3359,7 @@ index 86748b689..7557cc5be 100644
              case GGML_OP_FLASH_ATTN_BACK: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
-@@ -1049,6 +1275,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1049,6 +1311,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_DSV4_HC_POST: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
@@ -3308,7 +3389,7 @@ index 86748b689..7557cc5be 100644
              case GGML_OP_UNARY: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ false);
              } break;
-@@ -1115,52 +1364,111 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1115,52 +1400,111 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
          return split_state;
      };
  
@@ -3457,7 +3538,7 @@ index 86748b689..7557cc5be 100644
      GGML_ASSERT(ret.axis != GGML_BACKEND_SPLIT_AXIS_NONE);
  #ifndef NDEBUG
      if (ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
-@@ -1181,6 +1489,12 @@ static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
+@@ -1181,6 +1525,12 @@ static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
  }
  
  static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
@@ -3470,7 +3551,7 @@ index 86748b689..7557cc5be 100644
      // [TAG_META_HOST_VIEWS]
      // TODO: technically, this check should not be needed if the backend scheduler correctly prevents assigning
      //       such host-buffer views to the meta backend. figure out how to update the scheduler logic to achieve that
-@@ -1282,6 +1596,10 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
+@@ -1282,6 +1632,10 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
                  init_buf     = t_ij->view_src->buffer;
              }
          } else if (simple_buf != nullptr) {
@@ -3481,7 +3562,7 @@ index 86748b689..7557cc5be 100644
              if (ggml_backend_buffer_is_multi_buffer(simple_buf)) {
                  GGML_ABORT("multi buffers are not supported by the meta backend");
              }
-@@ -1329,7 +1647,7 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
+@@ -1329,7 +1683,7 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
          }
      }
  
@@ -3490,7 +3571,16 @@ index 86748b689..7557cc5be 100644
  
      return GGML_STATUS_SUCCESS;
  }
-@@ -1449,63 +1767,105 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+@@ -1337,7 +1691,7 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
+ static enum ggml_status ggml_backend_meta_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
+     GGML_ASSERT(ggml_backend_buffer_is_meta(buffer));
+     ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) buffer->context;
+-    buf_ctx->stc_compute_index = buf_ctx->stc_compute_index_next;
++    buf_ctx->stc_compute_index[g_meta_view_slot] = buf_ctx->stc_compute_index_next[g_meta_view_slot];
+     return ggml_backend_meta_buffer_init_tensor_impl(buf_ctx->get_simple_tensor_container(tensor), tensor);
+ }
+ 
+@@ -1449,63 +1803,105 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
      GGML_ASSERT(ggml_is_contiguous(tensor) || split_state.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
  
      if (split_state.n_segments != 1 || split_state.nr[0] != 1) {
@@ -3636,7 +3726,7 @@ index 86748b689..7557cc5be 100644
          return;
      }
  
-@@ -1714,7 +2074,7 @@ void ggml_backend_meta_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_
+@@ -1714,7 +2110,7 @@ void ggml_backend_meta_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_
      }
  }
  
@@ -3645,7 +3735,7 @@ index 86748b689..7557cc5be 100644
      const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
  
      const ggml_init_params params = {
-@@ -1730,7 +2090,9 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+@@ -1730,19 +2126,30 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
      std::vector<ggml_backend_buffer_t> bufs;
      bufs.reserve(n_simple_bufts);
      for (size_t i = 0; i < n_simple_bufts; i++) {
@@ -3656,7 +3746,9 @@ index 86748b689..7557cc5be 100644
          GGML_ASSERT(bufs.back() != nullptr);
          max_size = std::max(max_size, ggml_backend_buffer_get_size(bufs.back()));
      }
-@@ -1739,10 +2101,19 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+-    ggml_backend_meta_buffer_context * buf_ctx = new ggml_backend_meta_buffer_context(stc_static, stc_compute_0, stc_compute_1, bufs);
++    ggml_backend_meta_buffer_context * buf_ctx = new ggml_backend_meta_buffer_context(stc_static, stc_compute_0, stc_compute_1, params, bufs);
+ 
      return ggml_backend_buffer_init(buft, ggml_backend_meta_buffer_iface, buf_ctx, max_size);
  }
  
@@ -3677,7 +3769,16 @@ index 86748b689..7557cc5be 100644
      const ggml_init_params params_static = {
          /*.mem_size   =*/ n_tensors * ggml_tensor_overhead(),
          /*.mem_buffer =*/ nullptr,
-@@ -1832,6 +2203,38 @@ struct ggml_backend_meta_context {
+@@ -1758,7 +2165,7 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_b
+     ggml_backend_meta_simple_tensor_container stc_compute_1(params_compute, n_simple_bufts);
+ 
+     std::vector<ggml_backend_buffer_t> bufs(n_simple_bufts, nullptr);
+-    ggml_backend_meta_buffer_context * meta_buf_ctx = new ggml_backend_meta_buffer_context(stc_static, stc_compute_0, stc_compute_1, bufs);
++    ggml_backend_meta_buffer_context * meta_buf_ctx = new ggml_backend_meta_buffer_context(stc_static, stc_compute_0, stc_compute_1, params_compute, bufs);
+ 
+     ggml_backend_buffer_t meta_buf = ggml_backend_buffer_init(buft, ggml_backend_meta_buffer_iface, meta_buf_ctx, 0);
+     for (int i = 0; i < n_tensors; i++) {
+@@ -1832,6 +2239,38 @@ struct ggml_backend_meta_context {
      size_t                      max_subgraphs = 0;
      size_t                      n_subgraphs   = 0;
      uint64_t                    uid           = 0;
@@ -3716,7 +3817,7 @@ index 86748b689..7557cc5be 100644
  
      void *                               comm_ctx       = nullptr;
      ggml_backend_comm_allreduce_tensor_t comm_allreduce = nullptr;
-@@ -1854,6 +2257,26 @@ struct ggml_backend_meta_context {
+@@ -1854,6 +2293,26 @@ struct ggml_backend_meta_context {
          }
          name += ")";
  
@@ -3743,7 +3844,7 @@ index 86748b689..7557cc5be 100644
          if (n_devs > 1) {
              ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
                  ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_init");
-@@ -1876,6 +2299,12 @@ struct ggml_backend_meta_context {
+@@ -1876,6 +2335,12 @@ struct ggml_backend_meta_context {
              GGML_ASSERT(comm_free != nullptr);
              comm_free(comm_ctx);
          }
@@ -3756,7 +3857,7 @@ index 86748b689..7557cc5be 100644
          for (auto & bc : backend_configs) {
              ggml_backend_free(bc.backend);
          }
-@@ -1897,12 +2326,26 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
+@@ -1897,12 +2362,26 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
  
  static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
@@ -3786,7 +3887,7 @@ index 86748b689..7557cc5be 100644
  
      switch (split_state.axis) {
          case GGML_BACKEND_SPLIT_AXIS_0:
-@@ -1910,25 +2353,82 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
+@@ -1910,25 +2389,82 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
          case GGML_BACKEND_SPLIT_AXIS_2: {
              // Exploit that tensors are contiguous to splice it with simple tensors as "chunks".
              const size_t chunk_size_full = tensor->nb[split_state.axis + 1];
@@ -3884,7 +3985,7 @@ index 86748b689..7557cc5be 100644
              for (size_t j = 0; j < n_backends; j++) {
                  ggml_backend_tensor_set_async(
                      ggml_backend_meta_simple_backend(backend, j), ggml_backend_meta_buffer_simple_tensor(tensor, j), data, offset, size);
-@@ -1942,13 +2442,25 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
+@@ -1942,13 +2478,25 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
  
  static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
@@ -3912,7 +4013,7 @@ index 86748b689..7557cc5be 100644
      switch (split_state.axis) {
          case GGML_BACKEND_SPLIT_AXIS_0:
          case GGML_BACKEND_SPLIT_AXIS_1:
-@@ -1973,12 +2485,6 @@ static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggm
+@@ -1973,12 +2521,6 @@ static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggm
              }
              GGML_ASSERT(offset_j == chunk_size_full);
          } break;
@@ -3925,7 +4026,7 @@ index 86748b689..7557cc5be 100644
          default: {
              GGML_ABORT("fatal error");
          }
-@@ -1992,6 +2498,247 @@ static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
+@@ -1992,6 +2534,247 @@ static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
      }
  }
  
@@ -4173,7 +4274,19 @@ index 86748b689..7557cc5be 100644
  static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
      GGML_ASSERT(cgraph->grads == nullptr);
      const size_t n_backends = ggml_backend_meta_n_backends(backend);
-@@ -2041,6 +2788,17 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2026,8 +2809,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+         }
+         for (ggml_backend_buffer_t buf : used_buffers) {
+             ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) buf->context;
+-            buf_ctx->stc_compute_index_next = buf_ctx->stc_compute_index ^ 1;
+-            ggml_backend_meta_simple_tensor_container & stc = buf_ctx->stc_compute[buf_ctx->stc_compute_index_next];
++            const int slot = g_meta_view_slot;
++            buf_ctx->stc_compute_index_next[slot] = buf_ctx->stc_compute_index[slot] ^ 1;
++            ggml_backend_meta_simple_tensor_container & stc = buf_ctx->compute_container(buf_ctx->stc_compute_index_next[slot]);
+             for (ggml_context_ptr & ctx : stc.ctxs) {
+                 ggml_reset(ctx.get());
+             }
+@@ -2041,6 +2825,17 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
  
              for (int i = 0; i < cgraph->n_nodes; i++) {
                  ggml_tensor * node = cgraph->nodes[i];
@@ -4191,7 +4304,7 @@ index 86748b689..7557cc5be 100644
                  if (!ggml_backend_buffer_is_meta(node->buffer)) {
                      // [TAG_META_HOST_VIEWS]
                      GGML_ASSERT(ggml_backend_meta_is_host_view(node));
-@@ -2054,6 +2812,39 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2054,6 +2849,39 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
              }
          }
  
@@ -4231,7 +4344,7 @@ index 86748b689..7557cc5be 100644
          {
              // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
              auto get_i_delayed_branch = [&](const int i) -> int {
-@@ -2284,7 +3075,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2284,7 +3112,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
              backend_ctx->ctx.reset(ggml_init(params));
              for (size_t j = 0; j < n_backends; j++) {
                  auto & bcj = backend_ctx->backend_configs[j];
@@ -4243,7 +4356,7 @@ index 86748b689..7557cc5be 100644
                      bcj.cgraphs[i].cgraph_main = ggml_new_graph_custom(backend_ctx->ctx.get(), cgraph->n_nodes, /*grads =*/ false);
                  }
              }
-@@ -2316,6 +3110,33 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2316,6 +3147,33 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
                  cgraph_ij->uid = ggml_graph_next_uid();
              }
          }
@@ -4277,7 +4390,7 @@ index 86748b689..7557cc5be 100644
      }
  
      size_t iga = 0; // i graph aux
-@@ -2499,6 +3320,176 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
+@@ -2499,6 +3357,176 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend,
      return GGML_STATUS_SUCCESS;
  }
  
@@ -4454,7 +4567,7 @@ index 86748b689..7557cc5be 100644
  static const ggml_backend_i ggml_backend_meta_i = {
      /* .get_name                = */ ggml_backend_meta_get_name,
      /* .free                    = */ ggml_backend_meta_free,
-@@ -2513,9 +3504,20 @@ static const ggml_backend_i ggml_backend_meta_i = {
+@@ -2513,9 +3541,20 @@ static const ggml_backend_i ggml_backend_meta_i = {
      /* .graph_plan_update       = */ nullptr,
      /* .graph_plan_compute      = */ nullptr,
      /* .graph_compute           = */ ggml_backend_meta_graph_compute,
@@ -4479,7 +4592,7 @@ index 86748b689..7557cc5be 100644
  
  bool ggml_backend_is_meta(ggml_backend_t backend) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index ffbcba366..322e448ce 100644
+index ffbcba366..6746f5a83 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -23,6 +23,11 @@
@@ -4532,7 +4645,7 @@ index ffbcba366..322e448ce 100644
  size_t ggml_backend_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor) {
      GGML_ASSERT(buft);
      // get_alloc_size is optional, defaults to ggml_nbytes
-@@ -231,6 +267,103 @@ ggml_backend_dev_t ggml_backend_buft_get_device(ggml_backend_buffer_type_t buft)
+@@ -231,6 +267,110 @@ ggml_backend_dev_t ggml_backend_buft_get_device(ggml_backend_buffer_type_t buft)
      return buft->device;
  }
  
@@ -4615,6 +4728,13 @@ index ffbcba366..322e448ce 100644
 +    dev->iface.slab_compute_narrow2(dev, enable);
 +}
 +
++void ggml_backend_dev_slab_compute_plain(ggml_backend_dev_t dev, bool enable) {
++    if (dev == nullptr || dev->iface.slab_compute_plain == nullptr) {
++        return;
++    }
++    dev->iface.slab_compute_plain(dev, enable);
++}
++
 +size_t ggml_backend_dev_slab_work_size(ggml_backend_dev_t dev) {
 +    // OPEN 2 (TODO #42): 0 when this backend has no movable-boundary slab (or never set the hook), which is
 +    // how the caller tells "no slab to reclaim the wide layout with" from "slab, and it is this wide".
@@ -4636,7 +4756,7 @@ index ffbcba366..322e448ce 100644
  // backend buffer
  
  ggml_backend_buffer_t ggml_backend_buffer_init(
-@@ -567,7 +700,6 @@ void ggml_backend_synchronize(ggml_backend_t backend) {
+@@ -567,7 +707,6 @@ void ggml_backend_synchronize(ggml_backend_t backend) {
      if (backend->iface.synchronize == NULL) {
          return;
      }
@@ -4644,7 +4764,7 @@ index ffbcba366..322e448ce 100644
      backend->iface.synchronize(backend);
  }
  
-@@ -923,6 +1055,11 @@ struct ggml_backend_sched_split {
+@@ -923,6 +1062,11 @@ struct ggml_backend_sched_split {
      struct ggml_cgraph graph;
  };
  
@@ -4656,7 +4776,7 @@ index ffbcba366..322e448ce 100644
  struct ggml_backend_sched {
      bool is_reset; // true if the scheduler has been reset since the last graph split
      bool is_alloc;
-@@ -977,6 +1114,28 @@ struct ggml_backend_sched {
+@@ -977,6 +1121,28 @@ struct ggml_backend_sched {
  
      bool op_offload;
  
@@ -4685,7 +4805,7 @@ index ffbcba366..322e448ce 100644
      int debug;
  
      // graph size of the current and the previous scheduling, used by the realloc callback and for debugging
-@@ -1066,6 +1225,19 @@ static char causes[GGML_DEFAULT_GRAPH_SIZE*16 + GGML_SCHED_MAX_SPLITS_DEBUG*GGML
+@@ -1066,6 +1232,19 @@ static char causes[GGML_DEFAULT_GRAPH_SIZE*16 + GGML_SCHED_MAX_SPLITS_DEBUG*GGML
  #endif
  
  // returns the backend that should be used for the node based on the current locations
@@ -4705,7 +4825,7 @@ index ffbcba366..322e448ce 100644
  static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, struct ggml_tensor * tensor) {
      // assign pre-allocated nodes to their backend
      int cur_backend_id = ggml_backend_sched_backend_from_buffer(sched, tensor, tensor);
-@@ -1106,6 +1278,15 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
+@@ -1106,6 +1285,15 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
      // skip FLASH_ATTN_EXT since the sinks tensor is too small to choose a based based on it
      allow = allow && tensor->op != GGML_OP_FLASH_ATTN_EXT;
  
@@ -4721,7 +4841,7 @@ index ffbcba366..322e448ce 100644
      if (allow) {
          for (int i = 0; i < GGML_MAX_SRC; i++) {
              const struct ggml_tensor * src = tensor->src[i];
-@@ -1116,7 +1297,22 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
+@@ -1116,7 +1304,22 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
                  int src_backend_id = ggml_backend_sched_backend_from_buffer(sched, src, tensor);
                  // check if a backend with higher prio wants to offload the op
                  if (sched->op_offload && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(src->buffer)) {
@@ -4744,7 +4864,7 @@ index ffbcba366..322e448ce 100644
                          if (ggml_backend_supports_op(sched->backends[b], tensor) && ggml_backend_offload_op(sched->backends[b], tensor)) {
                              SET_CAUSE(tensor, "1.off");
                              return b;
-@@ -1182,6 +1378,18 @@ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, str
+@@ -1182,6 +1385,18 @@ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, str
      }
  }
  
@@ -4763,7 +4883,7 @@ index ffbcba366..322e448ce 100644
  static bool ggml_backend_sched_buffer_supported(ggml_backend_sched_t sched, struct ggml_tensor * t, int backend_id) {
      ggml_backend_buffer_t buf = t->view_src ? t->view_src->buffer : t->buffer;
      ggml_backend_buffer_type_t buft = NULL;
-@@ -1200,6 +1408,21 @@ static bool ggml_backend_sched_buffer_supported(ggml_backend_sched_t sched, stru
+@@ -1200,6 +1415,21 @@ static bool ggml_backend_sched_buffer_supported(ggml_backend_sched_t sched, stru
          }
      }
  
@@ -4785,7 +4905,7 @@ index ffbcba366..322e448ce 100644
      return buft != NULL && ggml_backend_supports_buft(sched->backends[backend_id], buft);
  }
  
-@@ -1211,6 +1434,27 @@ static void ggml_backend_sched_set_if_supported(ggml_backend_sched_t sched, stru
+@@ -1211,6 +1441,27 @@ static void ggml_backend_sched_set_if_supported(ggml_backend_sched_t sched, stru
  }
  
  // assigns backends to ops and splits the graph into subgraphs that can be computed on the same backend
@@ -4813,7 +4933,7 @@ index ffbcba366..322e448ce 100644
  void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
      // reset splits
      sched->n_splits = 0;
-@@ -1410,6 +1654,86 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1410,6 +1661,86 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
          }
      }
  
@@ -4900,7 +5020,7 @@ index ffbcba366..322e448ce 100644
      // pass 4: assign backends to remaining src from dst and view_src
      for (int i = 0; i < graph->n_nodes; i++) {
          struct ggml_tensor * node = graph->nodes[i];
-@@ -1458,6 +1782,10 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1458,6 +1789,10 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
          split->i_start = 0;
          split->n_inputs = 0;
          int cur_backend_id = split->backend_id;
@@ -4911,7 +5031,7 @@ index ffbcba366..322e448ce 100644
          for (; i < graph->n_nodes; i++) {
              struct ggml_tensor * node = graph->nodes[i];
  
-@@ -1471,6 +1799,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1471,6 +1806,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
  
              // check if we should start a new split based on the sources of the current node
              bool need_new_split = false;
@@ -4919,7 +5039,7 @@ index ffbcba366..322e448ce 100644
              if (node_backend_id == cur_backend_id && split->n_inputs > 0) {
                  for (int j = 0; j < GGML_MAX_SRC; j++) {
                      struct ggml_tensor * src = node->src[j];
-@@ -1482,7 +1811,27 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1482,7 +1818,27 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                      if (src->buffer != NULL && src->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
                          int src_backend_id = tensor_backend_id(src);
                          if (src_backend_id != cur_backend_id && !ggml_backend_sched_buffer_supported(sched, src, cur_backend_id)) {
@@ -4948,7 +5068,7 @@ index ffbcba366..322e448ce 100644
                              break;
                          }
                      }
-@@ -1507,6 +1856,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1507,6 +1863,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                  split->i_start = i;
                  split->n_inputs = 0;
                  cur_backend_id = node_backend_id;
@@ -4956,7 +5076,7 @@ index ffbcba366..322e448ce 100644
              }
  
              // find inputs that are not on the same backend
-@@ -1530,6 +1880,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1530,6 +1887,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                              if (sched->n_copies > 1) {
                                  ggml_set_input(tensor_copy);
                                  ggml_set_output(tensor_copy); // prevent ggml-alloc from overwriting the tensor
@@ -4965,7 +5085,7 @@ index ffbcba366..322e448ce 100644
                              }
                              tensor_id_copy(src_id, cur_backend_id, c) = tensor_copy;
                              SET_CAUSE(tensor_copy, "4.cpy");
-@@ -1539,6 +1891,29 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1539,6 +1898,29 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                              ggml_backend_sched_split_inputs_grow(split);
                          }
                          split->inputs[n_inputs] = src;
@@ -4995,7 +5115,7 @@ index ffbcba366..322e448ce 100644
                      }
                      node->src[j] = tensor_id_copy(src_id, cur_backend_id, sched->cur_copy);
                  }
-@@ -1617,6 +1992,10 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+@@ -1617,6 +1999,10 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
              }
          },
          /* .user_data     = */ &alloc_deps,
@@ -5006,7 +5126,7 @@ index ffbcba366..322e448ce 100644
      };
  
      for (int i = 0; i < sched->n_splits; i++) {
-@@ -1795,15 +2174,49 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+@@ -1795,15 +2181,49 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
              }
          }
  
@@ -5062,7 +5182,7 @@ index ffbcba366..322e448ce 100644
          }
          if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
              GGML_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-@@ -1814,19 +2227,382 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+@@ -1814,19 +2234,382 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
      return true;
  }
  
@@ -5447,7 +5567,7 @@ index ffbcba366..322e448ce 100644
          // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
          if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
              ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
-@@ -1834,31 +2610,281 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+@@ -1834,31 +2617,281 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
              ggml_backend_synchronize(split_backend);
          }
          ggml_backend_tensor_copy(input, input_cpy);
@@ -5749,7 +5869,7 @@ index ffbcba366..322e448ce 100644
      }
  }
  
-@@ -1867,12 +2893,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1867,12 +2900,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
      struct ggml_backend_sched_split * splits = sched->splits;
  
      int prev_backend_id = -1;
@@ -5765,7 +5885,7 @@ index ffbcba366..322e448ce 100644
          // ensure the previous split's async work has completed before we start
          // this split, the allocator may have reused buffer regions across splits
          if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
-@@ -1887,12 +2916,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1887,12 +2923,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
          // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
          for (int input_id = 0; input_id < split->n_inputs; input_id++) {
              if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
@@ -5780,7 +5900,7 @@ index ffbcba366..322e448ce 100644
              }
          }
  
-@@ -1940,6 +2969,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1940,6 +2976,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
              ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
          }
  
@@ -5795,7 +5915,7 @@ index ffbcba366..322e448ce 100644
          prev_backend_id = split_backend_id;
      }
  
-@@ -1959,14 +2996,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -1959,14 +3003,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
  
      struct ggml_backend_sched * sched = (ggml_backend_sched *) calloc(1, sizeof(struct ggml_backend_sched));
  
@@ -5812,7 +5932,7 @@ index ffbcba366..322e448ce 100644
      sched->debug_realloc = GGML_SCHED_DEBUG_REALLOC ? atoi(GGML_SCHED_DEBUG_REALLOC) : sched->debug_realloc;
  
      sched->n_backends = n_backends;
-@@ -2003,7 +3040,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -2003,7 +3047,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
          sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
          GGML_ASSERT(ggml_backend_supports_buft(backends[b], sched->bufts[b]));
  
@@ -5828,7 +5948,7 @@ index ffbcba366..322e448ce 100644
              for (int c = 0; c < sched->n_copies; c++) {
                  sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
              }
-@@ -2012,6 +3056,65 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -2012,6 +3063,65 @@ ggml_backend_sched_t ggml_backend_sched_new(
  
      sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
      sched->op_offload = op_offload;
@@ -5894,7 +6014,7 @@ index ffbcba366..322e448ce 100644
  
      ggml_backend_sched_reset(sched);
  
-@@ -2026,6 +3129,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+@@ -2026,6 +3136,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
          for (int c = 0; c < sched->n_copies; c++) {
              ggml_backend_event_free(sched->events[b][c]);
          }
@@ -5905,7 +6025,7 @@ index ffbcba366..322e448ce 100644
      }
      ggml_gallocr_free(sched->galloc);
      ggml_free(sched->ctx);
-@@ -2090,6 +3197,17 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
+@@ -2090,6 +3204,17 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
      return true;
  }
  
@@ -5923,7 +6043,7 @@ index ffbcba366..322e448ce 100644
  bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
      GGML_ASSERT(sched);
      GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
-@@ -2127,6 +3245,8 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
+@@ -2127,6 +3252,8 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
          }
      }
  
@@ -5932,7 +6052,7 @@ index ffbcba366..322e448ce 100644
      return ggml_backend_sched_compute_splits(sched);
  }
  
-@@ -2221,6 +3341,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
+@@ -2221,6 +3348,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
  bool ggml_op_alloc_size_may_expand(enum ggml_op op) {
      switch (op) {
          case GGML_OP_FLASH_ATTN_EXT:
@@ -5941,7 +6061,7 @@ index ffbcba366..322e448ce 100644
          case GGML_OP_MUL_MAT:
          case GGML_OP_MUL_MAT_ID:
          case GGML_OP_CUMSUM:
-@@ -2591,6 +3713,9 @@ ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void) {
+@@ -2591,6 +3720,9 @@ ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void) {
              /* .get_alloc_size      = */ NULL, // defaults to ggml_nbytes
              /* .get_alloc_size_n    = */ NULL,
              /* .is_host             = */ ggml_backend_cpu_buffer_type_is_host,
@@ -5951,7 +6071,7 @@ index ffbcba366..322e448ce 100644
          },
          /* .device  = */ NULL, // FIXME ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
          /* .context = */ NULL,
-@@ -2616,6 +3741,9 @@ static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void) {
+@@ -2616,6 +3748,9 @@ static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void) {
              /* .get_alloc_size      = */ NULL, // defaults to ggml_nbytes
              /* .get_alloc_size_n    = */ NULL,
              /* .is_host             = */ ggml_backend_cpu_buffer_type_is_host,
@@ -19886,7 +20006,7 @@ index 6b36b8fbc..b7d105f25 100644
              get_rows_cuda_kq<32, dst_t, dequantize_iq4_xs<dst_t>>(src0_d, src1_d, dst_d,
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-arena.cu b/ggml/src/ggml-cuda/ggml-cuda-arena.cu
 new file mode 100644
-index 000000000..585f80de5
+index 000000000..e8ea36db0
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-arena.cu
 @@ -0,0 +1,57 @@
@@ -19939,7 +20059,7 @@ index 000000000..585f80de5
 +    // whole units, so it makes sense only when the slab is in use.  With no slab (a dense model) it just
 +    // inflates small buffers -- a 178 MiB layout becomes 512 MiB -- so fall back to the percentage margin,
 +    // which is the pre-slab behaviour.  This is what removes the dense +739 MiB of issue #120.
-+    if (!ggml_cuda_slab_enabled()) {
++    if (!ggml_cuda_slab_enabled() || ggml_cuda_slab_compute_plain()) {
 +        return 0;
 +    }
 +    return chunk_mib * 1024 * 1024;
@@ -20243,10 +20363,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..2d02f46dd
+index 000000000..b333e1c58
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1131 @@
+@@ -0,0 +1,1143 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -20424,6 +20544,10 @@ index 000000000..2d02f46dd
 +// draft context and is routed to the slab's second pinned narrow region (the top of the reserved VA).
 +// Set/cleared around the draft's reserve and alloc_graph calls by `llama_context`.
 +static bool g_slab_compute_narrow2 = false;
++
++// when true, the COMPUTE buffer being allocated is one the slab never serves (the MTP draft's second scheduler):
++// it bypasses the slab and the chunk quantization.  Set/cleared around that allocation by `llama_context`.
++static bool g_slab_compute_plain = false;
 +
 +// `GGML_CUDA_SLAB_NARROW2=0` is the A/B arm: the draft's compute buffers then bypass the slab entirely
 +// (raw cudaMalloc), which is the session's quick fix.  Default on.
@@ -21363,7 +21487,15 @@ index 000000000..2d02f46dd
 +}
 +
 +bool ggml_cuda_slab_compute_enabled() {
-+    return g_slab_compute_enabled;
++    return g_slab_compute_enabled && !g_slab_compute_plain;
++}
++
++void ggml_cuda_slab_set_compute_plain(bool enable) {
++    g_slab_compute_plain = enable;
++}
++
++bool ggml_cuda_slab_compute_plain() {
++    return g_slab_compute_plain;
 +}
 +
 +void ggml_cuda_slab_set_compute_narrow2(bool enable) {
@@ -23613,10 +23745,10 @@ index 000000000..3b5666269
 +bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, struct ggml_cuda_topk_moe_args & args);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 new file mode 100644
-index 000000000..e9984b68e
+index 000000000..47221287d
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,97 @@
 +#pragma once
 +
 +#include <stddef.h>
@@ -23710,10 +23842,12 @@ index 000000000..e9984b68e
 +void   ggml_cuda_slab_disarm();
 +bool   ggml_cuda_slab_compute_enabled();
 +void   ggml_cuda_slab_set_compute_narrow2(bool enable);
++void   ggml_cuda_slab_set_compute_plain(bool enable);
++bool   ggml_cuda_slab_compute_plain();
 +size_t ggml_cuda_slab_headroom_bytes();
 +void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 957908f65..e32df28b8 100644
+index 957908f65..7c0968b30 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,5 +1,6 @@
@@ -25959,15 +26093,10 @@ index 957908f65..e32df28b8 100644
      bool use_cuda_graph = true;
      // Loop over nodes in GGML graph to obtain info needed for CUDA graph
  
-@@ -2661,1744 +3937,180 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
-                 // ref: https://github.com/ggml-org/llama.cpp/pull/18958
-                 use_cuda_graph = false;
- #ifndef NDEBUG
--                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
--#endif
--            }
--        }
--
+@@ -2666,1739 +3942,175 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+             }
+         }
+ 
 -        if (!use_cuda_graph) {
 -            break;
 -        }
@@ -27571,12 +27700,9 @@ index 957908f65..e32df28b8 100644
 -                fused_mul_mat_vec = true;
 -                fused_node_count  = n_ops;
 -                break;
-+                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
-+#endif
-             }
-         }
+-            }
+-        }
 -        if (fused_mul_mat_vec) {
-+
 +        if (!use_cuda_graph) {
              break;
          }
@@ -27812,9 +27938,9 @@ index 957908f65..e32df28b8 100644
 -    return 0;
  }
 +#endif // USE_CUDA_GRAPH
++
  
 -static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
-+
 +static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const ggml_cuda_graph_key & graph_key) {
 +    int64_t t_ev = g_cgc_on ? ggml_time_us() : 0;
      bool graph_evaluated_or_captured = false;
@@ -28563,7 +28689,7 @@ index 957908f65..e32df28b8 100644
      return get_op_batch_size(op) >= dev_ctx->op_offload_min_batch_size;
  }
  
-@@ -5897,6 +6141,123 @@ static void ggml_backend_cuda_device_event_synchronize(ggml_backend_dev_t dev, g
+@@ -5897,6 +6141,128 @@ static void ggml_backend_cuda_device_event_synchronize(ggml_backend_dev_t dev, g
      CUDA_CHECK(cudaEventSynchronize((cudaEvent_t)event->context));
  }
  
@@ -28684,10 +28810,15 @@ index 957908f65..e32df28b8 100644
 +    ggml_cuda_slab_set_compute_narrow2(enable);
 +}
 +
++static void ggml_backend_cuda_device_slab_compute_plain(ggml_backend_dev_t dev, bool enable) {
++    GGML_UNUSED(dev);
++    ggml_cuda_slab_set_compute_plain(enable);
++}
++
  static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .get_name                = */ ggml_backend_cuda_device_get_name,
      /* .get_description         = */ ggml_backend_cuda_device_get_description,
-@@ -5913,6 +6274,18 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+@@ -5913,6 +6279,19 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .event_new               = */ ggml_backend_cuda_device_event_new,
      /* .event_free              = */ ggml_backend_cuda_device_event_free,
      /* .event_synchronize       = */ ggml_backend_cuda_device_event_synchronize,
@@ -28703,10 +28834,11 @@ index 957908f65..e32df28b8 100644
 +    /* .slab_compute_narrow2    = */ ggml_backend_cuda_device_slab_compute_narrow2,
 +    /* .moe_cache_set_host_pool   = */ ggml_backend_cuda_device_moe_cache_set_host_pool,
 +    /* .moe_cache_set_host_source = */ ggml_backend_cuda_device_moe_cache_set_host_source,
++    /* .slab_compute_plain        = */ ggml_backend_cuda_device_slab_compute_plain,
  };
  
  // backend reg
-@@ -5994,8 +6367,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+@@ -5994,8 +6373,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
      GGML_UNUSED(reg);
  }
  
@@ -28728,7 +28860,7 @@ index 957908f65..e32df28b8 100644
      if (strcmp(name, "ggml_backend_comm_init") == 0) {
          return (void *)ggml_backend_cuda_comm_init;
      }
-@@ -6092,6 +6478,9 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
+@@ -6092,6 +6484,9 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
          return nullptr;
      }
  
@@ -33293,10 +33425,10 @@ index 429d2e200..011129db5 100644
 +}
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
 new file mode 100644
-index 000000000..31613f788
+index 000000000..43a4986a7
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmb.cu
-@@ -0,0 +1,2508 @@
+@@ -0,0 +1,2519 @@
 +#include "mmb.cuh"
 +#include "unary.cuh"
 +#include <unordered_map>
@@ -34800,6 +34932,7 @@ index 000000000..31613f788
 +    int  bf16w          = 1;     // BF16 dense weights
 +    int  routed         = 1;     // the routed MoE (MUL_MAT_ID) path + its fused GLU
 +    int  dense_geom     = MMB_GEOM_GFX11_SPLIT;  // see mmb_geom_id
++    int  big_q4k_only   = 0;     // 128x256 dense tile only for Q4_K weights (others take 128x128)
 +};
 +
 +static mmb_arch_cfg mmb_arch_defaults(const int cc) {
@@ -34848,6 +34981,15 @@ index 000000000..31613f788
 +        // model with IQ4_NL HC gates) does not fit on gfx1100, so end-to-end A/B must be done on
 +        // gfx1151/gfx1201 first.  LLAMA_HC_GATEMIX=1 is the opt-in.
 +        c.gatemix       = 0;
++        // The 128x256 dense tile spills to scratch on gfx1100 for most weight types (Q6_K 148 B,
++        // Q5_K 104, Q3_K 56, BF16 48 per thread; Q4_K does not), and under WSL a spilling MMB prefill
++        // kernel together with the spilling head-256 WMMA FA kernel faults the queue with
++        // HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION (r62, gfx1100 under WSL2: llama-bench pp2048 4/4
++        // runs, 0/4 with this rule; on r59 a server soak also had 0/8 with GGML_CUDA_MMB=0 and 0/8
++        // with GGML_CUDA_FA_WMMA_256=0).  The 128x128 tile
++        // does not spill; keeping Q4_K on 128x256 is +4.5 % / +3.8 % pp2048 at d0 / d16384 over
++        // 128x128 for every type (Qwen3.8-27B Q4_K_M).
++        c.big_q4k_only  = 1;
 +    }
 +    // TODO(S12): the routed/GLU thresholds, `tall_mode`, `tiny_m*`, `f32split_*` and `cache_max` are
 +    // still the gfx1151 values on every arch.  Give RDNA4 its own once they are measured per arch.
@@ -34880,11 +35022,11 @@ index 000000000..31613f788
 +    const mmb_arch_cfg & c = mmb_cfg();
 +    fprintf(stderr, "MMB_CFG cc=0x%x dense_geom=%d min_t=%d glu_thresh=%d routed_thresh=%d tall=%d "
 +                    "tiny_m=%d/%d f32split=%d(min_m=%d,min_k=%d) cache=%d shadow=%d/%dMB "
-+                    "hc16=%d down16=%d gatemix=%d blk16=%d res16=%d glu=%d bf16w=%d iq3xxs_glu=%d routed=%d\n",
++                    "hc16=%d down16=%d gatemix=%d blk16=%d res16=%d glu=%d bf16w=%d iq3xxs_glu=%d routed=%d big_q4k_only=%d\n",
 +            cc, c.dense_geom, c.min_t, c.glu_thresh, c.routed_thresh, c.tall_mode,
 +            c.tiny_m, c.tiny_tt, c.f32split_mode, c.f32split_min_m, c.f32split_min_k, c.cache_max,
 +            c.shadow_mode, c.shadow_cap_mb, c.hc16, c.down16, c.gatemix, c.blk16, c.res16,
-+            c.glu, c.bf16w, c.iq3xxs_glu, c.routed);
++            c.glu, c.bf16w, c.iq3xxs_glu, c.routed, c.big_q4k_only);
 +}
 +
 +static size_t mmb_cache_max() { static const int v = getenv("GGML_CUDA_MMB_CACHE") ? atoi(getenv("GGML_CUDA_MMB_CACHE")) : mmb_cfg().cache_max; return (size_t) v; }
@@ -35431,7 +35573,8 @@ index 000000000..31613f788
 +    }
 +    const uint16_t * shadow_pre = ((src0->type == GGML_TYPE_IQ4_NL && mmb_shadow()) || src0->type == GGML_TYPE_Q6_K) ? mmb_shadow_lookup(src0) : nullptr;
 +    static const int tile_ov = getenv("GGML_CUDA_MMB_TILE") ? atoi(getenv("GGML_CUDA_MMB_TILE")) : -1;
-+    const bool big = tile_ov >= 0 ? (tile_ov != 0) : ((M >= 6144 && K >= 2560) || (shadow_pre && K >= 2560 && T >= 4096));
++    const bool big_ok = !mmb_cfg().big_q4k_only || (!shadow_pre && src0->type == GGML_TYPE_Q4_K);
++    const bool big = tile_ov >= 0 ? (tile_ov != 0) : big_ok && ((M >= 6144 && K >= 2560) || (shadow_pre && K >= 2560 && T >= 4096));
 +    // HC gate (K=320, M=10240).  "producer slots ... 1 = HC gate" -- when the graph marks this
 +    // output BF16-only, the gate is written ONCE into the pinned slot 1 and the dsv4_hc_pre
 +    // consumer reads that BF16 copy instead of round-tripping the F32 tensor.  The mark alone is
@@ -38357,10 +38500,10 @@ index 000000000..4a37ad960
 +        const int warp_size, const int nchannels_dst, cudaStream_t stream);
 diff --git a/ggml/src/ggml-cuda/mmvq-rdna-params.cuh b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
 new file mode 100644
-index 000000000..ec5b8677e
+index 000000000..a722da7df
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,103 @@
 +#pragma once
 +
 +#include "common.cuh"
@@ -38413,7 +38556,19 @@ index 000000000..ec5b8677e
 +    return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K || type == GGML_TYPE_IQ4_XS ||
 +           type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S;
 +}
++// gfx1100 (RDNA3_0) rows per block for a Q4_K verify batch (ncols_dst 2..8), same row-block
++// decomposition as the RDNA4 rule below: each row's accumulation is unchanged (bit-identical).
++// gfx1100 sweep (nwarps 1/2/4/8 x rows 1/2/4, Qwen3.8-27B Q4_K_M, MTP n-max 3): 4 rows at
++// nwarps 1 is the fastest bit-identical point (~+7 % MTP decode), greedy text unchanged;
++// nwarps > 1 changes the K-split order and was no faster.  The multi-row guard in mmvq.cu is only
++// compiled for types where RDNA4 also takes >1 row: extend it before adding other types here.
++#ifndef GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB
++#define GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB 4
++#endif
 +static constexpr __host__ __device__ int calc_rows_per_block_weight(ggml_type type, int ncols_dst, int table_id, bool small_k, int nwarps) {
++    if (table_id == MMVQ_PARAMETERS_RDNA3_0 && type == GGML_TYPE_Q4_K && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
++        return GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB;
++    }
 +    if (table_id == MMVQ_PARAMETERS_RDNA4 && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
 +        // Multi-row blocks only pay off for one-wave blocks: the 8-wave Q8_0 short-K block
 +        // (calc_nwarps_weight) was measured slower at every row count (K = 2880, 8 tokens:
@@ -38616,7 +38771,7 @@ index 000000000..3829180ce
 +    }
 +}
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 0714ae3bb..fcc871366 100644
+index 0714ae3bb..bbd6f07e9 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -1,4 +1,5 @@
@@ -39835,7 +39990,7 @@ index 0714ae3bb..fcc871366 100644
          mul_mat_vec_q_moe_launch<type>(
              vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, nrows_x,
              stride_row_x, stride_col_y, stride_col_dst,
-@@ -1186,92 +1476,269 @@ static void mul_mat_vec_q_switch_ncols_dst(
+@@ -1186,92 +1476,270 @@ static void mul_mat_vec_q_switch_ncols_dst(
      }
  
      switch (ncols_dst) {
@@ -39995,10 +40150,11 @@ index 0714ae3bb..fcc871366 100644
 +#if defined(GGML_USE_HIP)
 +                constexpr int c_rpb_weight = calc_rows_per_block_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, false, 1);
 +                if constexpr (c_rpb_weight > 1) {
-+                    // the rows the launch will actually use (Q8_0 short-K: 8-warp blocks take fewer rows)
-+                    const int rpb_w = calc_rows_per_block_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, false,
-+                        calc_nwarps_weight(type, c_ncols_dst, MMVQ_PARAMETERS_RDNA4, long_k));
-+                    if (table_id == MMVQ_PARAMETERS_RDNA4 &&
++                    // the rows the launch will actually use (Q8_0 short-K: 8-warp blocks take fewer rows;
++                    // RDNA3_0 Q4_K: GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB)
++                    const int rpb_w = calc_rows_per_block_weight(type, c_ncols_dst, table_id, false,
++                        calc_nwarps_weight(type, c_ncols_dst, table_id, long_k));
++                    if ((table_id == MMVQ_PARAMETERS_RDNA4 || table_id == MMVQ_PARAMETERS_RDNA3_0) && rpb_w > 1 &&
 +                        (nrows_x % rpb_w != 0 || nrows_x < rpb_w * GGML_MMVQ_RDNA4_WEIGHT_MIN_BLOCKS)) {
 +                        if (long_k) {
 +                            launch_ksplit_rpb(ncols_tag, std::integral_constant<int, 1>{}, std::true_type{});
@@ -40175,7 +40331,7 @@ index 0714ae3bb..fcc871366 100644
          } break;
          default:
              GGML_ABORT("fatal error");
-@@ -1451,7 +1918,9 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1451,7 +1919,9 @@ void ggml_cuda_mul_mat_vec_q(
      GGML_ASSERT(        nb0        == ts_dst);
      GGML_ASSERT(!ids || ids->nb[0] == ggml_type_size(ids->type));
  
@@ -40186,7 +40342,7 @@ index 0714ae3bb..fcc871366 100644
  
      const float   * src1_d =       (const float   *) src1->data;
      const int32_t *  ids_d = ids ? (const int32_t *)  ids->data : nullptr;
-@@ -1464,8 +1933,8 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1464,8 +1934,8 @@ void ggml_cuda_mul_mat_vec_q(
          GGML_ASSERT( !ids || dst->ne[2] <= get_mmvq_mmid_max_batch(src0->type, cc));
          GGML_ASSERT(  ids || dst->ne[1] == 1);
          // Scale fusion is only allowed for NVFP4 currently as the cost of checking this at run-time in the prologue is
@@ -40197,7 +40353,7 @@ index 0714ae3bb..fcc871366 100644
  
          if (fusion->shared_up) {
              GGML_ASSERT(ids && fusion->gate && fusion->shared_gate && fusion->shared_dst);
-@@ -1503,9 +1972,23 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1503,9 +1973,23 @@ void ggml_cuda_mul_mat_vec_q(
          if (fusion->x_scale) {
              GGML_ASSERT(fusion->x_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->x_scale));
@@ -40222,7 +40378,7 @@ index 0714ae3bb..fcc871366 100644
          if (fusion->gate_scale) {
              GGML_ASSERT(fusion->gate_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->gate_scale));
-@@ -1514,10 +1997,17 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1514,10 +1998,17 @@ void ggml_cuda_mul_mat_vec_q(
          }
          fusion_local.glu_op = fusion->glu_op;
          fusion_local.glu_limit = fusion->glu_limit;
@@ -40242,7 +40398,7 @@ index 0714ae3bb..fcc871366 100644
          const size_t size_data  = ggml_nbytes(src0);
          const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
          if (size_alloc > size_data) {
-@@ -1528,12 +2018,22 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1528,12 +2019,22 @@ void ggml_cuda_mul_mat_vec_q(
      }
  
      const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
@@ -40271,7 +40427,7 @@ index 0714ae3bb..fcc871366 100644
      }
  
      const int64_t s01 = src0->nb[1] / ts_src0;
-@@ -1559,12 +2059,565 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1559,12 +2060,565 @@ void ggml_cuda_mul_mat_vec_q(
      const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
  
      mul_mat_vec_q_switch_type(
@@ -40838,7 +40994,7 @@ index 0714ae3bb..fcc871366 100644
  void ggml_cuda_op_mul_mat_vec_q(
      ggml_backend_cuda_context & ctx,
      const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
-@@ -1595,3 +2648,721 @@ void ggml_cuda_op_mul_mat_vec_q(
+@@ -1595,3 +2649,721 @@ void ggml_cuda_op_mul_mat_vec_q(
  
      GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
  }
@@ -52772,7 +52928,7 @@ index 04f3af644..5640285ef 100644
 +void ggml_cuda_op_sigmoid_mul_add(ggml_backend_cuda_context & ctx, ggml_tensor * sig, ggml_tensor * mul, ggml_tensor * add);
 +int  ggml_cuda_sigmoid_mul_add_try_fuse(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
 diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
-index f65fe530e..1916e4e38 100644
+index f65fe530e..7a31e363b 100644
 --- a/ggml/src/ggml-cuda/vecdotq.cuh
 +++ b/ggml/src/ggml-cuda/vecdotq.cuh
 @@ -2,6 +2,17 @@
@@ -52864,22 +53020,35 @@ index f65fe530e..1916e4e38 100644
      }
  
      return d3 * sumf;
-@@ -502,6 +545,7 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
+@@ -502,12 +545,13 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
  }
  
  #define VDR_Q4_K_Q8_1_MMVQ 2
 +#define VDR_Q4_K_Q8_1_MMVQ_MOE 4
  #define VDR_Q4_K_Q8_1_MMQ  8
  
- // contiguous v/x values
-@@ -520,8 +564,36 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
+-// contiguous v/x values
++// contiguous v/x values; scm packs the two scales (bytes 0, 1) and the two mins (bytes 2, 3)
+ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
+-    const int * __restrict__ v, const int * __restrict__ u, const uint8_t * __restrict__ sc,
+-    const uint8_t * __restrict__ m, const half2 & dm4, const float * __restrict__ d8) {
++    const int * __restrict__ v, const int * __restrict__ u, const uint32_t scm,
++    const half2 & dm4, const float * __restrict__ d8) {
+ 
+     float sumf_d = 0.0f;
+     float sumf_m = 0.0f;
+@@ -520,8 +564,40 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
          const int dot1 = ggml_cuda_dp4a(v1i, u[2*i+1], ggml_cuda_dp4a(v0i, u[2*i+0], 0)); // SIMD dot product
          const int dot2 = ggml_cuda_dp4a(0x01010101, u[2*i+1], ggml_cuda_dp4a(0x01010101, u[2*i+0], 0)); // sum of u
  
 -        sumf_d += d8[i] * (dot1 * sc[i]);
 -        sumf_m += d8[i] * (dot2 * m[i]);  // multiply constant part of q4_K with sum of q8_1 values
-+        sumf_d += d8[i] * ggml_cuda_mul_small(dot1, sc[i]);
-+        sumf_m += d8[i] * ggml_cuda_mul_small(dot2, m[i]);  // multiply constant part of q4_K with sum of q8_1 values
++        sumf_d += d8[i] * ggml_cuda_mul_small(dot1, (scm >> (8*i)) & 0xFF);
++        // multiply constant part of q4_K with sum of q8_1 values.  Same value as d8[i] * float(dot2 * m): d8[i] (11
++        // significant bits) times |dot2| <= 1024 is exact in fp32, so the fma sees the same exact product and rounds
++        // once.  The first factor depends only on the q8_1 column and the second only on the weight row, so a
++        // multi-row, multi-column block computes each once instead of per (row, column).
++        sumf_m += (d8[i] * (float) dot2) * (float) ((scm >> (8*i + 16)) & 0xFF);
 +    }
 +
 +    const float2 dm4f = __half22float2(dm4);
@@ -52911,7 +53080,7 @@ index f65fe530e..1916e4e38 100644
      }
  
      const float2 dm4f = __half22float2(dm4);
-@@ -558,6 +630,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
+@@ -558,6 +634,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
  }
  
  #define VDR_Q5_K_Q8_1_MMVQ 2
@@ -52919,7 +53088,7 @@ index f65fe530e..1916e4e38 100644
  #define VDR_Q5_K_Q8_1_MMQ  8
  
  // contiguous v/x values
-@@ -582,8 +655,43 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq(
+@@ -582,8 +659,43 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq(
          const int dot1 = ggml_cuda_dp4a(v0i, u[2*i+0], ggml_cuda_dp4a(v1i, u[2*i+1], 0)); // SIMD dot product
          const int dot2 = ggml_cuda_dp4a(0x01010101, u[2*i+0], ggml_cuda_dp4a(0x01010101, u[2*i+1], 0)); // sum of u
  
@@ -52965,7 +53134,7 @@ index f65fe530e..1916e4e38 100644
  
      }
  
-@@ -620,7 +728,14 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
+@@ -620,7 +732,14 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
      return dm4f.x*sumf_d - dm4f.y*sumf_m;
  }
  
@@ -52980,7 +53149,7 @@ index f65fe530e..1916e4e38 100644
  #define VDR_Q6_K_Q8_1_MMQ  8
  
  // contiguous v/x values
-@@ -640,7 +755,36 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmvq(
+@@ -640,7 +759,42 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmvq(
  
          const int vi = __vsub4((vil | vih), 0x20202020); // vi = (vil | vih) - 32
  
@@ -53010,15 +53179,21 @@ index f65fe530e..1916e4e38 100644
 +
 +        const int vil = (vl >> (4*(i&1))) & 0x0F0F0F0F;
 +
++#if defined(GGML_USE_HIP)
++        // vi = (vil | 16*h) - 32 per byte, h = the 2 high bits.  16*h - 32 is one of 0xE0, 0xF0, 0x00, 0x10 (zero low
++        // nibble), so one byte-table lookup and an OR replace the shift/mask and the emulated byte subtract.
++        const int vi = vil | __builtin_amdgcn_perm(0, 0x1000F0E0, (vh >> (4*(i&1))) & 0x03030303);
++#else
 +        const int vih = ((vh >> (4*(i&1))) << 4) & 0x30303030;
 +
 +        const int vi = __vsubss4((vil | vih), 0x20202020); // vi = (vil | vih) - 32
++#endif // defined(GGML_USE_HIP)
 +
 +        sumf += d8[i&1] * ggml_cuda_mul_small(ggml_cuda_dp4a(vi, u[i], 0), sc); // SIMD dot product
      }
  
      return d*sumf;
-@@ -701,18 +845,18 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
+@@ -701,18 +855,18 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
          const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
  
          // unpack crumbs into nibble indices
@@ -53047,7 +53222,7 @@ index f65fe530e..1916e4e38 100644
  
          sumi = ggml_cuda_dp4a(v0, u0, sumi);
          sumi = ggml_cuda_dp4a(v1, u1, sumi);
-@@ -865,6 +1009,32 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
+@@ -865,6 +1019,32 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
      return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, __low2half(bq8_1->ds));
  }
  
@@ -53080,10 +53255,46 @@ index f65fe530e..1916e4e38 100644
  static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -965,6 +1135,59 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
-     return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
- }
+@@ -936,22 +1116,20 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
+     v[0] = q4[0];
+     v[1] = q4[4];
  
+-    // branchless so nvcc can hoist this out of the ncols_dst loop
++    // branchless so nvcc can hoist this out of the ncols_dst loop.  The two scales (bytes 0, 1) and mins (bytes 2, 3)
++    // of sub-block pair j in one word: j < 2 takes the low 6 bits of scales[j], scales[j+2]; j >= 2 the low/high
++    // nibbles of scales[j+2] plus the top 2 bits of scales[j-2], scales[j].  Both are built 32 bits at a time and the
++    // lane's j (constant over the K loop) picks one.
+     const uint16_t * scales = (const uint16_t *)bq4_K->scales;
+     const int j  = bq8_offset/2;
+     const int jm = j & 1;
+ 
+-    const uint32_t s0 = scales[jm + 0];
+-    const uint32_t s2 = scales[jm + 2];
+-    const uint32_t s4 = scales[jm + 4];
++    const uint32_t s02 = scales[jm + 0] | ((uint32_t) scales[jm + 2] << 16);
++    const uint32_t s4  = scales[jm + 4];
+ 
+-    const uint32_t hi = (uint32_t) -(int32_t) (j >= 2);
+-
+-    uint16_t aux[2];
+-    aux[0] = (uint16_t) (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
+-    aux[1] = (uint16_t) (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+-    const uint8_t * sc = (const uint8_t *)aux;
+-    const uint8_t * m  = sc + 2;
++    const uint32_t scm_lo = s02 & 0x3f3f3f3f;
++    const uint32_t scm_hi = ((s4 | (s4 << 12)) & 0x0f0f0f0f) | ((s02 & 0xc0c0c0c0) >> 2);
++    const uint32_t scm    = j >= 2 ? scm_hi : scm_lo;
+ 
+     for (int i = 0; i < QR4_K; ++i) {
+         const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
+@@ -962,7 +1140,60 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
+         u[2*i+1] = q8[4];
+     }
+ 
+-    return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
++    return vec_dot_q4_K_q8_1_impl_vmmq(v, u, scm, bq4_K->dm, d8);
++}
++
 +// VDR=4 entry point: iqs must be a multiple of 4 (the mmvq kernel strides kqs
 +// by VDR). Processes 32 elements per call, splitting the ql/u loads over two
 +// 16-element chunks that share the q8_1 block pair, the sub-scale/min pair and
@@ -53135,12 +53346,10 @@ index f65fe530e..1916e4e38 100644
 +    }
 +
 +    return vec_dot_q4_K_q8_1_impl_vmmq4(v, u, sc, m, bq4_K->dm, d8);
-+}
-+
- static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
-     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+ }
  
-@@ -1016,6 +1239,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
+ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
+@@ -1016,6 +1247,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
      return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
  }
  
@@ -53205,7 +53414,7 @@ index f65fe530e..1916e4e38 100644
  static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -1042,6 +1323,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
+@@ -1042,6 +1331,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
  }
  
@@ -53247,7 +53456,7 @@ index f65fe530e..1916e4e38 100644
  #define VDR_IQ2_XXS_Q8_1_MMVQ 2
  #define VDR_IQ2_XXS_Q8_1_MMQ  2
  
-@@ -1060,19 +1376,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
+@@ -1060,19 +1384,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
          const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
  
@@ -53270,7 +53479,7 @@ index f65fe530e..1916e4e38 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1097,12 +1411,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1097,12 +1419,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l0/2] & 0x1FF];
          const uint32_t signs = unpack_ksigns(q2[l0/2] >> 9);
  
@@ -53285,7 +53494,7 @@ index f65fe530e..1916e4e38 100644
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
          if (l0 < 4) {
-@@ -1113,7 +1425,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1113,7 +1433,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -53294,7 +53503,7 @@ index f65fe530e..1916e4e38 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1143,11 +1455,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1143,11 +1463,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
      for (int l0 = 0; l0 < 8; l0 += 2) {
          const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
  
@@ -53309,7 +53518,7 @@ index f65fe530e..1916e4e38 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1160,7 +1470,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1160,7 +1478,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -53318,7 +53527,7 @@ index f65fe530e..1916e4e38 100644
  
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1184,13 +1494,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1184,13 +1502,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
          const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
          const uint32_t signs = unpack_ksigns(aux32 >> (7*l0/2));
  
@@ -53334,7 +53543,7 @@ index f65fe530e..1916e4e38 100644
  
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
-@@ -1199,7 +1507,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1199,7 +1515,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
      }
  
      const int ls = aux32 >> 28;
@@ -53343,7 +53552,7 @@ index f65fe530e..1916e4e38 100644
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1228,11 +1536,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1228,11 +1544,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
              iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
              iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
  
@@ -53358,7 +53567,7 @@ index f65fe530e..1916e4e38 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1241,7 +1547,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1241,7 +1555,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
          sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
      }
  
@@ -53367,7 +53576,7 @@ index f65fe530e..1916e4e38 100644
  
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1373,7 +1679,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
+@@ -1373,7 +1687,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
      }
  
      const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
@@ -54980,7 +55189,7 @@ index 3c4b52008..284fba517 100644
                      } else {
                          ss << ".";
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 23170d8a3..72cc5139f 100644
+index 23170d8a3..4a8fc5bf9 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -55404,10 +55613,26 @@ index 23170d8a3..72cc5139f 100644
  void llama_context::sched_new(size_t max_nodes, bool parallel) {
      sched.reset(ggml_backend_sched_new(
              backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
-@@ -712,6 +971,18 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
+@@ -712,6 +971,34 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
      ggml_backend_sched_set_realloc_callback(sched.get(), sched_graph_realloc, this);
  }
  
++void llama_context::sched_alt_select(bool alt) {
++    if (alt == sched_alt_in_use) {
++        return;
++    }
++    if (alt && !sched_alt) {
++        ggml_backend_sched_ptr sched_main = std::move(sched);
++        sched_new(gf_res_reserve->get_max_nodes(), cparams.pipeline_parallel);
++        sched_alt = std::move(sched);
++        sched     = std::move(sched_main);
++    }
++    std::swap(sched, sched_alt);
++    std::swap(gf_res_prev_active, gf_res_prev_active_alt);
++    sched_alt_in_use = alt;
++    ggml_backend_meta_set_view_slot(alt ? 1 : 0);
++}
++
 +bool llama_context::kq_mask_packed_reachable() const {
 +    if (model.hparams.n_pos_per_embd() > 1) {
 +        return true;
@@ -55423,7 +55648,7 @@ index 23170d8a3..72cc5139f 100644
  void llama_context::sched_reserve() {
      if (!sched_need_reserve) {
          return;
-@@ -723,11 +994,15 @@ void llama_context::sched_reserve() {
+@@ -723,11 +1010,15 @@ void llama_context::sched_reserve() {
  
      synchronize();
  
@@ -55440,7 +55665,18 @@ index 23170d8a3..72cc5139f 100644
      const size_t max_nodes = this->graph_max_nodes(n_tokens);
  
      LLAMA_LOG_DEBUG("%s: max_nodes = %zu\n", __func__, max_nodes);
-@@ -750,9 +1025,9 @@ void llama_context::sched_reserve() {
+@@ -738,6 +1029,10 @@ void llama_context::sched_reserve() {
+     gf_res_reserve.reset(new llm_graph_result(max_nodes));
+     gf_res_prev_active = nullptr;
+ 
++    GGML_ASSERT(!sched_alt_in_use);
++    sched_alt.reset();
++    gf_res_prev_active_alt = nullptr;
++
+     sched_new(max_nodes, cparams.pipeline_parallel);
+ 
+     llama_memory_context_ptr mctx;
+@@ -750,9 +1045,9 @@ void llama_context::sched_reserve() {
      }
  
      // avoid reserving graphs with zero outputs - assume one output per sequence
@@ -55452,7 +55688,7 @@ index 23170d8a3..72cc5139f 100644
  
      resolve_fused_ops(mctx.get(), n_seqs);
  
-@@ -772,13 +1047,14 @@ void llama_context::sched_reserve() {
+@@ -772,13 +1067,14 @@ void llama_context::sched_reserve() {
      // reserve pp (prompt processing) graph first so that buffers are only allocated once
      {
          auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(),
@@ -55469,7 +55705,7 @@ index 23170d8a3..72cc5139f 100644
              }
              if (!gf) {
                  throw std::runtime_error("failed to allocate compute pp buffers");
-@@ -797,7 +1073,7 @@ void llama_context::sched_reserve() {
+@@ -797,7 +1093,7 @@ void llama_context::sched_reserve() {
          n_splits_tg = n_splits_pp;
          n_nodes_tg  = n_nodes_pp;
      } else {
@@ -55478,7 +55714,7 @@ index 23170d8a3..72cc5139f 100644
          if (!gf) {
              throw std::runtime_error("failed to allocate compute tg buffers");
          }
-@@ -819,10 +1095,10 @@ void llama_context::sched_reserve() {
+@@ -819,10 +1115,10 @@ void llama_context::sched_reserve() {
                  // [TAG_RESERVE_DIAG_DECAY]
                  // the `inp_diag_decay` tensor size scales with `n_seq_tokens^2` which
                  // makes `n_seqs == 1` use more memory for the compute graph compared to `n_seqs > 1`
@@ -55491,7 +55727,7 @@ index 23170d8a3..72cc5139f 100644
          };
  
          if (!gf) {
-@@ -843,6 +1119,24 @@ void llama_context::sched_reserve() {
+@@ -843,6 +1139,24 @@ void llama_context::sched_reserve() {
          }
      }
  
@@ -55516,7 +55752,7 @@ index 23170d8a3..72cc5139f 100644
      {
          const bool diff = n_nodes_pp != n_nodes_tg || n_splits_pp != n_splits_tg ||
                            n_inputs_pp != n_inputs_tg || n_input_tensors_pp != n_input_tensors_tg;
-@@ -863,7 +1157,23 @@ void llama_context::sched_reserve() {
+@@ -863,7 +1177,23 @@ void llama_context::sched_reserve() {
      const int64_t t_end_us = ggml_time_us();
  
      LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d\n",
@@ -55541,7 +55777,15 @@ index 23170d8a3..72cc5139f 100644
  }
  
  void llama_context::synchronize() {
-@@ -995,7 +1305,7 @@ bool llama_context::memory_update(bool optimize) {
+@@ -977,6 +1307,7 @@ bool llama_context::memory_update(bool optimize) {
+             }
+         }
+         gf_res_prev_active = nullptr;
++        gf_res_prev_active_alt = nullptr;
+ 
+         if (!mctx->apply()) {
+             LLAMA_LOG_ERROR("%s: failed to apply memory update\n", __func__);
+@@ -995,7 +1326,7 @@ bool llama_context::memory_update(bool optimize) {
  
          const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
  
@@ -55550,7 +55794,7 @@ index 23170d8a3..72cc5139f 100644
          if (!gf) {
              LLAMA_LOG_ERROR("%s: failed to reserve graph after the memory update\n", __func__);
          }
-@@ -1279,12 +1589,12 @@ size_t llama_context::get_sampled_probs_count(int32_t idx) {
+@@ -1279,12 +1610,12 @@ size_t llama_context::get_sampled_probs_count(int32_t idx) {
  
  
  void llama_context::attach_threadpool(
@@ -55567,7 +55811,7 @@ index 23170d8a3..72cc5139f 100644
  }
  
  void llama_context::detach_threadpool() {
-@@ -1301,11 +1611,11 @@ void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
+@@ -1301,11 +1632,11 @@ void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
      cparams.n_threads_batch = n_threads_batch;
  }
  
@@ -55582,7 +55826,7 @@ index 23170d8a3..72cc5139f 100644
  
      for (auto & backend : backends) {
          auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend.get()));
-@@ -1344,6 +1654,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+@@ -1344,6 +1675,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
  
      GGML_ASSERT(lid <= model.hparams.n_layer());
  
@@ -55595,7 +55839,7 @@ index 23170d8a3..72cc5139f 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -1500,6 +1816,13 @@ bool llama_context::set_adapter_cvec(
+@@ -1500,6 +1837,13 @@ bool llama_context::set_adapter_cvec(
      return res;
  }
  
@@ -55609,7 +55853,7 @@ index 23170d8a3..72cc5139f 100644
  llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
      if (mctx && !mctx->apply()) {
          LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
-@@ -1507,6 +1830,171 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1507,6 +1851,179 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          return nullptr;
      }
  
@@ -55778,10 +56022,18 @@ index 23170d8a3..72cc5139f 100644
 +        }
 +    }
 +
++    static const bool draft_sched2 = [] {
++        const char * e = getenv("LLAMA_DRAFT_SCHED2");
++        return e == nullptr || atoi(e) != 0;
++    }();
++    if (draft_sched2 && cparams.ctx_other != nullptr) {
++        sched_alt_select(n_outputs > 0);
++    }
++
      auto * res = get_gf_res_prev();
      auto * gf  = res->get_gf();
  
-@@ -1544,7 +2032,22 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1544,7 +2061,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
              return nullptr;
          }
  
@@ -55793,19 +56045,22 @@ index 23170d8a3..72cc5139f 100644
 +        if (is_draft) {
 +            for (const auto & d : model.devices) {
 +                ggml_backend_dev_slab_compute_narrow2(d.dev, true);
++                // the second scheduler's small buffer is never served by the slab (narrow-2 holds one view)
++                ggml_backend_dev_slab_compute_plain(d.dev, sched_alt_in_use);
 +            }
 +        }
 +        const bool alloc_ok = ggml_backend_sched_alloc_graph(sched.get(), gf);
 +        if (is_draft) {
 +            for (const auto & d : model.devices) {
 +                ggml_backend_dev_slab_compute_narrow2(d.dev, false);
++                ggml_backend_dev_slab_compute_plain(d.dev, false);
 +            }
 +        }
 +        if (!alloc_ok) {
              LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
              ret = GGML_STATUS_ALLOC_FAILED;
              return nullptr;
-@@ -1570,6 +2073,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1570,12 +2105,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          return nullptr;
      }
  
@@ -55813,7 +56068,32 @@ index 23170d8a3..72cc5139f 100644
      ret = GGML_STATUS_SUCCESS;
  
      return res;
-@@ -1905,6 +2409,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ }
+ 
+ int llama_context::encode(const llama_batch_ext & batch_inp) {
++    // the draft context's second scheduler is swapped into `sched` only while this call runs
++    struct sched_alt_restore {
++        llama_context * ctx;
++        ~sched_alt_restore() { ctx->sched_alt_select(false); }
++    } sched_alt_restore_ { this };
++
+     if (batch_inp.tokens.empty()) {
+         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
+         return -1;
+@@ -1815,6 +2357,12 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch_ext & batch_inp) {
++    // the draft context's second scheduler is swapped into `sched` only while this call runs
++    struct sched_alt_restore {
++        llama_context * ctx;
++        ~sched_alt_restore() { ctx->sched_alt_select(false); }
++    } sched_alt_restore_ { this };
++
+     if (!memory) {
+         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
+         return encode(batch_inp);
+@@ -1905,6 +2453,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
      output_swaps.clear();
      embd_batch_idxs.clear();
@@ -55821,7 +56101,7 @@ index 23170d8a3..72cc5139f 100644
  
      sched_reserve();
  
-@@ -1970,7 +2475,18 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -1970,7 +2519,18 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      }
  
      int64_t n_outputs_prev = 0;
@@ -55841,7 +56121,7 @@ index 23170d8a3..72cc5139f 100644
  
      do {
          const auto & ubatch = mctx->get_ubatch();
-@@ -2115,14 +2631,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2115,14 +2675,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
          }
  
          // [TAG_EXTRACT_TARGET_EMBEDDINGS]
@@ -55858,7 +56138,7 @@ index 23170d8a3..72cc5139f 100644
  
              if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
                  ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
-@@ -2139,7 +2655,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2139,7 +2699,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
          if (extract_all_idxs) {
              GGML_ASSERT(ubatch.data && ubatch.data->batch_idxs.size() == ubatch.n_tokens);
@@ -55867,7 +56147,7 @@ index 23170d8a3..72cc5139f 100644
              const auto & batch_idxs = ubatch.data->batch_idxs;
              embd_batch_idxs.insert(embd_batch_idxs.end(), batch_idxs.begin(), batch_idxs.end());
          }
-@@ -2155,8 +2671,58 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2155,8 +2715,58 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
          }
  
          n_outputs_prev += n_outputs;
@@ -55928,7 +56208,7 @@ index 23170d8a3..72cc5139f 100644
  
      // set to total number of outputs in the batch, for use in llama_get_logits_ith
      n_outputs = n_outputs_all;
-@@ -2218,11 +2784,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2218,11 +2828,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  // output
  //
  
@@ -55942,7 +56222,23 @@ index 23170d8a3..72cc5139f 100644
  
      const auto n_batch    = cparams.n_batch;
      const auto n_vocab    = vocab.n_tokens();
-@@ -2380,8 +2946,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+@@ -2300,6 +2910,15 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+         // try to use the host buffer of the device where the output tensor is allocated for faster transfer to system memory
+         auto * output_dev = model.dev_output();
+         auto * output_dev_host_buft = output_dev ? ggml_backend_dev_host_buffer_type(output_dev) : nullptr;
++        // A meta (tensor-split) device has no single host buffer type when its devices each have their own (the CUDA
++        // per-device pinned types differ only in `device`).  The output buffer is never scheduled on, so the first
++        // simple device's pinned type serves it: without it the per-step D2H reads of the outputs land in pageable
++        // memory and each one blocks the host until the GPU is done.
++        static const bool output_pinned = [] { const char * e = getenv("LLAMA_OUTPUT_PINNED"); return e == nullptr || atoi(e) != 0; }();
++        if (output_pinned && output_dev_host_buft == nullptr && output_dev != nullptr && ggml_backend_dev_is_meta(output_dev) &&
++                ggml_backend_meta_dev_n_devs(output_dev) > 0) {
++            output_dev_host_buft = ggml_backend_dev_host_buffer_type(ggml_backend_meta_dev_simple_dev(output_dev, 0));
++        }
+         if (output_dev_host_buft) {
+             buft = output_dev_host_buft;
+         }
+@@ -2380,8 +2999,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
      return n_outputs_max;
  }
  
@@ -56073,7 +56369,7 @@ index 23170d8a3..72cc5139f 100644
      for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
          if (!cparams.embeddings_layer_inp[il]) {
              continue;
-@@ -2482,7 +3170,8 @@ void llama_context::output_reorder() {
+@@ -2482,7 +3223,8 @@ void llama_context::output_reorder() {
                  }
              }
              for (auto & layer : embd_layer_inp) {
@@ -56083,7 +56379,7 @@ index 23170d8a3..72cc5139f 100644
                      for (size_t k = 0; k < n_embd; ++k) {
                          std::swap(layer.data[i*n_embd + k], layer.data[j*n_embd + k]);
                      }
-@@ -2613,13 +3302,14 @@ static void ubatch_prepare_reserve(
+@@ -2613,13 +3355,14 @@ static void ubatch_prepare_reserve(
  }
  
  ggml_cgraph * llama_context::graph_reserve(
@@ -56102,7 +56398,13 @@ index 23170d8a3..72cc5139f 100644
      }
  
      ggml_backend_sched_reset(sched.get());
-@@ -2636,16 +3326,31 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2631,21 +3374,37 @@ ggml_cgraph * llama_context::graph_reserve(
+         }
+     }
+     gf_res_prev_active = nullptr;
++    gf_res_prev_active_alt = nullptr;
+ 
+     // store the n_outputs as it is, and restore it afterwards
      // TODO: not sure if needed, might simplify in the future by removing this
      const auto save_n_outputs = this->n_outputs;
  
@@ -56139,7 +56441,7 @@ index 23170d8a3..72cc5139f 100644
  
      res->reset();
  
-@@ -2667,10 +3372,32 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2667,10 +3426,32 @@ ggml_cgraph * llama_context::graph_reserve(
          } else {
              ggml_backend_sched_split_graph(sched.get(), gf);
          }
@@ -56176,7 +56478,7 @@ index 23170d8a3..72cc5139f 100644
      }
  
      return gf;
-@@ -2900,9 +3627,57 @@ public:
+@@ -2900,9 +3681,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
@@ -56237,7 +56539,7 @@ index 23170d8a3..72cc5139f 100644
          }
      }
  
-@@ -3691,6 +4466,52 @@ void llama_context::perf_reset() {
+@@ -3691,6 +4520,52 @@ void llama_context::perf_reset() {
      // note: the reallocation counters are not reset - they track the lifetime totals for this context
  }
  
@@ -56290,7 +56592,7 @@ index 23170d8a3..72cc5139f 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3701,22 +4522,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3701,22 +4576,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -56331,7 +56633,7 @@ index 23170d8a3..72cc5139f 100644
          }
      }
      return ret;
-@@ -3742,12 +4579,12 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter
+@@ -3742,12 +4633,12 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter
      ggml_set_param(tensor);
  }
  
@@ -56348,7 +56650,7 @@ index 23170d8a3..72cc5139f 100644
      GGML_ASSERT(n_batch                    % n_ubatch == 0);
  
      if (cparams.flash_attn) {
-@@ -3777,22 +4614,22 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
+@@ -3777,22 +4668,22 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
      void * param_filter_ud              = lopt_params.param_filter_ud;
  
    //llama_set_param(model->tok_embd,        param_filter, param_filter_ud); // FIXME
@@ -56387,7 +56689,15 @@ index 23170d8a3..72cc5139f 100644
          for (size_t i = 0; i < sizeof(layer)/sizeof(struct ggml_tensor *); ++i) {
              llama_set_param(reinterpret_cast<struct ggml_tensor **>(&layer)[i], param_filter, param_filter_ud);
          }
-@@ -3974,6 +4811,7 @@ llama_context_params llama_context_default_params() {
+@@ -3873,6 +4764,7 @@ void llama_context::opt_epoch_iter(
+ 
+             // the optimizer graph is allocated outside sched, so the next decode must rebuild
+             gf_res_prev_active = nullptr;
++            gf_res_prev_active_alt = nullptr;
+             res->reset();
+ 
+             auto * gf = model.build_graph(gparams);
+@@ -3974,6 +4866,7 @@ llama_context_params llama_context_default_params() {
          /*.n_ubatch                    =*/ 512,
          /*.n_seq_max                   =*/ 1,
          /*.n_rs_seq                    =*/ 0,
@@ -56395,7 +56705,7 @@ index 23170d8a3..72cc5139f 100644
          /*.n_outputs_max               =*/ 0,
          /*.n_outputs_max_per_seq       =*/ 1,
          /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default
-@@ -4004,6 +4842,7 @@ llama_context_params llama_context_default_params() {
+@@ -4004,6 +4897,7 @@ llama_context_params llama_context_default_params() {
          /*.op_offload                  =*/ true,
          /*.swa_full                    =*/ true,
          /*.kv_unified                  =*/ false,
@@ -56403,7 +56713,7 @@ index 23170d8a3..72cc5139f 100644
          /*.sampler                     =*/ nullptr,
          /*.n_sampler                   =*/ 0,
          /*.ctx_other                   =*/ nullptr,
-@@ -4012,6 +4851,26 @@ llama_context_params llama_context_default_params() {
+@@ -4012,6 +4906,26 @@ llama_context_params llama_context_default_params() {
      return result;
  }
  
@@ -56430,7 +56740,7 @@ index 23170d8a3..72cc5139f 100644
  llama_context * llama_init_from_model(
                   llama_model * model,
          llama_context_params   params) {
-@@ -4047,10 +4906,49 @@ llama_context * llama_init_from_model(
+@@ -4047,10 +4961,49 @@ llama_context * llama_init_from_model(
          if (model->get_split_state_ud.n_devices == 1) {
              LLAMA_LOG_WARN("%s: SPLIT_MODE_TENSOR being used for a single device is not recommended\n", __func__);
          }
@@ -56482,7 +56792,7 @@ index 23170d8a3..72cc5139f 100644
          return nullptr;
      }
  
-@@ -4279,6 +5177,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+@@ -4279,6 +5232,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
      return ctx->get_embeddings_nextn_ith(i);
  }
  
@@ -56510,7 +56820,7 @@ index 23170d8a3..72cc5139f 100644
      ctx->synchronize();
  
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 277aff71d..2130cca62 100644
+index 277aff71d..c5287b533 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -58,6 +58,11 @@ struct llama_context {
@@ -56573,7 +56883,17 @@ index 277aff71d..2130cca62 100644
  
      bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
  
-@@ -355,6 +391,10 @@ private:
+@@ -276,6 +312,9 @@ private:
+     // create a new backend scheduler for a graph of the specified size and register the callbacks below
+     void sched_new(size_t max_nodes, bool parallel);
+ 
++    // swap the second scheduler (and its graph-reuse state) in or out of `sched`, creating it on first use
++    void sched_alt_select(bool alt);
++
+     // ggml_backend_sched copy callback, copies only the experts used by MUL_MAT_ID and updates the MoE cache
+     static bool sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data);
+ 
+@@ -355,6 +394,10 @@ private:
      uint32_t n_input_tensors = 0; // number of tensors marked as input during the last graph reserve
      uint32_t n_outputs = 0; // number of actually-used outputs in the current ubatch or last logical batch
  
@@ -56584,7 +56904,29 @@ index 277aff71d..2130cca62 100644
      std::vector<int32_t> output_ids; // map batch token positions to ids of the logits and embd buffers
  
      struct swap_info {
-@@ -421,6 +461,13 @@ private:
+@@ -366,6 +409,13 @@ private:
+ 
+     ggml_backend_sched_ptr sched;
+ 
++    // The MTP draft context alternates a no-output ingest graph and a 1-token draft-step graph every cycle; with
++    // one scheduler each switch re-splits and re-allocates the graph.  The graphs with outputs run on a second
++    // scheduler, so both stay allocated and are reused.  It is swapped into `sched` only while a decode or encode
++    // runs (LLAMA_DRAFT_SCHED2=0: off).
++    ggml_backend_sched_ptr sched_alt;
++    bool                   sched_alt_in_use = false;
++
+     bool sched_need_reserve = true;
+ 
+     // state of sched_copy_experts, reset before each graph compute
+@@ -412,6 +462,7 @@ private:
+     llm_graph_result_ptr gf_res_reserve;
+ 
+     llm_graph_result * gf_res_prev_active = nullptr;
++    llm_graph_result * gf_res_prev_active_alt = nullptr; // the reuse state of the scheduler not in `sched`
+ 
+     // host buffer for the model output (logits and embeddings)
+     ggml_backend_buffer_ptr buf_output;
+@@ -421,6 +472,13 @@ private:
  
      bool has_evaluated_once = false;
  

@@ -1,4 +1,4 @@
-From 5eeff4da53a34a8f9f1b7cde40938a5a1df19920 Mon Sep 17 00:00:00 2001
+From 1cee2637c956accfe5c0da65da5604901546fb6a Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -1014,7 +1014,7 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index c9cb98456..72cc5139f 100644
+index 62bca96b1..4a8fc5bf9 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -310,6 +310,11 @@ llama_context::llama_context(
@@ -1029,7 +1029,7 @@ index c9cb98456..72cc5139f 100644
  
      cparams.ctx_type          = params.ctx_type;
      cparams.rope_scaling_type = params.rope_scaling_type;
-@@ -1649,6 +1654,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+@@ -1670,6 +1675,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
  
      GGML_ASSERT(lid <= model.hparams.n_layer());
  
@@ -1042,7 +1042,7 @@ index c9cb98456..72cc5139f 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -3616,9 +3627,57 @@ public:
+@@ -3670,9 +3681,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {

@@ -5,12 +5,16 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r64`** (canonical tip `5eeff4da5`, net tree
-`ca68f3ed0557d9cb2168f8b4773ab32476f84feb`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r65`** (canonical tip `5b2be1be3`, net tree
+`5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
-`1c5d32ac537d`, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), qwen4exp gate PASS, adaptive-MTP
-`none == n3` (35B bit-identical, `-n 3000`, prose `9840cd63290c` / mixed `5571e0424738`), 35B
-`-ncmoe 20` hang loop 10/10.  r64 folds the r63 residuals: **block 09** splices an arbitrary segmented
+identical to r64, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), rule-5 `llama-batched-bench`
+B=1/4/8 no worse than r64, MTP acceptance and text identical across arms.  r65 merges five
+`@briansp2020` PRs into their owner blocks (06/07/08/09/10): `LLAMA_OUTPUT_PINNED` (pinned output buffer
+under `-sm tensor`, block 09), `LLAMA_DRAFT_SCHED2` (a second scheduler for the MTP draft's output
+graphs, blocks 09 + 10), the Q4_K/Q6_K mmvq vecdot instruction reductions (block 07), and two gfx1100
+ports (the Q4_K-only 128x256 MMB dense tile, block 06, and 4 rows per block for a Q4_K verify batch,
+block 08).  Before it, r64 folds the r63 residuals: **block 09** splices an arbitrary segmented
 Meta write (no `offset % row_stride` classifier, no accumulator; byte-identical on current callers;
 Gemma4 front/tail proven a near-tie and accepted) and **block 10** owns the CUDA splice-gather ring in
 `ggml_backend_cuda_context` and drops the qwen4exp MTP `ubatch.token` assert (PR #160).  Before it, r63

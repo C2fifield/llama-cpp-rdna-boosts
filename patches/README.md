@@ -11,7 +11,23 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r64` (2026-10-15) -- block-09 segmented Meta writes, block-10 gather-ring ownership, qwen4exp image+MTP:**
+> **Current release `v12-097cf33d9-r65` (2026-10-15) -- five contributor PRs merged into their owner blocks (06/07/08/09/10, no new block):**
+> canonical tip `5b2be1be3`, net tree `5bdbf241fc20f6ef9eb0ac851a8531f0dd14f684`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy identical
+> to r64, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS (identical to base), rule-5
+> `llama-batched-bench` B=1/4/8 no worse than r64 (B=1 `28.51 -> 29.12`, B=4 `102.85 -> 108.81`, B=8
+> `180.29 -> 188.96`), MTP acceptance and generated text identical across arms.  Merged from
+> `@briansp2020`'s PRs #154/#155/#156/#157/#159: **`LLAMA_DRAFT_SCHED2`** (a second scheduler for the
+> MTP draft's output graphs: Flash-Next 2-GPU MTP `132.75 -> 139.6`/`140.1` t/s, draft reallocs
+> `1068 -> 34`, ~+1.5 % over the output arm), **`LLAMA_OUTPUT_PINNED`** (pinned output buffer under
+> `-sm tensor`: ~+2.7 % Flash-Next, ~+4.7 % dense 27B), the Q4_K/Q6_K mmvq vecdot instruction
+> reductions (`+0.8 %` dense 27B 1-GPU; reporter `+2-3 %` gfx1201, `+4-6 %` gfx1100), and two gfx1100
+> ports: the Q4_K-only 128x256 MMB dense tile (WSL2 aperture-fault fix, `+4.5 %` pp2048) and 4 rows
+> per block for a Q4_K verify batch (`+7 %` MTP decode, bit-identical).  The gfx1100 changes are
+> runtime no-ops on gfx1201.  Records: `../WORKLOG.md` 261015.002 and `../archive/work/{draft-sched2,
+> output-pinned,rdna3-mmvq-vecdot-alu,rdna3-mmb-tile-spill,rdna3-mmvq-q4k-rpb}/`.
+>
+> **Previous release `v12-097cf33d9-r64` (2026-10-15) -- block-09 segmented Meta writes, block-10 gather-ring ownership, qwen4exp image+MTP:**
 > canonical tip `5eeff4da5`, net tree `ca68f3ed0557d9cb2168f8b4773ab32476f84feb`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy
 > `1c5d32ac537d`, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, qwen4exp gate PASS
