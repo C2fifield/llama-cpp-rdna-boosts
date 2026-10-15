@@ -11,7 +11,24 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r62` (2026-10-14) -- fix the `-sm tensor` + `-ncmoe` below-gate upload race (block 10):**
+> **Current release `v12-097cf33d9-r63` (2026-10-14) -- `-ncmoe` hosts the LAST N layers + block-09 cache/preflight/`-lm none` fixes:**
+> canonical tip `daf21c0d0`, net tree `b8835a67755d4e00bd0a692d9938f34770699df0`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy
+> `1c5d32ac537d`, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP `none == n3`
+> (35B `-sm tensor -ncmoe 99` + auto cache, `-n 3000`, bit-identical `49eea5e81393`, +82 % prose /
+> +49 % mixed), qwen4exp gate PASS (IQ3_XXS/IQ4_NL/Q4_K_M), `llama-batched-bench -npl 1,4,8` tail >=
+> front, r62 below-gate corruption repro clean.  **Block 09** (`common/*`, `include/llama.h`,
+> `src/llama-model*.{h,cpp}`, `src/llama.cpp`, `src/llama-quant.cpp`, `tools/llama-bench`,
+> `moe-expert-cache.cu`): `-ncmoe N` now hosts `[n_layer-N, n_layer)` via
+> `llama_model_params.n_cpu_moe_from_end` (`LLAMA_HOST_EXPERTS_FROM_END=0` kill switch; 35B `pp4096`
+> 4264 vs 4120, `tg500` 87.5 vs 82.6, `pp512` 871 vs 635); the MoE-cache preflight is universal
+> (`llama_model_load_from_file`); the deferred arena sizing waits for the full host-table set; and the
+> Meta device takes whole-tensor uploads so `-lm none` + `-sm tensor` no longer aborts (r54 regression).
+> **Block 10** (`ggml-cuda-slab.cu`, `ggml-cuda-vmm.h`, `ggml-cuda.cu`): `ggml_cuda_slab_disarm()`
+> undoes the arm when the better-informed (larger-aux) preflight declines the cache.  See
+> `../WORKLOG.md` 261014.008 (r63); record `../archive/work/moe-upload-overlap/` (`RESOLUTION.md`).
+>
+> **Previous release `v12-097cf33d9-r62` (2026-10-14) -- fix the `-sm tensor` + `-ncmoe` below-gate upload race (block 10):**
 > canonical tip `e909c529a`, net tree `386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B `Qwen3.5-Q8_0` same-seed
 > greedy `1c5d32ac537d` (golden), `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP

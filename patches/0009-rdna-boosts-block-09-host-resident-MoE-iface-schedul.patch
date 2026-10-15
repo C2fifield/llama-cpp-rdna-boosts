@@ -1,4 +1,4 @@
-From c6a28db80fd0e7922f72f6a3d89e1a1dbd304630 Mon Sep 17 00:00:00 2001
+From e276f89df44771ff332aaac50c0fe1a675252579 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -18,11 +18,11 @@ slab/engine ones.
 
 Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
 ---
- common/arg.cpp                           |   14 +
- common/common.cpp                        |   19 +
- common/common.h                          |   13 +
+ common/arg.cpp                           |   21 +-
+ common/common.cpp                        |   26 +
+ common/common.h                          |   24 +
  common/fit.cpp                           |  346 +-
- common/speculative.cpp                   |   15 +
+ common/speculative.cpp                   |   17 +
  docs/multi-gpu.md                        |    4 +-
  ggml/include/ggml-alloc.h                |    1 +
  ggml/include/ggml-backend.h              |   70 +
@@ -42,7 +42,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-cuda/ggml-cuda.cu          | 2489 +++++++++++-
  ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu   | 4554 ++++++++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu   | 4634 ++++++++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h    |  301 ++
  ggml/src/ggml-cuda/norm.cu               |   35 +
  ggml/src/ggml-cuda/norm.cuh              |    1 +
@@ -61,7 +61,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  ggml/src/ggml-webgpu/ggml-webgpu.cpp     |    6 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp         |    6 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp     |    6 +
- include/llama.h                          |   42 +
+ include/llama.h                          |   50 +
  src/llama-context.cpp                    |  262 +-
  src/llama-context.h                      |   16 +
  src/llama-cparams.h                      |   11 +
@@ -69,15 +69,15 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  src/llama-kv-cache.cpp                   |    7 +-
  src/llama-mmap.cpp                       |   37 +-
  src/llama-mmap.h                         |    5 +
- src/llama-model-loader.cpp               |  238 +-
- src/llama-model-loader.h                 |   33 +-
- src/llama-model.cpp                      |  119 +-
+ src/llama-model-loader.cpp               |  285 +-
+ src/llama-model-loader.h                 |   37 +-
+ src/llama-model.cpp                      |  120 +-
  src/llama-model.h                        |    4 +
  src/llama-quant.cpp                      |    2 +-
- src/llama.cpp                            |    2 +-
+ src/llama.cpp                            |   16 +-
  tools/cli/cli.cpp                        |    6 +
- tools/llama-bench/llama-bench.cpp        |   60 +-
- 59 files changed, 12489 insertions(+), 328 deletions(-)
+ tools/llama-bench/llama-bench.cpp        |   65 +-
+ 59 files changed, 12670 insertions(+), 333 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -86,7 +86,7 @@ Gates: build all OK; 35B-A3B -ncmoe 40 cache off == on (identical greedy text).
  create mode 100644 ggml/src/ggml-moe-weighted-reduction.h
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index f5b40e985..31a97cf82 100644
+index f5b40e985..aecf5f70b 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
 @@ -2707,6 +2707,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
@@ -110,8 +110,37 @@ index f5b40e985..31a97cf82 100644
      add_opt(common_arg(
          {"-lzm", "--lazy-mode"}, "MODE",
          "on-demand reading of certain tensors, for example per-layer embeddings (default: auto)\n"
+@@ -2766,11 +2780,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     ).set_env("LLAMA_ARG_CPU_MOE"));
+     add_opt(common_arg(
+         {"-ncmoe", "--n-cpu-moe"}, "N",
+-        "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU",
++        "keep the Mixture of Experts (MoE) weights of the LAST N trunk layers in the CPU (set\n"
++        "LLAMA_HOST_EXPERTS_FROM_END=0 to restore the historical first-N placement)",
+         [](common_params & params, int value) {
+             if (value < 0) {
+                 throw std::invalid_argument("invalid value");
+             }
++            params.n_cpu_moe = value;
+             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_EXPS_REGEX, params.tensor_buft_overrides);
+         }
+     ).set_env("LLAMA_ARG_N_CPU_MOE"));
+@@ -4145,11 +4161,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_CPU_MOE"));
+     add_opt(common_arg(
+         {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}, "N",
+-        "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model",
++        "keep the Mixture of Experts (MoE) weights of the LAST N trunk layers in the CPU for the draft model",
+         [](common_params & params, int value) {
+             if (value < 0) {
+                 throw std::invalid_argument("invalid value");
+             }
++            params.speculative.draft.n_cpu_moe = value;
+             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_EXPS_REGEX, params.speculative.draft.tensor_buft_overrides);
+         }
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"));
 diff --git a/common/common.cpp b/common/common.cpp
-index ca4fe36b4..5ce5ccc40 100644
+index ca4fe36b4..a5b31c8a0 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -1366,6 +1366,23 @@ common_init_result::common_init_result(common_params & params, bool model_only)
@@ -138,15 +167,22 @@ index ca4fe36b4..5ce5ccc40 100644
      // a DFlash draft turns on the extraction of some target layers' inputs when it attaches, after this context and its
      // warm-up: take those layers from the draft's GGUF now, so the first graph reserve already sizes the compute
      // buffers for them (otherwise they are freed and allocated again, larger, at the first request)
-@@ -1771,6 +1788,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
+@@ -1771,6 +1788,14 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
      mparams.split_mode      = params.split_mode;
      mparams.load_mode       = params.load_mode;
      mparams.lazy_mode = params.lazy_mode;
 +    mparams.host_experts_mode = params.host_experts_mode;
++    // `-ncmoe N` hosts the LAST N trunk layers (the tail placement, the default).
++    // `LLAMA_HOST_EXPERTS_FROM_END=0` is the kill switch that restores the historical first-N placement.
++    {
++        const char * env = getenv("LLAMA_HOST_EXPERTS_FROM_END");
++        const bool from_end = env == nullptr || atoi(env) != 0;
++        mparams.n_cpu_moe_from_end = from_end ? params.n_cpu_moe : 0;
++    }
      mparams.tensor_split    = params.tensor_split;
      mparams.check_tensors   = params.check_tensors;
      mparams.use_extra_bufts = !params.no_extra_bufts;
-@@ -1834,6 +1852,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+@@ -1834,6 +1859,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
      cparams.op_offload        = !params.no_op_offload;
      cparams.swa_full          = params.swa_full;
      cparams.kv_unified        = params.kv_unified;
@@ -155,20 +191,43 @@ index ca4fe36b4..5ce5ccc40 100644
      cparams.type_k = params.cache_type_k;
      cparams.type_v = params.cache_type_v;
 diff --git a/common/common.h b/common/common.h
-index 6ebb81263..eee2e20c9 100644
+index 6ebb81263..ba632e912 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -501,6 +501,9 @@ struct common_params {
+@@ -20,6 +20,7 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <cstdio>
++#include <cstdlib>
+ 
+ #if defined(_WIN32) && !defined(_WIN32_WINNT)
+ #define _WIN32_WINNT 0x0A00
+@@ -346,6 +347,9 @@ struct common_params_speculative_draft {
+ 
+     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
+ 
++    // `--spec-draft-n-cpu-moe N`: see `common_params::n_cpu_moe`
++    int n_cpu_moe = 0;
++
+     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
+     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+ 
+@@ -501,6 +505,14 @@ struct common_params {
  
      enum llama_lazy_mode lazy_mode = LLAMA_LAZY_MODE_AUTO; // on-demand reading of tensors marked by the arch
  
 +    // how host-resident expert weights (`-ncmoe`/`-cmoe`) are backed when the model is mmap'd
 +    enum llama_host_experts_mode host_experts_mode = LLAMA_HOST_EXPERTS_MODE_PINNED;
 +
++    // `-ncmoe N` count, kept so `common_model_params_to_llama` can set
++    // `llama_model_params.n_cpu_moe_from_end` and the loader can host the LAST N trunk layers
++    // (`LLAMA_HOST_EXPERTS_FROM_END=0` restores the historical first-N placement).
++    int n_cpu_moe = 0;
++
      common_cpu_params cpuparams;
      common_cpu_params cpuparams_batch;
  
-@@ -588,6 +591,16 @@ struct common_params {
+@@ -588,6 +600,16 @@ struct common_params {
      bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
      bool kv_unified        = false; // enable unified KV cache
  
@@ -185,6 +244,15 @@ index 6ebb81263..eee2e20c9 100644
      bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
      bool verbose_prompt    = false; // print prompt tokens before generation
      bool display_prompt    = true;  // print prompt before generation
+@@ -1261,6 +1283,8 @@ inline llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
+ inline void llm_add_n_cpu_ffn_overrides(int n, const char * ffn_regex, std::vector<llama_model_tensor_buft_override> & overrides) {
+     // keep strings alive and avoid leaking memory by storing them in a static list
+     static std::list<std::string> buft_override_strings;
++    // The forward `blk.0..n-1` patterns.  When `llama_model_params.n_cpu_moe_from_end` is set (the
++    // default for `-ncmoe`), the model loader ignores these and hosts the LAST n trunk layers instead.
+     for (int i = 0; i < n; ++i) {
+         buft_override_strings.push_back(llm_ffn_block_regex(i, ffn_regex));
+         overrides.push_back({buft_override_strings.back().c_str(), ggml_backend_cpu_buffer_type()});
 diff --git a/common/fit.cpp b/common/fit.cpp
 index 7a0300829..e27677e16 100644
 --- a/common/fit.cpp
@@ -578,10 +646,19 @@ index 7a0300829..e27677e16 100644
      {
          dev_names.reserve(nd);
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 8951f3d09..d48c71a2e 100644
+index 8951f3d09..5c0924823 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
-@@ -2805,6 +2805,12 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2774,6 +2774,8 @@ common_speculative_init_result::common_speculative_init_result(
+     const bool spec_mtp = params.speculative.has_mtp();
+ 
+     auto mparams = common_model_params_to_llama(params);
++    // The draft model's own host-expert placement (`--spec-draft-n-cpu-moe`), not the target's `-ncmoe`.
++    mparams.n_cpu_moe_from_end = params.speculative.draft.n_cpu_moe;
+     auto cparams = common_context_params_to_llama(params);
+ 
+     if (spec_mtp) {
+@@ -2805,6 +2807,12 @@ common_speculative_init_result::common_speculative_init_result(
          model_path = params.speculative.draft.mparams.path;
          LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
  
@@ -594,7 +671,7 @@ index 8951f3d09..d48c71a2e 100644
          llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
          if (model_dft == NULL) {
              LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
-@@ -2833,6 +2839,15 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2833,6 +2841,15 @@ common_speculative_init_result::common_speculative_init_result(
  
          pimpl->context.reset(ctx_dft);
      }
@@ -8374,10 +8451,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..0bdfd09e5
+index 000000000..a59c99bc3
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4554 @@
+@@ -0,0 +1,4634 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -8645,6 +8722,37 @@ index 000000000..0bdfd09e5
 +// it after a compute-buffer drop returned the VRAM.  -1 = the layer was not cacheable at sizing time.
 +int                                 g_rearm_slots[512];
 +bool                                g_sized           = false;  // the deferred sizing has run
++// WIP moe-upload-overlap: the per-device host-expert bytes the preflight reported, so the deferred
++// arena sizing can WAIT until every host table has registered.  Without this, a pass that primes only a
++// SUBSET of the host tables latches the sizing on that subset -- e.g. a prefill's bulk ubatch is served
++// by the H2D staging ring (which does not register cache tables) while the final 1-token ubatch reaches
++// the decode hook and primes only the last host layer.  See `moe_cache_tables_complete_locked`.
++int64_t                             g_preflight_device_bytes[GGML_CUDA_MAX_DEVICES] = {0};
++bool                                g_preflight_device_seen [GGML_CUDA_MAX_DEVICES] = {false};
++// The aux (draft/MTP) estimate the early auto floor last used.  The preflight now runs once at model
++// load (aux 0, before the speculative params are known) and again from `common` with the real estimate;
++// a LARGER estimate re-runs the floor instead of latching the load-time answer.
++static size_t                       g_preflight_aux = 0;
++
++// WIP moe-upload-overlap: a host table the cache can NEVER hold (an unaddressable split slice) must not
++// keep the deferred sizing waiting for bytes it will never see.  Keyed on the host master + device, so
++// the repeated presentations of one table subtract once.
++static std::set<std::pair<const void *, int>> g_unregisterable_keys;
++static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device, int n_experts, size_t expert_bytes) {
++    if (weight == nullptr || device < 0 || device >= GGML_CUDA_MAX_DEVICES || n_experts <= 0 || expert_bytes == 0) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(g_mutex);
++    if (!g_unregisterable_keys.insert(std::make_pair((const void *) weight->data, device)).second) {
++        return;   // already subtracted
++    }
++    const int64_t b = (int64_t) n_experts * (int64_t) expert_bytes;
++    if (g_preflight_device_bytes[device] > b) {
++        g_preflight_device_bytes[device] -= b;
++    } else {
++        g_preflight_device_bytes[device] = 0;
++    }
++}
 +// Bumped by every entry point that can write an arena or a device slot map (the decode-band hooks, sizing, re-arm,
 +// eviction).  The cache-aware staging orders its copy stream after the compute stream only when this moved since its
 +// last staging on that device: during a prefill nothing writes, so the staging keeps overlapping the compute.
@@ -10622,6 +10730,27 @@ index 000000000..0bdfd09e5
 +// (moe_cache_floor_active).
 +bool g_floor_active = false;
 +
++// WIP moe-upload-overlap: true when the registered host tables account for at least the per-device
++// bytes the preflight reported for every device it saw.  A pass can reach the decode hook with only a
++// SUBSET of the host tables registered (a prefill's staged bulk ubatch plus a non-staged 1-token tail),
++// and the deferred sizing must not latch on that subset or the not-yet-seen tables get no arena forever.
++// An unseen device / an absent preflight is treated as complete (the pre-existing behaviour).
++static bool moe_cache_tables_complete_locked() {
++    int64_t registered[GGML_CUDA_MAX_DEVICES] = {0};
++    for (const table_t & t : g_tables) {
++        if (t.device >= 0 && t.device < GGML_CUDA_MAX_DEVICES) {
++            registered[t.device] += (int64_t) t.n_experts * (int64_t) t.expert_bytes;
++        }
++    }
++    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++        if (g_preflight_device_seen[d] && g_preflight_device_bytes[d] > 0 &&
++            registered[d] < g_preflight_device_bytes[d]) {
++            return false;
++        }
++    }
++    return true;
++}
++
 +// Deferred, budget-adaptive, UNIFORM sizing.  Every table gets the same slot count
 +// `budget / total_expert_bytes`, so an expert resident for gate is resident for up and down too and
 +// the effective (all-roles) hit rate is set by the shared slot count, not by the smallest table.
@@ -10632,14 +10761,19 @@ index 000000000..0bdfd09e5
 +    if (g_sized) {
 +        return;
 +    }
-+    g_sized = true;
 +    g_floor_active = g_enabled && !g_tables.empty();
 +    // Already disabled before the first graph (the slab could not give the cache a usable arena, or an
 +    // explicit `MOE_EXPERT_CACHE_MIB=0`): nothing to size.  See `moe_cache_disable_streaming` for why the
 +    // decision has to be made that early.
 +    if (!g_enabled) {
++        g_sized = true;
 +        return;
 +    }
++    // WIP moe-upload-overlap: do not latch the sizing on a partial table set (see the helper above).
++    if (!moe_cache_tables_complete_locked()) {
++        return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
++    }
++    g_sized = true;
 +    // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
 +    // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
 +    // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash
@@ -11054,6 +11188,19 @@ index 000000000..0bdfd09e5
 +    if (!g_enabled) {
 +        return false;
 +    }
++    // WIP moe-upload-overlap: remember the per-device host-expert bytes so the deferred arena sizing can
++    // wait until every host table has registered (see `moe_cache_tables_complete_locked`).  Recorded for
++    // the explicit-budget path too (`g_auto` false returns below).
++    if (device >= 0 && device < GGML_CUDA_MAX_DEVICES && host_expert_bytes > 0) {
++        std::lock_guard<std::mutex> lock(g_mutex);
++        // `max`: a second model (a separate MTP/draft head) may preflight the same devices with a
++        // smaller host-expert set; the cache is process-global and both models' tables register, so
++        // never let the smaller one lower the bar the deferred sizing waits for.
++        if ((int64_t) host_expert_bytes > g_preflight_device_bytes[device]) {
++            g_preflight_device_bytes[device] = (int64_t) host_expert_bytes;
++        }
++        g_preflight_device_seen [device] = true;
++    }
 +    // The pool's AUTO budget is a fraction of the MoE host expert bytes.  This runs once per host-expert
 +    // device, before the context, and is the only place that sees them all; accumulate here regardless of
 +    // the cache's own auto/explicit mode.
@@ -11063,10 +11210,14 @@ index 000000000..0bdfd09e5
 +    if (!g_auto) {
 +        return true;   // an explicit MOE_EXPERT_CACHE_MIB is used verbatim; no early floor
 +    }
-+    if (g_preflight_done) {
-+        return g_enabled;   // latch: the first call (target context, before the draft) decides
++    // The floor is a one-time early decision, but the aux estimate is only known from `common` (after the
++    // model load).  Re-run it when a larger aux arrives so the load-time aux-0 answer cannot silently
++    // keep a cache that the with-draft projection would have declined.
++    if (g_preflight_done && aux_reserve_bytes <= g_preflight_aux) {
++        return g_enabled;   // latch: the call with the largest aux so far decides
 +    }
 +    g_preflight_done = true;
++    g_preflight_aux = std::max(g_preflight_aux, aux_reserve_bytes);
 +    size_t free_b = 0, total_b = 0;
 +    device_guard dg(device);
 +    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
@@ -12115,6 +12266,9 @@ index 000000000..0bdfd09e5
 +                          __func__, name_layer(weight), name_role(weight).c_str(),
 +                          host_bytes, expert_bytes, slice_off, host_pitch, split_axis);
 +        }
++        // WIP moe-upload-overlap: this table can never enter the arena; drop it from the expected bytes
++        // so the deferred sizing is not blocked waiting for it.
++        moe_cache_note_unregisterable(weight, device, n_experts, expert_bytes);
 +        return false;
 +    }
 +    // Register the table with the cache even though this pass uploads through the gather.  The
@@ -12236,6 +12390,9 @@ index 000000000..0bdfd09e5
 +                          __func__, layer, name_role(weight).c_str(),
 +                          host_bytes, expert_bytes, slice_off, host_pitch, split_axis);
 +        }
++        // WIP moe-upload-overlap: this table can never enter the arena; drop it from the expected bytes
++        // so the deferred sizing is not blocked waiting for it.
++        moe_cache_note_unregisterable(weight, device, n_experts, expert_bytes);
 +        return false;
 +    }
 +    const int table = moe_cache_table(weight, layer, name_role(weight).c_str(), n_experts, expert_bytes,
@@ -13718,7 +13875,7 @@ index ec7ce2331..fe0eba002 100644
  };
  
 diff --git a/include/llama.h b/include/llama.h
-index 0eab7fec5..f91f0c7d8 100644
+index 0eab7fec5..2519ee713 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -222,6 +222,14 @@ extern "C" {
@@ -13736,7 +13893,7 @@ index 0eab7fec5..f91f0c7d8 100644
      enum llama_context_type {
          LLAMA_CONTEXT_TYPE_DEFAULT = 0,
          LLAMA_CONTEXT_TYPE_MTP     = 1,
-@@ -330,6 +338,9 @@ extern "C" {
+@@ -330,9 +338,20 @@ extern "C" {
  
          enum llama_lazy_mode lazy_mode; // on-demand reading of tensors marked by the arch
  
@@ -13746,7 +13903,18 @@ index 0eab7fec5..f91f0c7d8 100644
          // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE
          int32_t main_gpu;
  
-@@ -354,6 +365,10 @@ extern "C" {
++        // `-ncmoe N` placement.  0 (default): host the FIRST N trunk layers (historical).  N > 0: host the
++        // LAST N trunk layers `[n_layer - N, n_layer)` instead -- the tail carries the colder expert
++        // routing and has preceding resident compute to overlap the expert upload with, so it measures
++        // better on both prefill and (with the expert cache) decode.  The loader synthesizes the tail
++        // CPU overrides from this count and ignores the caller's forward `blk.<i>` `-ncmoe` patterns.
++        // `LLAMA_HOST_EXPERTS_FROM_END=0` is the kill switch that restores the forward placement.
++        int32_t n_cpu_moe_from_end;
++
+         // proportion of the model (layers or rows) to offload to each GPU, size: llama_max_devices()
+         const float * tensor_split;
+ 
+@@ -354,6 +373,10 @@ extern "C" {
          bool no_host;         // bypass host buffer allowing extra buffers to be used
          bool no_alloc;        // only load metadata and simulate memory allocations
          bool load_mtp;        // whether to load MTP layers
@@ -13757,7 +13925,7 @@ index 0eab7fec5..f91f0c7d8 100644
      };
  
      struct llama_sampler_seq_config {
-@@ -416,6 +431,10 @@ extern "C" {
+@@ -416,6 +439,10 @@ extern "C" {
          bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                            // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                            // ref: https://github.com/ggml-org/llama.cpp/pull/14363
@@ -13768,7 +13936,7 @@ index 0eab7fec5..f91f0c7d8 100644
  
          // [EXPERIMENTAL]
          // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
-@@ -578,6 +597,11 @@ extern "C" {
+@@ -578,6 +605,11 @@ extern "C" {
      //       ref: https://github.com/ggml-org/llama.cpp/pull/17046#discussion_r2503085732
      LLAMA_API uint32_t llama_n_ctx      (const struct llama_context * ctx);
      LLAMA_API uint32_t llama_n_ctx_seq  (const struct llama_context * ctx);
@@ -13780,7 +13948,7 @@ index 0eab7fec5..f91f0c7d8 100644
      LLAMA_API uint32_t llama_n_batch    (const struct llama_context * ctx);
      LLAMA_API uint32_t llama_n_ubatch   (const struct llama_context * ctx);
      LLAMA_API uint32_t llama_n_seq_max  (const struct llama_context * ctx);
-@@ -595,6 +619,24 @@ extern "C" {
+@@ -595,6 +627,24 @@ extern "C" {
      LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context * ctx); // TODO: rename to llama_get_pooling_type
  
      LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
@@ -14357,7 +14525,7 @@ index 6c6393d57..8cce74993 100644
  
      void seek(size_t offset, int whence) const;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 238ab0ba1..381cc1aca 100644
+index 238ab0ba1..798110c70 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -10,10 +10,18 @@
@@ -14379,7 +14547,7 @@ index 238ab0ba1..381cc1aca 100644
  static const size_t kiB = 1024;
  static const size_t MiB = 1024*kiB;
  static const size_t GiB = 1024*MiB;
-@@ -537,9 +545,11 @@ llama_model_loader::llama_model_loader(
+@@ -537,9 +545,12 @@ llama_model_loader::llama_model_loader(
          std::vector<std::string> & splits,
          FILE * file,
          llama_load_mode load_mode,
@@ -14388,14 +14556,16 @@ index 238ab0ba1..381cc1aca 100644
          bool no_alloc,
          bool load_mtp,
 +        bool allow_nextn_cpu_offload,
++        int  n_cpu_moe_from_end,
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
          : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
-@@ -555,10 +565,24 @@ llama_model_loader::llama_model_loader(
+@@ -555,10 +566,25 @@ llama_model_loader::llama_model_loader(
      }
  
      tensor_buft_overrides = param_tensor_buft_overrides_p;
 +    this->allow_nextn_cpu_offload = allow_nextn_cpu_offload;
++    this->n_cpu_moe_from_end      = n_cpu_moe_from_end;
  
      this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
      this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
@@ -14416,7 +14586,7 @@ index 238ab0ba1..381cc1aca 100644
      if (!fname.empty()) {
          // Load the main GGUF
          struct ggml_context * ctx = NULL;
-@@ -1113,6 +1137,40 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1113,6 +1139,40 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -14457,7 +14627,7 @@ index 238ab0ba1..381cc1aca 100644
  struct ggml_tensor * llama_model_loader::create_tensor(
          const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
          const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
-@@ -1216,7 +1274,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1216,7 +1276,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          const buft_list_t * buft_list;
          switch (info.layer) {
              case LLM_TENSOR_LAYER_INPUT:
@@ -14469,10 +14639,45 @@ index 238ab0ba1..381cc1aca 100644
                  break;
              case LLM_TENSOR_LAYER_OUTPUT:
                  buft_list = buft_list_output;
-@@ -1237,9 +1298,70 @@ struct ggml_tensor * llama_model_loader::create_tensor(
-             for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
+@@ -1231,15 +1294,103 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+ 
+         ggml_backend_buffer_type_t buft = nullptr;
+ 
++        // `-ncmoe N` tail placement (the default): host the LAST N trunk layers' MoE experts instead of
++        // the caller's forward `blk.0..N-1` patterns.  The bound is strictly `[n_layer - N, n_layer)` --
++        // the appended nextn/MTP head (`tn.bid >= n_layer`) is excluded by construction, so an embedded
++        // MTP layer is never offloaded.  `LLAMA_HOST_EXPERTS_FROM_END=0` (handled in common) leaves
++        // `n_cpu_moe_from_end == 0`, which keeps the historical forward placement.
++        llama_model_tensor_buft_override tail_ov[2] = { { nullptr, nullptr }, { nullptr, nullptr } };
++        const llama_model_tensor_buft_override * tb_ov = tensor_buft_overrides;
++        if (n_cpu_moe_from_end > 0 && op == GGML_OP_MUL_MAT_ID && hparams.n_layer() > 0 &&
++                tn.bid >= (int) hparams.n_layer() - n_cpu_moe_from_end &&
++                tn.bid <  (int) hparams.n_layer()) {
++            if (getenv("GGML_STAGE_TRACE")) {
++                fprintf(stderr, "NCMOE_TAIL host blk.%d (n_layer=%d N=%d)\n", (int) tn.bid, (int) hparams.n_layer(), n_cpu_moe_from_end);
++                fflush(stderr);
++            }
++            tail_ov[0].pattern = ".*";
++            tail_ov[0].buft    = ggml_backend_cpu_buffer_type();
++            tb_ov = tail_ov;
++        }
++
+         // check overrides
+-        if (tensor_buft_overrides) {
++        if (tb_ov) {
+             std::string tensor_name = tn.str();
+-            for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
++            for (const auto * overrides = tb_ov; overrides->pattern != nullptr; ++overrides) {
                  std::regex pattern(overrides->pattern);
                  if (std::regex_search(tensor_name, pattern)) {
++                    // The per-layer `blk.<i>` `-ncmoe` patterns were re-targeted to the tail above;
++                    // skip them so the front layers are not also hosted.  (Strictly `blk.`-prefixed, so
++                    // the all-layers `--cpu-moe` override and `--override-tensor` are kept.)  An
++                    // explicit `--override-tensor` / `--cpu-moe` list is left alone.
++                    if (n_cpu_moe_from_end > 0 && overrides->buft == ggml_backend_cpu_buffer_type() &&
++                            std::string(overrides->pattern).rfind("blk\\.", 0) == 0) {
++                        continue;
++                    }
 +                    // The appended nextn/MTP layer(s) are the SPECULATIVE head, not the trunk.  A CPU
 +                    // expert override from the main model (`-ncmoe`/`-cmoe`) must never offload them: the
 +                    // patterns are `blk.<i>` for i in 0..N-1, so `-ncmoe 99` matches
@@ -14542,7 +14747,7 @@ index 238ab0ba1..381cc1aca 100644
                          if (use_mmap) {
                              static std::once_flag once;
                              std::call_once(once, [] {
-@@ -1267,8 +1389,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1267,8 +1418,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // avoid using a host buffer when using mmap
@@ -14558,7 +14763,7 @@ index 238ab0ba1..381cc1aca 100644
              auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
              if (!cpu_dev) {
                  throw std::runtime_error("no CPU backend found");
-@@ -1326,7 +1454,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1326,7 +1483,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          ggml_set_name(&t_meta, tn.str().c_str());
  
          ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
@@ -14572,7 +14777,7 @@ index 238ab0ba1..381cc1aca 100644
          ggml_context * ctx = ctx_for_buft(buft);
          ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
          ggml_set_name(ret, tn.str().c_str());
-@@ -1364,6 +1497,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1364,6 +1526,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
      if (buft == nullptr) {
          return nullptr;
      }
@@ -14582,7 +14787,7 @@ index 238ab0ba1..381cc1aca 100644
  
      ggml_context * ctx = ctx_for_buft(buft);
  
-@@ -1407,6 +1543,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
+@@ -1407,6 +1572,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
      }
  }
  
@@ -14598,7 +14803,7 @@ index 238ab0ba1..381cc1aca 100644
  void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps) {
      // note: read_lazy also requires mmap; this condition make sure it's usable even when --load-mode is not set to mmap
      if (use_mmap || lazy.any()) {
-@@ -1426,11 +1571,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+@@ -1426,11 +1600,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                  }
              }
  
@@ -14615,7 +14820,7 @@ index 238ab0ba1..381cc1aca 100644
              if (mlock_mmaps) {
                  std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
                  mlock_mmap->init(mapping->addr());
-@@ -1446,6 +1594,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+@@ -1446,6 +1623,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
      }
  }
  
@@ -14629,7 +14834,7 @@ index 238ab0ba1..381cc1aca 100644
  void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const {
      GGML_ASSERT(!mappings.empty());
      const auto & mapping = mappings.at(idx);
-@@ -1504,6 +1659,8 @@ bool llama_model_loader::load_all_data(
+@@ -1504,6 +1688,8 @@ bool llama_model_loader::load_all_data(
      }
      GGML_ASSERT(size_data != 0 && "call init_mappings() first");
  
@@ -14638,7 +14843,28 @@ index 238ab0ba1..381cc1aca 100644
      std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
  
      // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
-@@ -1557,6 +1714,21 @@ bool llama_model_loader::load_all_data(
+@@ -1542,6 +1728,20 @@ bool llama_model_loader::load_all_data(
+             return nullptr;
+         }
+ 
++        // The Meta device (under `-sm tensor`) splits a tensor across its simple devices.  Its async
++        // uploader handles row-aligned writes (and the scheduler's <=512-byte MMQ tail pad) but a
++        // mid-row write is either accumulated in full (segmented tensors) or dispatched per device; the
++        // chunked pinned-upload pipeline below reads fixed 1 MiB pieces that are NOT row-aligned for a
++        // quantized tensor (e.g. blk.0.ssm_out.weight, q8_0, row stride 4352 B).  A non-mmap load
++        // (`--load-mode none`) therefore aborted in `ggml_backend_meta_buffer_set_tensor`.  For a Meta
++        // device read the whole tensor and write it once (always aligned); the async overlap is lost
++        // only on the non-mmap `-sm tensor` path.
++        if (ggml_backend_dev_is_meta(dev)) {
++            LLAMA_LOG_DEBUG("%s: device %s is a Meta device; using whole-tensor uploads\n", func,
++                ggml_backend_dev_name(dev));
++            return nullptr;
++        }
++
+         if (buft != ggml_backend_dev_buffer_type(dev)) {
+             LLAMA_LOG_DEBUG("%s: buffer type %s is not the default buffer type for device %s for async uploads\n", func,
+                 ggml_backend_buft_name(buft), ggml_backend_dev_name(dev));
+@@ -1557,6 +1757,21 @@ bool llama_model_loader::load_all_data(
          }
  
          auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
@@ -14660,7 +14886,7 @@ index 238ab0ba1..381cc1aca 100644
          if (!host_buft) {
              LLAMA_LOG_DEBUG("%s: no host buffer type found for device %s\n", func,
                  ggml_backend_dev_name(dev));
-@@ -1662,11 +1834,31 @@ bool llama_model_loader::load_all_data(
+@@ -1662,11 +1877,31 @@ bool llama_model_loader::load_all_data(
                      lmlock->grow_to(weight->offs + n_size);
                  }
  
@@ -14695,7 +14921,7 @@ index 238ab0ba1..381cc1aca 100644
              }
          } else {
              const auto & file = files.at(weight->idx);
-@@ -1746,6 +1938,15 @@ bool llama_model_loader::load_all_data(
+@@ -1746,6 +1981,15 @@ bool llama_model_loader::load_all_data(
              }
          }
  
@@ -14711,7 +14937,7 @@ index 238ab0ba1..381cc1aca 100644
          size_done += n_size;
      }
  
-@@ -1777,11 +1978,20 @@ bool llama_model_loader::load_all_data(
+@@ -1777,11 +2021,20 @@ bool llama_model_loader::load_all_data(
          // unmap offloaded tensors and metadata
          if (use_mmap) {
              for (uint32_t idx = 0; idx < mappings.size(); idx++) {
@@ -14737,7 +14963,7 @@ index 238ab0ba1..381cc1aca 100644
              }
          }
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 9e51d0ce7..cd838c120 100644
+index 9e51d0ce7..493782111 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -80,6 +80,8 @@ struct llama_model_loader {
@@ -14749,7 +14975,7 @@ index 9e51d0ce7..cd838c120 100644
      bool check_tensors;
      bool no_alloc;
      bool load_mtp;
-@@ -126,6 +128,10 @@ struct llama_model_loader {
+@@ -126,6 +128,13 @@ struct llama_model_loader {
      std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;
      std::unordered_map<std::string, llama_model_kv_override> kv_overrides;
      const llama_model_tensor_buft_override * tensor_buft_overrides;
@@ -14757,10 +14983,13 @@ index 9e51d0ce7..cd838c120 100644
 +    // for the main model so `-ncmoe`/`-cmoe` cannot offload the head; true for a separately loaded MTP
 +    // draft model so its own `--spec-draft-n-cpu-moe` is honoured.
 +    bool allow_nextn_cpu_offload = false;
++    // `-ncmoe N` tail placement: N > 0 hosts the LAST N trunk layers `[n_layer - N, n_layer)` instead of
++    // the caller's forward `blk.<i>` patterns (`LLAMA_HOST_EXPERTS_FROM_END=0` keeps N == 0).
++    int  n_cpu_moe_from_end       = 0;
  
      gguf_context_ptr metadata_ptr;
      struct gguf_context * metadata; // either metadata_ptr.get() or externally set
-@@ -138,7 +144,14 @@ struct llama_model_loader {
+@@ -138,7 +147,14 @@ struct llama_model_loader {
  
      size_t size_done = 0;
      size_t size_data = 0;
@@ -14776,7 +15005,7 @@ index 9e51d0ce7..cd838c120 100644
  
      // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
      struct ggml_backend_buft_comparator {
-@@ -158,7 +171,18 @@ struct llama_model_loader {
+@@ -158,7 +174,18 @@ struct llama_model_loader {
              if (lhs.lazy != rhs.lazy) {
                  return lhs.lazy < rhs.lazy;
              }
@@ -14796,7 +15025,7 @@ index 9e51d0ce7..cd838c120 100644
          }
      };
  
-@@ -179,9 +203,11 @@ struct llama_model_loader {
+@@ -179,9 +206,12 @@ struct llama_model_loader {
          std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
          FILE * file,
          llama_load_mode load_mode,
@@ -14805,10 +15034,11 @@ index 9e51d0ce7..cd838c120 100644
          bool no_alloc,
          bool load_mtp,
 +        bool allow_nextn_cpu_offload,
++        int  n_cpu_moe_from_end,
          const llama_model_kv_override * param_overrides_p,
          const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
  
-@@ -244,6 +270,9 @@ struct llama_model_loader {
+@@ -244,6 +274,9 @@ struct llama_model_loader {
  
      void get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const;
  
@@ -14819,7 +15049,7 @@ index 9e51d0ce7..cd838c120 100644
      void unmap_weight(const llama_tensor_weight & w) const;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 647929451..602611450 100644
+index 647929451..1559a083d 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -1662,9 +1662,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml_l) {
@@ -14874,15 +15104,17 @@ index 647929451..602611450 100644
              }
          } else {
              ggml_backend_buffer_t buf;
-@@ -3335,6 +3360,7 @@ llama_model_params llama_model_default_params() {
+@@ -3335,7 +3360,9 @@ llama_model_params llama_model_default_params() {
          /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
          /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
          /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
 +        /*.host_experts_mode           =*/ LLAMA_HOST_EXPERTS_MODE_PINNED,
          /*.main_gpu                    =*/ 0,
++        /*.n_cpu_moe_from_end          =*/ 0,
          /*.tensor_split                =*/ nullptr,
          /*.progress_callback           =*/ nullptr,
-@@ -3346,6 +3372,7 @@ llama_model_params llama_model_default_params() {
+         /*.progress_callback_user_data =*/ nullptr,
+@@ -3346,6 +3373,7 @@ llama_model_params llama_model_default_params() {
          /*.no_host                     =*/ false,
          /*.no_alloc                    =*/ false,
          /*.load_mtp                    =*/ false,
@@ -14890,7 +15122,7 @@ index 647929451..602611450 100644
      };
  
      return result;
-@@ -3769,6 +3796,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
+@@ -3769,6 +3797,72 @@ const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_te
      return model->tensors_by_name;
  }
  
@@ -14963,7 +15195,7 @@ index 647929451..602611450 100644
  int32_t llama_model_n_expert(const struct llama_model * model) {
      return model->hparams.n_expert;
  }
-@@ -3929,3 +4022,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -3929,3 +4023,23 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }
@@ -15010,7 +15242,7 @@ index dff84c574..f1f81b9f1 100644
      void print_info() const;
  
 diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
-index a956eaba7..d2c95ea2f 100644
+index a956eaba7..69709d7e7 100644
 --- a/src/llama-quant.cpp
 +++ b/src/llama-quant.cpp
 @@ -974,7 +974,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
@@ -15018,12 +15250,12 @@ index a956eaba7..d2c95ea2f 100644
      std::vector<std::string> splits = {};
      llama_model_loader ml(/*metadata*/ nullptr, /*set_tensor_data*/ nullptr, /*set_tensor_data_ud*/ nullptr,
 -        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*check_tensors*/ true, /*no_alloc*/ false, /*load_mtp*/ true, kv_overrides, nullptr);
-+        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*host_experts_mode*/ LLAMA_HOST_EXPERTS_MODE_AUTO, /*check_tensors*/ true, /*no_alloc*/ false, /*load_mtp*/ true, /*allow_nextn_cpu_offload*/ true, kv_overrides, nullptr);
++        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*host_experts_mode*/ LLAMA_HOST_EXPERTS_MODE_AUTO, /*check_tensors*/ true, /*no_alloc*/ false, /*load_mtp*/ true, /*allow_nextn_cpu_offload*/ true, /*n_cpu_moe_from_end*/ 0, kv_overrides, nullptr);
      ml.init_mappings(false); // no prefetching
  
      auto mparams = llama_model_default_params();
 diff --git a/src/llama.cpp b/src/llama.cpp
-index fedcabcf9..ad527c6b7 100644
+index fedcabcf9..63de2762e 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -327,7 +327,7 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
@@ -15031,9 +15263,30 @@ index fedcabcf9..ad527c6b7 100644
      try {
          llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
 -            params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
-+            params.host_experts_mode, params.check_tensors, params.no_alloc, params.load_mtp, params.allow_nextn_cpu_offload, params.kv_overrides, params.tensor_buft_overrides);
++            params.host_experts_mode, params.check_tensors, params.no_alloc, params.load_mtp, params.allow_nextn_cpu_offload, params.n_cpu_moe_from_end, params.kv_overrides, params.tensor_buft_overrides);
  
          ml.lazy.mode = params.lazy_mode;
+ 
+@@ -451,6 +451,20 @@ static struct llama_model * llama_model_load_from_file_impl(
+         return nullptr;
+     }
+ 
++    // Preflight the MoE expert cache / movable-boundary slab HERE so every consumer arms it.  This used
++    // to run only from `common_init_from_params`, which `llama-bench` (and tests, and API users) bypass,
++    // so llama-bench never armed the slab for ANY host-layer placement.  The draft/MTP aux estimate is
++    // only known from `common`, which calls the preflight again with the real value (the floor re-runs
++    // when the aux grows); the embedded MTP head is known here via `params.load_mtp`.
++    if (model != nullptr) {
++        size_t aux_bytes = 0;
++        if (params.load_mtp) {
++            const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
++            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
++        }
++        llama_model_moe_cache_preflight(model, aux_bytes);
++    }
++
+     return model;
+ }
  
 diff --git a/tools/cli/cli.cpp b/tools/cli/cli.cpp
 index 92c86614f..dc69ffa15 100644
@@ -15053,7 +15306,7 @@ index 92c86614f..dc69ffa15 100644
      llama_numa_init(params.numa);
  
 diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
-index 96ae4870f..38cc8d780 100644
+index 96ae4870f..5e3469510 100644
 --- a/tools/llama-bench/llama-bench.cpp
 +++ b/tools/llama-bench/llama-bench.cpp
 @@ -284,6 +284,16 @@ static const char * lazy_mode_str(llama_lazy_mode mode) {
@@ -15160,7 +15413,26 @@ index 96ae4870f..38cc8d780 100644
          mparams.main_gpu      = main_gpu;
          mparams.tensor_split  = tensor_split.data();
          mparams.no_host       = no_host;
-@@ -1298,6 +1346,7 @@ struct cmd_params_instance {
+@@ -1278,7 +1326,6 @@ struct cmd_params_instance {
+ 
+             patterns.reserve((size_t) n_cpu_moe);
+             merged.reserve(merged.size() + (size_t) n_cpu_moe + 1);
+-
+             for (int i = 0; i < n_cpu_moe; ++i) {
+                 patterns.push_back(llm_ffn_block_regex(i, LLM_FFN_EXPS_REGEX));
+                 merged.push_back({ patterns.back().c_str(),
+@@ -1288,6 +1335,10 @@ struct cmd_params_instance {
+             merged.push_back({ nullptr, nullptr });
+ 
+             mparams.tensor_buft_overrides = merged.data();
++            // The loader retargets these forward `blk.<i>` patterns to the LAST N trunk layers (the
++            // default; `LLAMA_HOST_EXPERTS_FROM_END=0` restores the forward placement).
++            const char * env_from_end = getenv("LLAMA_HOST_EXPERTS_FROM_END");
++            mparams.n_cpu_moe_from_end = (env_from_end == nullptr || atoi(env_from_end) != 0) ? n_cpu_moe : 0;
+         }
+ 
+         return mparams;
+@@ -1298,6 +1349,7 @@ struct cmd_params_instance {
                 split_mode == other.split_mode &&
                 main_gpu == other.main_gpu && tensor_split == other.tensor_split &&
                 load_mode == other.load_mode && lazy_mode == other.lazy_mode &&
@@ -15168,7 +15440,7 @@ index 96ae4870f..38cc8d780 100644
                 devices == other.devices && no_host == other.no_host && repack == other.repack &&
                 vec_tensor_buft_override_equal(tensor_buft_overrides, other.tensor_buft_overrides);
      }
-@@ -1333,6 +1382,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
+@@ -1333,6 +1385,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
      for (const auto & sm : params.split_mode)
      for (const auto & lm : params.load_mode)
      for (const auto & lzm : params.lazy_mode)
@@ -15176,7 +15448,7 @@ index 96ae4870f..38cc8d780 100644
      for (const auto & mg : params.main_gpu)
      for (const auto & devs : params.devices)
      for (const auto & ts : params.tensor_split)
-@@ -1374,6 +1424,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
+@@ -1374,6 +1427,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                  /* .split_mode            = */ sm,
                  /* .load_mode             = */ lm,
                  /* .lazy_mode             = */ lzm,
@@ -15184,7 +15456,7 @@ index 96ae4870f..38cc8d780 100644
                  /* .main_gpu              = */ mg,
                  /* .no_kv_offload         = */ nkvo,
                  /* .flash_attn            = */ fa,
-@@ -1412,6 +1463,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
+@@ -1412,6 +1466,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                  /* .split_mode            = */ sm,
                  /* .load_mode             = */ lm,
                  /* .lazy_mode             = */ lzm,
@@ -15192,7 +15464,7 @@ index 96ae4870f..38cc8d780 100644
                  /* .main_gpu              = */ mg,
                  /* .no_kv_offload         = */ nkvo,
                  /* .flash_attn            = */ fa,
-@@ -1450,6 +1502,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
+@@ -1450,6 +1505,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                  /* .split_mode            = */ sm,
                  /* .load_mode             = */ lm,
                  /* .lazy_mode             = */ lzm,
@@ -15200,7 +15472,7 @@ index 96ae4870f..38cc8d780 100644
                  /* .main_gpu              = */ mg,
                  /* .no_kv_offload         = */ nkvo,
                  /* .flash_attn            = */ fa,
-@@ -1493,6 +1546,7 @@ struct test {
+@@ -1493,6 +1549,7 @@ struct test {
      llama_split_mode         split_mode;
      llama_load_mode          load_mode;
      llama_lazy_mode          lazy_mode;
@@ -15208,7 +15480,7 @@ index 96ae4870f..38cc8d780 100644
      int                      main_gpu;
      bool                     no_kv_offload;
      llama_flash_attn_type    flash_attn;
-@@ -1534,6 +1588,7 @@ struct test {
+@@ -1534,6 +1591,7 @@ struct test {
          split_mode     = inst.split_mode;
          load_mode      = inst.load_mode;
          lazy_mode      = inst.lazy_mode;
@@ -15216,7 +15488,7 @@ index 96ae4870f..38cc8d780 100644
          main_gpu       = inst.main_gpu;
          no_kv_offload  = inst.no_kv_offload;
          flash_attn     = inst.flash_attn;
-@@ -1602,7 +1657,7 @@ struct test {
+@@ -1602,7 +1660,7 @@ struct test {
              "n_ubatch",       "n_threads",      "cpu_mask",      "cpu_strict",     "poll",
              "type_k",         "type_v",         "n_gpu_layers",  "n_cpu_moe",      "split_mode",
              "main_gpu",       "no_kv_offload",  "flash_attn",    "devices",        "tensor_split",
@@ -15225,7 +15497,7 @@ index 96ae4870f..38cc8d780 100644
              "embeddings",
              "no_op_offload",  "no_host",        "repack",        "fit_target",    "fit_min_ctx",
              "n_prompt",       "n_gen",          "n_depth",
-@@ -1628,7 +1683,7 @@ struct test {
+@@ -1628,7 +1686,7 @@ struct test {
          if (field == "avg_ts" || field == "stddev_ts") {
              return FLOAT;
          }
@@ -15234,7 +15506,7 @@ index 96ae4870f..38cc8d780 100644
              return STRING;
          }
          return STRING;
-@@ -1699,6 +1754,7 @@ struct test {
+@@ -1699,6 +1757,7 @@ struct test {
                                              tensor_buft_overrides_str,
                                              llama_load_mode_name(load_mode),
                                              lazy_mode_str(lazy_mode),

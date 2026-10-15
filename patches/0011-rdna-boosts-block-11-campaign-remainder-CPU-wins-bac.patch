@@ -1,4 +1,4 @@
-From e909c529a997ff1a526752a8feed6ce50c07c7e0 Mon Sep 17 00:00:00 2001
+From daf21c0d045a7e9b8003f3b12a68da62ca41376d Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -332,7 +332,7 @@ index 564fa9c4d..da77044b7 100644
      // Check if a backend sampler has already sampled a token in which case we
      // return that token id directly.
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index d48c71a2e..83b9d8858 100644
+index 5c0924823..b3f40f2ce 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -996,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
@@ -459,7 +459,7 @@ index d48c71a2e..83b9d8858 100644
          return true;
      }
  
-@@ -2794,6 +2877,20 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2796,6 +2879,20 @@ common_speculative_init_result::common_speculative_init_result(
      // the draft context holds as many tokens per sequence as the target context
      cparams.n_ctx = llama_n_ctx(ctx_tgt);
  
@@ -1121,10 +1121,10 @@ index 9ac8eff63..170efb75a 100644
  // returns total number of elements or 0 on error
  // if out is nullptr, returns the number of tokens without writing to out
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 7d2af8622..01db67736 100644
+index 64f255cdd..3625dd018 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -4089,6 +4089,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+@@ -4090,6 +4090,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
      return (uint32_t) model->target_layer_ids.size();
  }
  
@@ -1154,7 +1154,7 @@ index 50731dfce..c345789c3 100644
  
      //Dense linear projections for SentenceTransformers models like embeddinggemma
 diff --git a/src/llama.cpp b/src/llama.cpp
-index f031e6555..5c77bb1fa 100644
+index ddea45b44..cc189c193 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -375,6 +375,17 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta

@@ -1,4 +1,4 @@
-From b4e388d3c50b6d0641d9e807486021d72f877275 Mon Sep 17 00:00:00 2001
+From 05255faceb49b659e44fab3949b964b6a8676204 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -53,11 +53,11 @@ QSA/HC op dispatch is old-15):
  ggml/src/ggml-cuda/ggml-cuda-arena.cuh        |   11 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  238 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cuh   |   26 +
- ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1115 ++++
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1131 ++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2209 ++++++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   12 +
- ggml/src/ggml-cuda/ggml-cuda-vmm.h            |    7 +
- ggml/src/ggml-cuda/ggml-cuda.cu               | 4622 +++--------------
+ ggml/src/ggml-cuda/ggml-cuda-vmm.h            |    8 +
+ ggml/src/ggml-cuda/ggml-cuda.cu               | 4625 +++--------------
  ggml/src/ggml-cuda/hc-mix.cu                  | 1331 +++++
  ggml/src/ggml-cuda/hc-mix.cuh                 |    8 +
  ggml/src/ggml-cuda/hyperconn.cu               | 1119 ++++
@@ -122,7 +122,7 @@ QSA/HC op dispatch is old-15):
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 18998 insertions(+), 4842 deletions(-)
+ 99 files changed, 19019 insertions(+), 4841 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -149,7 +149,7 @@ QSA/HC op dispatch is old-15):
  create mode 100644 tests/test-lazy-reader.cpp
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 31a97cf82..6845cd4f2 100644
+index aecf5f70b..c7606ca31 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
 @@ -2725,7 +2725,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
@@ -4281,10 +4281,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..f2257358b
+index 000000000..2d02f46dd
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1131 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -5382,6 +5382,22 @@ index 000000000..f2257358b
 +// `g_slab_armed` / `g_slab_compute_enabled` / `g_slab_compute_narrow2` are module-local to the slab.
 +void ggml_cuda_slab_arm() {
 +    g_slab_armed = true;
++}
++
++// Undo a previous arm.  The MoE preflight runs at MODEL LOAD (universal, aux 0) and again from `common`
++// with the draft/MTP aux; if the second, better-informed call declines the cache (auto floor), the slab
++// must not stay armed for a cache that is off (it would withhold the VRAM the decline was protecting).
++// Safe only before a slab exists; a live slab is left alone.
++void ggml_cuda_slab_disarm() {
++    {
++        std::lock_guard<std::mutex> lock(g_slab_mutex);
++        for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++            if (g_slabs[d].inited) {
++                return;   // a live slab owns its mappings; do not yank the gate out from under it
++            }
++        }
++    }
++    g_slab_armed = false;
 +}
 +
 +bool ggml_cuda_slab_compute_enabled() {
@@ -7634,22 +7650,23 @@ index 000000000..3b5666269
 +struct ggml_cuda_topk_moe_args;
 +bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, struct ggml_cuda_topk_moe_args & args);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-index 8005b57b4..7ab668f15 100644
+index 8005b57b4..e9984b68e 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-@@ -85,3 +85,10 @@ void   ggml_cuda_slab_ring_set(int device, bool arm);
+@@ -85,3 +85,11 @@ void   ggml_cuda_slab_ring_set(int device, bool arm);
  // model preflight, before the slab is created, from the largest host-resident weight table.
  void   ggml_cuda_slab_set_ring_region(size_t bytes);
  void   ggml_cuda_slab_arena_free (int device, void * ptr, size_t size);
 +
 +// Phase-2 (item 6b): slab state accessors used by the device wrappers in ggml-cuda.cu.
 +void   ggml_cuda_slab_arm();
++void   ggml_cuda_slab_disarm();
 +bool   ggml_cuda_slab_compute_enabled();
 +void   ggml_cuda_slab_set_compute_narrow2(bool enable);
 +size_t ggml_cuda_slab_headroom_bytes();
 +void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index f8f77d8ba..a20d14750 100644
+index f8f77d8ba..1fa631e55 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,5 +1,6 @@
@@ -11682,11 +11699,10 @@ index f8f77d8ba..a20d14750 100644
 -            if (!ggml_can_fuse(cgraph, i, { op, bias_op })) {
 -                continue;
 -            }
--        }
 +        if (node->op == GGML_OP_MUL_MAT && node->src[0] != nullptr && node->src[1] != nullptr &&
 +            node->src[0]->op == GGML_OP_NONE && node->src[0]->ne[2] == 1) {
 +            return node->src[1]->ne[1];
-+        }
+         }
 +    }
  
 -        ggml_tensor * mm_node   = cgraph->nodes[i];
@@ -12691,16 +12707,21 @@ index f8f77d8ba..a20d14750 100644
          case GGML_OP_CROSS_ENTROPY_LOSS:
          case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
          case GGML_OP_OPT_STEP_ADAMW:
-@@ -9113,7 +6153,7 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
+@@ -9113,7 +6153,12 @@ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev,
          // This model HAS host-resident experts, so the work/arena split is meaningful -- arm the slab.
          // Dense models never reach here (`llama_model_moe_cache_preflight` skips an empty host-expert map),
          // which is what keeps the slab off them.  Runs before the context, so before any compute buffer.
 -        g_slab_armed = true;
 +        ggml_cuda_slab_arm();
++    } else {
++        // The preflight now runs once at model load (universal, aux 0) and again from `common` with the
++        // draft/MTP aux; if the better-informed call declines the cache, undo the earlier arm so a
++        // cache-off run does not still withhold VRAM for an arena it will never use.
++        ggml_cuda_slab_disarm();
      }
      return on;
  }
-@@ -9208,16 +6248,7 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
+@@ -9208,16 +6253,7 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
      // Default: route them to the slab's pinned second narrow region.  `GGML_CUDA_SLAB_NARROW2=0` is the
      // A/B arm -- the draft bypasses the slab entirely (raw cudaMalloc), the session's quick fix.
      GGML_UNUSED(dev);
@@ -12718,7 +12739,7 @@ index f8f77d8ba..a20d14750 100644
  }
  
  static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
-@@ -9329,8 +6360,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+@@ -9329,8 +6365,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
      GGML_UNUSED(reg);
  }
  
@@ -23255,7 +23276,7 @@ index bd78eb88a..269d0036f 100644
              // Clearing the state mid-batch would require special-casing which isn't done.
              LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 381cc1aca..4ce04f8f7 100644
+index 798110c70..1d9731731 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -15,17 +15,35 @@
@@ -23300,7 +23321,7 @@ index 381cc1aca..4ce04f8f7 100644
  const char * llama_file_version_name(llama_fver version) {
      switch (version) {
          case GGUF_FILE_VERSION_V1: return "GGUF V1 (support until nov 2023)";
-@@ -573,15 +591,7 @@ llama_model_loader::llama_model_loader(
+@@ -575,15 +593,7 @@ llama_model_loader::llama_model_loader(
      // Host-resident expert weights are always pinned (`ROCm_Host`): the GPU reads the host master in
      // place, which a pageable `CPU_Mapped` master cannot do without XNACK (issue #116).  The pageable
      // `--host-experts mmap` mode and the legacy `LLAMA_MMAP_HOST_EXPERTS=0` were removed for RDNA.
@@ -23317,7 +23338,7 @@ index 381cc1aca..4ce04f8f7 100644
  
      if (!fname.empty()) {
          // Load the main GGUF
-@@ -1137,6 +1147,14 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1139,6 +1149,14 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -23332,7 +23353,7 @@ index 381cc1aca..4ce04f8f7 100644
  // wip/fit-slab-accounting: account a host-resident MoE expert tensor's bytes per REAL device, so the
  // fit's G1/G2 reservation and the post-prefill drop/rearm cover every device.  Under `-sm tensor` the
  // layer's device is the Meta wrapper and the tensor is split across its simple devices, so distribute the
-@@ -1233,9 +1251,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1235,9 +1253,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // skip unused tensors
@@ -23346,7 +23367,7 @@ index 381cc1aca..4ce04f8f7 100644
  
              size_data -= nbytes;
              n_created++;
-@@ -1472,8 +1492,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1501,8 +1521,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          return NULL;
      }
  
@@ -23358,7 +23379,7 @@ index 381cc1aca..4ce04f8f7 100644
          is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()));
      }
  
-@@ -1943,8 +1965,10 @@ bool llama_model_loader::load_all_data(
+@@ -1986,8 +2008,10 @@ bool llama_model_loader::load_all_data(
          if (cur->data != nullptr && cur->buffer != nullptr && cur->ne[2] > 1 &&
                  ggml_backend_buffer_is_host(cur->buffer) &&
                  std::string(ggml_get_name(cur)).find("exps") != std::string::npos) {
@@ -23372,7 +23393,7 @@ index 381cc1aca..4ce04f8f7 100644
  
          size_done += n_size;
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index cd838c120..939d928bf 100644
+index 493782111..0cf69c201 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -70,6 +70,7 @@ struct llama_model_loader {
@@ -23407,7 +23428,7 @@ index cd838c120..939d928bf 100644
              return !ranges.empty();
          }
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 602611450..7d2af8622 100644
+index 1559a083d..64f255cdd 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -385,7 +385,46 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
@@ -23538,7 +23559,7 @@ index 602611450..7d2af8622 100644
  
                  const bool mtp_on_hybrid_nemotron =
                      params_l.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
-@@ -3887,7 +3987,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+@@ -3888,7 +3988,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
      TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
      TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
      TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),
@@ -23548,7 +23569,7 @@ index 602611450..7d2af8622 100644
  
  ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn_l, const std::initializer_list<int64_t> & ne, int flags) {
      GGML_ASSERT(ml != nullptr);
-@@ -4022,23 +4123,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
+@@ -4023,23 +4124,3 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
  
      return (uint32_t) nelements;
  }
@@ -23601,7 +23622,7 @@ index f1f81b9f1..50731dfce 100644
      explicit llama_model_base(const llama_model_params & params);
      virtual ~llama_model_base() = default;
 diff --git a/src/llama.cpp b/src/llama.cpp
-index ad527c6b7..f031e6555 100644
+index 63de2762e..ddea45b44 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -22,6 +22,7 @@
@@ -23635,7 +23656,7 @@ index ad527c6b7..f031e6555 100644
          const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
 @@ -329,7 +344,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
          llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
-             params.host_experts_mode, params.check_tensors, params.no_alloc, params.load_mtp, params.allow_nextn_cpu_offload, params.kv_overrides, params.tensor_buft_overrides);
+             params.host_experts_mode, params.check_tensors, params.no_alloc, params.load_mtp, params.allow_nextn_cpu_offload, params.n_cpu_moe_from_end, params.kv_overrides, params.tensor_buft_overrides);
  
 -        ml.lazy.mode = params.lazy_mode;
 +        ml.lazy.mode            = params.lazy_mode;

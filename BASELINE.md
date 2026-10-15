@@ -2,9 +2,16 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r62`** (canonical tip `e909c529a`, net tree
-`386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`).  r62 fixes the `-sm tensor` + `-ncmoe` below-gate upload
-race in **block 10**: `ggml_backend_cuda_set_tensor_2d_async`'s splice-gather issued its 1-D H2D on
+**`v12-097cf33d9-r63`** (canonical tip `daf21c0d0`, net tree
+`b8835a67755d4e00bd0a692d9938f34770699df0`).  r63 flips `-ncmoe N` to host the **last N** trunk layers
+(`llama_model_params.n_cpu_moe_from_end`; `LLAMA_HOST_EXPERTS_FROM_END=0` kill switch; 35B rear >=
+front, `tg500` 87.5 vs 82.6, `pp4096` 4264 vs 4120) and lands three block-09 fixes: the MoE-cache
+preflight is now universal (in `llama_model_load_from_file`, so llama-bench arms the slab too), the
+deferred arena sizing waits for the full host-table set, and `-lm none` + `-sm tensor` uses whole-tensor
+Meta uploads (r54 regression, qwen4exp gate re-run green).  Known follow-up
+(`wip/meta-async-and-gemma4/`): Gemma4 26B-A4B front/tail near-tie drift and the Meta async segmented
+mid-row fast path.  Before it, r62 fixes the `-sm tensor` + `-ncmoe` below-gate upload race in
+**block 10**: `ggml_backend_cuda_set_tensor_2d_async`'s splice-gather issued its 1-D H2D on
 `copy_stream()`, escaping the scheduler's main-stream `wait_before_overwrite`, so it could overwrite the
 reused split-input buffer while the previous split still read it (garbage on 35B-A3B/gemma4/Flash-Next
 GSQ, NaN perplexity); the gather H2D now runs on the main stream.  Before it, r61 makes the heat map's

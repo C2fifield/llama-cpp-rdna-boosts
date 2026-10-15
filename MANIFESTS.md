@@ -5,13 +5,21 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r62`** (canonical tip `e909c529a`, net tree
-`386a6a3d4e202d46fad21f9b63ee9a4aba3fb80e`): strict **12/12** `git am` (`scripts/validate-set.sh`
+**`097cf33d9`**, released as **`v12-097cf33d9-r63`** (canonical tip `daf21c0d0`, net tree
+`b8835a67755d4e00bd0a692d9938f34770699df0`): strict **12/12** `git am` (`scripts/validate-set.sh`
 green on a fresh tarball), whitespace-clean (`git am --whitespace=error-all`), 4B same-seed greedy
 `1c5d32ac537d`, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), adaptive-MTP `none == n3` on
-`-sm tensor -ncmoe 99` + auto cache, `test-backend-ops -o MUL_MAT_ID` no regression (the same 4
-pre-existing upstream `f16 dup=1` fails as r53).  r62 fixes the `-sm tensor` + `-ncmoe` below-gate
-upload race in **block 10** (`ggml_backend_cuda_set_tensor_2d_async`): the splice-gather's 1-D H2D now
+`-sm tensor -ncmoe 99` + auto cache (35B bit-identical, `-n 3000`), `test-backend-ops -o MUL_MAT_ID` no
+regression (the same 4 pre-existing upstream `f16 dup=1` fails as r53).  r63 flips `-ncmoe N` to host
+the **last N** trunk layers via a real `llama_model_params.n_cpu_moe_from_end` field
+(`LLAMA_HOST_EXPERTS_FROM_END=0` kill switch; 35B rear >= front on prefill and decode, `tg500` 87.5 vs
+82.6, `pp4096` 4264 vs 4120) and lands the block-09 fixes: universal MoE-cache preflight in
+`llama_model_load_from_file`, robust deferred arena sizing, and the `-lm none` + `-sm tensor` Meta
+device whole-tensor upload (r54 regression).  A known follow-up
+(`wip/meta-async-and-gemma4/`): Gemma4 26B-A4B front/tail near-tie drift and the
+`ggml_backend_meta_set_tensor_async` segmented mid-row fast path.  r62 fixes the `-sm tensor` +
+`-ncmoe` below-gate upload race in **block 10** (`ggml_backend_cuda_set_tensor_2d_async`): the
+splice-gather's 1-D H2D now
 runs on the main stream, so it is ordered behind the scheduler's `wait_before_overwrite` -- the
 copy-stream H2D could overwrite the reused split-input buffer while the previous split still read it
 (35B-A3B `3333…`, gemma4 `<unused32>…`, Flash-Next GSQ; `llama-perplexity` NaN).  Before it, r61 makes

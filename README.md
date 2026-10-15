@@ -12,7 +12,12 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r62`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r63`**.
+
+r63 flips the `-ncmoe` host placement to the **last N** trunk layers (the tail is the colder, more
+cache-friendly set and has preceding resident compute to overlap the expert upload with; measured
+`pp4096` 4264 vs 4120 and `tg500` 87.5 vs 82.6 on 35B-A3B).  `LLAMA_HOST_EXPERTS_FROM_END=0` restores
+the old first-N placement.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

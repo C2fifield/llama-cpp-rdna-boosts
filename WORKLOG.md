@@ -1,5 +1,43 @@
 # WORKLOG - dated delivery records
 
+## 261014.008 (r63) -- `-ncmoe` hosts the LAST N layers (rear-fill); block-09 cache/preflight/`-lm none` fixes
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r63` (base `097cf33d9`; canonical tip
+`daf21c0d0`, net tree `b8835a67755d4e00bd0a692d9938f34770699df0`; 12 blocks; `validate-set.sh` green on
+a fresh tarball).  **Blocks 09 and 10** are amended; no new block.
+
+**`-ncmoe N` placement (default flip, block 09).**  `-ncmoe N` now hosts the LAST N trunk layers
+`[n_layer-N, n_layer)`, not the first N.  Implemented as a real `llama_model_params.n_cpu_moe_from_end`
+field (not the `LLAMA_NCMOE_FROM_END` scratch env): `common/arg.cpp` stores the count,
+`common_model_params_to_llama` sets the field, the loader (`src/llama-model-loader.cpp`) synthesizes the
+tail CPU overrides and skips the caller's forward `blk.<i>` patterns, a separate draft model uses its
+own `--spec-draft-n-cpu-moe`, and `llama-bench` sets the field too.  Kill switch
+**`LLAMA_HOST_EXPERTS_FROM_END=0`** restores the historical first-N placement.  Rationale: the tail
+layers carry the colder expert routing and have preceding resident compute to overlap the upload with.
+35B-A3B Q8_0, 2x R9700, `-ncmoe 20`: `pp4096` **4264 vs 4120**, `tg500` **87.5 vs 82.6**, `pp512`
+**871 vs 635** (expert cache 4096).  Same-seed greedy on the 35B is **bit-identical** front vs tail
+(`139 chars sha=e2dde701fc04`).
+
+**Block-09 cache fixes.**  (a) The MoE-cache preflight now runs in `llama_model_load_from_file`
+(universal) instead of only `common_init_from_params`, which `llama-bench` bypassed -- so the
+movable-boundary slab was never armed under llama-bench for ANY placement.  (b) The deferred arena
+sizing waits until the registered host tables account for the expected per-device bytes, so a prefill's
+non-staged 1-token tail ubatch priming a subset can no longer latch the arena at 6 tables (the tail
+decode collapse).  (c) `-lm none` + `-sm tensor` no longer aborts during model load: the Meta device
+takes whole-tensor uploads (the non-mmap loader's 1 MiB pieces are not row-aligned for the splitter).
+That was an **r54 regression** (the segmented-upload sync fast path) promoted without re-running
+`gate-qwen4exp-quant-coherence.sh`; the gate is green again.
+
+**Gates (fresh build of the r63 tree).**  Coherence; `gate-prefill-logits.sh` PASS (0.000707 /
+98.755 %); `gate-qwen4exp-quant-coherence.sh` PASS (IQ3_XXS/IQ4_NL/Q4_K_M, 0 `////`, gather ON ==
+OFF); adaptive-MTP `none == draft-mtp n3` bit-identical on the 35B (`-sm tensor -ncmoe 99`, `-n 3000`,
++82 % prose, +49 % mixed); `llama-batched-bench -npl 1,4,8` tail >= front; r62 below-gate corruption
+repro clean (`////`=0).
+
+**Known follow-up (new campaign).**  Gemma4 26B-A4B front vs tail greedy text differs (both coherent;
+flips when the expert cache is toggled -> near-tie MoE drift), and the `ggml_backend_meta_set_tensor_async`
+segmented mid-row fast path is still a latent hazard (`wip/meta-async-and-gemma4/`).
+
 ## 261014.007 (r62) -- fix the `-sm tensor` + `-ncmoe` below-gate upload race (block 10)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r62` (base `097cf33d9`; canonical tip
