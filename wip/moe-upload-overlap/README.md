@@ -1,13 +1,16 @@
 # `moe-upload-overlap` — rear-fill the host-resident experts (was: make the H2D upload overlap compute)
 
-**Status: DECODE BLOCKER FIXED in scratch (2026-10-14) — see [`FIX-2026-10-14.md`](FIX-2026-10-14.md).**
+**Status: BLOCKER FIXED + r63 PLUMBING DONE + GATES GREEN (2026-10-14).  One open finding (Gemma4
+front/tail drift) needs the maintainer before the cut — see the bottom of this list and `FIX` §8.**
 The blocker was **not** the slab: it is a premature arena-sizing latch (`alloc_all_locked` sized on the
 6 tables a prefill's 1-token tail ubatch primed), plus a second, independent `llama-bench`-only gap
 (`llama-bench` never calls the MoE-cache preflight, so it never arms the slab for *any* placement).
 With the universal preflight (in `llama_model_load_from_file`) + the robust deferred sizing
 (`tools/block09-cache-sizing-and-preflight.patch`), both placements reach full residency
-(60 tables / 4080 MiB/device) and **rear >= front on prefill and decode**.  The fix is cut for **block
-09** (maintainer's decision).  Nothing is in `patches/` and nothing has been applied to the fork branch.
+(60 tables / 4080 MiB/device).  Rear-fill is now promoted past the prototype: a real
+`llama_model_params.n_cpu_moe_from_end` field, `-ncmoe N` defaults to the **last N** trunk layers, and
+`LLAMA_HOST_EXPERTS_FROM_END=0` is the kill switch (`tools/rear-fill-promotion.patch`, applies to clean
+r62).  A release re-cut (block 09 amendment + tag r63) has **not** been done yet.
 
 * **Prefill wins**: `pp4096` `0–19` = 4136 vs `20–39` = **4309 (+4 %)** at `-ncmoe 20`.
 * **Decode blocker FIXED** in scratch: `LLAMA_NCMOE_FROM_END=20` now reaches **60 tables /
@@ -19,13 +22,17 @@ With the universal preflight (in `llama_model_load_from_file`) + the robust defe
 * **MTP re-verified**: 35B embedded head `none == draft-mtp n3` bit-identical (+83 %); GSQ-RCO
   Qwen3.8-Flash-Next + separate MTP head coherent and bit-identical front vs tail.
 * **`-sm layer` tail prefill does NOT regress** (clean `pp4096`: tail 2799 vs front 2429).
+* **r63 final gates (all green except one):** rear ≥ front A/B (`pp4096` 4252 vs 4132; `tg500` 86.3 vs
+  83.3); 35B coherence tail == front (`e2dde701fc04`); prefill-logits PASS (0.000707); qwen4exp gate
+  PASS (3 quants); MTP `none == n3` bit-identical +82 % `-n 3000`; batched-bench tail ≥ front;
+  corruption repro `////`=0.  **Open:** Gemma4 26B-A4B front ≠ tail text (both coherent; flips with the
+  cache too, so it is a near-tie MoE drift) — maintainer decision needed before r63.
 * **NEW (r54 regression, FIXED):** `-lm none` + `-sm tensor` aborted during model load at
   `ggml-backend-meta.cpp` on all models.  Root cause: r54's block-09 "segmented host-resident expert
   upload" added a sync fast path (`offset % row_stride == 0`) that misrouted the non-mmap loader's
   mid-row 1 MiB chunks; the r54 promotion did **not** re-run `gate-qwen4exp-quant-coherence.sh`, which
-  is why the earlier gate passes (r41-r53) stopped being valid.  Fixed (Meta = whole-tensor upload +
-  tightened async fast path); the gate is green again (IQ3_XXS/IQ4_NL/Q4_K_M, 0 `////`, gather
-  ON == OFF).  Details: `FIX` §4h.
+  is why the earlier gate passes (r41-r53) stopped being valid.  Fixed in the loader (Meta =
+  whole-tensor upload); the gate is green again.  Details: `FIX` §4h.
 
 Earlier corrected results are in [`FINDINGS-2026-10-14.md`](FINDINGS-2026-10-14.md): staging is +41 % over
 `GGML_SCHED_STAGE=0`; the campaign's "placement is a no-op" was an inert-knob artifact (`llama-bench`
