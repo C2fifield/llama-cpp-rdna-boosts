@@ -25,7 +25,7 @@ events recorded on destroyed streams, so a later decode reuse failed `hipEventSy
 Latent for the delivery (the r63 loader guard keeps the Meta device off the loader async path); fixed
 so the sibling async-upload re-enable can land on top.
 
-**Block 10 -- qwen4exp image+MTP (PR #160, martino2k6).**  Dropped
+**Block 10 -- qwen4exp image+MTP (PR #160, martino2k6; PR merged to `main` for authorship).**  Dropped
 `GGML_ASSERT(ubatch.token && "QWEN4EXP MTP requires token input")` in the `graph_mtp` constructor: mtmd
 feeds the projector output as an embedding-only ubatch, and the graph's `inp->embd` else-branch already
 handles it, so the assert made every image request SIGABRT with `--spec-type draft-mtp`.  Token-capable

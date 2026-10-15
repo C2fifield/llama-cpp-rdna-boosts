@@ -1,9 +1,9 @@
 # `qwen4exp-mtmd-mtp-assert` (archived 2026-10-15)
 
 **PROMOTED into the delivery (r64, block 10).**  The one-line change below is folded into
-`patches/0010-rdna-boosts-block-10-...` as part of `v12-097cf33d9-r64`.  The original candidate and its
-evidence are kept here as the provenance record; see `WORKLOG.md` 261015.001 (r64).  Contributor: PR
-#160, Martin B (martino2k6).
+`patches/0010-rdna-boosts-block-10-...` as part of `v12-097cf33d9-r64` (PR #160 merged to `main` for
+authorship).  The original candidate and its evidence are kept here as the provenance record; see
+`WORKLOG.md` 261015.001 (r64).  Contributor: PR #160, Martin B (martino2k6).
 
 ---
 

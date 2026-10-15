@@ -49,8 +49,9 @@ fast path) were investigated and resolved in r64 (see below).
 to `archive/work/gemma4-drift-and-meta-async/` (`FINDINGS-2026-10-15.md`): the Gemma4 front/tail drift
 is a proven logits near-tie (accepted as MoE drift, no code), the segmented `set_tensor_async` write is
 folded into **block 09**, and the CUDA splice-gather ring ownership bug into **block 10**.  The external
-`qwen4exp-mtmd-mtp-assert` candidate (PR #160) is folded into **block 10** and its record archived at
-`archive/work/qwen4exp-mtmd-mtp-assert/`.  Released as `v12-097cf33d9-r64`.
+`qwen4exp-mtmd-mtp-assert` candidate (PR #160) is folded into **block 10** (the PR was merged to
+`main` for authorship) and its record archived at `archive/work/qwen4exp-mtmd-mtp-assert/`.  Released as
+`v12-097cf33d9-r64`.
 
 **Promoted (r62, 2026-10-14).**  `meta-split-copy-splice-race/` (seeded and fixed the same day) was
 folded into **block 10** and released as `v12-097cf33d9-r62`: the CUDA compact splice-gather issued its
