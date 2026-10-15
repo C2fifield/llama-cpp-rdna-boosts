@@ -29,7 +29,6 @@ is the signature of a stub, not of a campaign.
 | [`nwarps/`](nwarps/README.md) | per-M `nwarps` MoE candidate — the one deliberate width-purity impurity | ACTIVE (env-OFF) |
 | [`fa-band-2byte-row/`](fa-band-2byte-row/README.md) | extend the RDNA4 GQA band's 64-wide K/V config row to the 2-byte f16/bf16 arm (`ncols == 16`; TODO #27) | **OPEN (seeded 2026-10-11), small tuning** |
 | [`rdna35-mmvq-fusion-perf/`](rdna35-mmvq-fusion-perf/README.md) | restore the block-13 RDNA3_5 single-token dense-GLU fusion perf (~0.9 % `tg128`; TODO item 16) | **PARKED** — the original "pin the params" plan is dead; live candidates are codegen FMA contraction and the Q8_1 cache |
-| [`gemma4-drift-and-meta-async/`](gemma4-drift-and-meta-async/README.md) | the r63 residuals: (a) Gemma4 26B-A4B front-vs-tail greedy text diverges (near-tie MoE reduction-order drift; decide if it is worth chasing), and (b) `ggml_backend_meta_set_tensor_async`'s segmented mid-row fast path is still a latent hazard after the loader guard made it unreachable from the loader | **OPEN (seeded 2026-10-14)**, scoping + design |
 | [`meta-segmented-upload-async/`](meta-segmented-upload-async/README.md) | make the segmented per-op expert upload **async** again (per-row 1-D `set_async` + the MMQ tail) — r54 fixed it synchronously, so gemma4 + `-ncmoe` + `-sm tensor` is correct but only ~9 t/s | **OPEN (seeded 2026-10-13), perf follow-up** |
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
 | [`moe-layer-stagger/`](moe-layer-stagger/README.md) | stagger the host/device expert-layer split by ratio (even layers device, odd host) instead of the contiguous "first N layers to host", so the H2D expert upload is spread across the prefill instead of exposed as one host-only stretch | **PARKED (2026-10-14) — REFUTED.**  With the page-cache confound removed, four disjoint host sets are identical to 0.1 % at `-ncmoe 24`; prefill is H2D-bound, so the schedule cannot matter.  On the maintainer's call the campaign is parked.  See [`FINDINGS-2026-10-14.md`](moe-layer-stagger/FINDINGS-2026-10-14.md) |
@@ -44,7 +43,14 @@ switch).  The same release carries the block-09 cache/preflight fixes (universal
 deferred arena sizing, whole-tensor Meta upload for `-lm none`) that fixed the tail-placement decode
 collapse.  The record moved to `archive/work/moe-upload-overlap/` (with a `RESOLUTION.md`); the two
 residuals (Gemma4 front/tail near-tie drift, the `ggml_backend_meta_set_tensor_async` segmented mid-row
-fast path) are re-seeded in `wip/gemma4-drift-and-meta-async/`.
+fast path) were investigated and resolved in r64 (see below).
+
+**Promoted / closed (r64, 2026-10-15).**  `gemma4-drift-and-meta-async/` (the r63 residuals) is moved
+to `archive/work/gemma4-drift-and-meta-async/` (`FINDINGS-2026-10-15.md`): the Gemma4 front/tail drift
+is a proven logits near-tie (accepted as MoE drift, no code), the segmented `set_tensor_async` write is
+folded into **block 09**, and the CUDA splice-gather ring ownership bug into **block 10**.  The external
+`qwen4exp-mtmd-mtp-assert` candidate (PR #160) is folded into **block 10** and its record archived at
+`archive/work/qwen4exp-mtmd-mtp-assert/`.  Released as `v12-097cf33d9-r64`.
 
 **Promoted (r62, 2026-10-14).**  `meta-split-copy-splice-race/` (seeded and fixed the same day) was
 folded into **block 10** and released as `v12-097cf33d9-r62`: the CUDA compact splice-gather issued its

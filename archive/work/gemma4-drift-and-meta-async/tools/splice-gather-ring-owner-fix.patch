@@ -1,0 +1,77 @@
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 1d255b749..2b2e6a568 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1663,6 +1663,20 @@ struct ggml_backend_cuda_context {
+     std::string name;
+     cudaEvent_t copy_event = nullptr;
+ 
++    // Host-pinned ring for the strided splice H2D (see `ggml_backend_cuda_set_tensor_2d_async`,
++    // `stride_tensor == size && n_copies > 1`).  Owned by the context so the events and pinned
++    // buffers are torn down with its streams.  A function-local static ring outlived a *temporary*
++    // backend's streams -- the loader's `-lm none` async uploader creates its own meta backend and
++    // frees it after the load -- so a later decode reuse of a slot recorded by that backend failed
++    // `hipEventSynchronize` with `hipErrorUnknown`.
++    struct splice_pin_slot {
++        void *      buf = nullptr;
++        size_t      sz  = 0;
++        cudaEvent_t ev  = nullptr;
++    };
++    std::vector<splice_pin_slot> splice_pin_ring;
++    int                          splice_pin_idx = 0;
++
+     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
+     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
+     void * cublas_workspaces[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 0ab8512b8..0f3bcfc27 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -892,6 +892,12 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+     if (copy_event != nullptr) {
+         CUDA_CHECK(cudaEventDestroy(copy_event));
+     }
++    // Release the splice-gather ring before its streams go away: the events were recorded on them.
++    for (auto & s : splice_pin_ring) {
++        if (s.ev != nullptr) { (void) cudaEventSynchronize(s.ev); CUDA_CHECK(cudaEventDestroy(s.ev)); }
++        if (s.buf != nullptr) { CUDA_CHECK(hipHostFree(s.buf)); }
++    }
++    splice_pin_ring.clear();
+     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
+         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
+             if (streams[i][j] != nullptr) {
+@@ -3813,22 +3819,18 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
+         // pinned buffer of copy N (a single shared buffer corrupts/faults -- and indeed did).
+         // Depth is 8: more slots = fewer host waits = closer to the
+         // no-wait ceiling, at `depth x span` bytes of pinned memory.
+-        struct pin_slot { void * buf; size_t sz; hipEvent_t ev; };
+-        // exp36: keep one ring per device.  A shared ring recorded device 0's event on device 1's copy
+-        // stream (and vice versa), which either errors or is a no-op -- so the queued H2D (PINHOST=2)
+-        // never actually overlapped.  Cheap to fix and it makes the queue semantics honest.
+-        static thread_local std::vector<std::vector<pin_slot>> rings;   // [device][slot]
+-        static thread_local std::vector<int> pin_idx_dev;               // [device]
+-        static thread_local int ring_n = 0;
+-        if (ring_n == 0) {
+-            ring_n = 8;
+-        }
+-        const int dev = cuda_ctx->device;
+-        if ((int) rings.size()       <= dev) rings.resize(dev + 1);
+-        if ((int) pin_idx_dev.size() <= dev) pin_idx_dev.resize(dev + 1, 0);
+-        if (rings[dev].empty()) rings[dev].resize(ring_n, pin_slot{nullptr, 0, nullptr});
+-        const int k = pin_idx_dev[dev]++ % ring_n;
+-        pin_slot & s = rings[dev][k];
++        // The ring is owned by the context (one context == one device), so its events and buffers
++        // are destroyed with the context's streams.  It used to be a function-local static, which a
++        // temporary backend could outlive: the loader's `-lm none` async uploader builds its own meta
++        // backend (and CUDA contexts) and frees them after the load, leaving ring slots whose events
++        // were recorded on now-destroyed streams -- the decode's next reuse then failed
++        // `hipEventSynchronize` with `hipErrorUnknown`.
++        auto & ring = cuda_ctx->splice_pin_ring;
++        if (ring.empty()) {
++            ring.resize(8, ggml_backend_cuda_context::splice_pin_slot{});
++        }
++        const int k = cuda_ctx->splice_pin_idx++ % (int) ring.size();
++        auto & s = ring[k];
+         if (need > s.sz) {
+             if (s.ev != nullptr) { (void) hipEventSynchronize(s.ev); (void) hipEventDestroy(s.ev); s.ev = nullptr; }
+             if (s.buf != nullptr) { (void) hipHostFree(s.buf); s.buf = nullptr; }

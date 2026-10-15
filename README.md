@@ -12,7 +12,15 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r63`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r64`**.
+
+r64 rounds out the r63 host-expert upload work: block 09 now accepts an arbitrary segmented Meta
+write (head partial row + full rows + tail partial row), and block 10 owns the CUDA splice-gather
+ring in the context so it is torn down with its streams.  It also drops the qwen4exp MTP
+`ubatch.token` assert, so mtmd image requests work under `--spec-type draft-mtp` (PR #160).  Gates:
+`gate-prefill-logits.sh` 0.000707 / 98.755 %, `gate-qwen4exp-quant-coherence.sh` PASS, same-seed
+coherence unchanged on 4B/35B/Gemma4, adaptive-MTP `none == n3` byte-identical, 35B `-ncmoe 20` hang
+loop 10/10 clean (`-lm auto` and `-lm none`).
 
 r63 flips the `-ncmoe` host placement to the **last N** trunk layers (the tail is the colder, more
 cache-friendly set and has preceding resident compute to overlap the expert upload with; measured

@@ -11,7 +11,26 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r63` (2026-10-14) -- `-ncmoe` hosts the LAST N layers + block-09 cache/preflight/`-lm none` fixes:**
+> **Current release `v12-097cf33d9-r64` (2026-10-15) -- block-09 segmented Meta writes, block-10 gather-ring ownership, qwen4exp image+MTP:**
+> canonical tip `5eeff4da5`, net tree `ca68f3ed0557d9cb2168f8b4773ab32476f84feb`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy
+> `1c5d32ac537d`, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, qwen4exp gate PASS
+> (IQ3_XXS/IQ4_NL/Q4_K_M, gather transparent), adaptive-MTP `none == n3` (35B `-sm tensor -ncmoe 99`
+> + auto cache, `-n 3000`, prose `9840cd63290c` / mixed `5571e0424738`, bit-identical), 35B
+> `-ncmoe 20` hang loop 10/10 clean (`-lm auto` and `-lm none`).  **Block 09**
+> (`ggml/src/ggml-backend-meta.cpp`): the segmented sync splitter now accepts an arbitrary
+> `[offset, offset+size)` write (head partial row + full rows + tail partial row) and
+> `set_tensor_async` forwards every segmented range to it, deleting the whole-tensor accumulator and
+> the unsound `offset % row_stride` classifier; the write is byte-identical on the current callers
+> (`archive/work/gemma4-drift-and-meta-async/`, `FINDINGS-2026-10-15.md`).  **Block 10**
+> (`ggml-cuda/common.cuh`, `ggml-cuda.cu`, `src/models/qwen4exp.cpp`): the compact splice-gather's
+> pinned ring is owned by `ggml_backend_cuda_context` and freed with its streams (a function-local
+> static ring outlived a temporary backend's streams -- the loader's non-mmap async uploader -- and a
+> later `hipEventSynchronize` failed); and the `ubatch.token` assert in the qwen4exp MTP graph is
+> dropped, so mtmd image requests work with `--spec-type draft-mtp` (PR #160).  See
+> `../WORKLOG.md` 261015.001 (r64).
+>
+> **Previous release `v12-097cf33d9-r63` (2026-10-14) -- `-ncmoe` hosts the LAST N layers + block-09 cache/preflight/`-lm none` fixes:**
 > canonical tip `daf21c0d0`, net tree `b8835a67755d4e00bd0a692d9938f34770699df0`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball), whitespace-clean, 4B same-seed greedy
 > `1c5d32ac537d`, `gate-prefill-logits.sh` **0.000707 / 98.755 %** PASS, adaptive-MTP `none == n3`

@@ -1,8 +1,9 @@
 # `gemma4-drift-and-meta-async` — r63 residuals (seeded 2026-10-14)
 
-**Status: OPEN (scoping + design).  Not part of the delivery.**  Both items below are residuals of the
-r63 promotion (the `moe-upload-overlap` campaign, folded into blocks 09/10).  Nothing here may be applied
-to the fork without the maintainer's go-ahead (AGENTS.md WIP rule).
+**Status: ARCHIVED (2026-10-15) — promoted into `v12-097cf33d9-r64` (block 09 + block 10).**  Both
+residuals are root-caused: (A) is a proven near-tie (accepted as MoE drift), (B) and the loader-async
+ring bug are fixed and folded into the delivery.  See `FINDINGS-2026-10-15.md` and `WORKLOG.md`
+261015.001 (r64).  The `tools/*.patch` files are the cut candidates, kept for provenance.
 
 Two independent questions:
 
@@ -186,6 +187,9 @@ for i in 1 2 3; do timeout 240 env HIP_VISIBLE_DEVICES=0,1 MOE_EXPERT_HEATMAP=0 
 | file | what |
 |---|---|
 | `tools/meta-async-fastpath-attempt.patch` | the reverted classifier tightening (for reference; it hangs the rear placement) |
+| `tools/meta-async-partial-row-fix.patch` | **FIX (B)**: generalized segmented sync splitter (arbitrary range) + remove the async accumulator/classifier — cut for block 09 |
+| `tools/splice-gather-ring-owner-fix.patch` | **FIX (B-extra)**: per-context CUDA splice-gather ring — cut for block 10; not needed with the loader guard on |
+| `FINDINGS-2026-10-15.md` | **the result**: (A) logits near-tie proof; (B) caller/range instrumentation + fix + gate results |
 | `README.md` | this write-up |
 | `HANDOVER-2026-10-14.md` | cold-start handover |
 

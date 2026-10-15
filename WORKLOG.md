@@ -1,5 +1,49 @@
 # WORKLOG - dated delivery records
 
+## 261015.001 (r64) -- segmented Meta writes, splice-gather ring ownership, qwen4exp image+MTP
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r64` (base `097cf33d9`; canonical tip
+`5eeff4da5`, net tree `ca68f3ed0557d9cb2168f8b4773ab32476f84feb`; 12 blocks; `validate-set.sh` green on
+a fresh tarball).  **Blocks 09 and 10** are amended; no new block.
+
+**Block 09 -- the segmented `set_tensor_async` classifier (r63 residual, `archive/work/gemma4-drift-and-meta-async/`).**
+`ggml_backend_meta_set_tensor_async` classified a segmented write by `offset % row_stride == 0` alone,
+so an aligned-offset mid-row range was misrouted to the old sync splitter (axis-0 assert / axis-1 bogus
+tail); a reverted attempt to tighten the predicate stranded per-op ranges in a whole-tensor accumulator
+and hung the rear placement.  Fix: the segmented sync splitter now splices an arbitrary
+`[offset, offset+size)` write (head partial row + full rows + tail partial row), and `set_tensor_async`
+forwards every segmented range to it; the accumulator and the classifier are gone.  Instrumentation
+showed the 35B rear `-ncmoe 20` run never enters the segmented branch (6548 single-segment calls), while
+Gemma4 `-ncmoe 8` does (`blk.22..29.ffn_gate_up_exps.weight`, `axis=1, nr0=2`); with the r63 loader guard
+removed the pre-fix tree aborted 15/15 on the axis-0 assert and the fix makes it 24/24 clean.
+
+**Block 10 -- CUDA splice-gather ring ownership.**  The pinned ring in
+`ggml_backend_cuda_set_tensor_2d_async` was a function-local `static thread_local`; the loader's
+non-mmap async uploader builds a temporary Meta backend (and CUDA contexts) and frees them, leaving ring
+events recorded on destroyed streams, so a later decode reuse failed `hipEventSynchronize` with
+`hipErrorUnknown`.  The ring is now owned by `ggml_backend_cuda_context` and freed with its streams.
+Latent for the delivery (the r63 loader guard keeps the Meta device off the loader async path); fixed
+so the sibling async-upload re-enable can land on top.
+
+**Block 10 -- qwen4exp image+MTP (PR #160, martino2k6).**  Dropped
+`GGML_ASSERT(ubatch.token && "QWEN4EXP MTP requires token input")` in the `graph_mtp` constructor: mtmd
+feeds the projector output as an embedding-only ubatch, and the graph's `inp->embd` else-branch already
+handles it, so the assert made every image request SIGABRT with `--spec-type draft-mtp`.  Token-capable
+ubatches are unchanged.
+
+**(A) Gemma4 26B-A4B front-vs-tail residual -- proven a near-tie, accepted.**  At the first divergent
+token (step 4) the candidates are ` README` and ` long`, and the top-2 margin is 0.051 / 0.020 / 0.023 /
+0.261 across the four `(placement, cache)` arms, inside the ~0.1-0.2 arm-to-arm logit perturbation.
+Both outputs are coherent, `-ncmoe 0` reproduces one arm, and `-sm layer` is self-consistent; this is
+MoE fusion-order drift of the class the MTP methodology already accepts.  No code change.
+
+**Gates (fresh build of the r64 tree).**  Coherence: 4B `1c5d32ac537d`, 35B `627b2ebd7792`, Gemma4
+bit-identical to r63 (`0d2717074ba2` / `468a953af132`); `gate-prefill-logits.sh` PASS (0.000707 /
+98.755 %); `gate-qwen4exp-quant-coherence.sh` PASS (IQ3_XXS/IQ4_NL/Q4_K_M, 0 `////`, gather ON == OFF);
+adaptive-MTP `none == draft-mtp n3` bit-identical on the 35B (`-sm tensor -ncmoe 99`, `-n 3000`,
+prose `9840cd63290c`, mixed `5571e0424738`); 35B `-ncmoe 20` hang loop 10/10 (`-lm auto` and `-lm none`).
+See `archive/work/gemma4-drift-and-meta-async/FINDINGS-2026-10-15.md`.
+
 ## 261014.008 (r63) -- `-ncmoe` hosts the LAST N layers (rear-fill); block-09 cache/preflight/`-lm none` fixes
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r63` (base `097cf33d9`; canonical tip
