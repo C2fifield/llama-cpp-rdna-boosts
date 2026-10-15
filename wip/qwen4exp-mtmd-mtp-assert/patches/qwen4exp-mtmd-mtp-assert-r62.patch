@@ -1,0 +1,46 @@
+From 73d4ad4bfaf18aac2c63f9f8279b9539557f4215 Mon Sep 17 00:00:00 2001
+From: Martin B <martino2k6@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 09:51:15 +0100
+Subject: [PATCH] qwen4exp: drop the ubatch.token assert in the MTP graph
+
+With --spec-type draft-mtp on, every mtmd (image) request to
+Qwen3.8-Flash-Next aborts llama-server on
+
+  qwen4exp.cpp:1038: GGML_ASSERT(ubatch.token && "QWEN4EXP MTP requires token input")
+
+mtmd feeds the projector's embeddings as an embedding-only ubatch
+(token == nullptr). The graph itself already handles that case: its
+else-branch takes tok_embd from the registered embedding input
+(introduced by upstream #29622), and the feeder
+llm_graph_input_embd_h::set_input (upstream #30257) fills it
+end-to-end. The assert predates the mtmd port and is the only thing
+standing between the two; dropping it makes image requests work with
+MTP still enabled.
+
+Verified on gfx1151 (Strix Halo), Qwen3.8-Flash-Next Q5_K_M + the
+shared MTP head, ctx 131072: text-only greedy outputs byte-identical
+across the swap, logit fingerprint (truncated top-5 KL, top-1
+agreement) 0.0 / 1.0, MTP decode within 0.4 % with acceptance
+unchanged (0.63415); an image request SIGABRTs the unpatched server
+and passes on the patched one (usage.prompt_tokens = 322 proving the
+image was applied), twice byte-identical. deepseek4.cpp carries the
+same pattern; flagged in the README, not touched.
+---
+ src/models/qwen4exp.cpp | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index e76f29ada..845c178f5 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -1041,7 +1041,6 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     graph(model, params, no_build_t{}) {
+     GGML_ASSERT(hparams.n_layer_nextn > 0 && "QWEN4EXP MTP requires n_layer_nextn > 0");
+     GGML_ASSERT(hparams.n_layer_nextn == 1 && "QWEN4EXP MTP currently only supports a single MTP block");
+-    GGML_ASSERT(ubatch.token && "QWEN4EXP MTP requires token input");
+ 
+     const int64_t hc     = hparams.dsv4_hc_mult;
+     const int64_t hc_dim = hc * n_embd;
+-- 
+2.56.0
+
