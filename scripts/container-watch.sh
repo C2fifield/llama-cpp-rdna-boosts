@@ -27,6 +27,17 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# GHCR credential: keep a PERSISTENT copy so cron never depends on the login
+# session's temporary $XDG_RUNTIME_DIR/containers/auth.json (it is lost on
+# logout/reboot).  Refresh it from the gh token on every run.  `gh auth status`
+# must be authenticated with write:packages (push) and delete:packages (prune).
+export REGISTRY_AUTH_FILE="${REGISTRY_AUTH_FILE:-$HOME/.config/containers/auth.json}"
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$REGISTRY_AUTH_FILE")"
+    gh auth token | podman login --authfile "$REGISTRY_AUTH_FILE" ghcr.io \
+        -u "${GHCR_USER:-stew675}" --password-stdin >/dev/null 2>&1 || true
+fi
+
 RDNA_REPO="${RDNA_REPO:-$HOME/llama-cpp-rdna-boosts}"
 LLAMA_DIR="${LLAMA_DIR:-$HOME/llama.cpp}"
 STATE_DIR="${STATE_DIR:-$HOME/.cache/rdna-containers}"

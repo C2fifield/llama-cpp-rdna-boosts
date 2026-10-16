@@ -330,14 +330,24 @@ git clone https://github.com/stew675/llama-cpp-rdna-boosts.git
 # itself mid-run
 install -m 755 ~/llama-cpp-rdna-boosts/scripts/container-watch.sh ~/bin/rdna-container-watch.sh
 
-# authorization (interactive, once):
+# authorization (interactive, once).  A classic PAT needs write:packages (push)
+# and delete:packages (the prune); with a PAT, skip the refresh and use
+#   echo ghp_... | gh auth login -h github.com --with-token
 gh auth login -h github.com
 gh auth refresh -h github.com -s write:packages -s delete:packages
-gh auth token | podman login ghcr.io -u stew675 --password-stdin
+
+# keep rootless podman usable from cron after logout/reboot:
+sudo loginctl enable-linger "$(id -un)"
 
 # poll every 10 minutes
 ( crontab -l 2>/dev/null; echo '*/10 * * * * $HOME/bin/rdna-container-watch.sh >> $HOME/.cache/rdna-containers/watch.log 2>&1' ) | crontab -
 ```
+
+The watcher refreshes `~/.config/containers/auth.json` from `gh auth token` on every
+run (`REGISTRY_AUTH_FILE`), so the credential is persistent and does not depend on the
+login session's temporary `$XDG_RUNTIME_DIR/containers/auth.json`; no separate
+`podman login` is needed once `gh` is authenticated.  `loginctl enable-linger` is
+required so rootless podman still has a runtime dir when the user is logged out.
 
 The watcher fetches tags, takes the newest `v12-*` release, and if it differs from
 `~/.cache/rdna-containers/last-built`, checks it out and runs that tag's
