@@ -23,8 +23,9 @@
 # Exit: 0 = nothing to do or a build succeeded; 1 = a build/push failed.
 set -euo pipefail
 
-# cron has a minimal PATH.
+# cron has a minimal PATH and no login session; rootless podman needs XDG_RUNTIME_DIR.
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 RDNA_REPO="${RDNA_REPO:-$HOME/llama-cpp-rdna-boosts}"
 LLAMA_DIR="${LLAMA_DIR:-$HOME/llama.cpp}"
