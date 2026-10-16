@@ -1,0 +1,66 @@
+From cd7e447c086ce5c04887818e89586aeee1192520 Mon Sep 17 00:00:00 2001
+From: SixVolts <rigel@sixvolts.org>
+Date: Fri, 16 Oct 2026 12:00:00 +0000
+Subject: [PATCH 01/03] rdna-boosts: rdna2 block 01: fa tile partial-batch loads branch instead of pointer-select
+
+Port of sixvolts/llama-halo-hybrid cc1179bc: the partial-batch (unaligned KV
+length) tile loads branch on the in-bounds condition and write zeros directly
+instead of selecting between the global KV pointer and a pointer to a local zero
+array. On gfx1030 (no architected flat scratch) the select made a flat pointer
+that could point into private memory, and the load faulted at a near-null address
+for unaligned KV lengths (Qwen3.8 2051-cell gathered decode after a 113K prompt;
+test-backend-ops kv=113 / sinks / ALiBi cases). Same values.
+
+V620 (gfx1030): FLASH_ATTN_EXT 3982/3982 (aborted at the first kv=113 case before).
+---
+
+ 0 files changed
+
+diff --git a/ggml/src/ggml-cuda/fattn-tile.cuh b/ggml/src/ggml-cuda/fattn-tile.cuh
+index 1902a10..4f987a0 100644
+--- a/ggml/src/ggml-cuda/fattn-tile.cuh
++++ b/ggml/src/ggml-cuda/fattn-tile.cuh
+@@ -445,10 +445,16 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
+                 for (int j0 = j0_start; j0 < j0_stop; j0 += stride_j) {
+                     const int j = j0*cpy_ne + (stride_j == warp_size ? threadIdx.x : threadIdx.x % stride_j)*cpy_ne;
+ 
+-                    const __align__(16) half2 zero[cpy_ne] = {{0.0f, 0.0f}};
+-                    ggml_cuda_memcpy_1<cpy_nb>(
+-                        tile_KV + i*(J/2 + J_padding) + j,
+-                        !oob_check || i < i_sup ? KV + i*stride_KV + j : zero);
++                    // halo-hybrid: branch instead of selecting between a global pointer and a local zero array.
++                    // The select makes a flat pointer that may point into private memory; on gfx1030 (no
++                    // architected flat scratch) that load faulted at a near-null address for unaligned KV
++                    // lengths (Qwen3.8's 2051-cell gathered decode, test-backend-ops kv=113). Same values.
++                    if (!oob_check || i < i_sup) {
++                        ggml_cuda_memcpy_1<cpy_nb>(tile_KV + i*(J/2 + J_padding) + j, KV + i*stride_KV + j);
++                    } else {
++                        const __align__(16) half2 zero[cpy_ne] = {{0.0f, 0.0f}};
++                        ggml_cuda_memcpy_1<cpy_nb>(tile_KV + i*(J/2 + J_padding) + j, zero);
++                    }
+                 }
+             }
+         }
+@@ -670,10 +676,19 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
+                 for (int j0 = j0_start; j0 < j0_stop; j0 += stride_j) {
+                     const int j = j0*(cpy_ne/2) + (stride_j == warp_size ? threadIdx.x : threadIdx.x % stride_j)*(cpy_ne/2);
+ 
+-                    const T_in zero[cpy_ne/2] = {{0.0f, 0.0f}};
++                    // Branch instead of selecting between a global pointer and a local zero array: the select
++                    // makes a flat pointer that may point into private memory; on gfx1030 (no architected flat
++                    // scratch) that load faulted at a near-null address for unaligned KV lengths (Qwen3.8's
++                    // 2051-cell gathered decode, test-backend-ops kv=113). Same values.
+                     __align__(16) T_in tmp_in[cpy_ne/2];
+-                    ggml_cuda_memcpy_1<sizeof(tmp_in)>(
+-                        tmp_in, !oob_check || i < i_sup ? KV + i*stride_KV + j : zero);
++                    if (!oob_check || i < i_sup) {
++                        ggml_cuda_memcpy_1<sizeof(tmp_in)>(tmp_in, KV + i*stride_KV + j);
++                    } else {
++#pragma unroll
++                        for (int l = 0; l < cpy_ne/2; ++l) {
++                            tmp_in[l] = T_in{0.0f, 0.0f};
++                        }
++                    }
+ 
+                     __align__(16) float2 tmp_f2[cpy_ne/2];
+ #pragma unroll
