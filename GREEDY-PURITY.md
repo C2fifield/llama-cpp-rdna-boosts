@@ -1459,13 +1459,14 @@ with a per-region anchored view, i.e. non-unified semantics inside the shared po
 redesign; the campaign is **parked** at `wip/kv-cell-offset-nondeterminism/` (evidence:
 `FINDINGS-offset-mechanism.md`; probe + server repro under `tools/`).
 
-**Correction 2026-10-16 (issue #151 follow-up).**  This covers the `--kv-unified` case only.  A
-*separate* HIP-graphs start-to-start nondeterminism exists that `--no-kv-unified` does **not** remove
-(reporter: identical fixed-schedule requests differ on the first request of a fresh server, graphs on,
-both with and without unified KV; graphs off is stable).  It is not unified-KV cell offset and not
-issue #134; tracked as TODO #67 (not reproduced on Linux/ROCm 7.14; see the r69 revalidation in
-`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  Disable graphs for strict
-reproducibility.
+**Correction 2026-10-16 (issue #151 follow-up).**  This covers the `--kv-unified` case only.  The
+reporter additionally sees a start-to-start greedy flip with HIP graphs on, under both `--kv-unified`
+and `--no-kv-unified`.  We could **not** reproduce it on Linux/ROCm 7.14: fresh-process decode-logit
+probes are bit-identical across starts, graphs on and off (r69 revalidation,
+`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  Under `--no-kv-unified` the
+concurrent repeats are reproducible but solo differs from concurrent (a cross-sequence batching
+effect, not the cell set).  The reported flip is most likely the known Windows-only per-start flip
+(the r25 rope/set_rows fix, and the external hipBLASLt solution selection).  Tracked as TODO #67.
 
 **No performance angle.**  Making concurrent serving deterministic would require either pinning the
 batch shape/grouping or carrying the per-sequence-region redesign; neither is a throughput win, and the

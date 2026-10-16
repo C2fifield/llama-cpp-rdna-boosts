@@ -1,5 +1,23 @@
 # WORKLOG - dated delivery records
 
+## 261016.005 (no release) -- #67 wording re-correction: keep the three non-determinism axes separate
+
+**No delivery change.**  Follow-up to 261016.004: the first re-correction still read as if HIP graphs
+nondeterminism under `--no-kv-unified` were an established effect.  The record now keeps three axes
+apart:
+
+1. `--kv-unified`: the FA cell-offset effect; concurrent repeats differ.  Confirmed on r69.
+2. `--no-kv-unified`: concurrent repeats reproducible; solo vs concurrent differ (cross-sequence
+   batching), deterministically.  Confirmed on r69.
+3. HIP graphs on, start-to-start: reported by `@DanoPTT` on Windows/ROCm 10; **not reproduced** on
+   Linux/ROCm 7.14 at the decode-logit level, graphs on or off.  TODO #67.
+
+`README.md` (the unified-KV / #134 note) and `GREEDY-PURITY.md` §38 no longer state the graphs effect
+as fact; they attribute it to the reporter and point at the known Windows per-start flip.  A short
+reply with the decode-logit data and the Windows bisection ask (`ROCBLAS_USE_HIPBLASLT=0`,
+`GGML_CUDA_DISABLE_ROPE_SET_ROWS=1`, `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`) was posted on issue
+#151.
+
 ## 261016.004 (no release) -- kv-cell-offset revalidated on r69; the issue #151 graphs-on start-to-start flip does not reproduce on Linux
 
 **No delivery change.**  `release.json` stays `v12-097cf33d9-r70`; no patch, block or `release.json`

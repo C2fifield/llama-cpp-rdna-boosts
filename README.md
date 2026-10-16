@@ -506,15 +506,14 @@ introduced by this patch set; the analysis and reproducers are preserved (parked
 unified-KV effect, and the delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`,
 `native == staging`) are scoped to a fixed batch and are unchanged.
 
-**Separate from the unified-KV case (2026-10-16, issue #151 follow-up).**  HIP graphs introduce their
-own start-to-start nondeterminism that `--no-kv-unified` does **not** remove.  On the reporter's box
-(R9700 / gfx1201, Windows, graphs on) the **first** request on a fresh server already differed between
-starts, both with `--kv-unified` and with `--no-kv-unified`, on identical fixed-schedule
-`/completion` requests; graphs off was stable.  It reproduces on older releases (r30), so it is not a
-delivery regression; it is tracked as TODO #67 (it did **not** reproduce on Linux/ROCm 7.14; see
-`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`, so it is most likely the
-known Windows-only per-start flip).  Where strict reproducibility matters, keep
-`GGML_CUDA_DISABLE_GRAPHS=1` in addition to `--no-kv-unified`.
+**Separate from the unified-KV case (2026-10-16, issue #151 follow-up).**  The reporter (R9700 /
+Windows) also sees a start-to-start greedy flip with HIP graphs on, and reports that `--no-kv-unified`
+does not remove it.  We could **not** reproduce it on Linux/ROCm 7.14: fresh-process decode-logit
+probes (W=1..8) are bit-identical across starts, graphs on and off, including on the reporter's 27B
+model with q8_0 KV (`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  It is
+most likely the known Windows-only per-start flip (the r25 `rope -> view -> set_rows` bit-transparency
+fix, and the external hipBLASLt solution-selection issue, workaround `ROCBLAS_USE_HIPBLASLT=0`), both
+prefill-driven and independent of graphs.  Tracked as TODO #67.
 
 ## When upstream master moves
 
