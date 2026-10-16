@@ -112,9 +112,10 @@ grep -ao '\[PROF\] [a-z_]*[^[]*ms=[0-9]*\.[0-9]' server.log
 ```
 
 Artifacts in this directory: `instrumentation.patch`, `keep-survivors.patch`, `warmup-sizing.patch`
-(the priming-time sizing prototype + the completeness log), `server-prof.log` (the full request-1/2
-run), `warmup-arena-at-load.log` (the fix sizing the arena at load) and `warmup-sizing-oom.log` (the
-long-prefill OOM).
+(the full size-at-load prototype: priming sizing, skip-extend, the ring+wide reservation and the shared
+slab layout helper), `server-prof.log` (the first measurement run), `warmup-arena-at-load.log`,
+`warmup-sizing-oom.log`, `warmup-size-at-load-noextend.log` and `warmup-size-at-load-ring-wide.log`
+(the final working run).
 
 ## 5. Open items
 
@@ -182,3 +183,22 @@ tables are the coldest), but it is exactly the "filled past the reclaim point" t
 avoid it entirely the priming sizing must first reserve `ring + wide` (raise the slab work boundary to the
 wide layout) and then size the arena above it (`warmup-sizing.patch` is the first half; the boundary
 reservation is the next step).
+
+## 8. Reserve ring + wide at load (the ordering fix) — works
+
+Extracts the ring+wide layout into ONE helper (`ggml_cuda_slab_ring_layout`) and adds a
+`ggml_cuda_slab_reserve_wide` hook the context calls after `sched_reserve` (the widest compute size is
+`backend_buf_exp_size`).  The reservation is stored until the narrow floor exists, then realised by the
+cache immediately before it sizes (`ggml_cuda_slab_realize_wide`) and kept as a persistent `wide_floor` so
+later boundary shrinks cannot reclaim it.  `work_alloc` uses the same helper, so the setup phase and the
+real wide placement can never disagree.
+
+Result (`warmup-size-at-load-ring-wide.log`): arena **5355 MiB at load** (was 11110); the first wide
+prefill's boundary is already at `7552 = narrow_floor 1536 + ring 4224 + wide 1792`, so it evicts only
+**84 MiB** (was 5810); no OOM; decode **37.1 t/s vs 29.2**.  This is the boundary ordering the maintainer
+asked for: the wide region is reserved before the arena is sized, so the arena is never filled past the
+reclaim point.
+
+Gotcha (found and fixed): the first version deadlocked — `reserve_wide` held `g_slab_mutex` and called a
+`realize_wide` that relocked the same non-recursive mutex.  The fix is a `_locked` inner helper shared by
+the public entry point and `reserve_wide`.

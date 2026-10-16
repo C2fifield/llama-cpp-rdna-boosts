@@ -1,5 +1,273 @@
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index 6bfd16198..0ff98e861 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -80,6 +80,11 @@ extern "C" {
+     // place the staging ring above it.  No-op for a backend without a slab.
+     GGML_API void                  ggml_backend_dev_slab_narrow_floor(ggml_backend_dev_t dev, size_t bytes);
+ 
++    // wip/first-prefill-latency: reserve the wide (prefill) work region above the narrow floor + ring,
++    // so the MoE cache's load-time arena is placed above the region the first wide prefill will use.
++    // No-op for a backend without a slab.
++    GGML_API void                  ggml_backend_dev_slab_reserve_wide(ggml_backend_dev_t dev, size_t bytes);
++
+     // wip/moe-verify-fusions (narrow-2): pin the MTP draft's COMPUTE region at the top of the slab's
+     // reserved VA, so it cannot alias the target's narrow verify buffer at slab base 0.  Idempotent;
+     // no-op for a backend without a slab.
+diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
+index 801c22b29..0ec066f58 100644
+--- a/ggml/src/ggml-backend-impl.h
++++ b/ggml/src/ggml-backend-impl.h
+@@ -383,6 +383,11 @@ extern "C" {
+         // the allocator can place the staging ring above it.  Appended like the fields above.
+         void (*slab_narrow_floor)(ggml_backend_dev_t dev, size_t bytes);
+ 
++        // (optional) wip/first-prefill-latency: reserve the wide (prefill) work region before the MoE
++        // cache sizes its arena, so the load-time arena is placed above the first wide prefill's region.
++        // Appended like the fields above, so backends that do not set it are zero-initialized.
++        void (*slab_reserve_wide)(ggml_backend_dev_t dev, size_t bytes);
++
+         // (optional) wip/moe-verify-fusions (narrow-2): pin the MTP draft's COMPUTE region at the top of
+         // the slab's reserved VA (idempotent), so it cannot alias the target's narrow verify buffer at
+         // base 0.  Appended like the fields above, so backends that do not set it are zero-initialized.
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 2af35115f..2abbd5bf3 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -301,6 +301,7 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
+     /* .slab_headroom_bytes  = */ nullptr,
+     /* .slab_ring_set        = */ nullptr,
+     /* .slab_narrow_floor    = */ nullptr,
++    /* .slab_reserve_wide    = */ nullptr,
+     /* .slab_narrow2_floor   = */ ggml_backend_meta_device_slab_narrow2_floor,
+     /* .slab_compute_narrow2 = */ ggml_backend_meta_device_slab_compute_narrow2,
+     /* .moe_cache_set_host_pool   = */ nullptr,
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 39476dbe4..37531ee18 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -372,6 +372,14 @@ void ggml_backend_dev_slab_narrow_floor(ggml_backend_dev_t dev, size_t bytes) {
+     dev->iface.slab_narrow_floor(dev, bytes);
+ }
+ 
++void ggml_backend_dev_slab_reserve_wide(ggml_backend_dev_t dev, size_t bytes) {
++    // wip/first-prefill-latency: reserve the wide prefill work region.  Optional hook.
++    if (dev == nullptr || dev->iface.slab_reserve_wide == nullptr) {
++        return;
++    }
++    dev->iface.slab_reserve_wide(dev, bytes);
++}
++
+ void ggml_backend_dev_slab_narrow2_floor(ggml_backend_dev_t dev, size_t bytes) {
+     // wip/moe-verify-fusions (narrow-2): pin the MTP draft's COMPUTE region.  Optional hook; a backend
+     // without a slab (or that never set it) is a no-op.
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 6f8b612c3..f7840ee7c 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -700,6 +700,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+     /* .slab_headroom_bytes  = */ nullptr,
+     /* .slab_ring_set        = */ nullptr,
+     /* .slab_narrow_floor    = */ nullptr,
++    /* .slab_reserve_wide    = */ nullptr,
+     /* .slab_narrow2_floor   = */ nullptr,
+     /* .slab_compute_narrow2 = */ nullptr,
+     /* .moe_cache_set_host_pool   = */ nullptr,
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index 221eec2a1..366095226 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -130,6 +130,11 @@ struct ggml_cuda_slab {
+     // (it evicts the COLDEST tables, exactly like a prefill grow).  When the wide view is dropped the
+     // boundary shrinks back to `narrow_floor` and the ring + wide regions return to the arena.
+     size_t                   narrow_floor = 0;  // the fixed, always-resident narrow size (0 = not established)
++    // wip/first-prefill-latency: a requested wide (prefill) reservation.  Stored until the narrow floor is
++    // established, then realised as `wide_floor` (above the ring) so the warmup/priming sizing places the
++    // arena above it and the reservation survives the later boundary shrinks.
++    size_t                   wide_reserve_bytes = 0;
++    size_t                   wide_floor   = 0;   // = narrow_floor + ring + up(wide_reserve_bytes), once known
+     // wip/moe-verify-fusions (narrow-2): a SECOND static narrow view -- the MTP draft context's compute
+     // buffer -- is pinned at the TOP of the reserved VA: `[narrow2_off, size)`.  With MTP there are TWO
+     // live compute buffers (the target's verify view and the draft context's), so without this they both
+@@ -204,6 +209,31 @@ void ggml_cuda_slab_set_ring_region(size_t bytes) {
+     g_slab_ring_region_bytes = bytes;
+ }
+ 
++// wip/slab-ring-region / first-prefill-latency: the SINGLE source of truth for the work layout above the
++// narrow floor.  narrow = [0, narrow_floor), ring = [narrow_floor, narrow_floor + ring),
++// wide = [narrow_floor + ring, boundary), arena = [boundary, mapped).  Returns the chunk-aligned ring
++// region (0 when there is no room -- the ring then stays on the cudaMalloc path); when `out_wide_off` is
++// non-null it receives the wide view's base offset.  Every caller that sizes the ring or places a wide
++// view goes through here, so the two can never disagree.  Caller holds `g_slab_mutex`.
++static size_t ggml_cuda_slab_ring_layout(const ggml_cuda_slab & s, size_t wide_bytes,
++                                         size_t * out_wide_off, size_t * out_wide_floor) {
++    size_t ring = g_slab_ring_region_bytes;
++    if (ring > 0) {
++        ring = ggml_cuda_slab_up(ring, s.chunk);
++        if (s.narrow_floor + ring + s.chunk > s.mapped) {
++            ring = 0;   // no room for a meaningful region: leave the ring on the cudaMalloc path
++        }
++    }
++    const size_t wide_off = s.narrow_floor + ring;
++    if (out_wide_off != nullptr) {
++        *out_wide_off = wide_off;
++    }
++    if (out_wide_floor != nullptr) {
++        *out_wide_floor = wide_off + (wide_bytes > 0 ? ggml_cuda_slab_up(wide_bytes, s.chunk) : 0);
++    }
++    return ring;
++}
++
+ // wip/slab-ring-region: pin the always-resident narrow (decode/verify) floor.  The context knows the real
+ // decode/verify compute size (from the narrow re-reserve), which is more reliable than inferring it from the
+ // reserve sizes -- a decode view can be LARGER than the first small reserve (measured: the field's target
+@@ -232,18 +262,63 @@ void ggml_cuda_slab_set_narrow_floor(int device, size_t bytes) {
+         return;
+     }
+     s.narrow_floor = nf;
+-    size_t ring = g_slab_ring_region_bytes;
+-    if (ring > 0) {
+-        ring = ggml_cuda_slab_up(ring, s.chunk);
+-        if (s.narrow_floor + ring + s.chunk > s.mapped) {
+-            ring = 0;
+-        }
++    size_t wide_floor = 0;
++    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
++    if (s.wide_reserve_bytes > 0) {
++        s.wide_floor = wide_floor;
+     }
+-    s.ring_region = ring;
+     s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
+     s.ring_used   = 0;
+ }
+ 
++// wip/first-prefill-latency: reserve the wide (prefill) work region above the narrow floor + ring, so a
++// later load-time arena is placed ABOVE the region the first wide prefill will use and cannot be evicted
++// by it.  `set_narrow_floor` sets an absolute floor; this RAISES the work BOUNDARY by `bytes` without
++// moving the narrow floor, so the ring and the wide view keep their layout offsets (single source of
++// truth: `ggml_cuda_slab_ring_layout`) and the arena starts at `wide_off + bytes`.  The boundary is a
++// persistent floor (a shrink releases work back to it, never below), so subsequent wide views reuse the
++// reserved region instead of reclaiming arena.  Honored only before the ring is in use (its VA must not
++// move).  No-op if the reservation does not fit in the mapped slab.
++// Realise the pending wide reservation once the narrow floor + ring are known.  Caller holds
++// `g_slab_mutex`.  Layout offsets (ring, wide) come from the shared `ggml_cuda_slab_ring_layout`, so the
++// setup phase and the real work-allocation path can never disagree.  Idempotent.
++static void ggml_cuda_slab_realize_wide_locked(ggml_cuda_slab & s) {
++    if (!s.inited || s.wide_reserve_bytes == 0 || s.narrow_floor == 0) {
++        return;
++    }
++    size_t wide_floor = 0;
++    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
++    if (wide_floor == s.wide_floor && s.boundary >= wide_floor) {
++        return;   // already realised
++    }
++    s.wide_floor = wide_floor;
++    if (s.boundary < wide_floor) {
++        s.boundary = wide_floor;
++    }
++    GGML_LOG_WARN("%s: device %d: reserved a %.2f GiB wide work region (narrow_floor %.2f + ring %.2f); "
++                  "the arena now starts at %.2f GiB\n", __func__, s.device,
++                  (double) ggml_cuda_slab_up(s.wide_reserve_bytes, s.chunk) / (1ull << 30),
++                  (double) s.narrow_floor / (1ull << 30), (double) s.ring_region / (1ull << 30),
++                  (double) s.boundary / (1ull << 30));
++}
++
++void ggml_cuda_slab_realize_wide(int device) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    ggml_cuda_slab_realize_wide_locked(g_slabs[device]);
++}
++
++void ggml_cuda_slab_reserve_wide(int device, size_t bytes) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    ggml_cuda_slab & s = g_slabs[device];
++    if (!s.inited || bytes == 0) {
++        return;
++    }
++    if (bytes > s.wide_reserve_bytes) {
++        s.wide_reserve_bytes = bytes;
++    }
++    ggml_cuda_slab_realize_wide_locked(s);   // no-op until the narrow floor exists
++}
++
+ static size_t ggml_cuda_slab_chunk_bytes() {
+     static size_t chunk_mib = SIZE_MAX;
+     if (chunk_mib == SIZE_MAX) {
+@@ -878,14 +953,11 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+         // reserve; `work_needs` still floors the boundary at the wide need meanwhile.
+         if (s.narrow_floor == 0 && need < s.boundary) {
+             s.narrow_floor = ggml_cuda_slab_up(need, s.chunk);
+-            size_t ring = g_slab_ring_region_bytes;
+-            if (ring > 0) {
+-                ring = ggml_cuda_slab_up(ring, s.chunk);
+-                if (s.narrow_floor + ring + s.chunk > s.mapped) {
+-                    ring = 0;   // no room for a meaningful region: leave the ring on the cudaMalloc path
+-                }
++            size_t wide_floor = 0;
++            s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
++            if (s.wide_reserve_bytes > 0) {
++                s.wide_floor = wide_floor;
+             }
+-            s.ring_region = ring;
+             s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
+             s.ring_used   = 0;
+         }
+@@ -899,7 +971,8 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+         // a no-ring model keeps the plain size classification.
+         const bool   ring_wide = s.ring_region > 0 && s.ring_requested && s.narrow_floor > 0;
+         const bool   narrow   = s.narrow_floor > 0 && need <= s.narrow_floor && !ring_wide;
+-        const size_t wide_off = s.narrow_floor + s.ring_region;
++        size_t       wide_off = 0;
++        ggml_cuda_slab_ring_layout(s, 0, &wide_off, nullptr);
+ 
+         // The boundary may shrink only to the TALLEST live view's boundary contribution.  Each view's
+         // contribution is `base_off + up(need)` (a narrow view at base 0, a wide view above the ring), so
+@@ -914,6 +987,9 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+         }
+         const size_t contrib = ret_off + ggml_cuda_slab_up(need, s.chunk);
+         size_t floor = s.narrow_floor;
++        if (s.wide_floor > floor) {
++            floor = s.wide_floor;   // wip/first-prefill-latency: the reserved wide region is a floor too
++        }
+         if (!s.work_needs.empty()) {
+             const size_t mx = *s.work_needs.rbegin();
+             if (mx > floor) {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+index 70fd8d518..d76e76b6d 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
++++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+@@ -98,3 +98,5 @@ void   ggml_cuda_slab_set_compute_plain(bool enable);
+ bool   ggml_cuda_slab_compute_plain();
+ size_t ggml_cuda_slab_headroom_bytes();
+ void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
++void   ggml_cuda_slab_reserve_wide(int device, size_t bytes);
++void   ggml_cuda_slab_realize_wide(int device);
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index afe0ddffc..ad7f556da 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -6346,6 +6346,12 @@ static void ggml_backend_cuda_device_slab_narrow_floor(ggml_backend_dev_t dev, s
+     ggml_cuda_slab_set_narrow_floor(ctx->device, bytes);
+ }
+ 
++static void ggml_backend_cuda_device_slab_reserve_wide(ggml_backend_dev_t dev, size_t bytes) {
++    // wip/first-prefill-latency: reserve the wide (prefill) work region above the narrow floor + ring.
++    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
++    ggml_cuda_slab_reserve_wide(ctx->device, bytes);
++}
++
+ static void ggml_backend_cuda_device_slab_narrow2_floor(ggml_backend_dev_t dev, size_t bytes) {
+     // wip/moe-verify-fusions (narrow-2): pin (idempotently) the MTP draft's compute region from its
+     // measured narrow size.  No-op when the slab is not live on this device.
+@@ -6390,6 +6396,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+     /* .slab_headroom_bytes     = */ ggml_backend_cuda_device_slab_headroom_bytes,
+     /* .slab_ring_set           = */ ggml_backend_cuda_device_slab_ring_set,
+     /* .slab_narrow_floor       = */ ggml_backend_cuda_device_slab_narrow_floor,
++    /* .slab_reserve_wide       = */ ggml_backend_cuda_device_slab_reserve_wide,
+     /* .slab_narrow2_floor      = */ ggml_backend_cuda_device_slab_narrow2_floor,
+     /* .slab_compute_narrow2    = */ ggml_backend_cuda_device_slab_compute_narrow2,
+     /* .moe_cache_set_host_pool   = */ ggml_backend_cuda_device_moe_cache_set_host_pool,
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
-index ad1c3628c..841e69d5c 100644
+index ad1c3628c..b03f2cbe0 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
 @@ -31,6 +31,12 @@
@@ -56,7 +324,20 @@ index ad1c3628c..841e69d5c 100644
      return registered >= expected;
  }
  
-@@ -2438,7 +2464,13 @@ void alloc_all_locked() {
+@@ -2404,6 +2430,12 @@ void alloc_all_locked() {
+         return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
+     }
+     g_sized = true;
++    // wip/first-prefill-latency: realise the wide work reservation now that the narrow floor + ring are
++    // known, BEFORE the budget/arena sizing reads the slab's arena capacity (the boundary must already
++    // include the wide region).
++    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++        ggml_cuda_slab_realize_wide(d);
++    }
+     // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
+     // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
+     // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash
+@@ -2438,7 +2470,13 @@ void alloc_all_locked() {
              ggml_cuda_slab_headroom_at_least_mib(6144);
          }
      }
@@ -71,7 +352,7 @@ index ad1c3628c..841e69d5c 100644
      // Fail-soft / --fit (§3.1 #5, issue #33): the arena is the LOWEST-priority VRAM consumer.  Size it
      // from what is actually free NOW - after --fit, the compute-graph reserve and the KV cache have all
      // taken theirs - minus the configured reserve for later growth (a bigger ubatch, more context, a
-@@ -4125,6 +4157,15 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -4125,6 +4163,15 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
              t.primed = true;
              g_total_expert_bytes += (int64_t) expert_bytes;
              g_total_one_expert_bytes += (int64_t) expert_bytes;
@@ -87,3 +368,50 @@ index ad1c3628c..841e69d5c 100644
              return false;   // priming pass
          }
          if (!g_sized) {
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index ea4ad20b2..8798940c0 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -2922,6 +2922,7 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+     /* .slab_headroom_bytes  = */ nullptr,
+     /* .slab_ring_set        = */ nullptr,
+     /* .slab_narrow_floor    = */ nullptr,
++    /* .slab_reserve_wide    = */ nullptr,
+     /* .slab_narrow2_floor   = */ nullptr,
+     /* .slab_compute_narrow2 = */ nullptr,
+     /* .moe_cache_set_host_pool   = */ nullptr,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index ef600e788..bab1952bb 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -781,6 +781,30 @@ llama_context::llama_context(
+ 
+         sched_reserve();
+ 
++        // wip/first-prefill-latency: reserve the wide prefill work region in the slab BEFORE the MoE
++        // cache's priming sizing (during the warmup) places the arena.  `sched_reserve` has just measured
++        // the widest compute layout, so its largest compute buffer is the wide view; pinning that much
++        // above the narrow floor + ring keeps the load-time arena above the region the first wide prefill
++        // will use, instead of taking it and being evicted back on the first request.
++        if (!model.moe_host_expert_bytes.empty()) {
++            size_t wide_bytes = 0;
++            for (size_t i = 0; i < backend_buf_exp_size.size(); ++i) {
++                if (backend_buf_exp_size[i] > wide_bytes) {
++                    wide_bytes = backend_buf_exp_size[i];
++                }
++            }
++            if (wide_bytes > 0) {
++                for (const auto & kv : model.moe_host_expert_bytes) {
++                    ggml_backend_dev_slab_reserve_wide(kv.first, wide_bytes);
++                }
++                for (size_t d = 0; d < model.devices.size(); ++d) {
++                    if (!model.devices[d].is_meta) {
++                        ggml_backend_dev_slab_reserve_wide(model.devices[d].dev, wide_bytes);
++                    }
++                }
++            }
++        }
++
+         if (!cparams.flash_attn) {
+             if (ggml_is_quantized(params.type_v)) {
+                 throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
