@@ -52,10 +52,12 @@ amendment, or a note in the relevant record).
 - **Every release MUST also publish the ROCm container images.**  They are built and pushed
   **off-host** by the worker watcher (`scripts/container-watch.sh` on `radiance`), which polls for the
   new release tag and runs `scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune`; see
-  `CONTAINERS.md` → "Offload the image build to a worker".  **Do not run the full local build on the
-  primary box during a release**: it pins all cores for tens of minutes and contaminates any benchmark
-  running beside it.  The local `scripts/build-containers.sh` is for a smoke test or a manual worker-less
-  build only.  CI no longer builds them (the tag-push matrix took ~5 h and its failure mode was a cold
+  `CONTAINERS.md` → "Offload the image build to a worker".  **Do not run the full container image build
+  (all targets, both ROCm lines) on the primary box during a release**: it pins all cores for tens of
+  minutes and contaminates any benchmark running beside it.  Nothing here changes the normal local
+  **source** build for testing and development (`~/bin/build-llama-rocm-714`, Common tasks → "Build the
+  fork"), which stays on the primary box.  The local `scripts/build-containers.sh` is for a smoke test or
+  a manual worker-less container build only.  CI no longer builds them (the tag-push matrix took ~5 h and its failure mode was a cold
   retry).  The fork-branch refresh and the worker image push are both part of tagging a release.
 - The `~/llama.cpp` checkout exists to host the block commits and to apply/test the diff set locally.
   Apart from the release-time branch refresh above it is disposable: delete the pre-patched branch and
@@ -377,6 +379,11 @@ for the worker's one-time setup, or for a smoke build on the primary box; **do n
 `validate.yml` (per-push patch validation) and `release.yml` (the tag-triggered GitHub Release
 carrying `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`).
 
+**Scope: this is the container image build only.**  The normal local source build used for testing,
+benchmarking and the release gates (`~/bin/build-llama-rocm-714`, `build-pr`/`build-r69`/..., plus the
+coherence, MTP and prefill-logit runs) is unaffected and is still done on the primary box.  "Do not run
+the full build locally" means the `podman` image build below, not `cmake --build`.
+
 **Worker (`radiance`) one-time setup** (full detail in `CONTAINERS.md`):
 
 ```bash
@@ -386,7 +393,7 @@ install -m 755 <repo>/scripts/container-watch.sh ~/bin/rdna-container-watch.sh
 ( crontab -l 2>/dev/null; echo '*/10 * * * * $HOME/bin/rdna-container-watch.sh >> $HOME/.cache/rdna-containers/watch.log 2>&1' ) | crontab -
 ```
 
-**Primary box: manual full build (only if not using the worker) or a fast smoke:**
+**Primary box: manual container build (only if not using the worker) or a fast smoke:**
 
 ```bash
 ./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
