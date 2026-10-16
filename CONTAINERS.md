@@ -128,17 +128,19 @@ If the package is private, authenticate first:
 
 ## Triggering and releases
 
-Releases are tagged by hand and the images are built locally; only the cheap
-asset packaging stays in CI:
+Releases are tagged by hand and the images are built and pushed by the off-host
+worker (see "Offload the image build to a worker" below); only the cheap asset
+packaging stays in CI:
 
 - **tag push** (`v<blocks>-<base>-r<N>`, the release identity) →
   [`.github/workflows/release.yml`](.github/workflows/release.yml) attaches
   `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`
   to the GitHub Release (about a minute; no compiler, no Docker).  The tag is
   checked against `release.json.release` and the `v<blocks>-<base>-r<N>` shape.
-- **local image build** → `scripts/build-containers.sh --rocm "7.14.1 10.1"
-  --push` builds and pushes the images.  Run it before or after the tag; it
-  reads the tree from `release.json`, not from the tag.
+- **off-host image build** → the `radiance` watcher (`scripts/container-watch.sh`)
+  sees the new tag and runs `scripts/build-containers.sh --rocm "7.14.1 10.1"
+  --push --prune` there.  For a manual build, run the same script on whichever box
+  you prefer; either way it reads the tree from `release.json`, not from the tag.
 - `docker-ghcr.yml` no longer runs automatically (no tag or schedule trigger);
   it is a manual `workflow_dispatch` fallback.
 
@@ -174,11 +176,11 @@ To cut a release after a re-base or a block amendment:
 
 ./scripts/validate-set.sh          # strict apply + tree/hash/checksum gate
 
-# build + push the release images locally (see "Build the release container
-# images" in AGENTS.md).  Do this before the tag so a broken image never gets a
-# release name, or after it — the script reads the tree from release.json, not
-# from the tag.
-./scripts/build-containers.sh --rocm "7.14.1 10.1" --push
+# The images are built and pushed by the off-host worker once the tag is pushed
+# (see "Offload the image build to a worker").  To smoke-test or to build on this
+# box instead, run the script manually (do the full build on the worker during a
+# release so it does not tie up the primary box):
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune
 
 # freeze it: annotated tag on the commit that carries this release.json
 git tag -a v<blocks>-<base-sha>-r<N> -m "rdna-boosts v<blocks>-<base-sha>-r<N>"
@@ -203,7 +205,7 @@ attaches `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and
 checksums instead of tracking a moving `main`.  The tag's name is checked
 against `release.json.release` before anything is packaged, so a release can
 never ship under a name the manifest does not record.  The images themselves
-are pushed separately by `scripts/build-containers.sh` (locally).
+are pushed separately by the off-host worker running `scripts/build-containers.sh`.
 
 The `tree` field in `release.json` is the strongest check available: CI
 rebuilds the patched source from a tarball and asserts the resulting git tree
@@ -217,9 +219,10 @@ manual fallback remains available via `workflow_dispatch` on
 `.github/workflows/docker-ghcr.yml` (merge first, since GitHub only exposes it
 once the workflow is on the default branch).
 
-## Local build
+## Manual build
 
-This is the normal path — build and push the release images without CI:
+The normal release path is the off-host worker above.  This is the manual or fallback
+path (and the fast smoke test) — build and push the release images without CI:
 
 ```bash
 gh auth refresh -h github.com -s write:packages            # once; podman needs write:packages

@@ -49,10 +49,14 @@ amendment, or a note in the relevant record).
   3. Build it and run the coherence + MTP gates and `scripts/gate-prefill-logits.sh`; `scripts/validate-set.sh` must be green.
   4. `git push --force-with-lease origin rdna-boosts` — the **personal fork only**, never upstream;
      never a bare `--force`.
-- **Every release MUST also publish the ROCm container images**, built locally with
-  `scripts/build-containers.sh` (Common tasks → "Build the release container images (local)"; see also
-  `CONTAINERS.md`).  CI no longer builds them — the tag-push matrix took ~5 h and its failure mode was
-  a cold retry.  The fork-branch refresh and the local image push are both part of tagging a release.
+- **Every release MUST also publish the ROCm container images.**  They are built and pushed
+  **off-host** by the worker watcher (`scripts/container-watch.sh` on `radiance`), which polls for the
+  new release tag and runs `scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune`; see
+  `CONTAINERS.md` → "Offload the image build to a worker".  **Do not run the full local build on the
+  primary box during a release**: it pins all cores for tens of minutes and contaminates any benchmark
+  running beside it.  The local `scripts/build-containers.sh` is for a smoke test or a manual worker-less
+  build only.  CI no longer builds them (the tag-push matrix took ~5 h and its failure mode was a cold
+  retry).  The fork-branch refresh and the worker image push are both part of tagging a release.
 - The `~/llama.cpp` checkout exists to host the block commits and to apply/test the diff set locally.
   Apart from the release-time branch refresh above it is disposable: delete the pre-patched branch and
   re-apply rather than editing history in place.
@@ -72,7 +76,7 @@ amendment, or a note in the relevant record).
 | `BASELINE.md` | fork point, patch provenance, drift policy |
 | `GREEDY-PURITY.md` | the purity rulebook (index + invariants + per-finding claims); dated narratives/evidence are in `archive/docs/GREEDY-PURITY-FINDINGS.md` under the same `§` numbers |
 | `patches/` | **the delivery set** (0000-0011: block 00 + blocks 01-11) + apply README; block-by-block notes live in `patches/README.md` (the dated notes below the V2.0 header use the pre-V2.0 16-block numbering) |
-| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `cleanup-ghcr.py` (GHCR version retention; called by `build-containers.sh --push`), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
+| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `build-containers.sh` (the image build itself), `container-watch.sh` (the off-host release watcher, run on `radiance`), `cleanup-ghcr.py` (GHCR version retention; called by `build-containers.sh --push`), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
 | `rdna-boosts-all.patch` | the entire 12-patch net as ONE patch (fork point only) |
 | `benchmarks/` | dated bench records + methodology; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) and **`prefill-logit-methodology.md` = the prefill-logit KLD gate** (run before shipping any prefill-kernel change or release) |
 | `prompts/` | versioned, hash-stable test prompts; sizes/token counts/**sha256** in `prompts/README.md`. A shipped prompt is **never edited in place** (add a new file); a result is only valid against the prompt hash it names |
@@ -82,7 +86,7 @@ amendment, or a note in the relevant record).
 | `archive/docs/` | moved-out historical records (validation/baseline history, the pre-cleanup AGENTS.md) — reference only |
 | `archive/work/` | closed experiments and campaigns, preserved for future re-evaluation (mmb/qsa3, moe-expert-cache, issues/PRs, …) — reference only |
 | `baseline/*` branches, `block/*` tags | **historical** pre-block-12 checkpoints — do not use for the current delivery |
-| `.github/workflows/` | `validate.yml` (per-push delivery validation), `release.yml` (tag-triggered GitHub Release assets) and `docker-ghcr.yml` (manual-only ROCm image fallback); fork point read from `release.json`. **The release container images are built locally by `scripts/build-containers.sh`, not in CI** — see `CONTAINERS.md` |
+| `.github/workflows/` | `validate.yml` (per-push delivery validation), `release.yml` (tag-triggered GitHub Release assets) and `docker-ghcr.yml` (manual-only ROCm image fallback); fork point read from `release.json`. **The release container images are built and pushed off-host by the worker watcher (`scripts/container-watch.sh` on `radiance`), not in CI and not on the primary box** — see `CONTAINERS.md` |
 
 ## Scope policy — RDNA first, other backends uninjured
 
@@ -360,24 +364,34 @@ seconds). The FA instances are deliberately force-inlined — do **not** outline
 (measured: a universal 1.5-2.5 % prefill loss). This is the sanctioned answer to "the build is slow";
 detail in `archive/work/build-time-regression/`.
 
-### Build the release container images (local)
+### Build the release container images (worker by default; local only for smoke)
 
-The ROCm container images are built and pushed **locally**, not by GitHub Actions — a tag-push CI
-build took ~5 h for two ROCm lines (and a failed/timed-out run wrote no registry cache, so every retry
-was cold).  This is part of cutting a release, alongside the `rdna-boosts` fork-branch refresh in the
-Pushing policy.  The fast CI workflows stay: `validate.yml` (per-push patch validation) and
-`release.yml` (the tag-triggered GitHub Release carrying `rdna-boosts-all.patch`, `patches.tar.gz`,
-`release.json` and `SHA256SUMS`).
+The ROCm container images are built and pushed **off-host** by the worker watcher
+(`scripts/container-watch.sh` on `radiance`), which polls the delivery repo for a new `v12-*` tag and
+runs `scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune` on that box.  This keeps the
+primary box free for benchmarks, and a tag-push CI build is not used either (~5 h for two ROCm lines,
+and a failed/timed-out run wrote no registry cache so every retry was cold).  **After `git push` of
+the tag, nothing else is needed: the worker picks it up within 10 minutes.**  The commands below are
+for the worker's one-time setup, or for a smoke build on the primary box; **do not run the full
+`--rocm "7.14.1 10.1" --push` on the primary box during a release.**  The fast CI workflows stay:
+`validate.yml` (per-push patch validation) and `release.yml` (the tag-triggered GitHub Release
+carrying `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`).
+
+**Worker (`radiance`) one-time setup** (full detail in `CONTAINERS.md`):
 
 ```bash
-gh auth refresh -h github.com -s write:packages            # once; podman needs write:packages
-gh auth refresh -h github.com -s delete:packages           # once; the GHCR retention prune needs it
-gh auth token | podman login ghcr.io -u stew675 --password-stdin
+sudo loginctl enable-linger "$(id -un)"     # cron + rootless podman survive logout/reboot
+gh auth login -h github.com                 # classic PAT needs write:packages + delete:packages
+install -m 755 <repo>/scripts/container-watch.sh ~/bin/rdna-container-watch.sh
+( crontab -l 2>/dev/null; echo '*/10 * * * * $HOME/bin/rdna-container-watch.sh >> $HOME/.cache/rdna-containers/watch.log 2>&1' ) | crontab -
+```
 
+**Primary box: manual full build (only if not using the worker) or a fast smoke:**
+
+```bash
 ./scripts/build-containers.sh --prepare-only               # reconstruct + verify the release tree
-./scripts/build-containers.sh --rocm "7.14.1 10.1" --push # full release build (+ registry prune)
-# fast smoke, no push:
-./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server
+./scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune   # full build; prefer the worker
+./scripts/build-containers.sh --rocm 10.1 --arch gfx1201 --targets server   # fast smoke, no push
 ```
 
 `scripts/build-containers.sh` reads `release.json`, materialises the canonical patched tree

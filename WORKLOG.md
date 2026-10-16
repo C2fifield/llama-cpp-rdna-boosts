@@ -53,6 +53,16 @@ gate was always clean), but it is a correctness regression in the r68 default, s
 `GGML_CUDA_ASYNC_INPUT` **opt-in** (`=1` enables; the async path is unchanged).  The GDN gather index
 and the r68 log-level changes stay.
 
+**Off-host image build (2026-10-16).**  The release container images are now built and pushed by a
+worker watcher (`scripts/container-watch.sh` on `radiance`, cron every 10 minutes), so the primary box
+no longer pins all cores for tens of minutes per release.  The watcher takes the newest `v12-*` tag by
+creation date (a version sort mis-orders across a re-base), reconstructs the tree from `release.json`
+(base tarball + patches; it does not use the personal fork), runs
+`build-containers.sh --rocm "7.14.1 10.1" --push --prune`, and re-derives the GHCR auth from
+`gh auth token` on every run; `loginctl enable-linger` keeps rootless podman working headless.  A
+`flock` serialises builds and `last-built` makes each tag build once.  `AGENTS.md` and `CONTAINERS.md`
+now default to the worker; the local `build-containers.sh` is for smoke or manual builds only.
+
 ## 261015.006 (r68) -- issue #151: async graph-input uploads default-on + per-graph GDN state-gather index
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r68` (base `097cf33d9`; canonical tip
