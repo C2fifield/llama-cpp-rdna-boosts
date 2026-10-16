@@ -11,7 +11,26 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r74` (2026-10-16) -- the MoE arena is sized at warmup and the seed stops at the prefill reclaim boundary (blocks 09/10/11):**
+> **Current release `v12-097cf33d9-r75` (2026-10-16) -- H2D-ring/wide-compute placement fix + MTP-drafter ring-sizing guard (blocks 10/11):**
+> canonical tip `ca33b8647`, net tree `8add179f9ddcc33e87e576a38670745f39aa96f0`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 10 and 11** amended, no new block.
+> **Blocker fix (block 10):** `ggml_cuda_slab_work_alloc` placed the wide (prefill) compute view at
+> `narrow_floor + <live ring request>` instead of `narrow_floor + s.ring_region` (the **carved** ring).
+> The context re-arms the request after the carve (its auto-size cap) and the two diverged; on the
+> 35B-A3B + host experts + MTP path the wide buffer started inside the carved H2D staging ring, the two
+> aliased the same VRAM and corrupted live tensors -- a reproducible `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`
+> in `k_get_rows_float` (Q4_K_M) and a `rope_multi` memory fault (Q8_0).  Placement and the seed floor now
+> use the carved region (`ggml_cuda_slab_wide_offset`); the request is read only at carve time
+> (`ggml_cuda_slab_ring_candidate`).  **Guard (block 11):** the MTP draft context is built against the
+> target model (non-empty `moe_host_expert_bytes`) but its weights are fully resident and it never stages a
+> host table, so it must not re-size the shared H2D ring; the auto-size block now excludes
+> `LLAMA_CONTEXT_TYPE_MTP` (the same exclusion the narrow-floor pin and ring-arm blocks already use).
+> Verified: pre-fix r74 aborts on 35B-A3B Q4_K_M/Q8_0 (`-ncmoe 40`, 2 GPU, draft-mtp); post-fix both run
+> clean and are byte-identical to r73 (Q4_K_M `sha 0225e8352231` / acc 0.71471, Q8_0 `sha 69e8ecfffcef` /
+> acc 0.67643), and the GSQ field arena is unchanged (15666.6 MiB at load, 1 GPU).
+> Records: `../WORKLOG.md` 261016.010.
+>
+> **Previous release `v12-097cf33d9-r74` (2026-10-16) -- the MoE arena is sized at warmup and the seed stops at the prefill reclaim boundary (blocks 09/10/11):**
 > canonical tip `9450cbb89`, net tree `0fe32003b4014c2adf520eccc2e2ba1647ae3511`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.  The
 > warmup only *primes* the host-expert tables, so `alloc_all_locked` never ran there and the first user

@@ -1,5 +1,48 @@
 # WORKLOG - dated delivery records
 
+## 261016.010 (r75) -- fix the H2D-ring/wide-compute alias and stop the MTP drafter sizing the ring (blocks 10/11)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r75` (base `097cf33d9`; canonical tip
+`ca33b8647f8f0723e5632f9909a64ed1241dd460`, net tree `8add179f9ddcc33e87e576a38670745f39aa96f0`; 12
+blocks; `validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded
+tree).  **No new block:** blocks 10 and 11 amended.  A release blocker found while exercising the r74
+gate plan beyond what the handover ran (the r74 handover's own gates -- dense 4B coherence, a short MoE
+coherence, the arena checks -- did not hit this path).
+
+**The bug (block 10).**  r74 routed the wide (prefill) compute placement through the new
+`ggml_cuda_slab_ring_layout` helper, which recomputed the ring from the mutable global
+`g_slab_ring_region_bytes` (the *request*) instead of the region the slab actually **carved**
+(`s.ring_region`).  The context re-applies its auto ring cap after the carve, so the request changed
+(target ub 2048 -> 1201.2 MiB, carved 1216; later 975.3 MiB), the recomputed ring was 1024, and
+`work_alloc` placed the wide view at 1792 MiB instead of 1984 -- **inside** the carved H2D staging ring
+`[768, 1984)` -- aliasing the same VRAM.  On the 35B-A3B + host experts + MTP path the first wide
+prefill then corrupted live tensors: a reproducible GPU VM fault
+(`HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION` in `k_get_rows_float` on Q4_K_M; a `rope_multi` memory
+fault on Q8_0), both GPUs.  r73 used `s.narrow_floor + s.ring_region` and did not crash.  Fix: `work_alloc`
+and `seed_floor` use `ggml_cuda_slab_wide_offset()` = `s.narrow_floor + s.ring_region`; the carve-time
+computation (which legitimately reads the request) is isolated in `ggml_cuda_slab_ring_candidate()`.
+
+**The guard (block 11).**  The H2D-ring auto-size block in the `llama_context` constructor was guarded
+only by `!model.moe_host_expert_bytes.empty()`.  The MTP draft context is built against the target model
+(non-empty map) but its weights are fully resident and it never stages a host table, so it is not a ring
+consumer -- yet it ran the block and overwrote the shared global with its own ubatch-derived value
+(target ub 2048 -> 1201.2 MiB; draft ub 512 -> 975.3 MiB; `set_ring_cap` is last-writer-wins).  It now
+excludes `cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP`, the same exclusion the narrow-floor pin and
+ring-arm blocks already use.  With the guard the draft issues no ring resize at all (verified: every
+`SET_RING_REGION` is the target's 1201.2 MiB; no 975.3 after the MTP context is created).
+
+**Validation.**  Pre-fix r74, 35B-A3B `-ncmoe 40`, 2 GPU, `draft-mtp n3`, prose prompt: SIGABRT at the
+first prefill on both Q4_K_M and Q8_0.  Post-fix (default and `MOE_EXPERT_CACHE_SIZE_AT_PRIME=0`,
+graphs off, GDN sequential, adaptive) all clean, and `-n 3000` is **byte-identical to r73**: Q4_K_M
+`sha 0225e8352231` / acc 0.71471 / mean len 3.14; Q8_0 `sha 69e8ecfffcef` / acc 0.67643 / mean len 3.03.
+GSQ field arena unchanged: 1-GPU arena 15666.6 MiB at load, first-prefill eviction ~6.1 GiB, re-arm
+restores 15666.6, hit ~90.3 %, 44.4 t/s; 2-GPU 35569.6 MiB (97.8 %); 3-GPU 40925 MiB (100 %).  Dense
+gates (4B coherence, 27B prefill-logit, 27B adaptive-MTP) are unaffected -- no slab is armed for a
+MoE-less model.
+
+**Records.**  `archive/work/slab-ring-wide-alias/` (root cause, the `WORK_ALLOC` / `RING_LAYOUT`
+evidence, the repro commands and the fix, in full).
+
 ## 261016.009 (r74) -- the MoE arena is sized at warmup and the seed stops at the prefill reclaim boundary (blocks 09/10/11)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r74` (base `097cf33d9`; canonical tip

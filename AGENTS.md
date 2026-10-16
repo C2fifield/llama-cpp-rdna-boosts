@@ -159,7 +159,7 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   Without it, the interactive chat loop blocks forever. Wrap potentially blocking commands in `timeout`.
 - **Apply method:** all 12 blocks with **`git am`**; `scripts/apply-all.sh` is the tested path. Plain
   `git apply` of the concatenated series **silently drops hunks**. Every block is a normal commit.
-- **Naming (V2.0):** the current set is **12 blocks, 00-11** (`v12-097cf33d9-r66`).  Every `block NN`
+- **Naming (V2.0):** the current set is **12 blocks, 00-11** (`v12-097cf33d9-r75`).  Every `block NN`
   reference elsewhere in this file that is not one of the V2.0 numbers below is the **pre-V2.0 16-block
   numbering** and is kept as a historical handle.  The V2.0 map: **01** all-reduce, **02** adaptive MTP,
   **03** chunked GDN, **04** BF16 KV, **05** FA band/native/derived, **06** MMB, **07** k-quant,

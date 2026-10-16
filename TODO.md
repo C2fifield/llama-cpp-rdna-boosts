@@ -6,13 +6,15 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r67`, 2026-10-15):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `c536e9703`, net tree
-**`3ccabe1522d480cef2001ee87712d56acef0d1eb`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r67 fixes the r63..r66 host-expert regressions (the r66 MUL_MAT_ID helper prefill
-regression, the cache arena sizing on an uneven split, the pageable `-lm none` weight upload, and the
-carved-but-unarmed H2D ring); see `WORKLOG.md` 261015.005.  The paragraph below records the older r54
-state.  r54 folds the WIP-cleanup code changes into the blocks that own them: a clean
+**Current state (release `v12-097cf33d9-r75`, 2026-10-16):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `ca33b8647`, net tree
+**`8add179f9ddcc33e87e576a38670745f39aa96f0`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r75 fixes a release blocker exposed by r74 (the wide/H2D-ring alias: the wide
+prefill compute view was placed from the live ring request instead of the carved region, so on a
+host-expert model with MTP the first prefill faulted; blocks 10/11); see `WORKLOG.md` 261016.010.  r74
+(the warmup arena sizing + seed floor) and r73 (unified heat-map sidecar) were **internal pre-release
+betas, never published**; r74 failed validation and is superseded by r75.  The paragraph below records the
+older r67/r54 state.  r54 folds the WIP-cleanup code changes into the blocks that own them: a clean
 DFlash2 `-sm tensor` rejection (**block 11**, TODO #58; real fix re-seeded as
 `wip/dflash-meta-split-impl/`) and the segmented host-resident expert upload fix that lifts the gemma4
 `-sm tensor` rejection (**block 09**; the async-perf follow-up is `wip/meta-segmented-upload-async/`).

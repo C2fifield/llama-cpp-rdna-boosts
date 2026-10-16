@@ -1,4 +1,4 @@
-From 7239467ed2d3ab8808acc9a0679e7901048f0a9f Mon Sep 17 00:00:00 2001
+From 5a1ceaa7e9ab6455e73011bdbb10fd31eee7bb29 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -4588,7 +4588,7 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..9dec57385
+index 000000000..f6eeec2c8
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 @@ -0,0 +1,1224 @@
@@ -4803,29 +4803,30 @@ index 000000000..9dec57385
 +    g_slab_ring_region_bytes = bytes;
 +}
 +
-+// wip/slab-ring-region / first-prefill-latency: the SINGLE source of truth for the work layout above the
-+// narrow floor.  narrow = [0, narrow_floor), ring = [narrow_floor, narrow_floor + ring),
-+// wide = [narrow_floor + ring, boundary), arena = [boundary, mapped).  Returns the chunk-aligned ring
-+// region (0 when there is no room -- the ring then stays on the cudaMalloc path); when `out_wide_off` is
-+// non-null it receives the wide view's base offset.  Every caller that sizes the ring or places a wide
-+// view goes through here, so the two can never disagree.  Caller holds `g_slab_mutex`.
-+static size_t ggml_cuda_slab_ring_layout(const ggml_cuda_slab & s, size_t wide_bytes,
-+                                         size_t * out_wide_off, size_t * out_wide_floor) {
++// wip/slab-ring-region / first-prefill-latency: the chunk-aligned ring region to CARVE from the current
++// request (0 when there is no room -- the ring then stays on the cudaMalloc path).  Used only at the point
++// the region is actually carved into the work layout.  Caller holds `g_slab_mutex`.
++static size_t ggml_cuda_slab_ring_candidate(const ggml_cuda_slab & s, size_t narrow_floor) {
 +    size_t ring = g_slab_ring_region_bytes;
 +    if (ring > 0) {
 +        ring = ggml_cuda_slab_up(ring, s.chunk);
-+        if (s.narrow_floor + ring + s.chunk > s.mapped) {
++        if (narrow_floor + ring + s.chunk > s.mapped) {
 +            ring = 0;   // no room for a meaningful region: leave the ring on the cudaMalloc path
 +        }
 +    }
-+    const size_t wide_off = s.narrow_floor + ring;
-+    if (out_wide_off != nullptr) {
-+        *out_wide_off = wide_off;
-+    }
-+    if (out_wide_floor != nullptr) {
-+        *out_wide_floor = wide_off + (wide_bytes > 0 ? ggml_cuda_slab_up(wide_bytes, s.chunk) : 0);
-+    }
 +    return ring;
++}
++
++// The base offset of the wide (prefill) view: narrow = [0, narrow_floor), ring = [narrow_floor,
++// narrow_floor + ring_region), wide = [narrow_floor + ring_region, boundary), arena = [boundary, mapped).
++//
++// `s.ring_region` is the region the slab ACTUALLY reserved.  `g_slab_ring_region_bytes` is only the
++// current REQUEST and is re-armed after the carve (the context applies its auto-size cap): using it here
++// moves the wide view below the carved ring and the wide compute buffer overwrites the H2D staging ring
++// (measured r74: ring carved 1216 MiB, request re-armed to 975 MiB -> wide placed at 1792 instead of 1984,
++// a GPU VM fault in `k_get_rows_float` on the 35B-A3B + MTP path).  Placement must follow the carve.
++static size_t ggml_cuda_slab_wide_offset(const ggml_cuda_slab & s) {
++    return s.narrow_floor + s.ring_region;
 +}
 +
 +// wip/slab-ring-region: pin the always-resident narrow (decode/verify) floor.  The context knows the real
@@ -4856,7 +4857,7 @@ index 000000000..9dec57385
 +        return;
 +    }
 +    s.narrow_floor = nf;
-+    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, nullptr);
++    s.ring_region = ggml_cuda_slab_ring_candidate(s, nf);
 +    s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
 +    s.ring_used   = 0;
 +}
@@ -4864,8 +4865,8 @@ index 000000000..9dec57385
 +// wip/first-prefill-latency: record the wide (prefill) compute size.  The arena is sized against the FULL
 +// region (the boundary is NOT raised), but this lets the seed stop at `narrow_floor + ring + wide` -- the
 +// band a wide prefill immediately reclaims -- so the seeded experts are never the ones about to be
-+// evicted.  The band's tables are left unseeded and fill lazily during decode.  Single source of truth
-+// for the ring offset: `ggml_cuda_slab_ring_layout`.
++// evicted.  The band's tables are left unseeded and fill lazily during decode.  The offset comes from
++// `ggml_cuda_slab_wide_offset` (the CARVED ring region), never from the mutable request.
 +void ggml_cuda_slab_reserve_wide(int device, size_t bytes) {
 +    std::lock_guard<std::mutex> lock(g_slab_mutex);
 +    ggml_cuda_slab & s = g_slabs[device];
@@ -4878,18 +4879,18 @@ index 000000000..9dec57385
 +}
 +
 +// The offset below which the seed must NOT run: the reclaim band `[narrow_floor, narrow_floor + ring +
-+// wide)` a wide prefill takes back.  This is exactly the helper's `wide_floor` output, so the seed
-+// boundary and the wide placement share one layout (single source of truth).  Tables whose arena starts
-+// below it are the coldest (heat-ordered last) and are seeded only lazily.  0 when not established.
++// wide)` a wide prefill takes back.  This is exactly the wide placement's layout, so the seed boundary and
++// the wide placement cannot disagree.  Uses the CARVED ring region, never the mutable request.  Tables
++// whose arena starts below it are the coldest (heat-ordered last) and are seeded only lazily.  0 when not
++// established.
 +size_t ggml_cuda_slab_seed_floor(int device) {
 +    std::lock_guard<std::mutex> lock(g_slab_mutex);
 +    const ggml_cuda_slab & s = g_slabs[device];
 +    if (!s.inited || s.narrow_floor == 0) {
 +        return 0;
 +    }
-+    size_t wide_floor = 0;
-+    ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
-+    return wide_floor;
++    const size_t wide_off = ggml_cuda_slab_wide_offset(s);
++    return wide_off + (s.wide_reserve_bytes > 0 ? ggml_cuda_slab_up(s.wide_reserve_bytes, s.chunk) : 0);
 +}
 +
 +static size_t ggml_cuda_slab_chunk_bytes() {
@@ -5526,7 +5527,7 @@ index 000000000..9dec57385
 +        // reserve; `work_needs` still floors the boundary at the wide need meanwhile.
 +        if (s.narrow_floor == 0 && need < s.boundary) {
 +            s.narrow_floor = ggml_cuda_slab_up(need, s.chunk);
-+            s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, nullptr);
++            s.ring_region = ggml_cuda_slab_ring_candidate(s, s.narrow_floor);
 +            s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
 +            s.ring_used   = 0;
 +        }
@@ -5540,8 +5541,7 @@ index 000000000..9dec57385
 +        // a no-ring model keeps the plain size classification.
 +        const bool   ring_wide = s.ring_region > 0 && s.ring_requested && s.narrow_floor > 0;
 +        const bool   narrow   = s.narrow_floor > 0 && need <= s.narrow_floor && !ring_wide;
-+        size_t       wide_off = 0;
-+        ggml_cuda_slab_ring_layout(s, 0, &wide_off, nullptr);
++        const size_t wide_off = ggml_cuda_slab_wide_offset(s);
 +
 +        // The boundary may shrink only to the TALLEST live view's boundary contribution.  Each view's
 +        // contribution is `base_off + up(need)` (a narrow view at base 0, a wide view above the ring), so

@@ -12,9 +12,26 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r67`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r75`**.
 
-r67 fixes the host-resident-expert regressions the r63..r66 window introduced.  It restores the
+r75 carries the r73/r74 work plus a release-blocker fix.  r74 sizes the MoE expert-cache arena at the
+**warmup** (not the first real decode) and stops the prefill seed at the band a wide prefill immediately
+reclaims (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch); r73 unifies the heat-map sidecar to one
+`<base>.moe-heatmap` per model.  r75 fixes a placement bug those two exposed: the wide (prefill) compute
+view was placed from the live H2D-ring *request* instead of the *carved* region, so on a host-expert model
+with MTP the wide buffer aliased the staging ring and the first prefill faulted (`k_get_rows_float` on
+Q4_K_M, `rope_multi` on Q8_0); `work_alloc`/`seed_floor` now follow the carve, and the MTP draft context
+(fully resident, never stages a table) no longer sizes the ring at all.  Verified: 35B-A3B Q4_K_M/Q8_0
+`-ncmoe 40` + `draft-mtp` run clean and are byte-identical to r73; the GSQ field arena is unchanged
+(15666.6 MiB at load, 1 GPU); dense coherence, the prefill-logit gate (0.000707 / 98.755 %) and the
+adaptive-MTP gate are green (`WORKLOG.md` 261016.010).  **r73 and r74 were internal pre-release betas and
+were never published** — r74 did not pass validation (the alias above) and is superseded by r75.
+
+Before it, the r68-r72 amendments (container work, `-ncmoe` host placement, the ring-region guarded prefill
+drop, the ring auto-size, the H2D-ring largest-slice fix) are recorded in [`patches/README.md`](patches/README.md)
+and `WORKLOG.md`.
+
+Before it, r67 fixes the host-resident-expert regressions the r63..r66 window introduced.  It restores the
 MUL_MAT_ID router helper's batched template path (the r66 duplicate-ids fix had made it ~20 % slower on
 prefill while remaining duplicate-correct), so the 35B-A3B fully-resident prefill is back to **8243**
 t/s (r65 8357); it sizes the expert cache from the **total** registered host bytes so the uneven

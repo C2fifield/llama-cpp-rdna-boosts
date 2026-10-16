@@ -2,8 +2,19 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r67`** (canonical tip `c536e9703`, net tree
-`3ccabe1522d480cef2001ee87712d56acef0d1eb`).  r67 fixes the r63..r66 host-expert regressions:
+**`v12-097cf33d9-r75`** (canonical tip `ca33b8647`, net tree
+`8add179f9ddcc33e87e576a38670745f39aa96f0`).  r75 fixes a release blocker exposed by r74: **block 10**
+places the wide (prefill) compute view at the end of the **carved** H2D staging ring, not the live
+re-armed *request* (pre-fix the wide buffer aliased the ring and the first prefill faulted on 35B-A3B +
+host experts + MTP: `k_get_rows_float` on Q4_K_M / `rope_multi` on Q8_0); **block 11** excludes the MTP
+draft context from the ring auto-size (its weights are fully resident and it never stages a table).
+Before it, r74 sizes the MoE expert-cache arena at the warmup and stops the seed at the prefill reclaim
+boundary (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` kill switch), and r73 unifies the heat-map sidecar to one
+`<base>.moe-heatmap` per model.  **r73 and r74 were internal pre-release betas and were never published**
+(r74 failed validation and is superseded by r75).  Before them, the r68-r72 amendments (container work,
+`-ncmoe` host placement, the ring-region-guarded prefill drop, the ring auto-size and the H2D-ring
+largest-slice fix) are recorded in `patches/README.md`.  Earlier, r67 fixes the r63..r66 host-expert
+regressions:
 **block 10** restores the batched, duplicate-correct `mm_ids_helper` template path (r66's generic helper
 cost ~20-23 % of the fully-resident 35B-A3B prefill: 6430 -> 8243 t/s, r65 8357); **block 09** sizes the
 expert cache from the **total** registered host bytes so the uneven `-sm tensor` split no longer leaves

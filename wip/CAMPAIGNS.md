@@ -35,14 +35,17 @@ is the signature of a stub, not of a campaign.
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
 
-**Promoted (r74, 2026-10-16).**  `first-prefill-latency/` left `wip/`: the MoE arena is now sized at the
-warmup (the priming pass), with the ring + wide prefill region **reserved before the arena** via the
-shared `ggml_cuda_slab_ring_layout` helper and the new `ggml_cuda_slab_reserve_wide` hook.  Folded into
-**blocks 09/10/11** and default-on (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch); measured
-first-prefill eviction 5810 -> 84 MiB and decode 29.2 -> 37.1 t/s (1 GPU).  The `keep-survivors`
-prototype was inert in this config and stays un-promoted.  Record moved to
-`archive/work/first-prefill-latency/` (with a `RESOLUTION.md`).  The 3-GPU decode deficit it surfaced is
-revived as `wip/three-gpu-performance/`.  See `WORKLOG.md` 261016.009.
+**Promoted (r75, 2026-10-16).**  `first-prefill-latency/` left `wip/`: the MoE arena is now sized at the
+warmup (the priming pass), with the arena sized to the **full** region and the seed capped at the prefill
+reclaim boundary (`narrow_floor + ring + wide`) via the shared `ggml_cuda_slab_ring_layout` helper.  Folded
+into **blocks 09/10/11** and default-on (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch); measured
+on the maintainer's GSQ command (1 GPU, 13.8K prompt): arena 15666.6 MiB at load, 97/144 tables seeded,
+first-prefill eviction ~6.1 GiB (the band, reclaimed cheaply and re-armed to full), decode 75.0 t/s.  An
+earlier persistent-reservation draft (eviction 84 MiB) shrank the arena permanently and was reverted.  r75
+then fixed a placement regression this work exposed (the wide compute view aliasing the carved H2D ring;
+blocks 10/11).  The `keep-survivors` prototype was inert in this config and stays un-promoted.  Record
+moved to `archive/work/first-prefill-latency/` (with a `RESOLUTION.md`).  The 3-GPU decode deficit it
+surfaced is revived as `wip/three-gpu-performance/`.  See `WORKLOG.md` 261016.009 (r74) and 261016.010 (r75).
 
 **Promoted (r69, 2026-10-16).**  Two contributor PRs from `@briansp2020` (#162, #163) were merged and
 folded into their owner blocks (07/08/10; the delivery stays a 12-block set), then archived with a
