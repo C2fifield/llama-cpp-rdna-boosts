@@ -184,40 +184,32 @@ avoid it entirely the priming sizing must first reserve `ring + wide` (raise the
 wide layout) and then size the arena above it (`warmup-sizing.patch` is the first half; the boundary
 reservation is the next step).
 
-## 8. Reserve ring + wide at load (the ordering fix) — works
+## 8. Size at load + cap the seed at the reclaim boundary (the shipped fix)
 
-Extracts the ring+wide layout into ONE helper (`ggml_cuda_slab_ring_layout`) and adds a
-`ggml_cuda_slab_reserve_wide` hook the context calls after `sched_reserve` (the widest compute size is
-`backend_buf_exp_size`).  The reservation is stored until the narrow floor exists, then realised by the
-cache immediately before it sizes (`ggml_cuda_slab_realize_wide`) and kept as a persistent `wide_floor` so
-later boundary shrinks cannot reclaim it.  `work_alloc` uses the same helper, so the setup phase and the
-real wide placement can never disagree.
+The first attempt (rejected, below) reserved the ring+wide as a **persistent boundary floor**.  That kept
+the region out of the arena permanently: the sizing budget shrank to 9.75 GiB and never recovered
+(9671 MiB vs the correct 15666.6).  The shipped design instead:
 
-Result (`warmup-size-at-load-ring-wide.log`): arena **5355 MiB at load** (was 11110); the first wide
-prefill's boundary is already at `7552 = narrow_floor 1536 + ring 4224 + wide 1792`, so it evicts only
-**84 MiB** (was 5810); no OOM; decode **37.1 t/s vs 29.2**.  This is the boundary ordering the maintainer
-asked for: the wide region is reserved before the arena is sized, so the arena is never filled past the
-reclaim point.
+* sizes the arena against the **full** region (the boundary is not raised);
+* records the wide prefill size via `ggml_cuda_slab_reserve_wide` (from `backend_buf_exp_size`);
+* adds `ggml_cuda_slab_seed_floor` = the shared `ggml_cuda_slab_ring_layout` helper's `wide_floor` output
+  = `narrow_floor + ring + wide`;
+* skips seeding (and the identity full-copy) for any table whose arena starts below that floor.  Those
+  are the coldest tables (heat-ordered last); they stay unseeded, the first prefill reclaims them
+  cheaply, and they fill lazily during decode.
 
-Gotcha (found and fixed): the first version deadlocked — `reserve_wide` held `g_slab_mutex` and called a
-`realize_wide` that relocked the same non-recursive mutex.  The fix is a `_locked` inner helper shared by
-the public entry point and `reserve_wide`.
+Result (maintainer's exact GSQ command, `seed-floor-full-arena-1gpu.log`): arena **15666.6 MiB at load**
+(the full 15.62 GiB, matching the pre-session sizing), **97/144** tables seeded, first-prefill eviction
+**6150 MiB** (the band), `moe_cache_rearm` restores the arena to 15666.6 MiB, decode **75.0 t/s**.
 
-## 9. Multi-GPU `-sm tensor` — works (2 and 3 GPUs)
+**Rejected draft (kept for the record).**  Reserving the ring+wide before the arena as a persistent
+`wide_floor` (`realize_wide`) did remove the first-prefill eviction (arena 5355, evict 84 MiB), but it
+made the arena permanently 9.75 GiB.  Reverted before release.  (It also deadlocked at first:
+`reserve_wide` held `g_slab_mutex` and called a `realize_wide` that relocked it — moot now.)
 
-The hook is per host-expert device: the context loops `model.moe_host_expert_bytes` (the real devices
-under `-sm tensor`, not the Meta wrapper), each device reserves its own ring+wide, and the cache sizes
-each arena above it.  Same 13.8K-token request:
+## 9. Multi-GPU — re-measure for the corrected design
 
-| | 1 GPU | 2 GPUs (`0,1`) | 3 GPUs (`0,1,2`) |
-|---|---|---|---|
-| ring region (per device) | 4.12 GiB | 2.12 GiB | 1.44 GiB |
-| arena at load | 5355 MiB (13 %) | 23340 MiB (57 %) | 40925 MiB (100 %) |
-| first-prefill eviction | 84 MiB | 246 MiB | 124 MiB |
-| decode | 37.1 t/s | 84.4 t/s | 56.9 t/s |
-| OOM | none | none | none |
-
-Every device logged the reservation, none over-committed, and the only request-path evictions are the
-chunk-rounding remainder (84-246 MiB total).  On 3 GPUs the whole host-expert set fits, so the arena is
-100 % resident and the identity path fills it at load (off the request path).  Logs:
-`warmup-size-at-load-2gpu-tensor.log`, `warmup-size-at-load-3gpu-tensor.log`.
+The earlier 2/3-GPU table (arena 23340/40925 MiB, 84.4/56.9 t/s) was measured on the **rejected persistent
+reservation** and is not valid for the shipped design.  The hook is still per host-expert device (the
+context loops `model.moe_host_expert_bytes`, the real devices under `-sm tensor`), so each device gets its
+own seed floor; the corrected multi-GPU numbers belong to the handoff gate work.

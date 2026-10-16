@@ -11,19 +11,21 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r74` (2026-10-16) -- the MoE arena is sized at warmup, with the ring + wide prefill region reserved first (blocks 09/10/11):**
-> canonical tip `d6f59a05d`, net tree `599befc66eba9ebba1ed38956e3fedd2fc32bd37`; strict **12/12**
+> **Current release `v12-097cf33d9-r74` (2026-10-16) -- the MoE arena is sized at warmup and the seed stops at the prefill reclaim boundary (blocks 09/10/11):**
+> canonical tip `9450cbb89`, net tree `0fe32003b4014c2adf520eccc2e2ba1647ae3511`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.  The
 > warmup only *primes* the host-expert tables, so `alloc_all_locked` never ran there and the first user
 > decode paid the whole arena sizing + heat/prefill seed on the first token (measured 446 ms of H2D on a
-> 5.3 GiB arena); the first wide prefill then evicted >5 GiB of the freshly seeded arena.  The priming
-> pass now sizes too, `slab_extend_all` is skipped there (it over-mapped the reserve at the empty-context
-> moment and a later graph capture then OOM'd), and the context reserves the **ring + wide prefill**
-> region before the arena via a new `ggml_cuda_slab_reserve_wide` hook whose layout comes from the shared
-> `ggml_cuda_slab_ring_layout` (also used by the real wide placement, so the two cannot disagree).
-> Result (GSQ-IQ3_XXS, `-ncmoe 48 -sm tensor`, 13.8K prompt): arena 5355 MiB at load, first-prefill
-> eviction 5810 -> **84 MiB**, decode 29.2 -> **37.1 t/s** (1 GPU), **84.4 t/s** (2 GPU), **100 %
-> resident** (3 GPU), no OOM.  Default on (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch).
+> 5.3 GiB arena).  The priming pass now sizes too, and `slab_extend_all` is skipped there (it over-mapped
+> the reserve at the empty-context moment and a later graph capture then OOM'd).  The arena is sized to
+> the **full** region (the boundary is not raised), but the context records the wide prefill size and the
+> cache **stops seeding at `narrow_floor + ring + wide`** -- the band a wide prefill immediately reclaims.
+> That band's tables are the coldest (heat-ordered last), stay unseeded, are reclaimed cheaply by the
+> first prefill, and fill lazily during decode.  The seed boundary is the shared
+> `ggml_cuda_slab_ring_layout` helper's `wide_floor` output (also used by the real wide placement, so the
+> two cannot disagree).  Result (maintainer's GSQ command, 13.8K prompt): arena 15666.6 MiB at load (the
+> full 15.62 GiB), 97/144 tables seeded, first-prefill eviction 6150 MiB (the band), re-arm restores the
+> arena, decode **75.0 t/s**.  Default on (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch).
 > Records: `../WORKLOG.md` 261016.009, `archive/work/first-prefill-latency/`.
 >
 > **Previous release `v12-097cf33d9-r73` (2026-10-16) -- MoE heat map: one unified sidecar per model (block 09):**

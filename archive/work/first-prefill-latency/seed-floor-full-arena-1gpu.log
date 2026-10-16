@@ -1,0 +1,684 @@
+0.00.016.416 I ggml_cuda_init: found 1 ROCm devices (Total VRAM: 32624 MiB):
+0.00.016.437 I   Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: yes, Wave Size: 32, VRAM: 32624 MiB
+0.00.017.090 I srv  llama_server: initializing ...
+0.00.017.100 I cmn  common_param: common_params_print_info: build 11583 (d6f59a05d) with Clang 23.0.0 for Linux x86_64
+0.00.017.101 I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+0.00.017.101 I cmn  common_param: device_info:
+0.00.017.114 I cmn  common_param:   - ROCm0   : AMD Radeon AI PRO R9700 (gfx1201) (32624 MiB, 32548 MiB free)
+0.00.017.117 I cmn  common_param:   - CPU     : AMD Ryzen 9 9950X3D2 16-Core Processor (188913 MiB, 188913 MiB free)
+0.00.017.150 I cmn  common_param: system_info: n_threads = 7 (n_threads_batch = 7) / 16 | ROCm : NO_VMM = 1 | FA_QUANTS = q4_0-q4_0,q4_1-q4_1,q5_0-q5_0,q5_1-q5_1,q8_0-q8_0,bf16-bf16,f16-f16,iq4_nl-iq4_nl | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.017.173 I srv  init_listene: running without SSL
+0.00.017.312 I srv          init: using 4 threads for HTTP server
+0.00.017.340 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.018.594 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.018.595 I srv    load_model: local path '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.050.289 I llama_model_loader: additional 1 GGUFs metadata loaded.
+0.00.050.294 I llama_model_loader: loaded meta data with 67 key-value pairs and 1224 tensors from /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf (version GGUF V3 (latest))
+0.00.050.320 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+0.00.050.327 I llama_model_loader: - kv   0:                       general.architecture str              = qwen4exp
+0.00.050.328 I llama_model_loader: - kv   1:                               general.type str              = model
+0.00.050.329 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+0.00.050.333 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+0.00.050.335 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+0.00.050.335 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8-Flash-Next GSQ-RCO
+0.00.050.336 I llama_model_loader: - kv   6:                        general.description str              = A Preview of the Qwen4 Architecture
+0.00.050.336 I llama_model_loader: - kv   7:                         general.size_label str              = 512x56B
+0.00.050.336 I llama_model_loader: - kv   8:                       qwen4exp.block_count u32              = 48
+0.00.050.337 I llama_model_loader: - kv   9:                    qwen4exp.context_length u32              = 262144
+0.00.050.337 I llama_model_loader: - kv  10:                  qwen4exp.embedding_length u32              = 2560
+0.00.050.337 I llama_model_loader: - kv  11:              qwen4exp.attention.head_count u32              = 24
+0.00.050.337 I llama_model_loader: - kv  12:           qwen4exp.attention.head_count_kv u32              = 2
+0.00.050.343 I llama_model_loader: - kv  13:           qwen4exp.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+0.00.050.345 I llama_model_loader: - kv  14:                    qwen4exp.rope.freq_base f32              = 10000000.000000
+0.00.050.345 I llama_model_loader: - kv  15:  qwen4exp.attention.layer_norm_rms_epsilon f32              = 0.000001
+0.00.050.345 I llama_model_loader: - kv  16:                      qwen4exp.expert_count u32              = 512
+0.00.050.346 I llama_model_loader: - kv  17:                 qwen4exp.expert_used_count u32              = 10
+0.00.050.346 I llama_model_loader: - kv  18:              qwen4exp.attention.key_length u32              = 256
+0.00.050.346 I llama_model_loader: - kv  19:            qwen4exp.attention.value_length u32              = 256
+0.00.050.346 I llama_model_loader: - kv  20:        qwen4exp.expert_feed_forward_length u32              = 640
+0.00.050.346 I llama_model_loader: - kv  21: qwen4exp.expert_shared_feed_forward_length u32              = 640
+0.00.050.347 I llama_model_loader: - kv  22:                   qwen4exp.ssm.conv_kernel u32              = 4
+0.00.050.347 I llama_model_loader: - kv  23:                    qwen4exp.ssm.state_size u32              = 128
+0.00.050.347 I llama_model_loader: - kv  24:                   qwen4exp.ssm.group_count u32              = 16
+0.00.050.347 I llama_model_loader: - kv  25:                qwen4exp.ssm.time_step_rank u32              = 48
+0.00.050.347 I llama_model_loader: - kv  26:                    qwen4exp.ssm.inner_size u32              = 6144
+0.00.050.347 I llama_model_loader: - kv  27:           qwen4exp.full_attention_interval u32              = 4
+0.00.050.347 I llama_model_loader: - kv  28:              qwen4exp.rope.dimension_count u32              = 64
+0.00.050.348 I llama_model_loader: - kv  29:            qwen4exp.hyper_connection.count u32              = 4
+0.00.050.348 I llama_model_loader: - kv  30:         qwen4exp.hyper_connection.low_rank u32              = 320
+0.00.050.348 I llama_model_loader: - kv  31:      qwen4exp.attention.indexer.head_count u32              = 4
+0.00.050.348 I llama_model_loader: - kv  32:      qwen4exp.attention.indexer.key_length u32              = 128
+0.00.050.348 I llama_model_loader: - kv  33:           qwen4exp.attention.indexer.top_k u32              = 2048
+0.00.050.351 I llama_model_loader: - kv  34:         qwen4exp.attention.compress_ratios arr[i32,48]      = [0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 4, ...
+0.00.050.351 I llama_model_loader: - kv  35:                        qwen4exp.ple.layers arr[i32,1]       = [1]
+0.00.050.351 I llama_model_loader: - kv  36:                    qwen4exp.ple.ngram_size u32              = 3
+0.00.050.351 I llama_model_loader: - kv  37:               qwen4exp.ple.heads_per_ngram u32              = 8
+0.00.050.352 I llama_model_loader: - kv  38:                   qwen4exp.ple.conv_kernel u32              = 4
+0.00.050.352 I llama_model_loader: - kv  39:                  qwen4exp.ple.eos_token_id u32              = 248044
+0.00.050.352 I llama_model_loader: - kv  40:  qwen4exp.embedding_length_per_layer_input u32              = 160
+0.00.050.353 I llama_model_loader: - kv  41:             qwen4exp.ple.layer_multipliers arr[u64,3]       = [23703573157769, 20109073645365, 8052...
+0.00.050.354 I llama_model_loader: - kv  42:                  qwen4exp.ple.head_offsets arr[u64,16]      = [0, 20000003, 40000026, 60000059, 800...
+0.00.050.355 I llama_model_loader: - kv  43:              qwen4exp.ple.head_vocab_sizes arr[u64,16]      = [20000003, 20000023, 20000033, 200000...
+0.00.050.355 I llama_model_loader: - kv  44:                       tokenizer.ggml.model str              = gpt2
+0.00.050.356 I llama_model_loader: - kv  45:                         tokenizer.ggml.pre str              = qwen35
+0.00.062.371 I llama_model_loader: - kv  46:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+0.00.065.685 I llama_model_loader: - kv  47:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+0.00.077.206 I llama_model_loader: - kv  48:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+0.00.077.207 I llama_model_loader: - kv  49:                tokenizer.ggml.eos_token_id u32              = 248046
+0.00.077.207 I llama_model_loader: - kv  50:            tokenizer.ggml.padding_token_id u32              = 248044
+0.00.077.208 I llama_model_loader: - kv  51:                tokenizer.ggml.bos_token_id u32              = 248044
+0.00.077.208 I llama_model_loader: - kv  52:               tokenizer.ggml.add_bos_token bool             = false
+0.00.077.209 I llama_model_loader: - kv  53:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+0.00.077.209 I llama_model_loader: - kv  54:                qwen4exp.ple.image_token_id u32              = 248056
+0.00.077.209 I llama_model_loader: - kv  55:                       general.quantized_by str              = ISTA DASLab
+0.00.077.210 I llama_model_loader: - kv  56:                           general.repo_url str              = https://huggingface.co/ISTA-DASLab
+0.00.077.210 I llama_model_loader: - kv  57:                               general.tags arr[str,2]       = ["gsq-rco", "ista-daslab"]
+0.00.077.211 I llama_model_loader: - kv  58:                      quantize.imatrix.file str              = imatrix-qwen3.8-flash-next.gguf
+0.00.077.211 I llama_model_loader: - kv  59:                   quantize.imatrix.dataset str              = calib_qwen3.8-flash-next.tokids
+0.00.077.211 I llama_model_loader: - kv  60:             quantize.imatrix.entries_count u32              = 926
+0.00.077.211 I llama_model_loader: - kv  61:              quantize.imatrix.chunks_count u32              = 1000
+0.00.077.212 I llama_model_loader: - kv  62:                          general.file_type u32              = 23
+0.00.077.212 I llama_model_loader: - kv  63:               general.quantization_version u32              = 2
+0.00.077.213 I llama_model_loader: - kv  64:                                   split.no u16              = 0
+0.00.077.213 I llama_model_loader: - kv  65:                                split.count u16              = 2
+0.00.077.213 I llama_model_loader: - kv  66:                        split.tensors.count i32              = 1224
+0.00.077.215 I llama_model_loader: - type  f32:  292 tensors
+0.00.077.215 I llama_model_loader: - type  f16:    1 tensors
+0.00.077.215 I llama_model_loader: - type q4_K:   45 tensors
+0.00.077.216 I llama_model_loader: - type q5_K:   15 tensors
+0.00.077.216 I llama_model_loader: - type q6_K:   71 tensors
+0.00.077.216 I llama_model_loader: - type iq2_xxs:   18 tensors
+0.00.077.216 I llama_model_loader: - type iq2_xs:   20 tensors
+0.00.077.216 I llama_model_loader: - type iq3_xxs:   12 tensors
+0.00.077.217 I llama_model_loader: - type iq4_nl:   59 tensors
+0.00.077.217 I llama_model_loader: - type iq3_s:   82 tensors
+0.00.077.217 I llama_model_loader: - type iq2_s:   20 tensors
+0.00.077.217 I llama_model_loader: - type iq4_xs:   67 tensors
+0.00.077.218 I llama_model_loader: - type bf16:  484 tensors
+0.00.077.218 I llama_model_loader: - type q2_0:   38 tensors
+0.00.077.220 I print_info: file format = GGUF V3 (latest)
+0.00.077.220 I print_info: file type   = IQ3_XXS - 3.0625 bpw
+0.00.077.222 I print_info: file size   = 70.62 GiB (3.43 BPW) 
+0.00.077.243 I llama_prepare_model_devices: skipping CPU (AMD Ryzen 9 9950X3D2 16-Core Processor) for tensor parallelism
+0.00.077.245 I llama_prepare_model_devices: creating a Meta device for tensor parallelism from 1 devices:
+0.00.077.246 I llama_prepare_model_devices: - device 0: ROCm0 (AMD Radeon AI PRO R9700 (gfx1201))
+0.00.077.255 I llama_prepare_model_devices: using device ROCm0 (AMD Radeon AI PRO R9700 (gfx1201)) (0000:06:00.0) - 32548 MiB free
+0.00.140.462 I load: 0 unused tokens
+0.00.154.269 I load: printing all EOG tokens:
+0.00.154.270 I load:   - 248044 ('<|endoftext|>')
+0.00.154.270 I load:   - 248046 ('<|im_end|>')
+0.00.154.271 I load:   - 248063 ('<|fim_pad|>')
+0.00.154.271 I load:   - 248064 ('<|repo_name|>')
+0.00.154.271 I load:   - 248065 ('<|file_sep|>')
+0.00.154.362 I load: special tokens cache size = 33
+0.00.197.748 I load: token to piece cache size = 1.7581 MB
+0.00.197.760 I print_info: arch                  = qwen4exp
+0.00.197.761 I print_info: vocab_only            = 0
+0.00.197.761 I print_info: no_alloc              = 0
+0.00.197.761 I print_info: n_ctx_train           = 262144
+0.00.197.762 I print_info: n_embd_inp            = 2560
+0.00.197.763 I print_info: n_embd                = 2560
+0.00.197.764 I print_info: n_embd_out            = 10240
+0.00.197.765 I print_info: n_layer               = 48
+0.00.197.765 I print_info: n_layer_all           = 48
+0.00.197.774 I print_info: n_head                = 24
+0.00.197.775 I print_info: n_head_kv             = 2
+0.00.197.776 I print_info: n_rot                 = 64
+0.00.197.776 I print_info: n_swa                 = 0
+0.00.197.777 I print_info: is_swa_any            = 0
+0.00.197.778 I print_info: non_causal_type       = 0
+0.00.197.778 I print_info: n_embd_head_k         = 256
+0.00.197.778 I print_info: n_embd_head_v         = 256
+0.00.197.779 I print_info: n_gqa                 = 12
+0.00.197.780 I print_info: n_embd_k_gqa          = 512
+0.00.197.781 I print_info: n_embd_v_gqa          = 512
+0.00.197.782 I print_info: f_norm_eps            = 0.0e+00
+0.00.197.782 I print_info: f_norm_rms_eps        = 1.0e-06
+0.00.197.783 I print_info: f_clamp_kqv           = 0.0e+00
+0.00.197.783 I print_info: f_max_alibi_bias      = 0.0e+00
+0.00.197.783 I print_info: f_logit_scale         = 0.0e+00
+0.00.197.783 I print_info: f_attn_scale          = 0.0e+00
+0.00.197.783 I print_info: f_attn_value_scale    = 0.0000
+0.00.197.785 I print_info: n_ff                  = 0
+0.00.197.785 I print_info: n_expert              = 512
+0.00.197.786 I print_info: n_expert_used         = 10
+0.00.197.786 I print_info: n_expert_groups       = 0
+0.00.197.786 I print_info: n_group_used          = 0
+0.00.197.786 I print_info: causal attn           = 1
+0.00.197.787 I print_info: pooling type          = -1
+0.00.197.787 I print_info: rope type             = 40
+0.00.197.787 I print_info: rope scaling          = linear
+0.00.197.788 I print_info: freq_base_train       = 10000000.0
+0.00.197.789 I print_info: freq_scale_train      = 1
+0.00.197.789 I print_info: n_ctx_orig_yarn       = 262144
+0.00.197.789 I print_info: rope_yarn_log_mul     = 0.0000
+0.00.197.789 I print_info: rope_finetuned        = unknown
+0.00.197.790 I print_info: mrope sections        = [11, 11, 10, 0]
+0.00.197.790 I print_info: model type            = A3B
+0.00.197.791 I print_info: model params          = 176.94 B
+0.00.197.791 I print_info: general.name          = Qwen3.8-Flash-Next GSQ-RCO
+0.00.197.793 I print_info: vocab type            = BPE
+0.00.197.793 I print_info: n_vocab               = 248320
+0.00.197.794 I print_info: n_merges              = 247587
+0.00.197.794 I print_info: BOS token             = 248044 '<|endoftext|>'
+0.00.197.794 I print_info: EOS token             = 248046 '<|im_end|>'
+0.00.197.794 I print_info: EOT token             = 248046 '<|im_end|>'
+0.00.197.794 I print_info: PAD token             = 248044 '<|endoftext|>'
+0.00.197.795 I print_info: LF token              = 198 'Ċ'
+0.00.197.795 I print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+0.00.197.795 I print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+0.00.197.795 I print_info: FIM MID token         = 248061 '<|fim_middle|>'
+0.00.197.795 I print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+0.00.197.796 I print_info: FIM REP token         = 248064 '<|repo_name|>'
+0.00.197.796 I print_info: FIM SEP token         = 248065 '<|file_sep|>'
+0.00.197.796 I print_info: EOG token             = 248044 '<|endoftext|>'
+0.00.197.796 I print_info: EOG token             = 248046 '<|im_end|>'
+0.00.197.796 I print_info: EOG token             = 248063 '<|fim_pad|>'
+0.00.197.796 I print_info: EOG token             = 248064 '<|repo_name|>'
+0.00.197.796 I print_info: EOG token             = 248065 '<|file_sep|>'
+0.00.197.797 I print_info: max token length      = 256
+0.00.197.798 I load_tensors: loading model tensors, this can take a while... (load_mode = none)
+0.08.599.776 I load_tensors: offloading output layer to GPU
+0.08.599.779 I load_tensors: offloading 47 repeating layers to GPU
+0.08.599.780 I load_tensors: offloaded 49/49 layers to GPU
+0.08.599.786 I load_tensors:        ROCm0 model buffer size =  3664.71 MiB
+0.08.599.787 I load_tensors:    ROCm_Host model buffer size = 68651.45 MiB
+0.08.600.430 I moe_cache_init: MoE expert cache enabled on device 0: budget=auto MiB/device, period=32 steps, adaptive uniform slots (deferred sizing)
+0.24.695.792 W heat_map_warn_retired_locked: ignoring retired heat map /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf.moe-heatmap; heat maps are now one unified index per model named /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.moe-heatmap (the retired `<gguf>.moe-heatmap` naming is no longer used)
+0.24.695.799 W heat_map_warn_retired_locked: 1 retired heat-map file(s) ignored; delete them to silence this warning
+0.24.696.549 I heat_map_load_locked: loaded 144 heat entries from /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.moe-heatmap
+0.27.169.909 I moe_cache_preflight: auto cache preflight: device 0 projected arena 23614.0 MiB (free 28734.0 - reserve 1024.0 - aux 4096.0) >= floor 7366.5 MiB (host experts 40925.0 MiB); cache stays on
+0.27.170.553 I cmn  common_init_: added <|endoftext|> logit bias = -inf
+0.27.170.554 I cmn  common_init_: added <|im_end|> logit bias = -inf
+0.27.170.555 I cmn  common_init_: added <|fim_pad|> logit bias = -inf
+0.27.170.555 I cmn  common_init_: added <|repo_name|> logit bias = -inf
+0.27.170.555 I cmn  common_init_: added <|file_sep|> logit bias = -inf
+0.27.170.613 I llama_init_from_model: enabling flash_attn since it is required for SPLIT_MODE_TENSOR
+0.27.170.632 I llama_context: constructing llama_context
+0.27.170.642 I llama_context: n_seq_max             = 1
+0.27.170.643 I llama_context: n_ctx                 = 131072
+0.27.170.643 I llama_context: n_ctx_seq             = 131072
+0.27.170.643 I llama_context: n_batch               = 4096
+0.27.170.644 I llama_context: n_ubatch              = 4096
+0.27.170.644 I llama_context: causal_attn           = 1
+0.27.170.645 I llama_context: flash_attn            = enabled
+0.27.170.645 I llama_context: kv_unified            = false
+0.27.170.646 I llama_context: freq_base             = 10000000.0
+0.27.170.646 I llama_context: freq_scale            = 1
+0.27.170.646 I llama_context: n_rs_seq              = 7
+0.27.170.647 I llama_context: n_rs_batch            = 8
+0.27.170.647 I llama_context: n_outputs_max         = 8
+0.27.170.647 I llama_context: n_outputs_max_per_seq = 8
+0.27.170.647 I llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.27.171.302 I llama_context:  ROCm_Host  output buffer size =     0.95 MiB
+0.27.171.710 I llama_kv_cache:      ROCm0 KV buffer size =  1632.00 MiB
+0.27.179.712 I llama_kv_cache: size = 1632.00 MiB (131072 cells,  12 layers,  1/1 seqs), K (q8_0):  816.00 MiB, V (q8_0):  816.00 MiB
+0.27.179.714 I llama_kv_cache: n_rot_k = 256, n_embd_head_k_all = 256
+0.27.179.714 I llama_kv_cache: n_rot_v = 64, n_embd_head_k_all = 256
+0.27.181.839 I llama_memory_recurrent:      ROCm0 RS buffer size =   900.56 MiB
+0.27.181.842 I llama_memory_recurrent: size =  900.56 MiB (     1 cells,  48 layers,  1 seqs  7 rs_seq), R (f32):   33.75 MiB, S (f32):  864.00 MiB, P (f32):    2.81 MiB
+0.27.181.844 I operator(): creating indexer KV cache, size = 131072 cells
+0.27.183.046 I llama_kv_cache:      ROCm0 KV buffer size =   204.01 MiB
+0.27.183.412 I llama_kv_cache: size =  204.00 MiB (131072 cells,  12 layers,  1/1 seqs), K (q8_0):  204.00 MiB, V (q8_0):    0.00 MiB
+0.27.183.414 I llama_kv_cache: n_rot_k = 128, n_embd_head_k_all = 128
+0.27.183.414 I llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 0
+0.27.183.420 I pool_create: derived indexer cache pool skipped (q8_0 keys, derived cache enabled)
+0.27.183.442 I sched_reserve: reserving ...
+0.27.192.717 I resolve_fused_ops: resolving derived kq mask support:
+0.27.194.530 W resolve_fused_ops: derived kq mask flash attention was not used in the probe graph, set to disabled
+0.27.194.532 W resolve_fused_ops: derived kq mask flash attention not supported, set to disabled
+0.27.194.532 W resolve_fused_ops: note: the derived kq mask is implemented by the MMA and the tile flash attention kernels; it is disabled here because neither served this graph (or the node did not reach the GPU)
+0.27.194.533 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+0.27.195.561 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+0.27.196.492 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+0.27.208.415 W SLAB_INIT dev=0 free=25.38 GiB reserve=8.00 GiB headroom=4.00 GiB aux=4.00 GiB size(VA)=21.38 GiB mapped=17.38 GiB boundary=1.75 GiB va_spare=4.00 GiB chunk=64.0 MiB ring_req=4.11 GiB
+0.27.208.419 W ggml_cuda_slab_init_locked: device 0: slab 17.38 GiB (chunk 64.0 MiB): work 1.75 GiB + arena 15.62 GiB (8.00 GiB reserve, 4.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.27.208.420 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 1792.00 MiB from the slab work region (boundary 1792.00 MiB) on device 0
+0.27.239.685 I sched_reserve:      ROCm0 compute buffer size =  1792.00 MiB
+0.27.239.689 I sched_reserve:  ROCm_Host compute buffer size =   202.64 MiB
+0.27.239.692 I sched_reserve: graph (pp bs=4096, tg bs=1): nodes = 8230 / 6066, splits = 144 / 50, input objects = 6 / 6, input tensors = 18 / 14
+0.27.239.693 I sched_reserve: reserve took 56.25 ms, sched copies = 1
+0.27.239.854 I cmn          init: llama threadpool init, n_threads = 7
+0.27.239.873 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.27.611.366 I ggml_backend_cuda_stage_h2d_gbps: H2D bandwidth calibration: 14.5 GB/s (512 MiB x3 in 111.46 ms)
+0.27.620.172 I sched_stage_min_tokens: H2D staging calibration: 14.5 GB/s -> min_tokens=1542
+0.27.782.393 W alloc_all_locked: MoE expert cache (auto): arena 15666.6 MiB of 40925.0 MiB host experts (38.3% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+0.27.790.467 I apply_heat_seed_locked: layer=1 role=blk.1.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.797.235 I apply_heat_seed_locked: layer=1 role=blk.1.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.804.000 I apply_heat_seed_locked: layer=1 role=blk.1.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.817.931 I apply_heat_seed_locked: layer=2 role=blk.2.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.825.448 I apply_heat_seed_locked: layer=2 role=blk.2.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.832.967 I apply_heat_seed_locked: layer=2 role=blk.2.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.840.308 I apply_heat_seed_locked: layer=3 role=blk.3.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.847.122 I apply_heat_seed_locked: layer=3 role=blk.3.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.853.919 I apply_heat_seed_locked: layer=3 role=blk.3.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.867.920 I apply_heat_seed_locked: layer=4 role=blk.4.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.875.510 I apply_heat_seed_locked: layer=4 role=blk.4.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.883.047 I apply_heat_seed_locked: layer=4 role=blk.4.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.890.596 I apply_heat_seed_locked: layer=5 role=blk.5.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.898.136 I apply_heat_seed_locked: layer=5 role=blk.5.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.905.487 I apply_heat_seed_locked: layer=5 role=blk.5.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.912.854 I apply_heat_seed_locked: layer=6 role=blk.6.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.919.671 I apply_heat_seed_locked: layer=6 role=blk.6.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.926.481 I apply_heat_seed_locked: layer=6 role=blk.6.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.933.851 I apply_heat_seed_locked: layer=7 role=blk.7.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.940.674 I apply_heat_seed_locked: layer=7 role=blk.7.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.947.488 I apply_heat_seed_locked: layer=7 role=blk.7.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.958.271 I apply_heat_seed_locked: layer=8 role=blk.8.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.969.038 I apply_heat_seed_locked: layer=8 role=blk.8.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.976.382 I apply_heat_seed_locked: layer=8 role=blk.8.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.983.927 I apply_heat_seed_locked: layer=9 role=blk.9.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.991.462 I apply_heat_seed_locked: layer=9 role=blk.9.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.27.998.814 I apply_heat_seed_locked: layer=9 role=blk.9.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.006.360 I apply_heat_seed_locked: layer=10 role=blk.10.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.013.900 I apply_heat_seed_locked: layer=10 role=blk.10.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.021.247 I apply_heat_seed_locked: layer=10 role=blk.10.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.028.615 I apply_heat_seed_locked: layer=11 role=blk.11.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.035.427 I apply_heat_seed_locked: layer=11 role=blk.11.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.042.240 I apply_heat_seed_locked: layer=11 role=blk.11.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.050.499 I apply_heat_seed_locked: layer=12 role=blk.12.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.058.747 I apply_heat_seed_locked: layer=12 role=blk.12.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.066.101 I apply_heat_seed_locked: layer=12 role=blk.12.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.073.466 I apply_heat_seed_locked: layer=13 role=blk.13.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.080.281 I apply_heat_seed_locked: layer=13 role=blk.13.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.087.093 I apply_heat_seed_locked: layer=13 role=blk.13.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.094.640 I apply_heat_seed_locked: layer=14 role=blk.14.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.102.177 I apply_heat_seed_locked: layer=14 role=blk.14.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.109.521 I apply_heat_seed_locked: layer=14 role=blk.14.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.117.778 I apply_heat_seed_locked: layer=15 role=blk.15.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.126.026 I apply_heat_seed_locked: layer=15 role=blk.15.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.133.378 I apply_heat_seed_locked: layer=15 role=blk.15.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.140.743 I apply_heat_seed_locked: layer=16 role=blk.16.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.147.588 I apply_heat_seed_locked: layer=16 role=blk.16.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.154.403 I apply_heat_seed_locked: layer=16 role=blk.16.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.162.659 I apply_heat_seed_locked: layer=17 role=blk.17.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.170.907 I apply_heat_seed_locked: layer=17 role=blk.17.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.178.256 I apply_heat_seed_locked: layer=17 role=blk.17.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.189.032 I apply_heat_seed_locked: layer=18 role=blk.18.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.199.793 I apply_heat_seed_locked: layer=18 role=blk.18.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.207.140 I apply_heat_seed_locked: layer=18 role=blk.18.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.214.682 I apply_heat_seed_locked: layer=19 role=blk.19.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.222.214 I apply_heat_seed_locked: layer=19 role=blk.19.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.229.563 I apply_heat_seed_locked: layer=19 role=blk.19.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.240.341 I apply_heat_seed_locked: layer=20 role=blk.20.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.251.104 I apply_heat_seed_locked: layer=20 role=blk.20.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.258.451 I apply_heat_seed_locked: layer=20 role=blk.20.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.266.712 I apply_heat_seed_locked: layer=21 role=blk.21.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.274.955 I apply_heat_seed_locked: layer=21 role=blk.21.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.282.308 I apply_heat_seed_locked: layer=21 role=blk.21.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.293.077 I apply_heat_seed_locked: layer=22 role=blk.22.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.303.840 I apply_heat_seed_locked: layer=22 role=blk.22.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.311.186 I apply_heat_seed_locked: layer=22 role=blk.22.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.321.961 I apply_heat_seed_locked: layer=23 role=blk.23.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.332.724 I apply_heat_seed_locked: layer=23 role=blk.23.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.340.071 I apply_heat_seed_locked: layer=23 role=blk.23.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.350.844 I apply_heat_seed_locked: layer=24 role=blk.24.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.361.603 I apply_heat_seed_locked: layer=24 role=blk.24.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.368.945 I apply_heat_seed_locked: layer=24 role=blk.24.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.376.484 I apply_heat_seed_locked: layer=25 role=blk.25.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.384.013 I apply_heat_seed_locked: layer=25 role=blk.25.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.391.361 I apply_heat_seed_locked: layer=25 role=blk.25.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.399.622 I apply_heat_seed_locked: layer=26 role=blk.26.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.407.870 I apply_heat_seed_locked: layer=26 role=blk.26.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.415.217 I apply_heat_seed_locked: layer=26 role=blk.26.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.422.584 I apply_heat_seed_locked: layer=27 role=blk.27.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.429.399 I apply_heat_seed_locked: layer=27 role=blk.27.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.436.207 I apply_heat_seed_locked: layer=27 role=blk.27.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.450.040 I apply_heat_seed_locked: layer=28 role=blk.28.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.460.797 I apply_heat_seed_locked: layer=28 role=blk.28.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.471.553 I apply_heat_seed_locked: layer=28 role=blk.28.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.485.794 I apply_heat_seed_locked: layer=29 role=blk.29.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.494.032 I apply_heat_seed_locked: layer=29 role=blk.29.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.502.277 I apply_heat_seed_locked: layer=29 role=blk.29.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.516.108 I apply_heat_seed_locked: layer=0 role=blk.0.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.523.640 I apply_heat_seed_locked: layer=0 role=blk.0.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.531.173 I apply_heat_seed_locked: layer=0 role=blk.0.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.545.000 I apply_heat_seed_locked: layer=30 role=blk.30.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.555.758 I apply_heat_seed_locked: layer=30 role=blk.30.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.566.524 I apply_heat_seed_locked: layer=30 role=blk.30.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.580.352 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.587.156 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.593.958 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.607.790 I apply_heat_seed_locked: layer=32 role=blk.32.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.28.621.356 I alloc_all_locked: device 0: sized 196 slots/table from 144 tables / 79.9 MiB per expert (budget auto MiB/device)
+0.28.621.358 I alloc_all_locked: per-device sizing: 1 device(s), arena total 15666.6 MiB
+0.28.628.064 I common_speculative_init_result: loading draft model '/llm/models/Qwen3.8/Flash-Next/IQ4_NL/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+0.28.654.502 I llama_model_loader: loaded meta data with 52 key-value pairs and 32 tensors from /llm/models/Qwen3.8/Flash-Next/IQ4_NL/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf (version GGUF V3 (latest))
+0.28.654.507 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+0.28.654.509 I llama_model_loader: - kv   0:                       general.architecture str              = qwen4exp
+0.28.654.510 I llama_model_loader: - kv   1:       qwen4exp.nextn_shared_target_tensors bool             = true
+0.28.654.511 I llama_model_loader: - kv   2:                               general.type str              = model
+0.28.654.511 I llama_model_loader: - kv   3:                     general.sampling.top_k i32              = 20
+0.28.654.512 I llama_model_loader: - kv   4:                     general.sampling.top_p f32              = 0.950000
+0.28.654.512 I llama_model_loader: - kv   5:                      general.sampling.temp f32              = 1.000000
+0.28.654.513 I llama_model_loader: - kv   6:                               general.name str              = Ckpt_Q38
+0.28.654.513 I llama_model_loader: - kv   7:                         general.size_label str              = 512x95M
+0.28.654.513 I llama_model_loader: - kv   8:                            general.license str              = other
+0.28.654.513 I llama_model_loader: - kv   9:                       general.license.name str              = qwen-community-1.0
+0.28.654.514 I llama_model_loader: - kv  10:                       general.license.link str              = LICENSE
+0.28.654.519 I llama_model_loader: - kv  11:                               general.tags arr[str,1]       = ["image-text-to-text"]
+0.28.654.519 I llama_model_loader: - kv  12:                       qwen4exp.block_count u32              = 49
+0.28.654.519 I llama_model_loader: - kv  13:                    qwen4exp.context_length u32              = 262144
+0.28.654.520 I llama_model_loader: - kv  14:                  qwen4exp.embedding_length u32              = 2560
+0.28.654.520 I llama_model_loader: - kv  15:              qwen4exp.attention.head_count u32              = 24
+0.28.654.520 I llama_model_loader: - kv  16:           qwen4exp.attention.head_count_kv u32              = 2
+0.28.654.521 I llama_model_loader: - kv  17:           qwen4exp.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+0.28.654.522 I llama_model_loader: - kv  18:                    qwen4exp.rope.freq_base f32              = 10000000.000000
+0.28.654.522 I llama_model_loader: - kv  19:  qwen4exp.attention.layer_norm_rms_epsilon f32              = 0.000001
+0.28.654.522 I llama_model_loader: - kv  20:                      qwen4exp.expert_count u32              = 512
+0.28.654.523 I llama_model_loader: - kv  21:                 qwen4exp.expert_used_count u32              = 10
+0.28.654.523 I llama_model_loader: - kv  22:              qwen4exp.attention.key_length u32              = 256
+0.28.654.523 I llama_model_loader: - kv  23:            qwen4exp.attention.value_length u32              = 256
+0.28.654.523 I llama_model_loader: - kv  24:        qwen4exp.expert_feed_forward_length u32              = 640
+0.28.654.523 I llama_model_loader: - kv  25: qwen4exp.expert_shared_feed_forward_length u32              = 640
+0.28.654.523 I llama_model_loader: - kv  26:              qwen4exp.nextn_predict_layers u32              = 1
+0.28.654.523 I llama_model_loader: - kv  27:                   qwen4exp.ssm.conv_kernel u32              = 4
+0.28.654.524 I llama_model_loader: - kv  28:                    qwen4exp.ssm.state_size u32              = 128
+0.28.654.524 I llama_model_loader: - kv  29:                   qwen4exp.ssm.group_count u32              = 16
+0.28.654.524 I llama_model_loader: - kv  30:                qwen4exp.ssm.time_step_rank u32              = 48
+0.28.654.524 I llama_model_loader: - kv  31:                    qwen4exp.ssm.inner_size u32              = 6144
+0.28.654.524 I llama_model_loader: - kv  32:           qwen4exp.full_attention_interval u32              = 4
+0.28.654.524 I llama_model_loader: - kv  33:              qwen4exp.rope.dimension_count u32              = 64
+0.28.654.524 I llama_model_loader: - kv  34:            qwen4exp.hyper_connection.count u32              = 4
+0.28.654.525 I llama_model_loader: - kv  35:         qwen4exp.hyper_connection.low_rank u32              = 320
+0.28.654.525 I llama_model_loader: - kv  36:      qwen4exp.attention.indexer.head_count u32              = 4
+0.28.654.525 I llama_model_loader: - kv  37:      qwen4exp.attention.indexer.key_length u32              = 128
+0.28.654.525 I llama_model_loader: - kv  38:           qwen4exp.attention.indexer.top_k u32              = 2048
+0.28.654.527 I llama_model_loader: - kv  39:         qwen4exp.attention.compress_ratios arr[i32,49]      = [0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 4, ...
+0.28.654.527 I llama_model_loader: - kv  40:                       tokenizer.ggml.model str              = gpt2
+0.28.654.527 I llama_model_loader: - kv  41:                         tokenizer.ggml.pre str              = qwen35
+0.28.665.586 I llama_model_loader: - kv  42:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+0.28.668.803 I llama_model_loader: - kv  43:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+0.28.679.769 I llama_model_loader: - kv  44:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+0.28.679.770 I llama_model_loader: - kv  45:                tokenizer.ggml.eos_token_id u32              = 248046
+0.28.679.770 I llama_model_loader: - kv  46:            tokenizer.ggml.padding_token_id u32              = 248044
+0.28.679.770 I llama_model_loader: - kv  47:                tokenizer.ggml.bos_token_id u32              = 248044
+0.28.679.771 I llama_model_loader: - kv  48:               tokenizer.ggml.add_bos_token bool             = false
+0.28.679.772 I llama_model_loader: - kv  49:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+0.28.679.772 I llama_model_loader: - kv  50:               general.quantization_version u32              = 2
+0.28.679.772 I llama_model_loader: - kv  51:                          general.file_type u32              = 7
+0.28.679.773 I llama_model_loader: - type  f32:   11 tensors
+0.28.679.773 I llama_model_loader: - type q8_0:   19 tensors
+0.28.679.773 I llama_model_loader: - type bf16:    2 tensors
+0.28.679.774 I print_info: file format = GGUF V3 (latest)
+0.28.679.775 I print_info: file type   = Q8_0
+0.28.679.775 I print_info: file size   = 2.58 GiB (8.52 BPW) 
+0.28.679.781 I llama_prepare_model_devices: skipping CPU (AMD Ryzen 9 9950X3D2 16-Core Processor) for tensor parallelism
+0.28.679.781 I llama_prepare_model_devices: creating a Meta device for tensor parallelism from 1 devices:
+0.28.679.782 I llama_prepare_model_devices: - device 0: ROCm0 (AMD Radeon AI PRO R9700 (gfx1201))
+0.28.679.789 I llama_prepare_model_devices: using device ROCm0 (AMD Radeon AI PRO R9700 (gfx1201)) (0000:06:00.0) - 8064 MiB free
+0.28.679.825 I load_arch_hparams: nextn layer 48 compress ratio 0 -> 4
+0.28.733.553 I load: 0 unused tokens
+0.28.746.319 I load: printing all EOG tokens:
+0.28.746.320 I load:   - 248044 ('<|endoftext|>')
+0.28.746.320 I load:   - 248046 ('<|im_end|>')
+0.28.746.320 I load:   - 248063 ('<|fim_pad|>')
+0.28.746.320 I load:   - 248064 ('<|repo_name|>')
+0.28.746.321 I load:   - 248065 ('<|file_sep|>')
+0.28.746.388 I load: special tokens cache size = 33
+0.28.785.779 I load: token to piece cache size = 1.7581 MB
+0.28.785.784 I print_info: arch                  = qwen4exp
+0.28.785.784 I print_info: vocab_only            = 0
+0.28.785.785 I print_info: no_alloc              = 0
+0.28.785.785 I print_info: n_ctx_train           = 262144
+0.28.785.785 I print_info: n_embd_inp            = 2560
+0.28.785.786 I print_info: n_embd                = 2560
+0.28.785.786 I print_info: n_embd_out            = 10240
+0.28.785.786 I print_info: n_layer               = 48
+0.28.785.786 I print_info: n_layer_all           = 49
+0.28.785.791 I print_info: n_head                = 24
+0.28.785.791 I print_info: n_head_kv             = 2
+0.28.785.791 I print_info: n_rot                 = 64
+0.28.785.791 I print_info: n_swa                 = 0
+0.28.785.792 I print_info: is_swa_any            = 0
+0.28.785.792 I print_info: non_causal_type       = 0
+0.28.785.793 I print_info: n_embd_head_k         = 256
+0.28.785.793 I print_info: n_embd_head_v         = 256
+0.28.785.793 I print_info: n_gqa                 = 12
+0.28.785.794 I print_info: n_embd_k_gqa          = 512
+0.28.785.794 I print_info: n_embd_v_gqa          = 512
+0.28.785.795 I print_info: f_norm_eps            = 0.0e+00
+0.28.785.796 I print_info: f_norm_rms_eps        = 1.0e-06
+0.28.785.796 I print_info: f_clamp_kqv           = 0.0e+00
+0.28.785.797 I print_info: f_max_alibi_bias      = 0.0e+00
+0.28.785.797 I print_info: f_logit_scale         = 0.0e+00
+0.28.785.797 I print_info: f_attn_scale          = 0.0e+00
+0.28.785.797 I print_info: f_attn_value_scale    = 0.0000
+0.28.785.798 I print_info: n_ff                  = 0
+0.28.785.798 I print_info: n_expert              = 512
+0.28.785.798 I print_info: n_expert_used         = 10
+0.28.785.798 I print_info: n_expert_groups       = 0
+0.28.785.798 I print_info: n_group_used          = 0
+0.28.785.798 I print_info: causal attn           = 1
+0.28.785.799 I print_info: pooling type          = -1
+0.28.785.799 I print_info: rope type             = 40
+0.28.785.799 I print_info: rope scaling          = linear
+0.28.785.800 I print_info: freq_base_train       = 10000000.0
+0.28.785.800 I print_info: freq_scale_train      = 1
+0.28.785.800 I print_info: n_ctx_orig_yarn       = 262144
+0.28.785.800 I print_info: rope_yarn_log_mul     = 0.0000
+0.28.785.800 I print_info: rope_finetuned        = unknown
+0.28.785.801 I print_info: mrope sections        = [11, 11, 10, 0]
+0.28.785.802 I print_info: model type            = A3B
+0.28.785.802 I print_info: model params          = 2.61 B
+0.28.785.802 I print_info: general.name          = Ckpt_Q38
+0.28.785.803 I print_info: vocab type            = BPE
+0.28.785.803 I print_info: n_vocab               = 248320
+0.28.785.803 I print_info: n_merges              = 247587
+0.28.785.804 I print_info: BOS token             = 248044 '<|endoftext|>'
+0.28.785.804 I print_info: EOS token             = 248046 '<|im_end|>'
+0.28.785.804 I print_info: EOT token             = 248046 '<|im_end|>'
+0.28.785.805 I print_info: PAD token             = 248044 '<|endoftext|>'
+0.28.785.805 I print_info: LF token              = 198 'Ċ'
+0.28.785.805 I print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+0.28.785.805 I print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+0.28.785.805 I print_info: FIM MID token         = 248061 '<|fim_middle|>'
+0.28.785.805 I print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+0.28.785.806 I print_info: FIM REP token         = 248064 '<|repo_name|>'
+0.28.785.806 I print_info: FIM SEP token         = 248065 '<|file_sep|>'
+0.28.785.806 I print_info: EOG token             = 248044 '<|endoftext|>'
+0.28.785.806 I print_info: EOG token             = 248046 '<|im_end|>'
+0.28.785.806 I print_info: EOG token             = 248063 '<|fim_pad|>'
+0.28.785.807 I print_info: EOG token             = 248064 '<|repo_name|>'
+0.28.785.807 I print_info: EOG token             = 248065 '<|file_sep|>'
+0.28.785.807 I print_info: max token length      = 256
+0.28.785.808 I load_tensors: loading model tensors, this can take a while... (load_mode = none)
+0.28.787.377 I load_tensors: offloading output layer to GPU
+0.28.787.378 I load_tensors: offloading 48 repeating layers to GPU
+0.28.787.378 I load_tensors: offloaded 50/50 layers to GPU
+0.28.787.379 I load_tensors:        ROCm0 model buffer size =  2647.04 MiB
+0.29.003.884 I llama_init_from_model: enabling flash_attn since it is required for SPLIT_MODE_TENSOR
+0.29.003.898 I llama_context: constructing llama_context
+0.29.003.905 I llama_context: n_seq_max             = 1
+0.29.003.907 I llama_context: n_ctx                 = 131072
+0.29.003.908 I llama_context: n_ctx_seq             = 131072
+0.29.003.908 I llama_context: n_batch               = 4096
+0.29.003.908 I llama_context: n_ubatch              = 512
+0.29.003.908 I llama_context: causal_attn           = 1
+0.29.003.909 I llama_context: flash_attn            = enabled
+0.29.003.909 I llama_context: kv_unified            = false
+0.29.003.912 I llama_context: freq_base             = 10000000.0
+0.29.003.913 I llama_context: freq_scale            = 1
+0.29.003.913 I llama_context: n_rs_seq              = 0
+0.29.003.913 I llama_context: n_rs_batch            = 1
+0.29.003.914 I llama_context: n_outputs_max         = 1
+0.29.003.914 I llama_context: n_outputs_max_per_seq = 1
+0.29.003.914 I llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.29.004.145 I llama_context:  ROCm_Host  output buffer size =     0.95 MiB
+0.29.004.147 I create_memory: MTP context uses a hybrid-idx memory (sparse draft attention)
+0.29.004.739 I llama_kv_cache:      ROCm0 KV buffer size =   256.00 MiB
+0.29.005.656 I llama_kv_cache: size =  256.00 MiB (131072 cells,   1 layers,  1/1 seqs), K (f16):  128.00 MiB, V (f16):  128.00 MiB
+0.29.005.657 I llama_kv_cache: n_rot_k = 0, n_embd_head_k_all = 256
+0.29.005.658 I llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 256
+0.29.005.665 I llama_memory_recurrent: size =    0.00 MiB (     1 cells,  48 layers,  1 seqs  0 rs_seq), R (f32):    0.00 MiB, S (f32):    0.00 MiB, P (f32):    0.00 MiB
+0.29.005.667 I operator(): creating indexer KV cache, size = 131072 cells
+0.29.006.259 I llama_kv_cache:      ROCm0 KV buffer size =    32.00 MiB
+0.29.006.439 I llama_kv_cache: size =   32.00 MiB (131072 cells,   1 layers,  1/1 seqs), K (f16):   32.00 MiB, V (f16):    0.00 MiB
+0.29.006.440 I llama_kv_cache: n_rot_k = 0, n_embd_head_k_all = 128
+0.29.006.440 I llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 0
+0.29.006.725 I pool_create: derived indexer cache (pool) = 1 layers x 128 dims x 1 streams, ENABLED
+0.29.006.728 I sched_reserve: reserving ...
+0.29.007.810 I resolve_fused_ops: resolving derived kq mask support:
+0.29.007.954 I resolve_fused_ops: derived kq mask flash attention enabled
+0.29.007.955 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+0.29.008.006 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+0.29.008.045 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+0.29.009.030 W ggml_cuda_slab_narrow2_floor_locked: device 0: narrow-2 (MTP draft compute) pinned at [20.88, 21.38] GiB (0.50 GiB); the arena now tops out at 15.62 GiB
+0.29.009.033 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 512.00 MiB from the slab work region (boundary 1792.00 MiB) on device 0
+0.29.011.979 I sched_reserve:      ROCm0 compute buffer size =   512.00 MiB
+0.29.011.980 I sched_reserve:  ROCm_Host compute buffer size =    27.15 MiB
+0.29.011.985 I sched_reserve: graph (pp bs=512, tg bs=1): nodes = 159 / 112, splits = 2 / 2, input objects = 5 / 5, input tensors = 13 / 9
+0.29.011.986 I sched_reserve: reserve took 5.26 ms, sched copies = 1
+0.29.013.704 I cmn  common_conte: the context supports bounded partial sequence removal
+0.29.013.705 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'false'
+0.29.013.719 I spec common_specu: adding speculative implementation 'draft-mtp'
+0.29.013.721 I spec common_specu: - n_max=7, n_min=0, p_min=0.00, n_embd=10240, backend_sampling=1
+0.29.013.722 I spec common_specu: - gpu_layers=-1, cache_k=f16, cache_v=f16, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+0.29.013.748 W set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU
+0.29.013.749 W spec common_specu: backend offload failed for seq_id=0; using CPU sampler
+0.29.013.756 I spec common_specu: adaptive draft depth enabled (draft-mtp-adaptive)
+0.29.014.999 I sched_reserve: reserving ...
+0.29.016.137 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 512.00 MiB from the slab work region (boundary 1792.00 MiB) on device 0
+0.29.019.188 I sched_reserve:      ROCm0 compute buffer size =   512.00 MiB
+0.29.019.189 I sched_reserve:  ROCm_Host compute buffer size =    27.15 MiB
+0.29.019.191 I sched_reserve: graph (pp bs=512, tg bs=1): nodes = 159 / 112, splits = 2 / 2, input objects = 5 / 5, input tensors = 13 / 9
+0.29.019.191 I sched_reserve: reserve took 4.19 ms, sched copies = 1
+0.29.035.926 I srv    load_model: speculative decoding context initialized
+0.29.035.930 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 131072
+0.29.035.941 I srv    load_model: prompt cache is enabled, size limit: 16384 MiB
+0.29.035.941 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.29.035.943 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.29.035.944 I srv    load_model: context checkpoints enabled, max = 64, min spacing = 4096
+0.29.035.956 I srv          init: idle slots will be saved to prompt cache upon starting a new task
+0.29.039.130 I srv          init: init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.29.039.519 I srv          init: init: chat template, thinking = 1
+0.29.039.526 I srv          init: preserve_reasoning kwarg: true
+0.29.039.548 I srv  llama_server: model loaded
+0.29.039.553 I srv  llama_server: listening on http://0.0.0.0:8033
+0.29.039.607 I srv  update_slots: all slots are idle
+0.35.879.543 I srv  server_strea: conv_id= (empty=1)
+0.35.892.317 I slot get_availabl: id  0 | task -1 |  - skipping, slot is empty
+0.35.892.319 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.35.892.320 I srv  get_availabl: updating prompt cache
+0.35.892.324 I srv          load:  - looking for better prompt, base f_keep = -1.000, f_sim = 0.000
+0.35.892.327 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 16384.000 MiB, 131072 tokens, 17179869184 est)
+0.35.892.328 I srv  get_availabl: prompt cache update took 0.01 ms
+0.35.892.364 I slot launch_slot_: id  0 | task -1 | sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> ?temp-ext -> dist 
+0.35.892.371 I slot launch_slot_: id  0 | task -1 | sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 64
+	top_k = 20, top_p = 0.950, min_p = 0.001, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 1.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.35.892.374 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.35.892.390 I slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 131072, n_keep = 0, task.n_tokens = 13800
+0.35.892.395 I slot   operator(): id  0 | task 0 | cached n_tokens = 0, memory_seq_rm [0, end)
+0.35.893.114 I sched_reserve: reserving ...
+0.35.918.422 W moe_cache_evict_slab_range: evicted 6150.0 MiB of arena tables from the taken slab chunks (arena now 9577.5 MiB)
+0.35.918.426 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 2048.00 MiB from the slab work region (boundary 8064.00 MiB) on device 0
+0.35.951.025 I sched_reserve:      ROCm0 compute buffer size =  2048.00 MiB
+0.35.951.028 I sched_reserve:  ROCm_Host compute buffer size =   202.64 MiB
+0.35.951.031 I sched_reserve: graph (pp bs=4096, tg bs=1): nodes = 8301 / 6066, splits = 147 / 50, input objects = 6 / 6, input tensors = 18 / 14
+0.35.951.032 I sched_reserve: reserve took 57.91 ms, sched copies = 1
+0.36.001.351 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 2048.00 MiB from the slab work region (boundary 8064.00 MiB) on device 0
+0.36.340.569 I ggml_cuda_op_gated_delta_net_impl: whole-batch chunked GDN prefill n=4096 K=8 n_seqs=1 (> 16: no snapshot tail needed)
+0.39.724.486 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 1, n_diff = 0
+0.39.728.124 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 2, n_diff = 0
+0.39.738.443 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 3, n_diff = 0
+0.39.748.437 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 4, n_diff = 0
+0.39.756.235 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 5, n_diff = 0
+0.39.763.999 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 6, n_diff = 0
+0.39.771.971 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 7, n_diff = 0
+0.39.779.986 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4096, progress = 0.30, t =   3.60 s / 1137.95 tokens per second
+0.39.779.987 I slot   operator(): id  0 | task 0 | cached n_tokens = 4096, memory_seq_rm [4096, end)
+0.39.785.096 I sched_graph_realloc: graph reallocation: nodes = 9084, splits = 147, n_same = 1, n_diff = 0
+0.39.786.274 I ggml_gallocr_reserve_n_impl: reallocating ROCm_Host buffer from size 200.58 MiB to 200.65 MiB
+0.42.898.981 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 8, n_diff = 0
+0.42.903.356 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 9, n_diff = 0
+0.42.915.398 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 10, n_diff = 0
+0.42.926.995 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 11, n_diff = 0
+0.42.937.633 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 12, n_diff = 0
+0.42.946.459 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 13, n_diff = 0
+0.42.955.231 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 14, n_diff = 0
+0.42.964.150 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 15, n_diff = 0
+0.42.973.214 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   8192, progress = 0.59, t =   6.84 s / 1197.21 tokens per second
+0.42.973.216 I slot   operator(): id  0 | task 0 | cached n_tokens = 8192, memory_seq_rm [8192, end)
+0.45.389.016 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 16, n_diff = 0
+0.45.393.422 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 17, n_diff = 0
+0.45.404.934 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 18, n_diff = 0
+0.45.414.111 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   9704, progress = 0.70, t =   9.46 s / 1026.33 tokens per second
+0.45.414.113 I slot   operator(): id  0 | task 0 | cached n_tokens = 9704, memory_seq_rm [9704, end)
+0.45.441.002 I slot create_check: id  0 | task 0 | created context checkpoint 1 of 64 (pos_min = 9703, pos_max = 9703, n_tokens = 9704, size = 112.571 MiB)
+0.48.530.633 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 19, n_diff = 0
+0.48.534.743 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 20, n_diff = 0
+0.48.548.250 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 21, n_diff = 0
+0.48.561.238 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 22, n_diff = 0
+0.48.571.684 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 23, n_diff = 0
+0.48.581.939 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 24, n_diff = 0
+0.48.592.199 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 25, n_diff = 0
+0.48.602.820 I sched_graph_realloc: graph reallocation: nodes = 182, splits = 2, n_same = 26, n_diff = 0
+0.48.613.361 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  13796, progress = 1.00, t =  12.47 s / 1106.06 tokens per second
+0.48.613.363 I slot   operator(): id  0 | task 0 | cached n_tokens = 13796, memory_seq_rm [13796, end)
+0.48.614.393 I slot init_sampler: id  0 | task 0 | init sampler, took 1.00 ms, tokens: text = 13800, total = 13800
+0.48.645.062 I slot create_check: id  0 | task 0 | created context checkpoint 2 of 64 (pos_min = 13795, pos_max = 13795, n_tokens = 13796, size = 112.571 MiB)
+0.48.659.469 I ggml_backend_cuda_buffer_type_alloc_buffer_usage: compute buffer 1792.00 MiB from the slab work region (boundary 1792.00 MiB) on device 0
+0.48.674.392 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.48.681.670 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_up_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.48.688.999 I apply_heat_seed_locked: layer=31 role=blk.31.ffn_gate_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.48.702.839 I apply_heat_seed_locked: layer=32 role=blk.32.ffn_down_exps.weight heat-seeded 196/196 slots from the persisted map (512 experts)
+0.48.715.904 W moe_cache_rearm: re-armed 51 stood-down expert-cache tables after a compute-buffer drop (arena now 15666.6 MiB)
+0.48.915.474 I sched_graph_realloc: graph reallocation: nodes = 131, splits = 2, n_same = 26, n_diff = 1
+0.48.959.152 I sched_graph_realloc: graph reallocation: nodes = 6562, splits = 50, n_same = 1, n_diff = 1
+0.49.103.445 I sched_graph_realloc: graph reallocation: nodes = 171, splits = 2, n_same = 27, n_diff = 1
+0.49.454.910 I sched_graph_realloc: graph reallocation: nodes = 6562, splits = 50, n_same = 2, n_diff = 1
+0.49.548.062 I sched_graph_realloc: graph reallocation: nodes = 171, splits = 2, n_same = 28, n_diff = 1
+0.49.548.681 I sched_graph_realloc: graph reallocation: nodes = 131, splits = 2, n_same = 29, n_diff = 1
+0.50.130.724 I spec adaptive_fee: adaptive draft depth seq 0: 4 -> 5 (n_draft=4, n_accepted=4, n_bucket=61)
+0.50.173.164 I sched_graph_realloc: graph reallocation: nodes = 6562, splits = 50, n_same = 3, n_diff = 1
+0.50.235.926 I sched_graph_realloc: graph reallocation: nodes = 171, splits = 2, n_same = 30, n_diff = 1
+0.50.863.530 I spec adaptive_fee: adaptive draft depth seq 0: 5 -> 6 (n_draft=5, n_accepted=5, n_bucket=61)
+0.50.909.766 I sched_graph_realloc: graph reallocation: nodes = 6562, splits = 50, n_same = 4, n_diff = 1
+0.50.973.879 I sched_graph_realloc: graph reallocation: nodes = 171, splits = 2, n_same = 31, n_diff = 1
+0.51.569.943 I slot print_timing: id  0 | task 0 | prompt eval time =   13022.97 ms / 13800 tokens (    0.94 ms per token,  1059.67 tokens per second)
+0.51.569.945 I slot print_timing: id  0 | task 0 |        eval time =    2654.56 ms /   200 tokens (   13.34 ms per token,    74.97 tokens per second)
+0.51.569.946 I slot print_timing: id  0 | task 0 |       total time =   15677.53 ms / 14000 tokens
+0.51.569.948 I slot print_timing: id  0 | task 0 |    graphs reused =         29
+0.51.569.948 I slot print_timing: id  0 | task 0 |   graph reallocs =          4    /     1        (same size) / (changed size)
+0.51.569.951 I slot print_timing: id  0 | task 0 | draft acceptance = 1.00000 (  165 accepted /   165 generated), mean len =  5.85
+0.51.569.951 I slot print_timing: id  0 | task 0 |      acc per pos = (1.000, 1.000, 1.000, 1.000, 0.588, 0.265, 0.000)
+0.51.569.966 I spec common_specu: statistics draft-mtp-adaptive: #calls(b,g,a) =    1     34     34, #gen drafts =     34, #acc drafts =    34, #gen tokens =    165, #acc tokens =   165, #mean acc len = 5.85, #acc rate/pos = (1.000, 1.000, 1.000, 1.000, 0.588, 0.265), dur(b,g,a) = 0.013, 262.384, 0.036 ms
+0.51.569.972 I slot print_timing: id  0 | task 0 |   MoE arena = 0.9057 (264632 hit / 292200 reaches this turn), arena 15666.6 MiB
+0.51.570.063 I slot      release: id  0 | task 0 | stop processing: n_tokens = 13999, truncated = 0
+0.51.570.069 I srv  update_slots: all slots are idle
+1.08.166.880 I srv    operator(): operator(): cleaning up before exit...
+1.08.167.121 I common_memory_breakdown_print: | memory breakdown [MiB]             | total   free     self   model   context   compute    unaccounted |
+1.08.167.122 I common_memory_breakdown_print: |   - ROCm0 (AI PRO R9700 (gfx1201)) | 32624 = 3548 + (12417 =  3664 +    2736 +    6016) +       16658 |
+1.08.167.122 I common_memory_breakdown_print: |   - Host                           |                 68652 = 68651 +       0 +       0                |
+1.11.157.613 I moe_cache_report: MoE expert cache: h=0.9057 (264632/292200 reaches), fills=37146 evictions=8753, tables=144, slots=28224, arena=15666.6 MiB total (budget auto MiB/device)
+1.11.157.615 I moe_cache_report: takeover=5037 decline_all=0 get_ok=1305 cold=uva cold_reaches=10086
+1.11.157.616 I moe_cache_report: cold admission=touch, admission-rejected (served cold)=10218
+1.11.157.616 I moe_cache_report: device 0: tables=144 slots/table(sum)=28224 arena=15666.6 MiB (budget auto MiB/device)
+1.11.179.127 I heat_map_save_locked: saved 144 heat entries to /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.moe-heatmap
+1.11.179.167 I moe_cache_report: heat (R2): total=823359035144, nonzero=73080/73728 experts over 144 tables
+1.11.179.168 I moe_cache_report: heat top: layer=46 role=blk.46.ffn_gate_exps.weight expert=25 count=564266829
+1.11.179.169 I moe_cache_report: heat top: layer=46 role=blk.46.ffn_up_exps.weight expert=25 count=564266829
+1.11.179.169 I moe_cache_report: heat top: layer=46 role=blk.46.ffn_down_exps.weight expert=25 count=564266829
+1.11.179.169 I moe_cache_report: heat top: layer=47 role=blk.47.ffn_down_exps.weight expert=398 count=545318006
+1.11.179.169 I moe_cache_report: heat top: layer=47 role=blk.47.ffn_gate_exps.weight expert=398 count=544212086
+1.11.179.170 I moe_cache_report: VRAM budget: requested=auto MiB/device, free-clamped=1, arena alloc failures=0 (fail-soft)
+1.11.179.173 I moe_cache_report: expert access: hits=264632 fills=17350 colds=10218 (hit=90.57% fill=5.94% cold=3.50%)
+1.11.179.175 I moe_cache_report: expert H2D traffic: fills=9935.3 MiB cold-reads=5608.9 MiB total=15544.2 MiB over ~34 tokens = 457.18 MiB/token
+1.11.179.176 I moe_cache_report: expert traffic per token: 457.2 MiB/token = 468154 KiB/token (fills 299227, cold 168926)

@@ -1,4 +1,4 @@
-From 2040b108c494789b32ff9b16844f8288bf6d9a7e Mon Sep 17 00:00:00 2001
+From bbdc214d5232353bc7bdb627475da9084d9c3a2f Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -46,10 +46,10 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  ggml/src/ggml-cuda/cpy-batch.cu          |  108 +
  ggml/src/ggml-cuda/cpy-batch.cuh         |    9 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h       |   87 +
- ggml/src/ggml-cuda/ggml-cuda.cu          | 2493 +++++++++++-
+ ggml/src/ggml-cuda/ggml-cuda.cu          | 2493 ++++++++++-
  ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu   | 4752 ++++++++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu   | 4766 ++++++++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h    |  301 ++
  ggml/src/ggml-cuda/norm.cu               |   35 +
  ggml/src/ggml-cuda/norm.cuh              |    1 +
@@ -84,7 +84,7 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  src/llama.cpp                            |   16 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   65 +-
- 59 files changed, 13046 insertions(+), 381 deletions(-)
+ 59 files changed, 13060 insertions(+), 381 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -8757,10 +8757,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..c60d26fcc
+index 000000000..23e97d162
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4752 @@
+@@ -0,0 +1,4766 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -10264,6 +10264,25 @@ index 000000000..c60d26fcc
 +
 +// wip/moe-expert-cache prefill seed (MOE_EXPERT_CACHE_PREFILL_SEED=1): one-shot bulk admission of the
 +// experts the prefill routing touched most, applied at arena sizing (after the arena/policy state exist).
++// wip/first-prefill-latency: the arena is sized against the full slab region, but a wide prefill reclaims
++// the band `[narrow_floor, narrow_floor + ring + wide)`.  A table whose arena starts inside that band is
++// the coldest (heat-ordered last) and must NOT be pre-seeded -- the seed would be thrown away on the very
++// next prefill.  Leave it empty; it fills lazily during decode.  Returns true when seeding is allowed.
++static bool heat_seed_above_floor(const table_t & t) {
++    if (t.device < 0 || t.arena == nullptr) {
++        return true;
++    }
++    const size_t floor = ggml_cuda_slab_seed_floor(t.device);
++    if (floor == 0) {
++        return true;   // layout not established (non-slab path): seed as before
++    }
++    const char * base = (const char *) ggml_cuda_slab_work_base(t.device);
++    if (base == nullptr) {
++        return true;
++    }
++    return (size_t) ((const char *) t.arena - base) >= floor;
++}
++
 +// `t.prefill_count` was accumulated in `moe_cache_update_host`'s prefill branch; here it is ranked
 +// (count desc, expert id asc), the top `min(slots, cap)` are placed in slots 0.. and copied from the
 +// pinned host master - the same bytes a decode fill would fetch, just front-loaded.  The host mirrors are
@@ -10272,7 +10291,7 @@ index 000000000..c60d26fcc
 +void apply_prefill_seed_locked(table_t & t) {
 +    const bool from_tally = g_prefill_seed;
 +    if (!g_prefill_seed || t.identity || t.slots <= 0 || t.host == nullptr ||
-+        !t.expert_slot.empty()) {
++        !t.expert_slot.empty() || !heat_seed_above_floor(t)) {
 +        return;
 +    }
 +    if (from_tally && (int) t.prefill_count.size() != t.n_experts) {
@@ -10361,7 +10380,8 @@ index 000000000..c60d26fcc
 +// MOE_EXPERT_CACHE_PREFILL_SEED.  Call it BEFORE `apply_prefill_seed_locked` so the persisted prior
 +// wins the (empty-arena) race for slots 0...
 +void apply_heat_seed_locked(table_t & t) {
-+    if (!g_heat_on || t.identity || t.slots <= 0 || t.host == nullptr || !t.expert_slot.empty()) {
++    if (!g_heat_on || t.identity || t.slots <= 0 || t.host == nullptr || !t.expert_slot.empty() ||
++        !heat_seed_above_floor(t)) {
 +        return;
 +    }
 +    if ((int) t.heat.size() != t.n_experts || t.n_experts <= 0) {
@@ -11062,7 +11082,7 @@ index 000000000..c60d26fcc
 +    // because the arena is not read until a later token.  A partial copy rolls the table back to the
 +    // normal remap path.
 +    t.identity = false;
-+    if (slots == t.n_experts && t.host != nullptr && t.expert_bytes > 0) {
++    if (slots == t.n_experts && t.host != nullptr && t.expert_bytes > 0 && heat_seed_above_floor(t)) {
 +        bool ok = true;
 +        const int64_t rows = (t.split_axis == 0 && t.host_pitch > 0 && t.host_bytes > 0)
 +                                 ? (int64_t) (t.host_bytes / t.host_pitch) : 0;
@@ -11175,12 +11195,6 @@ index 000000000..c60d26fcc
 +        return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
 +    }
 +    g_sized = true;
-+    // wip/first-prefill-latency: realise the wide work reservation now that the narrow floor + ring are
-+    // known, BEFORE the budget/arena sizing reads the slab's arena capacity (the boundary must already
-+    // include the wide region).
-+    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
-+        ggml_cuda_slab_realize_wide(d);
-+    }
 +    // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
 +    // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
 +    // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash

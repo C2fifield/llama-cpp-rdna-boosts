@@ -1,4 +1,4 @@
-From 98f16eeb370623ccffae8f3067b50691bb155649 Mon Sep 17 00:00:00 2001
+From 7239467ed2d3ab8808acc9a0679e7901048f0a9f Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -61,7 +61,7 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  ggml/src/ggml-cuda/ggml-cuda-arena.cuh        |   11 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  238 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cuh   |   26 +
- ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1252 +++++
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1224 +++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2312 ++++++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   34 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |   15 +
@@ -130,7 +130,7 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 19823 insertions(+), 4900 deletions(-)
+ 99 files changed, 19795 insertions(+), 4900 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -4588,10 +4588,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..366095226
+index 000000000..9dec57385
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1252 @@
+@@ -0,0 +1,1224 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -4724,11 +4724,11 @@ index 000000000..366095226
 +    // (it evicts the COLDEST tables, exactly like a prefill grow).  When the wide view is dropped the
 +    // boundary shrinks back to `narrow_floor` and the ring + wide regions return to the arena.
 +    size_t                   narrow_floor = 0;  // the fixed, always-resident narrow size (0 = not established)
-+    // wip/first-prefill-latency: a requested wide (prefill) reservation.  Stored until the narrow floor is
-+    // established, then realised as `wide_floor` (above the ring) so the warmup/priming sizing places the
-+    // arena above it and the reservation survives the later boundary shrinks.
++    // wip/first-prefill-latency: the wide (prefill) compute size, recorded by the context.  The arena is
++    // sized against the FULL region, but the seed is capped at `narrow_floor + ring + wide_reserve_bytes`
++    // -- the band a wide prefill immediately reclaims -- so nothing is pre-seeded only to be evicted; the
++    // hole fills lazily during decode.  See `ggml_cuda_slab_seed_floor`.
 +    size_t                   wide_reserve_bytes = 0;
-+    size_t                   wide_floor   = 0;   // = narrow_floor + ring + up(wide_reserve_bytes), once known
 +    // wip/moe-verify-fusions (narrow-2): a SECOND static narrow view -- the MTP draft context's compute
 +    // buffer -- is pinned at the TOP of the reserved VA: `[narrow2_off, size)`.  With MTP there are TWO
 +    // live compute buffers (the target's verify view and the draft context's), so without this they both
@@ -4856,51 +4856,16 @@ index 000000000..366095226
 +        return;
 +    }
 +    s.narrow_floor = nf;
-+    size_t wide_floor = 0;
-+    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
-+    if (s.wide_reserve_bytes > 0) {
-+        s.wide_floor = wide_floor;
-+    }
++    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, nullptr);
 +    s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
 +    s.ring_used   = 0;
 +}
 +
-+// wip/first-prefill-latency: reserve the wide (prefill) work region above the narrow floor + ring, so a
-+// later load-time arena is placed ABOVE the region the first wide prefill will use and cannot be evicted
-+// by it.  `set_narrow_floor` sets an absolute floor; this RAISES the work BOUNDARY by `bytes` without
-+// moving the narrow floor, so the ring and the wide view keep their layout offsets (single source of
-+// truth: `ggml_cuda_slab_ring_layout`) and the arena starts at `wide_off + bytes`.  The boundary is a
-+// persistent floor (a shrink releases work back to it, never below), so subsequent wide views reuse the
-+// reserved region instead of reclaiming arena.  Honored only before the ring is in use (its VA must not
-+// move).  No-op if the reservation does not fit in the mapped slab.
-+// Realise the pending wide reservation once the narrow floor + ring are known.  Caller holds
-+// `g_slab_mutex`.  Layout offsets (ring, wide) come from the shared `ggml_cuda_slab_ring_layout`, so the
-+// setup phase and the real work-allocation path can never disagree.  Idempotent.
-+static void ggml_cuda_slab_realize_wide_locked(ggml_cuda_slab & s) {
-+    if (!s.inited || s.wide_reserve_bytes == 0 || s.narrow_floor == 0) {
-+        return;
-+    }
-+    size_t wide_floor = 0;
-+    s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
-+    if (wide_floor == s.wide_floor && s.boundary >= wide_floor) {
-+        return;   // already realised
-+    }
-+    s.wide_floor = wide_floor;
-+    if (s.boundary < wide_floor) {
-+        s.boundary = wide_floor;
-+    }
-+    GGML_LOG_WARN("%s: device %d: reserved a %.2f GiB wide work region (narrow_floor %.2f + ring %.2f); "
-+                  "the arena now starts at %.2f GiB\n", __func__, s.device,
-+                  (double) ggml_cuda_slab_up(s.wide_reserve_bytes, s.chunk) / (1ull << 30),
-+                  (double) s.narrow_floor / (1ull << 30), (double) s.ring_region / (1ull << 30),
-+                  (double) s.boundary / (1ull << 30));
-+}
-+
-+void ggml_cuda_slab_realize_wide(int device) {
-+    std::lock_guard<std::mutex> lock(g_slab_mutex);
-+    ggml_cuda_slab_realize_wide_locked(g_slabs[device]);
-+}
-+
++// wip/first-prefill-latency: record the wide (prefill) compute size.  The arena is sized against the FULL
++// region (the boundary is NOT raised), but this lets the seed stop at `narrow_floor + ring + wide` -- the
++// band a wide prefill immediately reclaims -- so the seeded experts are never the ones about to be
++// evicted.  The band's tables are left unseeded and fill lazily during decode.  Single source of truth
++// for the ring offset: `ggml_cuda_slab_ring_layout`.
 +void ggml_cuda_slab_reserve_wide(int device, size_t bytes) {
 +    std::lock_guard<std::mutex> lock(g_slab_mutex);
 +    ggml_cuda_slab & s = g_slabs[device];
@@ -4910,7 +4875,21 @@ index 000000000..366095226
 +    if (bytes > s.wide_reserve_bytes) {
 +        s.wide_reserve_bytes = bytes;
 +    }
-+    ggml_cuda_slab_realize_wide_locked(s);   // no-op until the narrow floor exists
++}
++
++// The offset below which the seed must NOT run: the reclaim band `[narrow_floor, narrow_floor + ring +
++// wide)` a wide prefill takes back.  This is exactly the helper's `wide_floor` output, so the seed
++// boundary and the wide placement share one layout (single source of truth).  Tables whose arena starts
++// below it are the coldest (heat-ordered last) and are seeded only lazily.  0 when not established.
++size_t ggml_cuda_slab_seed_floor(int device) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    const ggml_cuda_slab & s = g_slabs[device];
++    if (!s.inited || s.narrow_floor == 0) {
++        return 0;
++    }
++    size_t wide_floor = 0;
++    ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
++    return wide_floor;
 +}
 +
 +static size_t ggml_cuda_slab_chunk_bytes() {
@@ -5547,11 +5526,7 @@ index 000000000..366095226
 +        // reserve; `work_needs` still floors the boundary at the wide need meanwhile.
 +        if (s.narrow_floor == 0 && need < s.boundary) {
 +            s.narrow_floor = ggml_cuda_slab_up(need, s.chunk);
-+            size_t wide_floor = 0;
-+            s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, &wide_floor);
-+            if (s.wide_reserve_bytes > 0) {
-+                s.wide_floor = wide_floor;
-+            }
++            s.ring_region = ggml_cuda_slab_ring_layout(s, s.wide_reserve_bytes, nullptr, nullptr);
 +            s.ring_slots  = ggml_backend_cuda_context::h2d_stage_slots();
 +            s.ring_used   = 0;
 +        }
@@ -5581,9 +5556,6 @@ index 000000000..366095226
 +        }
 +        const size_t contrib = ret_off + ggml_cuda_slab_up(need, s.chunk);
 +        size_t floor = s.narrow_floor;
-+        if (s.wide_floor > floor) {
-+            floor = s.wide_floor;   // wip/first-prefill-latency: the reserved wide region is a floor too
-+        }
 +        if (!s.work_needs.empty()) {
 +            const size_t mx = *s.work_needs.rbegin();
 +            if (mx > floor) {
@@ -8203,7 +8175,7 @@ index 000000000..0a4b93eeb
 +struct ggml_cuda_topk_moe_args;
 +bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, struct ggml_cuda_topk_moe_args & args);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-index 8005b57b4..d76e76b6d 100644
+index 8005b57b4..312476e89 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 @@ -77,6 +77,9 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size);
@@ -8231,7 +8203,7 @@ index 8005b57b4..d76e76b6d 100644
 +size_t ggml_cuda_slab_headroom_bytes();
 +void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
 +void   ggml_cuda_slab_reserve_wide(int device, size_t bytes);
-+void   ggml_cuda_slab_realize_wide(int device);
++size_t ggml_cuda_slab_seed_floor(int device);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
 index d4efa9436..ad7f556da 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu

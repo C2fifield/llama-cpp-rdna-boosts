@@ -1,41 +1,46 @@
 # WORKLOG - dated delivery records
 
-## 261016.009 (r74) -- the MoE arena is sized at warmup, with the ring + wide prefill region reserved first (blocks 09/10/11)
+## 261016.009 (r74) -- the MoE arena is sized at warmup and the seed stops at the prefill reclaim boundary (blocks 09/10/11)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r74` (base `097cf33d9`; canonical tip
-`d6f59a05da2f5914bbe6bbb8662fba11f6f8ff4d`, net tree `599befc66eba9ebba1ed38956e3fedd2fc32bd37`; 12
+`9450cbb89b7d04885040370f29731aa2289ae7ce`, net tree `0fe32003b4014c2adf520eccc2e2ba1647ae3511`; 12
 blocks; `validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded
-tree).  **No new block:** blocks 09/10/11 amended, split by owning block (09 = iface header + the cache
-priming sizing; 10 = the shared slab layout helper + `reserve_wide` + the CUDA iface; 11 = the cpu/rpc
-iface initializers + the context hook).  Default on; `MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch.
+tree).  **No new block:** blocks 09/10/11 amended vs r73, split by owning block (09 = iface header + the
+cache priming sizing + the seed-floor skip; 10 = the shared slab layout helper + `reserve_wide` (records
+the wide size) + `seed_floor` + the CUDA iface; 11 = the cpu/rpc iface initializers + the context hook).
+Default on; `MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch.
 
 **The problem.**  The warmup is a single pass, so every host-expert table hits `moe_cache_table`'s
 `!t.primed` early return and **no table is ever re-sighted in a decode-band pass** -- `alloc_all_locked`
 was therefore never called at warmup and the arena was deferred to the first user decode.  The first
 generated token then paid the whole arena allocation + heat/prefill seed (measured 446 ms of H2D on a
-5.3 GiB arena, scaling with the arena), and the **first wide prefill evicted 5810 MiB** of the
-just-seeded arena (the boundary was still at the narrow floor).  Sizing on the priming pass alone
-over-committed: with the empty context the slab's `extend_all` mapped the reserve the wide
-prefill/transients still needed (arena 15107 MiB, only 4 GiB free) and a later `hipGraphInstantiate`
-OOM'd.
+5.3 GiB arena, scaling with the arena).  Sizing on the priming pass alone over-committed: with the empty
+context the slab's `extend_all` mapped the reserve the wide prefill/transients still needed (arena
+15107 MiB, only 4 GiB free) and a later `hipGraphInstantiate` OOM'd.
 
 **The fix.**  (1) The priming branch also calls `alloc_all_locked` (completeness-gated, so it still
 cannot latch on a partial set); (2) at the priming sizing `slab_extend_all` is skipped, so the arena is
-not sized against the over-mapped reserve; (3) the context, right after `sched_reserve`, reserves the
-**ring + wide prefill** region in the slab before the cache sizes (`ggml_cuda_slab_reserve_wide`, the
-widest compute size from `backend_buf_exp_size`), so the load-time arena begins **above** the region the
-first wide prefill will use.  The ring/wide layout comes from ONE shared helper,
-`ggml_cuda_slab_ring_layout` (also used by the real wide placement in `work_alloc`), so the reservation
-and the allocation cannot disagree; the reservation is a persistent `wide_floor`.
+not sized against the over-mapped reserve; (3) the context records the wide (prefill) compute size
+(`ggml_cuda_slab_reserve_wide`, from `backend_buf_exp_size`) and the cache **stops seeding at
+`narrow_floor + ring + wide`** -- the band a wide prefill immediately reclaims.  The arena is therefore
+sized to the FULL region (the boundary is not raised), but the ~6 GiB band is never pre-seeded: its
+tables are the coldest (heat-ordered last), they are left empty, the first prefill reclaims them cheaply,
+and they fill lazily during decode.  The seed boundary is the shared `ggml_cuda_slab_ring_layout`
+helper's `wide_floor` output (also used by the real wide placement in `work_alloc`), so the seed
+stop-point and the placement cannot disagree.  (An earlier r74 draft made the reservation a *persistent
+boundary floor* instead; that shrank the arena budget to 9.75 GiB permanently and was reverted before
+release -- see `archive/work/first-prefill-latency/`.)
 
-**Results** (GSQ-IQ3_XXS, `-ncmoe 48 -sm tensor`, 13.8K prompt, adaptive MTP): arena **5355 MiB at load**
-(was deferred), first-prefill eviction **5810 -> 84 MiB**, decode **29.2 -> 37.1 t/s** (1 GPU),
-**84.4 t/s** (2 GPU), **100 % resident** (3 GPU), no OOM.  Warmup sizing reaches 100 % table
-completeness in ~0.2 s at load.
+**Results** (maintainer's exact GSQ command, 1 GPU, 13.8K prompt, adaptive MTP): arena **15666.6 MiB at
+load** (the full 15.62 GiB region, matching the pre-session sizing), **97/144** tables seeded (the ~47 in
+the reclaim band skipped), first prefill evicts **6150 MiB** (the band, unseeded), `moe_cache_rearm`
+rebuilds 51 tables and restores the arena to **15666.6 MiB**, decode **75.0 t/s**.  Warmup sizing reaches
+100 % table completeness in ~0.2 s at load.  (The 2/3-GPU arms must be re-measured for the corrected
+design -- see the handoff.)
 
 **Records.** `archive/work/first-prefill-latency/` (measurement, the `keep-survivors` prototype -- inert
-in this config -- and the failure logs).  The 3-GPU decode deficit this surfaced is revived separately as
-`wip/three-gpu-performance/` (TODO #51).
+in this config -- the seed-floor log and the failure logs).  The 3-GPU decode deficit this surfaced is
+revived separately as `wip/three-gpu-performance/` (TODO #51).
 
 ## 261016.008 (r73) -- MoE heat map: one unified sidecar name per model (block 09)
 
