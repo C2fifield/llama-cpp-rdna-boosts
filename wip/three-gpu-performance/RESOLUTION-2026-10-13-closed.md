@@ -1,5 +1,10 @@
 # `mtp-3gpu-decode` — CLOSED (r55, 2026-10-13): no code change, the symptom is gone on r54
 
+> **SUPERSEDED (2026-10-16).**  This closure is kept as history.  The campaign was **revived** as
+> [`wip/three-gpu-performance/`](README.md) after a 2026-10-16 measurement found the opposite (3-GPU
+> decode slower than 2-GPU, including at 100 % residency).  The closure's A/B below is not comparable to
+> that arm (different model and prompt) and must be re-run on the current tree before it is trusted.
+
 ## Result
 
 Step 0 (a fresh 3-GPU vs 2-GPU A/B on the current tree) was run first, exactly as the campaign required.

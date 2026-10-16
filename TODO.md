@@ -262,6 +262,19 @@ GPU queues when the kernel migrates a GPU-mapped host page); the AR timeout itse
 correctness fix.  **Working home:
 `wip/host-expert-master-drop/`.**  Gates and the reader enumeration are in that README.
 
+### 51. 3-GPU decode is slower than 2-GPU (MTP and plain, partial and fully resident) — PERFORMANCE
+
+**Reopened 2026-10-16; measured.**  Formerly closed at r55 (a fresh A/B then found 3-GPU MTP 74.3 vs
+2-GPU 65.0 t/s).  A 2026-10-16 measurement on r73 found the opposite: 2-GPU **84.4** vs 3-GPU **56.9**
+t/s (13.8K prompt, GSQ-IQ3_XXS, `-ncmoe 48 -sm tensor`, adaptive MTP), and it is present at **100 %
+arena residency** (so it is not an arena-sizing artifact).  3-GPU prefill is the fastest (1258 t/s).
+Broader than MTP (the fresh arm is MTP; the matrix must cover plain and fully-resident too).
+
+**Working home: `wip/three-gpu-performance/`** (revived from `archive/work/mtp-3gpu-decode/`; the r55
+closure record is kept there as `RESOLUTION-2026-10-13-closed.md`).  Step 0: re-run the r55 harness on
+r73, then the full `{2,3}` x `{plain,MTP}` x `{partial,fully-resident}` x `{tensor,layer}` grid, then the
+all-reduce / identity-path / tensor-split-gather profile.
+
 ### 50. The cache-aware fusion guard is global while the slab's eviction is per-table (code `OPEN 2`)
 
 **RESOLVED (2026-10-10), DELIVERED in `v16-a55e952b8-r40`.**  The guard is now **per-table**

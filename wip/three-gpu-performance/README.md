@@ -1,25 +1,58 @@
-# `mtp-3gpu-decode` — 3-GPU MTP decode is slower than plain decode (TODO #51)
+# `three-gpu-performance` — 3-GPU decode is slower than 2-GPU (MTP and plain, partial and fully resident)
 
-**Status: OPEN (seeded 2026-10-11).** Not part of the delivery; nothing here may be applied to the
-fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`). This is the
-same item as **TODO #51**. It has no predecessor campaign of its own: it was *found and parked* during
-`archive/work/slab-ring-region/` (now archived) and `TODO.md` names the **archive** directory
-`archive/work/moe-verify-fusions/` as its "working home" — that directory is a record, not a live
-campaign. **This directory is the campaign.**
+**Status: REVIVED (2026-10-16) from `archive/work/mtp-3gpu-decode/` (the r55 closure).**  This is the same
+item as the former **TODO #51**, now scoped wider: it is **not MTP-only** and it reproduces in the
+**fully-resident** case.  Not part of the delivery; nothing here may be applied to the fork without the
+maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
 
-> **Maintainer note (2026-10-11).**  3-GPU MTP is **still a bit slower than plain decode, but no longer
-> 2.6x slower.**  So the r38 table in §0 is a **historical anchor**: the first task is to re-measure the
-> current gap on r48 and re-scope from there.  Do not treat the 2.6x figure as the present symptom.
+> **Revival note (2026-10-16).**  The campaign was closed at r55 with no code change because a fresh A/B
+> then found 3-GPU MTP **faster** than 2-GPU (74.3 vs 65.0 t/s, 32K prompt, IQ4_NL).  A 2026-10-16
+> measurement on r73 with the GSQ model and a 13.8K prompt found the **opposite** (3-GPU 56.9 vs 2-GPU
+> 84.4 t/s) — and present at 100 % arena residency.  Either the r55 arm is not comparable (model/prompt/
+> length) or a regression landed between r54 and r73; **step 0 is to re-run the r55 harness on r73.**  The
+> closure record is kept as [`RESOLUTION-2026-10-13-closed.md`](RESOLUTION-2026-10-13-closed.md).
 
-> **Cold start.** Read this file in full, then `AGENTS.md` ("Report findings before shipping", "Pushing
-> policy", "WIP and promotion rules", "Default-on policy", "Critical facts"), the `GGML_CUDA_ALLREDUCE` /
-> `GGML_CUDA_AR_*` rows in `ENVIRONMENT.md` §6, and the two predecessor records
-> [`archive/work/slab-ring-region/HANDOVER.md`](../../archive/work/slab-ring-region/HANDOVER.md) §4.3.1
-> and [`archive/work/allreduce-small-msg-latency/README.md`](../../archive/work/allreduce-small-msg-latency/README.md)
-> (whose "Not measured: More than 2 GPUs" **is** this item). Report findings to the maintainer before any
-> delivery change and wait.
+## 0. Current symptom and findings (2026-10-16, r73)
 
-## 0. The symptom
+Measured on this box: Qwen3.8-Flash-Next GSQ-IQ3_XXS, `-ncmoe 48 -sm tensor`, 13.8K-token prompt, 200
+generated, `--spec-type draft-mtp-adaptive --spec-draft-n-max 7`, WITH the `first-prefill-latency`
+ring+wide reservation so the arena is correctly sized (and not evicted) in every arm:
+
+| GPUs (env) | arena at load | prefill t/s | decode t/s |
+|---|---|---:|---:|
+| 1 (`HIP_VISIBLE_DEVICES=2`) | 5355 MiB (13 %) | 1065 | 37.1 |
+| 2 (`0,1`) | 23340 MiB (57 %) | 1246 | **84.4** |
+| 3 (`0,1,2`) | 40925 MiB (100 %) | **1258** | **56.9** |
+
+Two facts to build the campaign on:
+
+1. **3-GPU decode is ~33 % slower than 2-GPU** (56.9 vs 84.4) while its **prefill is the fastest** — the
+   same shape as the r38 finding.  This arm is MTP; the campaign must establish whether plain decode has
+   the same deficit.
+2. **It is present in the fully-resident scenario.**  On 3 GPUs the whole host-expert set fits
+   (100 % residency, identity fast path); on 2 it does not (57 %).  So it is **not** an arena-sizing or
+   cache-occupancy artifact — the `first-prefill-latency` work removed that confound (arena sized at load,
+   only 124-246 MiB evicted on the first prefill).  The gap is in the compute/communication path.
+
+The r55 closure found the opposite (3-GPU MTP 74.3 > 2-GPU 65.0), so the model, the prompt length, or a
+regression between r54 and r73 matters.  Re-measure before theorising.
+
+## 1. The work matrix this campaign must fill
+
+Do not chase one number.  Measure the full grid, each with the arena resident and the exact prompt hash:
+
+| axis | arms | why |
+|---|---|---|
+| device count | 2, 3 | the headline |
+| speculation | `--spec-type none`, `draft-mtp`, `draft-mtp-adaptive` | is it MTP-only or the plain forward? |
+| cache residency | partially resident, **fully resident** (`MOE_EXPERT_CACHE_MIB` large enough for 100 %) | the 3-GPU run is fully resident; the 2-GPU control is not |
+| split mode | `-sm tensor`, `-sm layer` | does the cost track the tensor split or the device count? |
+
+Only after the grid is filled does the r38/r55 discrepancy get resolved and the suspect list get ordered.
+
+## 2. Historical symptom (r38 anchor)
+
+<!-- The pre-revival §0, kept as the historical anchor. -->
 
 On 3 GPUs MTP was a **loss**, not a win, on clean r38 — and it hits the production config (`AGENTS.md`:
 servers run unpinned, 3-GPU, `HIP_VISIBLE_DEVICES=0,1,2`, hybrid all-reduce default). Measured
@@ -41,9 +74,9 @@ is **not** the H2D-ring WIP; it is a pre-existing 3-GPU property. The all-reduce
 (`GGML_CUDA_ALLREDUCE=ce` vs the hybrid default) makes no difference; `ce` is 2-device-only anyway
 (`ENVIRONMENT.md` §6). It is also orthogonal to cache residency (3-GPU logs 99.1 % residency).
 
-## 1. Re-measure on r48 FIRST — several relevant things changed after the finding
+## 3. Re-measure on r73 FIRST — several relevant things changed after the finding
 
-The table above is **r38**. The following landed between r38 and the current r48 and can all move the
+The table above is **r38**. The following landed between r38 and the current r73 and can all move the
 3-GPU MTP number, so treat the table as the historical anchor, not the current truth:
 
 - **r41 (block 12)** made the hybrid NCCL init **eager** again (the r34 lazy mid-run init was the
@@ -51,16 +84,16 @@ The table above is **r38**. The following landed between r38 and the current r48
   prefill/verify.
 - **r45/r46 (block 16, folded into block 12)** added the small-message all-reduce knobs
   `GGML_CUDA_AR_SMALL_BLOCKS` (default **4**) and `GGML_CUDA_AR_SMALL_BYTES` (default 64 KiB), plus the
-  opt-in 2-device P2P path. 3-GPU verify messages are "small" (see §3) so the new default launch already
+  opt-in 2-device P2P path. 3-GPU verify messages are "small" (see §5) so the new default launch already
   applies to this item — but it was only validated on **2 GPUs**.
 - **r39** moved the H2D staging ring into the slab; **r47/r48** changed the CE all-reduce to fail soft and
   fixed the `--load-mode none` meta event proxy. Neither is expected to matter, but the tree is not the
   tree the table was measured on.
 
-**Step 0 is therefore a fresh 3-GPU vs 2-GPU A/B on `~/llama.cpp` (r48 tree) before touching anything.**
+**Step 0 is therefore a fresh 3-GPU vs 2-GPU A/B on `~/llama.cpp` (r73 tree) before touching anything.**
 If the gap is gone or much smaller, close #51 and record why.
 
-## 2. Reproducer (field harness)
+## 4. Reproducer (field harness)
 
 The harness is preserved in the repo (the `/tmp/srr` copies are transient):
 
@@ -101,7 +134,7 @@ PROMPT=/tmp/srr/mixed30k.txt GPUS=0,1,2 ./field_nospec.sh ~/llama.cpp/build-rocm
 Read `prompt_tps` / `predicted_tps` from `/tmp/srr/<tag>.timing`; the acceptance line and the cache
 eviction tail are printed by the script. Do not run parallel/background benches.
 
-## 3. What is known about the 3-GPU all-reduce path
+## 5. What is known about the 3-GPU all-reduce path
 
 `GGML_CUDA_ALLREDUCE=hybrid` (the default) routes **small** tensors to the internal host-staged pipeline
 and large tensors to RCCL:
@@ -120,7 +153,7 @@ and large tensors to RCCL:
 - `GGML_CUDA_AR_PROFILE=1` prints per-call `min/p50/p90/p99/max` (µs) and per-device
   `phase1(entry→signal)` / `spin` percentiles at pipeline teardown. This is the first instrument to run.
 
-## 4. Suspects and the investigation plan
+## 6. Suspects and the investigation plan
 
 Work them in order; each has an A/B and a cheap first measurement.
 
@@ -147,8 +180,15 @@ Work them in order; each has an A/B and a cheap first measurement.
    found that on 2 GPUs with MTP the all-reduce is *not* the limiter (a ~2.6–2.9 µs dependent-kernel
    dispatch floor dominates). If the 3-GPU profile shows the AR is not the cost, look at the number of
    kernels/graphs per verify step on 3 devices instead.
+6. **Fully-resident identity path + tensor-split per-op traffic (NEW, 2026-10-16).**  The 2026-10-16 3-GPU
+   arm is 100 % resident (identity fast path); the 2-GPU control is 57 %.  First control the residency:
+   compare 2 vs 3 GPUs at the SAME occupancy (force it with `MOE_EXPERT_CACHE_MIB`, or pick a model whose
+   host set fits both).  Then compare `-sm tensor` vs `-sm layer` at 100 % residency — if the deficit
+   tracks the tensor split (per-op gathers / cross-device reads of the expert band) it is not the
+   all-reduce.  `GGML_CUDA_AR_PROFILE=1` plus per-op timing of the MUL_MAT_ID / verify band is the first
+   measurement.
 
-## 5. Gates and discipline
+## 7. Gates and discipline
 
 - This is a **performance** campaign: no purity contract changes. Any candidate must still pass the
   coherence gate (same-seed `llama-cli`, 2- and 3-GPU `-sm tensor`) and the adaptive-MTP gate
@@ -159,7 +199,7 @@ Work them in order; each has an A/B and a cheap first measurement.
 - If the root cause is in an all-reduce shape or the scheduler, keep any change behind an env
   kill-switch and re-validate the 2-GPU path (the shipping default) before promotion.
 
-## 6. Pointers
+## 8. Pointers
 
 - `TODO.md` #51; `WORKLOG.md` 2026-10-10 (r39, the `slab-ring-region` promotion).
 - [`archive/work/slab-ring-region/HANDOVER.md`](../../archive/work/slab-ring-region/HANDOVER.md) §4.3.1
