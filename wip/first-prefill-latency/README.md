@@ -202,3 +202,22 @@ reclaim point.
 Gotcha (found and fixed): the first version deadlocked — `reserve_wide` held `g_slab_mutex` and called a
 `realize_wide` that relocked the same non-recursive mutex.  The fix is a `_locked` inner helper shared by
 the public entry point and `reserve_wide`.
+
+## 9. Multi-GPU `-sm tensor` — works (2 and 3 GPUs)
+
+The hook is per host-expert device: the context loops `model.moe_host_expert_bytes` (the real devices
+under `-sm tensor`, not the Meta wrapper), each device reserves its own ring+wide, and the cache sizes
+each arena above it.  Same 13.8K-token request:
+
+| | 1 GPU | 2 GPUs (`0,1`) | 3 GPUs (`0,1,2`) |
+|---|---|---|---|
+| ring region (per device) | 4.12 GiB | 2.12 GiB | 1.44 GiB |
+| arena at load | 5355 MiB (13 %) | 23340 MiB (57 %) | 40925 MiB (100 %) |
+| first-prefill eviction | 84 MiB | 246 MiB | 124 MiB |
+| decode | 37.1 t/s | 84.4 t/s | 56.9 t/s |
+| OOM | none | none | none |
+
+Every device logged the reservation, none over-committed, and the only request-path evictions are the
+chunk-rounding remainder (84-246 MiB total).  On 3 GPUs the whole host-expert set fits, so the arena is
+100 % resident and the identity path fills it at load (off the request path).  Logs:
+`warmup-size-at-load-2gpu-tensor.log`, `warmup-size-at-load-3gpu-tensor.log`.
