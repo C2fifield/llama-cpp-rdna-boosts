@@ -33,7 +33,16 @@ is the signature of a stub, not of a campaign.
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
-| [`issue-151-host-path-regression/`](issue-151-host-path-regression/README.md) | issue #151: dense decode with graphs **off** is 1.3–2.4 % slower on r56 than r30 on the reporter's slow Windows host (Ryzen 5 PRO 4650G).  Two candidate patches are now implemented and validated on r67: `GGML_CUDA_ASYNC_INPUT` default-on (the reporter's +1.4 %) and a per-graph GDN state-gather index replacing the `O(gathers × nodes)` walk (local **−0.63 ms host/graph, +0.24 % tg**, reporter +0.3 %). | **OPEN (seeded 2026-10-15, candidate fix validated 2026-10-15)** — does **not** reproduce on the maintainer's box as a version regression (GPU-bound: host is ~4.3 ms/graph vs the reporter's ~10), so the win is verified by host time and the reporter's box, not by local tg.  `=2` (index vs walk) clean on dense GDN / MoE / non-GDN / MTP / 2-GPU; prefill-logit gate PASS.  **Awaiting the promote / hold / beta decision** (§8 of the README). |
+
+**Promoted (r68, 2026-10-15).**  `issue-151-host-path-regression/` left `wip/`: both candidate patches
+plus a log-hygiene change shipped in `v12-097cf33d9-r68` (canonical tip `fc6dcad9f`, net tree
+`ffe832696698786865f4adf18216a019b61b160e`).  `GGML_CUDA_ASYNC_INPUT` is now **default-on** (`=0`
+restores the synchronous path; the reporter measured +1.4 % decode on their slow host), the `O(gathers x
+nodes)` GDN state-gather walk is replaced by a per-graph index built lazily on the first candidate
+(`GGML_CUDA_GDN_GATHER_INDEX`; local **-0.63 ms host/graph, -13 %**, +0.23 % tg128, reporter +0.3 %), and
+the two per-table arena seed notices (`apply_prefill_seed_locked`, `apply_heat_seed_locked`) moved from
+`WARN` to the `-lv 4`-only `INFO` level.  Folded into **blocks 09/10**; the record moved to
+`archive/work/issue-151-host-path-regression/` (with a `RESOLUTION.md`).  See `WORKLOG.md` 261015.006.
 
 **Promoted (r67, 2026-10-15).**  `block09-cache-ring-arming/` left `wip/`: all three r63..r66 host-expert
 regressions (the cache completeness gate on an uneven split, the pageable `-lm none` weight source, and

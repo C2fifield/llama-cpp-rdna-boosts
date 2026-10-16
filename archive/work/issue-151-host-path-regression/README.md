@@ -1,9 +1,8 @@
 # issue-151-host-path-regression
 
-**Status: OPEN — candidate fix implemented + validated locally (2026-10-15); awaiting the promote / hold
-/ beta decision.**  Nothing in this directory is part of the delivery, and nothing here may be applied to
-the fork without the maintainer's explicit go-ahead (see the WIP and promotion rules in
-`../../AGENTS.md`).
+**Status: PROMOTED (r68, 2026-10-15) -- see `RESOLUTION.md`.**  The two candidate patches below were
+folded into the delivery blocks (00-11) and shipped as `v12-097cf33d9-r68`; this directory is the
+historical record and nothing here is part of the delivery.
 
 **Issue:** https://github.com/stew675/llama-cpp-rdna-boosts/issues/151
 **Reporter:** `@DanoPTT` (R9700/gfx1201, **Windows 11**, Ryzen 5 PRO 4650G, Swift Qwen3.8-27B Q6_K /

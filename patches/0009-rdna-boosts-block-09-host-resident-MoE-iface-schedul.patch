@@ -1,4 +1,4 @@
-From a2e6ff7c6ab6cb73e9914e36b3c29419061fb404 Mon Sep 17 00:00:00 2001
+From c3aa49b1c8c568ee3a3d219fbc5b7e56dd1474c4 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -8702,7 +8702,7 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..703590962
+index 000000000..0b4ed345f
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
 @@ -0,0 +1,4647 @@
@@ -10285,7 +10285,7 @@ index 000000000..703590962
 +    if (seeded > 0) {
 +        t.fills    += seeded;
 +        t.slot_dirty = true;
-+        GGML_LOG_WARN("%s: layer=%d role=%s prefill-%s %d/%d slots (%d experts; %lld prefill tokens)\n",
++        GGML_LOG_INFO("%s: layer=%d role=%s prefill-%s %d/%d slots (%d experts; %lld prefill tokens)\n",
 +                      __func__, t.layer, t.role.c_str(), from_tally ? "seeded" : "loaded",
 +                      seeded, t.slots, t.n_experts, (long long) t.prefill_tokens);
 +    }
@@ -10366,7 +10366,7 @@ index 000000000..703590962
 +    if (seeded > 0) {
 +        t.fills     += seeded;
 +        t.slot_dirty = true;
-+        GGML_LOG_WARN("%s: layer=%d role=%s heat-seeded %d/%d slots from the persisted map (%d experts)\n",
++        GGML_LOG_INFO("%s: layer=%d role=%s heat-seeded %d/%d slots from the persisted map (%d experts)\n",
 +                      __func__, t.layer, t.role.c_str(), seeded, t.slots, t.n_experts);
 +    }
 +}

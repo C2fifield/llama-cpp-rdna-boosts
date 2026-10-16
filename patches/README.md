@@ -11,7 +11,20 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r67` (2026-10-15) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression:**
+> **Current release `v12-097cf33d9-r68` (2026-10-15) -- issue #151 host-path fix: async graph-input uploads default-on + per-graph GDN state-gather index:**
+> canonical tip `fc6dcad9f`, net tree `ffe832696698786865f4adf18216a019b61b160e`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10** amended, no new block.
+> (1) `GGML_CUDA_ASYNC_INPUT` is now **default-on** (`=0` restores the synchronous path); the
+> per-copy `cudaStreamSynchronize` is invisible on a fast host and the reporter measured **+1.4 %**
+> decode on their slow one.  (2) The `O(gathers x nodes)` GDN state-gather walk is replaced by a
+> per-graph index (`GGML_CUDA_GDN_GATHER_INDEX`, `0` walk / `2` both+abort), built lazily on the first
+> candidate; **-0.63 ms host/graph (-13 %)** on gfx1201, +0.23 % tg128, reporter +0.3 %.  (3) The two
+> per-table arena seed notices (`apply_prefill_seed_locked`, `apply_heat_seed_locked`) move from `WARN`
+> to `INFO` (the `-lv 4`-only level; ggml has no `TRACE`).  Gates: prefill-logit **0.000707 /
+> 98.755 %**, 4B coherence `7386359e5dac` (== r67), MTP `none == n3 == n7` (`1a80de87f2b6`), index
+> `=2` clean on dense / MoE / non-GDN / MTP / 2-GPU.  See `../WORKLOG.md` 261015.006.
+>
+> **Previous release `v12-097cf33d9-r67` (2026-10-15) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression:**
 > canonical tip `c536e9703`, net tree `3ccabe1522d480cef2001ee87712d56acef0d1eb`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** are amended, no new block.
 > **The r66 MUL_MAT_ID duplicate-ids fix regressed the prefill ~20-23 %**: its generic `mm_ids_helper`

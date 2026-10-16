@@ -1,5 +1,56 @@
 # WORKLOG - dated delivery records
 
+## 261015.006 (r68) -- issue #151: async graph-input uploads default-on + per-graph GDN state-gather index
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r68` (base `097cf33d9`; canonical tip
+`fc6dcad9f`, net tree `ffe832696698786865f4adf18216a019b61b160e`; 12 blocks; `validate-set.sh` green on
+a fresh tarball -- strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:**
+block 09 (`moe-expert-cache.cu`) and block 10 (`ggml-cuda.cu`, `ggml-cuda-try-fuse.{cu,cuh}`) are
+amended.
+
+**Issue #151 (`@DanoPTT`, gfx1201, Windows 11, Ryzen 5 PRO 4650G, graphs off).**  Dense decode was
+1.3-2.4 % slower on r56 than on their r30 reference, with the GPU doing the same or less work, so the
+cost is the eager host path.  The reporter's follow-ups narrowed it to the synchronous graph-input
+upload (`GGML_CUDA_ASYNC_INPUT`) and the `O(gathers x nodes)` GDN state-gather walk
+(`ggml_cuda_gdn_state_gather_deferrable`).  It does not reproduce as a version regression on our box
+(GPU-bound: ~4.5 ms host/graph against their ~10), so the win is verified by host time and by their box.
+
+1. **Async graph-input uploads now default-on (block 10, `ggml-cuda.cu`).**  `g_async_input_on` is
+true unless `GGML_CUDA_ASYNC_INPUT=0`; the first-hit notice moves from `WARN` to `INFO` and names the
+kill-switch.  The synchronous path blocked the host on every small graph-input copy; the async path
+stages through the per-device 16 MiB pinned ring with the done-event ordering (r46/PR #125).  The
+historical single-run impurity that kept it opt-in is closed by that ordering; re-validated here.
+2. **Per-graph GDN state-gather index (block 10, `ggml-cuda-try-fuse.{cu,cuh}` + the loop in
+`ggml-cuda.cu`).**  The walk scans every remaining node for each candidate gather (~48 gathers x
+~1900 nodes on a 64-layer GDN decode graph).  The index answers every gather from one pass, built
+**lazily on the first candidate** so a non-GDN graph pays only a pointer check per `GET_ROWS`.
+`GGML_CUDA_GDN_GATHER_INDEX=0` selects the walk; `=2` runs both and `GGML_ABORT`s on a different answer.
+The index is **conservative** relative to the walk (its fields are counted over the whole graph,
+including nodes before the gather, while the walk sees only nodes after it), so a disagreement can
+only drop a deferral -- the ordinary un-skipped `GET_ROWS` (bit-identical) -- never add one.
+3. **The two per-table arena seed notices move from `WARN` to `INFO` (block 09, `moe-expert-cache.cu`).**
+`apply_prefill_seed_locked`'s `prefill-...` line and `apply_heat_seed_locked`'s `heat-seeded ...` line
+printed once per expert table at load.  ggml has no `TRACE` level; `GGML_LOG_INFO` is the `-lv 4`-only
+level here (`common_log_get_verbosity(GGML_LOG_INFO) == LOG_LEVEL_TRACE`), so they are gone at the
+default `-lv 3` and visible at `-lv 4`.
+
+**Measurements (gfx1201, 1x R9700, 27B Q6_K, graphs off, `-t 8`).**  5 interleaved `-r 10` rounds on
+the candidate: tg128 **24.600 -> 24.659 t/s (+0.24 %)**; r68 build 3 rounds: **24.593 -> 24.650**
+(+0.23 %).  Prefill `pp4096` unchanged.  Host per graph (`GGML_CUDA_GCDBG=1`, 65 graphs / 250055
+nodes): **4.97 -> 4.34 ms** for the index (**-0.63 ms, -13 %**); async removes the per-copy
+`cudaStreamSynchronize` (outside `graph_compute`, so not in that timer; +0.21 % tg by itself).  The
+reporter measured async **+1.4 %** over the index arm (+0.5 % over r30) and the index **+0.3 %**.
+
+**Gates (r68 build, `fc6dcad9f`).**  `gate-prefill-logits.sh` **PASS** (mean KLD **0.000707** /
+same-top-p **98.755 %**); 4B Q8_0 same-seed greedy **7386359e5dac** (== r67), identical across
+`{graphs on/off} x {defaults / both kill-switches}`; adaptive-MTP `none == draft-mtp n3 == n7` prose
+n3000 byte-identical (**1a80de87f2b6**); `GGML_CUDA_GDN_GATHER_INDEX=2` clean on 4B / 27B Q6_K / 27B
+Swift UD-Q5_K_M / 35B-A3B (`-ncmoe 99` and `-sm tensor -ncmoe 20` 2-GPU) / Gemma4 E4B (non-GDN)+
+MTP, graphs on and off; 2-GPU `-sm tensor` and `-sm tensor -ncmoe` same-seed coherent.  No correctness
+risk local to this change; the residual ~0.4 % from the report is unattributed upstream
+`a55e952b8 -> 097cf33d9` drift (not bisected).  Campaign record:
+`archive/work/issue-151-host-path-regression/` (with `RESOLUTION.md`).
+
 ## 261015.005 (r67) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r67` (base `097cf33d9`; canonical tip
