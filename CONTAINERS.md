@@ -306,3 +306,49 @@ time to see the plan, or to prune a different package (e.g. a defunct one):
 ./scripts/cleanup-ghcr.py --package llama-cpp-rdna-boosts --keep-days 7
 ./scripts/cleanup-ghcr.py --package llama-cpp-rdna-boosts --keep-days 7 --apply
 ```
+
+---
+
+## Offload the image build to a worker
+
+Building the images ties up the primary box for tens of minutes per release.  A
+second machine can poll for new release tags and build/push in the background via
+`scripts/container-watch.sh`.
+
+**Setup (once, on the worker).**  The worker needs `podman`, `gh`, `jq`, `python3`,
+`curl`, `git` and `flock`, plus network access to `codeload.github.com` (the base
+tarball), Docker Hub (the ROCm base images) and `ghcr.io`.  A clone of this repo
+(HTTPS is enough: the worker only fetches) and, optionally, a `~/llama.cpp`
+checkout.  Then:
+
+```bash
+# clone (or update) the delivery repo
+git clone https://github.com/stew675/llama-cpp-rdna-boosts.git
+
+# install the watcher OUTSIDE the checkout: it checks out release tags in the
+# repo, and bash reads a running script incrementally, so it must not replace
+# itself mid-run
+install -m 755 ~/llama-cpp-rdna-boosts/scripts/container-watch.sh ~/bin/rdna-container-watch.sh
+
+# authorization (interactive, once):
+gh auth login -h github.com
+gh auth refresh -h github.com -s write:packages -s delete:packages
+gh auth token | podman login ghcr.io -u stew675 --password-stdin
+
+# poll every 10 minutes
+( crontab -l 2>/dev/null; echo '*/10 * * * * $HOME/bin/rdna-container-watch.sh >> $HOME/.cache/rdna-containers/watch.log 2>&1' ) | crontab -
+```
+
+The watcher fetches tags, takes the newest `v12-*` release, and if it differs from
+`~/.cache/rdna-containers/last-built`, checks it out and runs that tag's
+`scripts/build-containers.sh --rocm "7.14.1 10.1" --push`.  A `flock` serialises
+builds; the log is `~/.cache/rdna-containers/build-<tag>.log`.  `FORCE_TAG=<tag>` and
+`BUILD_EXTRA=--no-cleanup` (or the other envs in the script header) override behaviour.
+To build a release immediately instead of waiting for cron:
+
+```bash
+FORCE_TAG=v12-097cf33d9-r69 ~/bin/rdna-container-watch.sh
+```
+
+The primary box can keep using `scripts/build-containers.sh` directly for a manual or
+smoke build; the watcher is only the unattended path.
