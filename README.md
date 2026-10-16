@@ -502,9 +502,17 @@ concurrent run can differ from the same request run solo, at the rounding level 
 flip).  **Use `--no-kv-unified` when strict reproducibility is required.**  This is inherent to
 upstream's unified-KV design — it reproduces on unmodified upstream `097cf33d9` — and not a defect
 introduced by this patch set; the analysis and reproducers are preserved (parked) at
-`wip/kv-cell-offset-nondeterminism/`.  Single-request and non-unified runs are unaffected, and the
-delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`, `native == staging`) are
-scoped to a fixed batch and are unchanged.
+`wip/kv-cell-offset-nondeterminism/`.  Single-request and non-unified runs are unaffected by the
+unified-KV effect, and the delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`,
+`native == staging`) are scoped to a fixed batch and are unchanged.
+
+**Separate from the unified-KV case (2026-10-16, issue #151 follow-up).**  HIP graphs introduce their
+own start-to-start nondeterminism that `--no-kv-unified` does **not** remove.  On the reporter's box
+(R9700 / gfx1201, Windows, graphs on) the **first** request on a fresh server already differed between
+starts, both with `--kv-unified` and with `--no-kv-unified`, on identical fixed-schedule
+`/completion` requests; graphs off was stable.  It reproduces on older releases (r30), so it is not a
+delivery regression; it is tracked as TODO #67.  Where strict reproducibility matters, keep
+`GGML_CUDA_DISABLE_GRAPHS=1` in addition to `--no-kv-unified`.
 
 ## When upstream master moves
 

@@ -1459,6 +1459,12 @@ with a per-region anchored view, i.e. non-unified semantics inside the shared po
 redesign; the campaign is **parked** at `wip/kv-cell-offset-nondeterminism/` (evidence:
 `FINDINGS-offset-mechanism.md`; probe + server repro under `tools/`).
 
+**Correction 2026-10-16 (issue #151 follow-up).**  This covers the `--kv-unified` case only.  A
+*separate* HIP-graphs start-to-start nondeterminism exists that `--no-kv-unified` does **not** remove
+(reporter: identical fixed-schedule requests differ on the first request of a fresh server, graphs on,
+both with and without unified KV; graphs off is stable).  It is not unified-KV cell offset and not
+issue #134; tracked as TODO #67.  Disable graphs for strict reproducibility.
+
 **No performance angle.**  Making concurrent serving deterministic would require either pinning the
 batch shape/grouping or carrying the per-sequence-region redesign; neither is a throughput win, and the
 field symptom is only a rounding-level near-tie flip, so there is nothing to gain by fixing it now.

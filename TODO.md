@@ -57,6 +57,23 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 67. HIP graphs introduce a start-to-start nondeterminism that `--no-kv-unified` does not remove — CORRECTNESS (open)
+
+**Opened 2026-10-16 from the issue #151 follow-up.**  With `GGML_CUDA_DISABLE_GRAPHS` unset, greedy
+output is not reproducible from one process start to the next; with graphs off it is stable.  The
+reporter's evidence (R9700 / gfx1201, Windows, `-np 2`, draft-mtp n3, q8_0 KV): on a fresh server the
+**first** request already differs between starts, both with `--kv-unified` and with `--no-kv-unified`
+(and `-c 204800` so each slot holds the prompt without the shared stream), so this is not the
+unified-KV cell-offset non-determinism (#134) and not leftover slot state.  It reproduces on older
+releases (r30), so it is not a delivery regression.  The texts diverge late and stay coherent, i.e. a
+rounding-level near-tie flip; draft acceptance differs slightly, so the divergence may begin in a
+verify step.  Not delivery-blocking (the reporter's production runs graphs off), but the project favors
+determinism.  **Workaround:** `GGML_CUDA_DISABLE_GRAPHS=1` for strict reproducibility.  Next: a minimal
+reproducer here (fixed schedule, a fresh server per start, graphs on/off, `GGML_CUDA_DISABLE_VERIFY_GRAPHS=1`
+to separate decode from verify graphs, and `--spec-type none` to remove MTP); then decide whether a
+captured graph is replayed against a state the update check treats as unchanged, or the captured path
+selects a different kernel than eager.
+
 ### 66. RDNA2 (`gfx1030`) best-effort bring-up — issue #158 — PLATFORM VALIDATION (open)
 
 **Opened 2026-10-16; the code shipped in r70; the platform validation is open.**  r70 folded the two
@@ -289,7 +306,10 @@ cold-start prompt; refined findings in `FINDINGS-offset-mechanism.md`): the depe
 whole physical *cell set*, a fixed alignment is insufficient, and a proper fix needs per-sequence
 contiguous tile-aligned regions (an upstream redesign). Documented as a gotcha (README / `GREEDY-PURITY.md`
 §38); issue #134 closed as upstream-inherent. Reopen the campaign if the maintainer or @DanoPTT decides it
-is worth the redesign. It is a separate root from the recurrent rollback. The `seq_rm` boundary warning
+is worth the redesign. **Correction 2026-10-16 (issue #151 follow-up):** a *separate* HIP-graphs
+start-to-start nondeterminism survives `--no-kv-unified` and shows on a fresh server's first request, so
+it is not this cell-offset root; tracked as **TODO #67**. It is a separate root from the recurrent
+rollback. The `seq_rm` boundary warning
 (Issue #131) is a false positive in the cross-sequence case: the probe is bit-exact at the production
 verify width, and **r44 block 02** now tracks the last-batch shape **per sequence** so the diagnostic
 reports the right sequence. The deeper "large prefill as the last prepared batch before a rollback"

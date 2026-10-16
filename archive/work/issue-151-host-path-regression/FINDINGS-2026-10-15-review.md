@@ -84,11 +84,11 @@ gates on the current tree.  This is the cleanest single answer to the reporter's
 
 ### B5. Graphs-on nondeterminism (issue's 2nd comment)
 
-This reproduces on r30 too, so it is not delivery-specific.  It is the documented unified-KV /
-attention-offset non-determinism: a sequence's attention result depends on the physical **set** of KV
-cells it occupies, so `-np > 1 --kv-unified` is not deterministic regardless of graphs
-(`wip/kv-cell-offset-nondeterminism/`, issue #134).  Recommend `--no-kv-unified` for the test, or
-confirm graphs-on determinism with `--no-kv-unified`.
+This reproduces on r30 too, so it is not delivery-specific.  **Corrected 2026-10-16 (issue #151
+follow-up):** it was first filed as the unified-KV / attention-offset non-determinism, but the
+reporter's follow-up shows it survives `--no-kv-unified` and appears on the first request of a fresh
+server, so it is a *separate* HIP-graphs start-to-start effect (TODO #67), not `--kv-unified` cell
+offset (issue #134).  Recommend `GGML_CUDA_DISABLE_GRAPHS=1` for strict reproducibility.
 
 ## C. Environment-variable read audit
 

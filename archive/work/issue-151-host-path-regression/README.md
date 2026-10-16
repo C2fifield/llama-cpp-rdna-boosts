@@ -37,8 +37,10 @@ Reporter's own narrowing (see the issue comments):
 - The remainder (~0.4 %) is possibly upstream drift (`a55e952b8` → `097cf33d9`); the reporter has not
   bisected that.
 - Their graphs-on nondeterminism (issue's 2nd comment) reproduces on **r30** too, so it is not delivery
-  specific; it matches the documented unified-KV / cell-offset non-determinism
-  (`../kv-cell-offset-nondeterminism/`, issue #134) — test with `--no-kv-unified`.
+  specific.  Originally filed as the unified-KV / cell-offset non-determinism
+  (`../kv-cell-offset-nondeterminism/`, issue #134); **corrected 2026-10-16**: `--no-kv-unified` does not
+  remove it and it appears on a fresh server's first request, so it is a separate graphs-on effect
+  (TODO #67).
 
 ---
 

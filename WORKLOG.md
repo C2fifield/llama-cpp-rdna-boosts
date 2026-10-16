@@ -1,5 +1,26 @@
 # WORKLOG - dated delivery records
 
+## 261016.003 (no release) -- record correction: the HIP-graphs start-to-start nondeterminism is not #134 (issue #151 follow-up)
+
+**No delivery change.**  `release.json` stays `v12-097cf33d9-r70`; no patch, block or `release.json`
+byte changes, so no re-tag and no gate re-run.  This entry records a documentation correction and a new
+tracker item.
+
+**Issue #151 follow-up (reporter's 2026-10-16 reply).**  The reporter confirmed r68 closes the
+`llama-bench` decode gap and closed the loop on both arms (async graph-input uploads, GDN gather
+index; `GDN_GATHER_INDEX=2` clean).  Two items came out of the reply:
+
+1. `GGML_CUDA_ASYNC_INPUT` is already opt-in in r69/r70 (the r69 `-ub 8` `llama-perplexity`
+   self-comparison put it back to `=1` only), so their r68 "bit-identical across 27 requests" set is a
+   different instrument and does not contradict that result.  The reply points them at the
+   `--kl-divergence-base` self-comparison and notes `=1` keeps the +1.3 % at the cost of
+   determinism.  No code change.
+2. **Record correction.**  Their `--no-kv-unified` data (still differing start to start, on a fresh
+   server's first request) shows the HIP-graphs nondeterminism is **not** the unified-KV cell-offset
+   issue (#134).  Corrected in `README.md` (the #134 section), `GREEDY-PURITY.md` §38, `TODO.md` #52
+   part C and the archived `archive/work/issue-151-host-path-regression/` records; new tracker item
+   **TODO #67** with the workaround (`GGML_CUDA_DISABLE_GRAPHS=1`) and a next-step plan.
+
 ## 261016.002 (r70) -- RDNA2 (`gfx1030`) best-effort bring-up (issue #158): gfx1030 WMMA compile guards + container arch
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r70` (base `097cf33d9`; canonical tip
