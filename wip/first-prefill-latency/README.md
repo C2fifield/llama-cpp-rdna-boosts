@@ -24,6 +24,14 @@ patch (`instrumentation.patch`, `RDNA_PROF=1`):
 * **The re-arm path never fired** in this workload: the only cache event in request 2 was an 84 MiB slab
   eviction with no `re-armed`/re-seed.  So the `keep-survivors.patch` prototype (below) is **inert here**
   and was not worth a before/after number in this config.
+* **Warmup sizing works but over-commits.**  The warmup only ever *primes* each table (`!t.primed`
+  returns before the sizing check), so `alloc_all_locked` is never called and the arena cannot be sized at
+  load.  Making the priming pass also call `alloc_all_locked` *does* size the arena at load
+  (`registered == expected` reaches 100 % in ~0.2 s, arena 15107 MiB, 36.9 %), but a subsequent long
+  prefill then **OOMs in HIP graph capture** because at warmup the slab `extend_all` reclaims the
+  model's unused reserve and the empty-context arena takes it.  The deferred sizing avoids this by
+  running after the wide layout/KV exist.  See §6 — this needs a reserve/boundary rule before it can
+  ship.
 
 ## 1. Measured timeline
 
@@ -103,13 +111,44 @@ RDNA_PROF=1 HIP_VISIBLE_DEVICES=2 NCCL_PROXY_CPUSET=8,9,10,11,12,13,14,15 \
 grep -ao '\[PROF\] [a-z_]*[^[]*ms=[0-9]*\.[0-9]' server.log
 ```
 
-Artifacts in this directory: `instrumentation.patch`, `keep-survivors.patch`, `server-prof.log`
-(the full request-1/2 run with the `[PROF]` lines).
+Artifacts in this directory: `instrumentation.patch`, `keep-survivors.patch`, `warmup-sizing.patch`
+(the priming-time sizing prototype + the completeness log), `server-prof.log` (the full request-1/2
+run), `warmup-arena-at-load.log` (the fix sizing the arena at load) and `warmup-sizing-oom.log` (the
+long-prefill OOM).
 
 ## 5. Open items
 
-1. **Make the warmup latch the sizing** (the actual first-token lever).  Instrument
-   `moe_cache_tables_complete_locked` (registered vs expected at the end of the warmup) to find why the
-   warmup is incomplete.
+1. **Make the warmup latch the sizing safely** (the actual first-token lever): the primary sizing must
+   not take the VRAM the widest prefill will need.  The deferred path gets that for free by sizing
+   after the wide layout has existed and been dropped; the warmup path must reproduce it (e.g. size
+   against a reserved wide-layout boundary, or suppress `ggml_cuda_slab_extend_all` for the priming
+   sizing so the arena cannot consume the reserve).  Repro + OOM trace: §6.
 2. If (1) is not viable, seed the arena **asynchronously** so the first decode overlaps the H2D.
 3. Re-cut `keep-survivors.patch` A/B on a config where the re-arm actually fires.
+
+## 6. Warmup sizing prototype — what worked and how it failed
+
+The diagnosis (instrumented `moe_cache_tables_complete_locked`, `warmup-sizing.patch`):
+
+* During the warmup every host table is seen exactly once.  `moe_cache_table`'s `!t.primed` branch sets
+  `t.primed` and **returns before** the `!g_sized` sizing check, so the warmup can never size.  The first
+  real prefill re-sights the tables but is gated off (`n_tok > 8`); the first decode then sizes.
+* The completeness gate itself is **not** the blocker: the instrumented warmup reached
+  `registered=42912972800 expected=42912972800 tables=144 (100.0%)` (i.e. all 48×3 host tables).
+* Consequence: the arena size depends on the **first request** — a 5-token request sized it to
+  11750 MiB, the 13.8K request to 5355 MiB (the prompt's KV/wide layout occupies VRAM before sizing).
+
+Prototype: call `alloc_all_locked()` from the priming branch too
+(`MOE_EXPERT_CACHE_SIZE_AT_PRIME=1`).  Result:
+
+* **Good:** the arena is sized at load, before `listening` — `alloc_all_locked: ... arena 15107.1 MiB
+  (36.9%)` at t≈0.09 s, and the first request logs **no** `alloc_all_locked`/seed at all.
+* **Bad:** the next long prefill+decode **aborts with `ROCm error: out of memory` in
+  `ggml_cuda_graph_evaluate_and_capture`**.  At warmup the context is empty, so
+  `ggml_cuda_slab_extend_all()` grows the slab into the reserve the model "did not need" and the arena
+  takes 15 GiB; the wide prefill/decode cannot then be placed.  Raising
+  `MOE_EXPERT_CACHE_RESERVE_MIB` does **not** help — `extend_all` reclaims it (`warmup-sizing-oom.log`).
+
+So the prototype proves the mechanism but needs a matching reserve/boundary rule before it can ship
+(§5 item 1).  The likely shape: for the priming sizing, either reserve the widest work layout up front or
+skip `slab_extend_all` so the arena is sized against a boundary the later wide view cannot exceed.

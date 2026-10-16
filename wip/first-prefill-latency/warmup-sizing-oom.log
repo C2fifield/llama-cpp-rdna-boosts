@@ -1,0 +1,665 @@
+0.00.026.014 I srv  llama_server: initializing ...
+0.00.026.021 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.026.207 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.027.656 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.513.699 E llama_init_from_model: failed to initialize the context: qwen4exp requires ctx_other to be set (this warning is normal during memory fitting)
+0.00.530.052 W operator(): failed to measure the memory of the extra model, fitting without it: failed to create llama_context from model
+0.00.530.065 W common_params_fit_impl: host-resident MoE experts active: reserving the slab headroom plus the expert-cache arena (auto floor: MOE_EXPERT_CACHE_MIN_MIB / MIN_RES_PCT) in the --fit margin before fitting the context (10438 MiB this pass over 40925 MiB of host experts).  --fit sizes the context around it; the arena then takes any remaining free device memory keeping MOE_EXPERT_CACHE_RESERVE_MIB=8000 MiB per device.
+0.00.530.083 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to -2, abort
+0.00.685.332 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.06.604.148 W heat_map_warn_retired_locked: ignoring retired heat map /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf.moe-heatmap; heat maps are now one unified index per model named /llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.moe-heatmap (the retired `<gguf>.moe-heatmap` naming is no longer used)
+0.06.604.154 W heat_map_warn_retired_locked: 1 retired heat-map file(s) ignored; delete them to silence this warning
+0.14.378.941 W resolve_fused_ops: derived kq mask flash attention was not used in the probe graph, set to disabled
+0.14.378.944 W resolve_fused_ops: derived kq mask flash attention not supported, set to disabled
+0.14.378.944 W resolve_fused_ops: note: the derived kq mask is implemented by the MMA and the tile flash attention kernels; it is disabled here because neither served this graph (or the node did not reach the GPU)
+0.14.391.212 W SLAB_INIT dev=0 free=20.98 GiB reserve=8.00 GiB headroom=4.00 GiB aux=4.00 GiB size(VA)=16.94 GiB mapped=12.94 GiB boundary=1.75 GiB va_spare=4.00 GiB chunk=64.0 MiB ring_req=4.11 GiB
+0.14.391.215 W ggml_cuda_slab_init_locked: device 0: slab 12.94 GiB (chunk 64.0 MiB): work 1.75 GiB + arena 11.19 GiB (8.00 GiB reserve, 4.00 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.14.416.562 I cmn          init: llama threadpool init, n_threads = 16
+0.14.796.604 W [PROF] complete? registered=242483200 expected=42912972800 tables=1 (0.6%)0.14.796.632 W [PROF] complete? registered=484966400 expected=42912972800 tables=2 (1.1%)0.14.796.647 W [PROF] complete? registered=956825600 expected=42912972800 tables=3 (2.2%)0.14.814.056 W [PROF] complete? registered=1173094400 expected=42912972800 tables=4 (2.7%)0.14.814.105 W [PROF] complete? registered=1389363200 expected=42912972800 tables=5 (3.2%)0.14.814.127 W [PROF] complete? registered=1625292800 expected=42912972800 tables=6 (3.8%)0.14.816.706 W [PROF] complete? registered=1867776000 expected=42912972800 tables=7 (4.4%)0.14.816.732 W [PROF] complete? registered=2110259200 expected=42912972800 tables=8 (4.9%)0.14.816.759 W [PROF] complete? registered=2582118400 expected=42912972800 tables=9 (6.0%)0.14.824.491 W [PROF] complete? registered=2798387200 expected=42912972800 tables=10 (6.5%)0.14.824.526 W [PROF] complete? registered=3014656000 expected=42912972800 tables=11 (7.0%)0.14.824.553 W [PROF] complete? registered=3250585600 expected=42912972800 tables=12 (7.6%)0.14.827.210 W [PROF] complete? registered=3493068800 expected=42912972800 tables=13 (8.1%)0.14.827.238 W [PROF] complete? registered=3735552000 expected=42912972800 tables=14 (8.7%)0.14.827.263 W [PROF] complete? registered=4207411200 expected=42912972800 tables=15 (9.8%)0.14.830.082 W [PROF] complete? registered=4449894400 expected=42912972800 tables=16 (10.4%)0.14.830.123 W [PROF] complete? registered=4692377600 expected=42912972800 tables=17 (10.9%)0.14.830.144 W [PROF] complete? registered=4928307200 expected=42912972800 tables=18 (11.5%)0.14.832.679 W [PROF] complete? registered=5144576000 expected=42912972800 tables=19 (12.0%)0.14.832.704 W [PROF] complete? registered=5360844800 expected=42912972800 tables=20 (12.5%)0.14.832.726 W [PROF] complete? registered=5596774400 expected=42912972800 tables=21 (13.0%)0.14.835.322 W [PROF] complete? registered=5813043200 expected=42912972800 tables=22 (13.5%)0.14.835.349 W [PROF] complete? registered=6029312000 expected=42912972800 tables=23 (14.1%)0.14.835.371 W [PROF] complete? registered=6265241600 expected=42912972800 tables=24 (14.6%)0.14.838.020 W [PROF] complete? registered=6625689600 expected=42912972800 tables=25 (15.4%)0.14.838.044 W [PROF] complete? registered=6986137600 expected=42912972800 tables=26 (16.3%)0.14.838.064 W [PROF] complete? registered=7222067200 expected=42912972800 tables=27 (16.8%)0.14.841.340 W [PROF] complete? registered=7464550400 expected=42912972800 tables=28 (17.4%)0.14.841.364 W [PROF] complete? registered=7707033600 expected=42912972800 tables=29 (18.0%)0.14.841.388 W [PROF] complete? registered=7942963200 expected=42912972800 tables=30 (18.5%)0.14.844.228 W [PROF] complete? registered=8185446400 expected=42912972800 tables=31 (19.1%)0.14.844.255 W [PROF] complete? registered=8427929600 expected=42912972800 tables=32 (19.6%)0.14.844.274 W [PROF] complete? registered=8663859200 expected=42912972800 tables=33 (20.2%)0.14.846.705 W [PROF] complete? registered=8880128000 expected=42912972800 tables=34 (20.7%)0.14.846.729 W [PROF] complete? registered=9096396800 expected=42912972800 tables=35 (21.2%)0.14.846.750 W [PROF] complete? registered=9332326400 expected=42912972800 tables=36 (21.7%)0.14.849.293 W [PROF] complete? registered=9601024000 expected=42912972800 tables=37 (22.4%)0.14.849.315 W [PROF] complete? registered=9869721600 expected=42912972800 tables=38 (23.0%)0.14.849.335 W [PROF] complete? registered=10105651200 expected=42912972800 tables=39 (23.5%)0.14.852.161 W [PROF] complete? registered=10321920000 expected=42912972800 tables=40 (24.1%)0.14.852.185 W [PROF] complete? registered=10538188800 expected=42912972800 tables=41 (24.6%)0.14.852.202 W [PROF] complete? registered=10774118400 expected=42912972800 tables=42 (25.1%)0.14.854.647 W [PROF] complete? registered=11016601600 expected=42912972800 tables=43 (25.7%)0.14.854.670 W [PROF] complete? registered=11259084800 expected=42912972800 tables=44 (26.2%)0.14.854.688 W [PROF] complete? registered=11495014400 expected=42912972800 tables=45 (26.8%)0.14.857.292 W [PROF] complete? registered=11763712000 expected=42912972800 tables=46 (27.4%)0.14.857.316 W [PROF] complete? registered=12032409600 expected=42912972800 tables=47 (28.0%)0.14.857.334 W [PROF] complete? registered=12268339200 expected=42912972800 tables=48 (28.6%)0.14.859.992 W [PROF] complete? registered=12484608000 expected=42912972800 tables=49 (29.1%)0.14.860.018 W [PROF] complete? registered=12700876800 expected=42912972800 tables=50 (29.6%)0.14.860.036 W [PROF] complete? registered=12936806400 expected=42912972800 tables=51 (30.1%)0.14.862.344 W [PROF] complete? registered=13205504000 expected=42912972800 tables=52 (30.8%)0.14.862.369 W [PROF] complete? registered=13474201600 expected=42912972800 tables=53 (31.4%)0.14.862.384 W [PROF] complete? registered=13710131200 expected=42912972800 tables=54 (31.9%)0.14.864.903 W [PROF] complete? registered=14070579200 expected=42912972800 tables=55 (32.8%)0.14.864.937 W [PROF] complete? registered=14431027200 expected=42912972800 tables=56 (33.6%)0.14.864.956 W [PROF] complete? registered=14666956800 expected=42912972800 tables=57 (34.2%)0.14.868.208 W [PROF] complete? registered=14909440000 expected=42912972800 tables=58 (34.7%)0.14.868.229 W [PROF] complete? registered=15151923200 expected=42912972800 tables=59 (35.3%)0.14.868.252 W [PROF] complete? registered=15387852800 expected=42912972800 tables=60 (35.9%)0.14.870.794 W [PROF] complete? registered=15748300800 expected=42912972800 tables=61 (36.7%)0.14.870.821 W [PROF] complete? registered=16108748800 expected=42912972800 tables=62 (37.5%)0.14.870.843 W [PROF] complete? registered=16344678400 expected=42912972800 tables=63 (38.1%)0.14.874.104 W [PROF] complete? registered=16613376000 expected=42912972800 tables=64 (38.7%)0.14.874.133 W [PROF] complete? registered=16882073600 expected=42912972800 tables=65 (39.3%)0.14.874.157 W [PROF] complete? registered=17118003200 expected=42912972800 tables=66 (39.9%)0.14.876.947 W [PROF] complete? registered=17478451200 expected=42912972800 tables=67 (40.7%)0.14.876.971 W [PROF] complete? registered=17838899200 expected=42912972800 tables=68 (41.6%)0.14.876.991 W [PROF] complete? registered=18074828800 expected=42912972800 tables=69 (42.1%)0.14.880.239 W [PROF] complete? registered=18435276800 expected=42912972800 tables=70 (43.0%)0.14.880.263 W [PROF] complete? registered=18795724800 expected=42912972800 tables=71 (43.8%)0.14.880.281 W [PROF] complete? registered=19031654400 expected=42912972800 tables=72 (44.3%)0.14.883.000 W [PROF] complete? registered=19392102400 expected=42912972800 tables=73 (45.2%)0.14.883.023 W [PROF] complete? registered=19752550400 expected=42912972800 tables=74 (46.0%)0.14.883.042 W [PROF] complete? registered=19988480000 expected=42912972800 tables=75 (46.6%)0.14.886.071 W [PROF] complete? registered=20230963200 expected=42912972800 tables=76 (47.1%)0.14.886.093 W [PROF] complete? registered=20473446400 expected=42912972800 tables=77 (47.7%)0.14.886.112 W [PROF] complete? registered=20709376000 expected=42912972800 tables=78 (48.3%)0.14.888.657 W [PROF] complete? registered=20978073600 expected=42912972800 tables=79 (48.9%)0.14.888.678 W [PROF] complete? registered=21246771200 expected=42912972800 tables=80 (49.5%)0.14.888.697 W [PROF] complete? registered=21482700800 expected=42912972800 tables=81 (50.1%)0.14.891.001 W [PROF] complete? registered=21698969600 expected=42912972800 tables=82 (50.6%)0.14.891.028 W [PROF] complete? registered=21915238400 expected=42912972800 tables=83 (51.1%)0.14.891.053 W [PROF] complete? registered=22151168000 expected=42912972800 tables=84 (51.6%)0.14.893.548 W [PROF] complete? registered=22511616000 expected=42912972800 tables=85 (52.5%)0.14.893.572 W [PROF] complete? registered=22872064000 expected=42912972800 tables=86 (53.3%)0.14.893.593 W [PROF] complete? registered=23343923200 expected=42912972800 tables=87 (54.4%)0.14.897.543 W [PROF] complete? registered=23612620800 expected=42912972800 tables=88 (55.0%)0.14.897.564 W [PROF] complete? registered=23881318400 expected=42912972800 tables=89 (55.7%)0.14.897.588 W [PROF] complete? registered=24353177600 expected=42912972800 tables=90 (56.8%)0.14.900.876 W [PROF] complete? registered=24713625600 expected=42912972800 tables=91 (57.6%)0.14.900.904 W [PROF] complete? registered=25074073600 expected=42912972800 tables=92 (58.4%)0.14.900.924 W [PROF] complete? registered=25545932800 expected=42912972800 tables=93 (59.5%)0.14.904.483 W [PROF] complete? registered=25762201600 expected=42912972800 tables=94 (60.0%)0.14.904.504 W [PROF] complete? registered=25978470400 expected=42912972800 tables=95 (60.5%)0.14.904.522 W [PROF] complete? registered=26450329600 expected=42912972800 tables=96 (61.6%)0.14.907.400 W [PROF] complete? registered=26810777600 expected=42912972800 tables=97 (62.5%)0.14.907.416 W [PROF] complete? registered=27171225600 expected=42912972800 tables=98 (63.3%)0.14.907.431 W [PROF] complete? registered=27643084800 expected=42912972800 tables=99 (64.4%)0.14.911.024 W [PROF] complete? registered=28003532800 expected=42912972800 tables=100 (65.3%)0.14.911.038 W [PROF] complete? registered=28363980800 expected=42912972800 tables=101 (66.1%)0.14.911.049 W [PROF] complete? registered=28599910400 expected=42912972800 tables=102 (66.6%)0.14.914.075 W [PROF] complete? registered=28960358400 expected=42912972800 tables=103 (67.5%)0.14.914.091 W [PROF] complete? registered=29320806400 expected=42912972800 tables=104 (68.3%)0.14.914.104 W [PROF] complete? registered=29792665600 expected=42912972800 tables=105 (69.4%)0.14.918.017 W [PROF] complete? registered=30113792000 expected=42912972800 tables=106 (70.2%)0.14.918.032 W [PROF] complete? registered=30434918400 expected=42912972800 tables=107 (70.9%)0.14.918.043 W [PROF] complete? registered=30906777600 expected=42912972800 tables=108 (72.0%)0.14.921.481 W [PROF] complete? registered=31227904000 expected=42912972800 tables=109 (72.8%)0.14.921.496 W [PROF] complete? registered=31549030400 expected=42912972800 tables=110 (73.5%)0.14.921.509 W [PROF] complete? registered=31784960000 expected=42912972800 tables=111 (74.1%)0.14.924.196 W [PROF] complete? registered=32145408000 expected=42912972800 tables=112 (74.9%)0.14.924.209 W [PROF] complete? registered=32505856000 expected=42912972800 tables=113 (75.7%)0.14.924.221 W [PROF] complete? registered=32977715200 expected=42912972800 tables=114 (76.8%)0.14.927.488 W [PROF] complete? registered=33246412800 expected=42912972800 tables=115 (77.5%)0.14.927.503 W [PROF] complete? registered=33515110400 expected=42912972800 tables=116 (78.1%)0.14.927.518 W [PROF] complete? registered=33986969600 expected=42912972800 tables=117 (79.2%)0.14.930.459 W [PROF] complete? registered=34229452800 expected=42912972800 tables=118 (79.8%)0.14.930.474 W [PROF] complete? registered=34471936000 expected=42912972800 tables=119 (80.3%)0.14.930.486 W [PROF] complete? registered=34943795200 expected=42912972800 tables=120 (81.4%)0.14.933.368 W [PROF] complete? registered=35212492800 expected=42912972800 tables=121 (82.1%)0.14.933.384 W [PROF] complete? registered=35481190400 expected=42912972800 tables=122 (82.7%)0.14.933.396 W [PROF] complete? registered=35717120000 expected=42912972800 tables=123 (83.2%)0.14.935.948 W [PROF] complete? registered=36038246400 expected=42912972800 tables=124 (84.0%)0.14.935.962 W [PROF] complete? registered=36359372800 expected=42912972800 tables=125 (84.7%)0.14.935.972 W [PROF] complete? registered=36595302400 expected=42912972800 tables=126 (85.3%)0.14.938.674 W [PROF] complete? registered=36864000000 expected=42912972800 tables=127 (85.9%)0.14.938.689 W [PROF] complete? registered=37132697600 expected=42912972800 tables=128 (86.5%)0.14.938.702 W [PROF] complete? registered=37604556800 expected=42912972800 tables=129 (87.6%)0.14.941.814 W [PROF] complete? registered=37965004800 expected=42912972800 tables=130 (88.5%)0.14.941.833 W [PROF] complete? registered=38325452800 expected=42912972800 tables=131 (89.3%)0.14.941.847 W [PROF] complete? registered=38797312000 expected=42912972800 tables=132 (90.4%)0.14.945.622 W [PROF] complete? registered=39118438400 expected=42912972800 tables=133 (91.2%)0.14.945.635 W [PROF] complete? registered=39439564800 expected=42912972800 tables=134 (91.9%)0.14.945.647 W [PROF] complete? registered=39911424000 expected=42912972800 tables=135 (93.0%)0.14.948.730 W [PROF] complete? registered=40232550400 expected=42912972800 tables=136 (93.8%)0.14.948.743 W [PROF] complete? registered=40553676800 expected=42912972800 tables=137 (94.5%)0.14.948.753 W [PROF] complete? registered=40789606400 expected=42912972800 tables=138 (95.1%)0.14.951.340 W [PROF] complete? registered=41058304000 expected=42912972800 tables=139 (95.7%)0.14.951.352 W [PROF] complete? registered=41327001600 expected=42912972800 tables=140 (96.3%)0.14.951.364 W [PROF] complete? registered=41798860800 expected=42912972800 tables=141 (97.4%)0.14.954.164 W [PROF] complete? registered=42119987200 expected=42912972800 tables=142 (98.2%)0.14.954.175 W [PROF] complete? registered=42441113600 expected=42912972800 tables=143 (98.9%)0.14.954.183 W [PROF] complete? registered=42912972800 expected=42912972800 tables=144 (100.0%)0.14.954.332 W ggml_cuda_slab_extend: device 0: slab grew by 3.88 GiB into the reserve the model did not need (now 16.81 GiB: work 1.75 GiB + arena 15.06 GiB; 4.02 GiB left free AFTER this mapping, which is GGML_CUDA_SLAB_HEADROOM_MIB -- not extra headroom)
+0.14.954.336 W alloc_all_locked: MoE expert cache (auto): arena 15107.1 MiB of 40925.0 MiB host experts (36.9% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+0.16.227.869 I common_speculative_init_result: loading draft model '/llm/models/Qwen3.8/Flash-Next/IQ4_NL/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+0.16.744.688 W ggml_cuda_slab_narrow2_floor_locked: device 0: no room for a 0.50 GiB narrow-2 region above the work region (1.75 GiB) and a 2.00 GiB arena floor in a 16.94 GiB slab (mapped 16.81 GiB); the draft compute buffer stays on the cudaMalloc path
+0.16.744.692 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+0.16.748.120 W ggml_cuda_slab_narrow2_floor_locked: device 0: no room for a 0.50 GiB narrow-2 region above the work region (1.75 GiB) and a 2.00 GiB arena floor in a 16.94 GiB slab (mapped 16.81 GiB); the draft compute buffer stays on the cudaMalloc path
+0.16.749.270 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 131072, kv_unified = 'true'
+0.16.749.355 W set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU
+0.16.749.356 W spec common_specu: backend offload failed for seq_id=0; using CPU sampler
+0.16.749.358 W spec common_specu: backend offload failed for seq_id=1; using CPU sampler
+0.16.749.358 W spec common_specu: backend offload failed for seq_id=2; using CPU sampler
+0.16.749.359 W spec common_specu: backend offload failed for seq_id=3; using CPU sampler
+0.16.751.909 W ggml_cuda_slab_narrow2_floor_locked: device 0: no room for a 0.50 GiB narrow-2 region above the work region (1.75 GiB) and a 2.00 GiB arena floor in a 16.94 GiB slab (mapped 16.81 GiB); the draft compute buffer stays on the cudaMalloc path
+0.16.751.912 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+0.16.770.377 W ggml_cuda_slab_narrow2_floor_locked: device 0: no room for a 0.50 GiB narrow-2 region above the work region (1.75 GiB) and a 2.00 GiB arena floor in a 16.94 GiB slab (mapped 16.81 GiB); the draft compute buffer stays on the cudaMalloc path
+0.16.780.876 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.16.780.906 I srv  llama_server: model loaded
+0.16.780.909 I srv  llama_server: listening on http://127.0.0.1:8033
+0.28.241.456 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.28.241.490 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.28.264.059 W moe_cache_evict_slab_range: evicted 5934.0 MiB of arena tables from the taken slab chunks (arena now 9235.4 MiB)
+0.33.322.640 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   4096, progress = 0.30, t =   4.80 s / 854.20 tokens per second
+0.36.517.484 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   8192, progress = 0.59, t =   8.04 s / 1019.37 tokens per second
+0.39.014.478 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   9704, progress = 0.70, t =  10.70 s / 907.11 tokens per second
+0.42.212.887 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =  13796, progress = 1.00, t =  13.72 s / 1005.50 tokens per second
+0.42.287.697 W alloc_table_locked: layer=32 role=blk.32.ffn_gate_exps.weight: 189 slots requested, only 54 fit; sizing the arena to 54 slots
+0.42.290.664 W alloc_table_locked: layer=32 role=blk.32.ffn_up_exps.weight: 189 slots requested, only 42 fit; sizing the arena to 42 slots
+0.42.310.937 W alloc_table_locked: layer=33 role=blk.33.ffn_up_exps.weight: 189 slots requested, only 14 fit; sizing the arena to 14 slots
+0.42.311.744 W alloc_table_locked: arena alloc failed for layer=33 role=blk.33.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.322.089 W alloc_table_locked: layer=33 role=blk.33.ffn_down_exps.weight: 94 slots requested, only 22 fit; sizing the arena to 22 slots
+0.42.326.270 W alloc_table_locked: layer=34 role=blk.34.ffn_down_exps.weight: 189 slots requested, only 109 fit; sizing the arena to 109 slots
+0.42.333.886 W alloc_table_locked: arena alloc failed for layer=34 role=blk.34.ffn_gate_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.333.888 W alloc_table_locked: arena alloc failed for layer=34 role=blk.34.ffn_up_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.340.542 W alloc_table_locked: layer=34 role=blk.34.ffn_gate_exps.weight: 94 slots requested, only 17 fit; sizing the arena to 17 slots
+0.42.341.513 W alloc_table_locked: arena alloc failed for layer=34 role=blk.34.ffn_up_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.347.429 W alloc_table_locked: layer=34 role=blk.34.ffn_up_exps.weight: 47 slots requested, only 32 fit; sizing the arena to 32 slots
+0.42.354.998 W alloc_table_locked: layer=35 role=blk.35.ffn_down_exps.weight: 189 slots requested, only 25 fit; sizing the arena to 25 slots
+0.42.356.775 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.356.777 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.356.817 W alloc_table_locked: layer=35 role=blk.35.ffn_down_exps.weight: 94 slots requested, only 24 fit; sizing the arena to 24 slots
+0.42.358.520 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.358.521 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.358.523 W alloc_table_locked: layer=35 role=blk.35.ffn_down_exps.weight: 47 slots requested, only 24 fit; sizing the arena to 24 slots
+0.42.360.213 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.360.214 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.361.831 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.361.833 W alloc_table_locked: arena alloc failed for layer=35 role=blk.35.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.363.194 W alloc_table_locked: layer=35 role=blk.35.ffn_up_exps.weight: 11 slots requested, only 6 fit; sizing the arena to 6 slots
+0.42.364.685 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight: 189 slots requested, only 13 fit; sizing the arena to 13 slots
+0.42.365.365 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.365.367 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.365.403 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight: 94 slots requested, only 13 fit; sizing the arena to 13 slots
+0.42.366.079 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.366.081 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.366.082 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight: 47 slots requested, only 13 fit; sizing the arena to 13 slots
+0.42.366.744 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.366.746 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.366.747 W alloc_table_locked: layer=36 role=blk.36.ffn_gate_exps.weight: 23 slots requested, only 13 fit; sizing the arena to 13 slots
+0.42.367.407 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.367.408 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.367.973 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.367.974 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.368.525 W alloc_table_locked: arena alloc failed for layer=36 role=blk.36.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.368.927 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 189 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.369.111 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.369.113 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.369.150 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 94 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.369.334 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.369.335 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.369.337 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 47 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.369.508 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.369.509 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.369.511 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 23 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.369.680 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.369.681 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.369.682 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 11 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.369.852 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.369.853 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.369.854 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 5 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.370.022 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.370.024 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.370.193 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.370.194 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.370.352 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.370.353 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.370.354 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.355 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.356 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.356 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.357 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.358 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.358 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.359 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.360 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.360 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.361 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.361 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.362 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.362 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.362 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.363 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.363 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.363 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.363 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.364 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.364 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.364 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.364 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.365 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.366 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.367 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (189 slots x 473600 B); cache disabled for this table
+0.42.370.368 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (189 slots x 473600 B); cache disabled for this table
+0.42.370.369 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.369 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (94 slots x 473600 B); cache disabled for this table
+0.42.370.370 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (94 slots x 473600 B); cache disabled for this table
+0.42.370.371 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.371 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (47 slots x 473600 B); cache disabled for this table
+0.42.370.372 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (47 slots x 473600 B); cache disabled for this table
+0.42.370.372 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.373 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (23 slots x 473600 B); cache disabled for this table
+0.42.370.373 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (23 slots x 473600 B); cache disabled for this table
+0.42.370.374 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.374 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (11 slots x 473600 B); cache disabled for this table
+0.42.370.374 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (11 slots x 473600 B); cache disabled for this table
+0.42.370.375 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.375 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (5 slots x 473600 B); cache disabled for this table
+0.42.370.375 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (5 slots x 473600 B); cache disabled for this table
+0.42.370.376 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.376 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (2 slots x 473600 B); cache disabled for this table
+0.42.370.376 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (2 slots x 473600 B); cache disabled for this table
+0.42.370.376 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.377 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (1 slots x 473600 B); cache disabled for this table
+0.42.370.377 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (1 slots x 473600 B); cache disabled for this table
+0.42.370.378 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.379 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.380 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.370.381 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.381 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.382 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.370.383 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.383 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.384 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.370.384 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.385 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.385 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.370.386 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.386 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.387 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.370.387 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.387 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.387 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.370.388 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.388 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.388 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.370.389 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.389 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.389 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.370.390 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.391 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.392 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.370.393 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.393 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.394 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.370.394 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.395 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.396 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.370.396 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.397 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.397 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.370.397 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.398 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.398 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.370.398 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.399 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.399 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.370.400 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.400 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.400 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.370.401 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.401 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.401 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.370.402 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.403 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.404 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.405 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.406 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.406 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.407 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.407 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.408 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.408 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.409 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.409 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.410 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.410 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.410 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.411 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.411 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.411 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.411 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.412 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.412 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.412 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.412 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.413 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.414 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.414 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.370.415 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.370.416 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.416 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.370.417 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.370.418 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.418 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.370.419 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.370.419 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.420 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.370.420 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.370.420 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.421 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.370.421 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.370.421 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.421 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.370.422 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.370.422 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.422 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.370.422 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.370.423 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.423 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.370.423 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.370.424 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.425 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.426 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.426 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.427 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.428 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.428 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.429 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.429 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.430 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.430 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.430 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.431 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.431 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.431 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.432 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.432 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.432 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.432 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.433 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.433 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.433 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.433 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.433 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.435 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.435 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.436 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.370.437 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.438 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.438 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.370.439 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.439 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.440 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.370.440 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.441 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.441 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.370.441 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.442 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.442 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.370.442 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.442 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.443 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.370.443 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.443 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.443 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.370.444 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.444 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.444 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.370.445 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.446 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.447 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.370.447 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.448 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.449 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.370.449 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.450 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.450 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.370.451 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.451 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.452 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.370.452 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.452 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.452 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.370.453 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.453 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.453 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.370.454 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.454 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.454 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.370.454 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.454 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.455 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.370.456 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.370.457 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.457 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.370.458 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.370.459 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.459 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.370.460 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.370.460 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.461 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.370.461 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.370.462 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.462 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.370.462 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.370.463 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.463 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.370.463 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.370.464 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.464 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.370.464 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.370.464 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.465 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.370.465 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.370.465 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.465 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.370.466 W moe_cache_rearm: re-armed 18 stood-down expert-cache tables after a compute-buffer drop (arena now 9531.8 MiB)
+0.42.370.473 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 189 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.370.650 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.370.652 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.370.654 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 94 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.370.823 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.370.824 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.370.826 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 47 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.370.996 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.370.997 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.370.998 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 23 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.371.167 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.371.168 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.371.169 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 11 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.371.338 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.371.340 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.371.341 W alloc_table_locked: layer=37 role=blk.37.ffn_down_exps.weight: 5 slots requested, only 2 fit; sizing the arena to 2 slots
+0.42.371.509 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.371.510 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.371.680 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.371.681 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.371.781 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_gate_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.371.782 W alloc_table_locked: arena alloc failed for layer=37 role=blk.37.ffn_up_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.371.782 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.783 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.785 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.786 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.787 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.787 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.788 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.788 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.789 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.789 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.790 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.790 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.791 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.793 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.793 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.793 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.793 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.794 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.794 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.794 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.795 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.795 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.795 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.795 W alloc_table_locked: arena alloc failed for layer=38 role=blk.38.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.796 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.797 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (189 slots x 473600 B); cache disabled for this table
+0.42.371.798 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (189 slots x 473600 B); cache disabled for this table
+0.42.371.798 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.799 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (94 slots x 473600 B); cache disabled for this table
+0.42.371.800 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (94 slots x 473600 B); cache disabled for this table
+0.42.371.800 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.801 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (47 slots x 473600 B); cache disabled for this table
+0.42.371.801 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (47 slots x 473600 B); cache disabled for this table
+0.42.371.802 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.802 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (23 slots x 473600 B); cache disabled for this table
+0.42.371.802 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (23 slots x 473600 B); cache disabled for this table
+0.42.371.803 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.803 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (11 slots x 473600 B); cache disabled for this table
+0.42.371.803 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (11 slots x 473600 B); cache disabled for this table
+0.42.371.804 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.804 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (5 slots x 473600 B); cache disabled for this table
+0.42.371.804 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (5 slots x 473600 B); cache disabled for this table
+0.42.371.804 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.805 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (2 slots x 473600 B); cache disabled for this table
+0.42.371.805 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (2 slots x 473600 B); cache disabled for this table
+0.42.371.805 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.805 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_gate_exps.weight (1 slots x 473600 B); cache disabled for this table
+0.42.371.805 W alloc_table_locked: arena alloc failed for layer=39 role=blk.39.ffn_up_exps.weight (1 slots x 473600 B); cache disabled for this table
+0.42.371.806 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.807 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.808 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.371.809 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.809 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.810 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.371.810 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.811 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.812 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.371.812 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.812 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.813 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.371.813 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.814 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.814 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.371.814 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.815 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.815 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.371.815 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.815 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.816 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.371.816 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.816 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.816 W alloc_table_locked: arena alloc failed for layer=40 role=blk.40.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.371.817 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.818 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.819 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.371.819 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.820 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.821 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.371.821 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.822 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.822 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.371.823 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.823 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.823 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.371.824 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.824 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.824 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.371.825 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.825 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.825 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.371.825 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.826 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.826 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.371.826 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.826 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.827 W alloc_table_locked: arena alloc failed for layer=41 role=blk.41.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.371.827 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.828 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.829 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.830 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.830 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.831 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.832 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.832 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.833 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.833 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.834 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.834 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.834 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.835 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.835 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.835 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.836 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.836 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.836 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.836 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.836 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.837 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.837 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.837 W alloc_table_locked: arena alloc failed for layer=42 role=blk.42.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.838 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.839 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.371.840 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (189 slots x 704000 B); cache disabled for this table
+0.42.371.840 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.841 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.371.841 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (94 slots x 704000 B); cache disabled for this table
+0.42.371.842 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.843 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.371.843 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (47 slots x 704000 B); cache disabled for this table
+0.42.371.844 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.844 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.371.844 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (23 slots x 704000 B); cache disabled for this table
+0.42.371.845 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.845 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.371.845 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (11 slots x 704000 B); cache disabled for this table
+0.42.371.846 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.846 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.371.846 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (5 slots x 704000 B); cache disabled for this table
+0.42.371.846 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.847 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.371.847 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (2 slots x 704000 B); cache disabled for this table
+0.42.371.847 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.847 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_gate_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.371.847 W alloc_table_locked: arena alloc failed for layer=43 role=blk.43.ffn_up_exps.weight (1 slots x 704000 B); cache disabled for this table
+0.42.371.848 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.849 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.850 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.851 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.851 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.852 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.852 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.853 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.853 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.854 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.854 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.855 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.855 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.855 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.856 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.856 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.856 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.856 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.857 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.857 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.857 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.857 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.857 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.858 W alloc_table_locked: arena alloc failed for layer=44 role=blk.44.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.858 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.859 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.860 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (189 slots x 460800 B); cache disabled for this table
+0.42.371.861 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.861 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.862 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (94 slots x 460800 B); cache disabled for this table
+0.42.371.863 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.863 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.864 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (47 slots x 460800 B); cache disabled for this table
+0.42.371.864 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.864 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.865 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (23 slots x 460800 B); cache disabled for this table
+0.42.371.865 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.865 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.866 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (11 slots x 460800 B); cache disabled for this table
+0.42.371.866 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.866 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.867 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (5 slots x 460800 B); cache disabled for this table
+0.42.371.867 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.867 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.867 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (2 slots x 460800 B); cache disabled for this table
+0.42.371.868 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.868 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.868 W alloc_table_locked: arena alloc failed for layer=45 role=blk.45.ffn_down_exps.weight (1 slots x 460800 B); cache disabled for this table
+0.42.371.869 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.870 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.871 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (189 slots x 524800 B); cache disabled for this table
+0.42.371.871 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.872 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.873 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (94 slots x 524800 B); cache disabled for this table
+0.42.371.873 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.874 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.875 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (47 slots x 524800 B); cache disabled for this table
+0.42.371.875 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.875 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.876 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (23 slots x 524800 B); cache disabled for this table
+0.42.371.876 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.877 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.877 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (11 slots x 524800 B); cache disabled for this table
+0.42.371.877 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.878 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.878 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (5 slots x 524800 B); cache disabled for this table
+0.42.371.878 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.878 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.879 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (2 slots x 524800 B); cache disabled for this table
+0.42.371.879 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.879 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_gate_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.879 W alloc_table_locked: arena alloc failed for layer=46 role=blk.46.ffn_up_exps.weight (1 slots x 524800 B); cache disabled for this table
+0.42.371.880 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (189 slots x 921600 B); cache disabled for this table
+0.42.371.881 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.882 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (189 slots x 627200 B); cache disabled for this table
+0.42.371.883 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (94 slots x 921600 B); cache disabled for this table
+0.42.371.884 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.884 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (94 slots x 627200 B); cache disabled for this table
+0.42.371.885 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (47 slots x 921600 B); cache disabled for this table
+0.42.371.885 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.886 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (47 slots x 627200 B); cache disabled for this table
+0.42.371.886 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (23 slots x 921600 B); cache disabled for this table
+0.42.371.887 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.888 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (23 slots x 627200 B); cache disabled for this table
+0.42.371.888 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (11 slots x 921600 B); cache disabled for this table
+0.42.371.888 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.889 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (11 slots x 627200 B); cache disabled for this table
+0.42.371.889 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (5 slots x 921600 B); cache disabled for this table
+0.42.371.889 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.890 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (5 slots x 627200 B); cache disabled for this table
+0.42.371.890 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (2 slots x 921600 B); cache disabled for this table
+0.42.371.890 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.891 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (2 slots x 627200 B); cache disabled for this table
+0.42.371.891 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_down_exps.weight (1 slots x 921600 B); cache disabled for this table
+0.42.371.891 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_gate_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.42.371.891 W alloc_table_locked: arena alloc failed for layer=47 role=blk.47.ffn_up_exps.weight (1 slots x 627200 B); cache disabled for this table
+0.43.524.681 E ROCm error: out of memory
+0.43.524.685 E   current device: 0, in function ggml_cuda_graph_evaluate_and_capture at /home/stew675/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:4410
+0.43.524.686 E   hipGraphInstantiate(&graph->instance, graph->graph, __null, __null, 0)
+/home/stew675/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:127: ROCm error
+[New LWP 759794]
+[New LWP 759756]
+[New LWP 759755]
+[New LWP 759754]
+[New LWP 759753]
+[New LWP 759752]
+[New LWP 759751]
+[New LWP 759750]
+[New LWP 759749]
+[New LWP 759748]
+[New LWP 759747]
+[New LWP 759746]
+[New LWP 759745]
+[New LWP 759744]
+[New LWP 759743]
+[New LWP 759742]
+[New LWP 759741]
+[New LWP 759739]
+[New LWP 759738]
+[New LWP 759737]
+[New LWP 759736]
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <ima:enforcing>
+  <https://debuginfod.fedoraproject.org/>
+  <ima:ignore>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007f947e682352 in __syscall_cancel_arch () from /lib64/libc.so.6
+#0  0x00007f947e682352 in __syscall_cancel_arch () from /lib64/libc.so.6
+#1  0x00007f947e67654c in __internal_syscall_cancel () from /lib64/libc.so.6
+#2  0x00007f947e676594 in __syscall_cancel () from /lib64/libc.so.6
+#3  0x00007f947e6e610f in wait4 () from /lib64/libc.so.6
+#4  0x00007f9492ce9926 in ggml_print_backtrace () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-base.so.0
+#5  0x00007f9492d03439 in ggml_abort () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-base.so.0
+#6  0x00007f949017a642 in ggml_cuda_error(char const*, char const*, char const*, int, char const*) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-hip.so.0
+#7  0x00007f9490194d8a in ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context*, ggml_cgraph*, bool, bool, ggml_cuda_graph_key const&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-hip.so.0
+#8  0x00007f949018d645 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-hip.so.0
+#9  0x00007f9492d109d8 in ggml_backend_sched_graph_compute_async () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libggml-base.so.0
+#10 0x00007f9491c7920c in llama_context::graph_compute(ggml_cgraph*, bool) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama.so.0
+#11 0x00007f9491c789f3 in llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama.so.0
+#12 0x00007f9491c7a8e5 in llama_context::decode(llama_batch_ext const&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama.so.0
+#13 0x00007f9492b48b29 in std::_Function_handler<void (), server_context_impl::decode(int&, int)::{lambda()#1}>::_M_invoke(std::_Any_data const&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#14 0x00007f9492a741b1 in server_queue::yield_to_queue(std::function<void ()>&&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#15 0x00007f9492b3e9a6 in server_context_impl::decode(int&, int) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#16 0x00007f9492b3dc5a in server_context_impl::update_slots() () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#17 0x00007f9492a74645 in server_queue::start_loop(long) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#18 0x00007f9492a19a09 in llama_server(common_params&, int, char**, server_child&) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#19 0x00007f9492a1088c in llama_server(int, char**) () from /home/stew675/llama.cpp/build-rocm-hybrid/bin/libllama-server-impl.so
+#20 0x00007f947e60a681 in __libc_start_call_main () from /lib64/libc.so.6
+#21 0x00007f947e60a798 in __libc_start_main_impl () from /lib64/libc.so.6
+#22 0x0000555dc4e977b5 in _start ()
+[Inferior 1 (process 759732) detached]

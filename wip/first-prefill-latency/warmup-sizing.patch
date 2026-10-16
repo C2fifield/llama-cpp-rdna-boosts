@@ -1,0 +1,69 @@
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index ad1c3628c..8cab405cf 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -31,6 +31,12 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++// wip/first-prefill-latency: temporary warmup completeness instrumentation, only when RDNA_PROF is set.
++static bool moe_prof_on() {
++    static const bool on = getenv("RDNA_PROF") != nullptr;
++    return on;
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // state
+ // ---------------------------------------------------------------------------------------------
+@@ -343,6 +349,9 @@ bool                                g_heat_dirty      = false;
+ std::chrono::steady_clock::time_point g_heat_last_save{};
+ bool                                g_prov_evict      = false; // MOE_EXPERT_CACHE_PROVISIONAL=1: pre-filled entries are evictable like empty slots until first hit
+ int                                 g_prefill_seed_n  = 0;     // MOE_EXPERT_CACHE_PREFILL_SEED_N: cap seeded experts/table (0 = all slots)
++// wip/first-prefill-latency: size+seed the arena on the priming pass (the warmup), not the first real
++// decode.  Opt-in prototype, NOT part of the delivery.  See the campaign README.
++bool                                g_size_at_prime   = false;
+ int64_t                             g_alloc_clamped   = 0;
+ int64_t                             g_alloc_failed    = 0;
+ 
+@@ -612,6 +621,7 @@ void parse_env() {
+     // behaviourally a no-op for an empty arena.
+     g_prov_evict     = env_int("MOE_EXPERT_CACHE_PROVISIONAL", 1) != 0;
+     g_prefill_seed_n = env_int("MOE_EXPERT_CACHE_PREFILL_SEED_N", 0);
++    g_size_at_prime  = env_int("MOE_EXPERT_CACHE_SIZE_AT_PRIME", 0) != 0;
+     if (g_prefill_seed_n < 0) {
+         g_prefill_seed_n = 0;
+     }
+@@ -2378,6 +2388,19 @@ static bool moe_cache_tables_complete_locked() {
+             expected += g_preflight_device_bytes[d];
+         }
+     }
++    if (moe_prof_on()) {
++        static int64_t last_reg = -1;
++        static int64_t last_exp = -1;
++        static size_t  last_n   = 0;
++        if (registered != last_reg || expected != last_exp || g_tables.size() != last_n) {
++            last_reg = registered;
++            last_exp = expected;
++            last_n   = g_tables.size();
++            GGML_LOG_WARN("[PROF] complete? registered=%lld expected=%lld tables=%zu (%.1f%%)",
++                          (long long) registered, (long long) expected, g_tables.size(),
++                          expected > 0 ? 100.0 * (double) registered / (double) expected : 100.0);
++        }
++    }
+     return registered >= expected;
+ }
+ 
+@@ -4125,6 +4148,13 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+             t.primed = true;
+             g_total_expert_bytes += (int64_t) expert_bytes;
+             g_total_one_expert_bytes += (int64_t) expert_bytes;
++            // wip/first-prefill-latency: a single-pass warmup primes every host table but never
++            // re-sights one, so the sizing check below is unreachable and the first real decode pays the
++            // whole seed.  Also evaluate the deferred sizing here; `alloc_all_locked`'s completeness gate
++            // is what prevents latching on a partial set, so this is safe to call on every priming.
++            if (g_size_at_prime && !g_sized && n_tok <= 8) {
++                alloc_all_locked();
++            }
+             return false;   // priming pass
+         }
+         if (!g_sized) {
