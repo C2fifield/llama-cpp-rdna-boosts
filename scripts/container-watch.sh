@@ -90,7 +90,9 @@ LOG="$STATE_DIR/build-$tag.log"
 # and the ccache store (both bounded: ~20 GB/base and CCACHE_MAXSIZE=20G).  A
 # failed push aborts before the prune (build-containers.sh is `set -e`), so a
 # broken image is left for inspection.
-if LLAMA_CPP_DIR="$LLAMA_DIR" ./scripts/build-containers.sh --rocm "$ROCM_LINES" --push --prune $BUILD_EXTRA >"$LOG" 2>&1; then
+# --force: `--src` is a DISPOSABLE materialized tree, so a stale one (a previous
+# release's tree) must never silently block a new release's build -- recreate it.
+if LLAMA_CPP_DIR="$LLAMA_DIR" ./scripts/build-containers.sh --rocm "$ROCM_LINES" --push --prune --force $BUILD_EXTRA >"$LOG" 2>&1; then
     echo "$tag" > "$STATE_DIR/last-built"
     log "$tag pushed (log: $LOG)"
 else
