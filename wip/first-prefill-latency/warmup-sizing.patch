@@ -1,5 +1,5 @@
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
-index ad1c3628c..8cab405cf 100644
+index ad1c3628c..841e69d5c 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
 @@ -31,6 +31,12 @@
@@ -15,17 +15,20 @@ index ad1c3628c..8cab405cf 100644
  // ---------------------------------------------------------------------------------------------
  // state
  // ---------------------------------------------------------------------------------------------
-@@ -343,6 +349,9 @@ bool                                g_heat_dirty      = false;
+@@ -343,6 +349,12 @@ bool                                g_heat_dirty      = false;
  std::chrono::steady_clock::time_point g_heat_last_save{};
  bool                                g_prov_evict      = false; // MOE_EXPERT_CACHE_PROVISIONAL=1: pre-filled entries are evictable like empty slots until first hit
  int                                 g_prefill_seed_n  = 0;     // MOE_EXPERT_CACHE_PREFILL_SEED_N: cap seeded experts/table (0 = all slots)
 +// wip/first-prefill-latency: size+seed the arena on the priming pass (the warmup), not the first real
 +// decode.  Opt-in prototype, NOT part of the delivery.  See the campaign README.
 +bool                                g_size_at_prime   = false;
++// wip/first-prefill-latency: true only for the priming-time sizing, so it does not call
++// `slab_extend_all` (which would map the reserve the wide prefill/transients still need).
++bool                                g_alloc_priming   = false;
  int64_t                             g_alloc_clamped   = 0;
  int64_t                             g_alloc_failed    = 0;
  
-@@ -612,6 +621,7 @@ void parse_env() {
+@@ -612,6 +624,7 @@ void parse_env() {
      // behaviourally a no-op for an empty arena.
      g_prov_evict     = env_int("MOE_EXPERT_CACHE_PROVISIONAL", 1) != 0;
      g_prefill_seed_n = env_int("MOE_EXPERT_CACHE_PREFILL_SEED_N", 0);
@@ -33,7 +36,7 @@ index ad1c3628c..8cab405cf 100644
      if (g_prefill_seed_n < 0) {
          g_prefill_seed_n = 0;
      }
-@@ -2378,6 +2388,19 @@ static bool moe_cache_tables_complete_locked() {
+@@ -2378,6 +2391,19 @@ static bool moe_cache_tables_complete_locked() {
              expected += g_preflight_device_bytes[d];
          }
      }
@@ -53,7 +56,22 @@ index ad1c3628c..8cab405cf 100644
      return registered >= expected;
  }
  
-@@ -4125,6 +4148,13 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -2438,7 +2464,13 @@ void alloc_all_locked() {
+             ggml_cuda_slab_headroom_at_least_mib(6144);
+         }
+     }
+-    ggml_cuda_slab_extend_all();
++    // wip/first-prefill-latency: at the priming sizing the context is empty, so `slab_extend_all` maps
++    // the reserve the first wide prefill's work view and outside-slab transients still need (measured:
++    // 3.88 GiB mapped, leaving only the 4 GiB headroom, then a decode capture OOMs).  Skip it here; the
++    // arena is then capped to what was reserved before the request's real memory existed.
++    if (!g_alloc_priming) {
++        ggml_cuda_slab_extend_all();
++    }
+     // Fail-soft / --fit (§3.1 #5, issue #33): the arena is the LOWEST-priority VRAM consumer.  Size it
+     // from what is actually free NOW - after --fit, the compute-graph reserve and the KV cache have all
+     // taken theirs - minus the configured reserve for later growth (a bigger ubatch, more context, a
+@@ -4125,6 +4157,15 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
              t.primed = true;
              g_total_expert_bytes += (int64_t) expert_bytes;
              g_total_one_expert_bytes += (int64_t) expert_bytes;
@@ -62,7 +80,9 @@ index ad1c3628c..8cab405cf 100644
 +            // whole seed.  Also evaluate the deferred sizing here; `alloc_all_locked`'s completeness gate
 +            // is what prevents latching on a partial set, so this is safe to call on every priming.
 +            if (g_size_at_prime && !g_sized && n_tok <= 8) {
++                g_alloc_priming = true;
 +                alloc_all_locked();
++                g_alloc_priming = false;
 +            }
              return false;   // priming pass
          }

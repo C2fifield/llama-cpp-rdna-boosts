@@ -152,3 +152,33 @@ Prototype: call `alloc_all_locked()` from the priming branch too
 So the prototype proves the mechanism but needs a matching reserve/boundary rule before it can ship
 (§5 item 1).  The likely shape: for the priming sizing, either reserve the widest work layout up front or
 skip `slab_extend_all` so the arena is sized against a boundary the later wide view cannot exceed.
+
+## 7. Skip `slab_extend_all` at the priming sizing — works
+
+The first fix attempt at the boundary rule: when the sizing is the priming one
+(`g_alloc_priming`), do **not** call `ggml_cuda_slab_extend_all()` — the extension is what maps the reserve
+at the empty-context moment.  Result (`warmup-size-at-load-noextend.log`):
+
+* arena sized at load to **11110.5 MiB** (27.1 %), **zero `slab grew`** lines;
+* the long 13.8K-token request **succeeds** (prompt 13040 ms, 200 tok, no abort), zero request-path
+  `alloc_all_locked`;
+* the wide prefill still evicts 5810 MiB (arena → 5361.8 MiB) and `moe_cache_rearm` rebuilds 12 tables
+  cleanly.
+
+**Corrected diagnosis of the OOM.**  It was *not* the prefill being allocated outside the slab — the
+prefill work is placed in the slab (`WORK_ALLOC ret_off=5760`, boundary → 7808).  Two separate things:
+
+1. `alloc_table_locked: arena alloc failed … cache disabled for this table` is **fail-soft and normal
+   (the success run has MORE of them: 863 vs 535)** — it is the cache declining tables that no longer
+   fit a fragmented arena, and the layer falls back to the host path.
+2. The terminal abort is **`hipGraphInstantiate`** (`ggml-cuda.cu:4410`) — a HIP-runtime allocation for
+   the executable graph, outside the slab's control.  It failed because `slab_extend` had over-mapped the
+   slab to 16.81 GiB (only 4.02 GiB free on the card); with extend skipped ~19 GiB is free and it
+   succeeds.
+
+**Residual:** the arena is still sized above the wide view (11110 MiB) and the first wide prefill evicts
+5810 MiB of it.  That is the design's moveable boundary doing its job (and heat-ordered, so the reclaimed
+tables are the coldest), but it is exactly the "filled past the reclaim point" the maintainer flagged — to
+avoid it entirely the priming sizing must first reserve `ring + wide` (raise the slab work boundary to the
+wide layout) and then size the arena above it (`warmup-sizing.patch` is the first half; the boundary
+reservation is the next step).
