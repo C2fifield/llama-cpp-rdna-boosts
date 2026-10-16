@@ -1,0 +1,157 @@
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 278dac781..6ad3c8668 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -1805,9 +1805,9 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+ 
+         const size_t row_stride = tensor->nb[2];
+         GGML_ASSERT(offset % row_stride == 0);
+-        GGML_ASSERT(size   % row_stride == 0);
+         const int64_t row_start = offset / row_stride;
+         const int64_t row_count = size   / row_stride;
++        const size_t  tail      = size   % row_stride;   // the scheduler's <=512-byte MMQ tail pad
+         GGML_ASSERT(row_start + row_count <= tensor->ne[2]);
+ 
+         for (size_t s = 0; s < split_state.n_segments; s++) {
+@@ -1823,7 +1823,21 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+                 }
+             }
+         }
+-        GGML_ASSERT(offset_data*row_count == size);
++        GGML_ASSERT(offset_data*row_count == size - tail);
++
++        // `copy_experts` appends `min(expert_size, 512)` bytes of the next expert so the MMQ padding is
++        // finite.  The row-aligned loop above cannot express that tail, so place it flat at each
++        // device's next expert slot (the exact bytes are irrelevant -- only that they are finite).
++        if (tail > 0) {
++            GGML_ASSERT(row_start + row_count + 1 <= tensor->ne[2]);
++            const char * pad_src = (const char *) data + size - tail;
++            for (size_t j = 0; j < n_bufs; j++) {
++                ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
++                const size_t dst_off = (size_t) (row_start + row_count) * simple_tensor->nb[2];
++                GGML_ASSERT(dst_off + tail <= ggml_nbytes(simple_tensor));
++                ggml_backend_tensor_set(simple_tensor, pad_src, dst_off, tail);
++            }
++        }
+         return;
+     }
+ 
+@@ -2295,13 +2309,28 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
+ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     const size_t n_backends = ggml_backend_meta_n_backends(backend);
+     GGML_ASSERT(ggml_is_contiguous(tensor));
++    if (size == 0) {
++        // A zero-element tensor has no meaningful meta split state (UNKNOWN); nothing to upload.
++        return;
++    }
+ 
+     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
+     if (split_state.n_segments != 1 || split_state.nr[0] != 1 || split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
+-        // UPSTREAM PR #22466 (adapted): a layout the contiguous-chunk splice cannot express.  The
+-        // loader uploads such a tensor in chunks at increasing offsets, so accumulate them and hand the
+-        // whole tensor to `set_tensor` (which stages through pinned memory) once it is complete.
+         const size_t total = ggml_nbytes(tensor);
++        // A row-aligned range (the scheduler's per-op upload of a pruned expert group, possibly with the
++        // MMQ tail pad) is handed to the sync setter, which places each device's segmented slice and
++        // handles the tail.  A mid-row chunk (the loader's pinned async-upload pipeline, adapted from
++        // upstream PR #22466) is accumulated and flushed whole.
++        size_t row_stride = 0;
++        if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_0) {
++            row_stride = tensor->nb[1];
++        } else if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_1) {
++            row_stride = tensor->nb[2];
++        }
++        if (row_stride > 0 && offset % row_stride == 0) {
++            ggml_backend_tensor_set(tensor, data, offset, size);
++            return;
++        }
+         if (offset == 0 && size == total) {
+             ggml_backend_tensor_set(tensor, data, 0, size);
+             return;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 16fbdfc3f..4f69ceee8 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -360,47 +360,6 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+ 
+ }
+ 
+-// gemma4's fused expert tensor (`ffn_gate_up_exps`) has a SEGMENTED split layout (n_segments/nr).
+-// When the expert table is host-resident (`-ncmoe`/`-cmoe` pushes a CPU-buffer override for it),
+-// the per-ubatch upload has no correct path under tensor split: ggml_backend_meta_set_tensor_async
+-// only understands a contiguous single-segment slice, so the meta assert fires.  An all-resident
+-// model, or one offloaded by `-ngl`/`--fit` (whole layers on the CPU backend, no per-ubatch upload),
+-// is fine.  Detect the override so only the crashing configuration is rejected, with a clear message
+-// instead of an assert (issue #99).
+-static bool llm_params_have_host_expert_override(const llama_model_params & params) {
+-    if (params.tensor_buft_overrides == nullptr) {
+-        return false;
+-    }
+-    // Representative gemma4 expert weight names; the `-ncmoe`/`-cmoe` patterns are
+-    // `...ffn_(up|down|gate|gate_up)_(ch)?exps`, which these match.
+-    static const char * const probes[] = {
+-        "blk.0.ffn_gate_up_exps.weight",
+-        "blk.0.ffn_down_exps.weight",
+-    };
+-    for (const llama_model_tensor_buft_override * o = params.tensor_buft_overrides; o->pattern != nullptr; ++o) {
+-        if (o->buft == nullptr) {
+-            continue;
+-        }
+-        const ggml_backend_dev_t dev = ggml_backend_buft_get_device(o->buft);
+-        const enum ggml_backend_dev_type dev_type =
+-            dev == nullptr ? GGML_BACKEND_DEVICE_TYPE_CPU : ggml_backend_dev_type(dev);
+-        if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+-            continue;   // the expert table stays device-resident
+-        }
+-        try {
+-            const std::regex pat(o->pattern);
+-            for (const char * probe : probes) {
+-                if (std::regex_search(std::string(probe), pat)) {
+-                    return true;
+-                }
+-            }
+-        } catch (const std::regex_error &) {
+-            // an invalid pattern is reported by the loader; ignore it here
+-        }
+-    }
+-    return false;
+-}
+-
+ llama_model * llama_model_create(llm_arch arch, const llama_model_params & params) {
+     llama_model * model = llama_model_mapping(arch, params);
+ 
+@@ -409,12 +368,6 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
+         if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && !llm_arch_supports_sm_tensor(arch)) {
+             throw std::runtime_error(std::string("LLAMA_SPLIT_MODE_TENSOR not implemented for architecture '") + llm_arch_name(arch) + "'");
+         }
+-        if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && arch == LLM_ARCH_GEMMA4 &&
+-            llm_params_have_host_expert_override(params)) {
+-            throw std::runtime_error("LLAMA_SPLIT_MODE_TENSOR is not supported for gemma4 with host-resident "
+-                                     "experts (-ncmoe/-cmoe): the fused expert tensor's segmented per-ubatch "
+-                                     "upload has no tensor-split path -- use -sm layer for that config");
+-        }
+     }
+ 
+     return model;
+diff --git a/src/llama.cpp b/src/llama.cpp
+index f031e6555..5c77bb1fa 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -375,6 +375,17 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
+         } catch(const std::exception & e) {
+             throw std::runtime_error("error loading model hyperparameters: " + std::string(e.what()));
+         }
++        // TODO #58: a DFlash2 drafter with a selector builds `ggml_top_k` over the draft logits, which
++        // `-sm tensor` vocab-splits (axis 0); the Meta backend cannot reduce a per-row op across a split
++        // axis and aborts in `ggml-backend-meta.cpp`.  Reject cleanly with a `-sm layer` hint instead of
++        // aborting mid-load.  A real Meta distributed-top-k / split-to-mirrored gather is tracked in
++        // `wip/dflash-meta-split/`.
++        if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && model->arch == LLM_ARCH_DFLASH &&
++            model->hparams.dflash_selector_rank > 0) {
++            throw std::runtime_error("LLAMA_SPLIT_MODE_TENSOR is not supported for a DFlash2 drafter with a "
++                                     "selector: its per-row TOP_K over the vocab-split draft logits has no "
++                                     "tensor-split path -- use -sm layer for that config");
++        }
+         if (model->arch == LLM_ARCH_CLIP) {
+             throw std::runtime_error("CLIP cannot be used as main model, use it with --mmproj instead");
+         }

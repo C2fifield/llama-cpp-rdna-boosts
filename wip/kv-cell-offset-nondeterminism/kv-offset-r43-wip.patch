@@ -1,0 +1,420 @@
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index 12fa60d3b..4e21a7c12 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -64,6 +64,13 @@ extern "C" {
+     // Returns true when anything was re-armed.
+     GGML_API bool                  ggml_backend_dev_moe_cache_rearm(ggml_backend_dev_t dev);
+ 
++    // wip/host-expert-dio-cache: enable the bounded pinned host pool (`--host-experts pool`) and register
++    // the on-disk source of a host-resident expert tensor.  Routed through the device API so a backend-DL
++    // build (and a Windows DLL) links without a direct ggml-cuda forward declaration (issue #130).
++    // No-op for a backend without the host pool.
++    GGML_API void                  ggml_backend_dev_moe_cache_set_host_pool(ggml_backend_dev_t dev, bool on);
++    GGML_API void                  ggml_backend_dev_moe_cache_set_host_source(ggml_backend_dev_t dev, const void * tensor_data, const char * path, size_t offs, int n_experts, size_t host_bytes, size_t total_bytes);
++
+     // wip/slab-ring-region: arm/disarm the allocator's reserved H2D staging-ring hole.  Armed at a wide
+     // (prefill) pass, disarmed at the prefill -> decode drop, so a decode-only stretch gets the VRAM back.
+     // No-op for a backend without a slab or with no ring hole.
+diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
+index 2824e0684..dd50b3b76 100644
+--- a/ggml/src/ggml-backend-impl.h
++++ b/ggml/src/ggml-backend-impl.h
+@@ -391,6 +391,13 @@ extern "C" {
+         // (optional) wip/moe-verify-fusions (narrow-2): route this context's COMPUTE allocations to the
+         // pinned narrow-2 region (the MTP draft).  Appended like the fields above.
+         void (*slab_compute_narrow2)(ggml_backend_dev_t dev, bool enable);
++
++        // (optional) wip/host-expert-dio-cache: enable the bounded pinned host pool and register the
++        // on-disk source of a host-resident expert tensor.  Routed through the device API so libllama
++        // does not forward-declare a ggml-cuda symbol (issue #130).  Appended like the fields above,
++        // so every backend that does not set them is zero-initialized.
++        void (*moe_cache_set_host_pool)(ggml_backend_dev_t dev, bool on);
++        void (*moe_cache_set_host_source)(ggml_backend_dev_t dev, const void * tensor_data, const char * path, size_t offs, int n_experts, size_t host_bytes, size_t total_bytes);
+     };
+ 
+     struct ggml_backend_device {
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index b5ff188a9..55464d3fc 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -297,6 +297,20 @@ bool ggml_backend_dev_moe_cache_rearm(ggml_backend_dev_t dev) {
+     return dev->iface.moe_cache_rearm(dev);
+ }
+ 
++void ggml_backend_dev_moe_cache_set_host_pool(ggml_backend_dev_t dev, bool on) {
++    if (dev == nullptr || dev->iface.moe_cache_set_host_pool == nullptr) {
++        return;
++    }
++    dev->iface.moe_cache_set_host_pool(dev, on);
++}
++
++void ggml_backend_dev_moe_cache_set_host_source(ggml_backend_dev_t dev, const void * tensor_data, const char * path, size_t offs, int n_experts, size_t host_bytes, size_t total_bytes) {
++    if (dev == nullptr || dev->iface.moe_cache_set_host_source == nullptr) {
++        return;
++    }
++    dev->iface.moe_cache_set_host_source(dev, tensor_data, path, offs, n_experts, host_bytes, total_bytes);
++}
++
+ void ggml_backend_dev_slab_ring_set(ggml_backend_dev_t dev, bool arm) {
+     // wip/slab-ring-region: arm/disarm the reserved H2D staging-ring hole.  No-op when the backend has no
+     // slab or no ring hole (the hook is optional and zero-initialized).
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 2c1855da4..7483ae21f 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -10537,6 +10537,21 @@ static bool ggml_backend_cuda_device_moe_cache_rearm(ggml_backend_dev_t dev) {
+     return rearmed;
+ }
+ 
++// issue #130: route the host-pool entry points through the device API so that libllama does not
++// forward-declare and call a ggml-cuda symbol directly (a backend-DL build, and a Windows DLL, only
++// export what is marked GGML_API).  The pool is global in ggml-cuda, so any CUDA device serves.
++static void ggml_backend_cuda_device_moe_cache_set_host_pool(ggml_backend_dev_t dev, bool on) {
++    (void) dev;
++    moe_cache_set_host_pool(on);
++}
++
++static void ggml_backend_cuda_device_moe_cache_set_host_source(ggml_backend_dev_t dev,
++        const void * tensor_data, const char * path, size_t offs,
++        int n_experts, size_t host_bytes, size_t total_bytes) {
++    (void) dev;
++    moe_cache_set_host_source(tensor_data, path, offs, n_experts, host_bytes, total_bytes);
++}
++
+ static size_t ggml_backend_cuda_device_slab_work_size(ggml_backend_dev_t dev) {
+     // OPEN 2 (TODO #42): the movable-boundary slab WORK region's current size (the boundary), or 0 when this
+     // device has no slab.  `llama_context` compares it against the narrow size it last settled on to decide
+@@ -10631,6 +10646,8 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+     /* .slab_narrow_floor       = */ ggml_backend_cuda_device_slab_narrow_floor,
+     /* .slab_narrow2_floor      = */ ggml_backend_cuda_device_slab_narrow2_floor,
+     /* .slab_compute_narrow2    = */ ggml_backend_cuda_device_slab_compute_narrow2,
++    /* .moe_cache_set_host_pool   = */ ggml_backend_cuda_device_moe_cache_set_host_pool,
++    /* .moe_cache_set_host_source = */ ggml_backend_cuda_device_moe_cache_set_host_source,
+ };
+ 
+ // backend reg
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index 5f5070a31..bab2fa335 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -603,6 +603,36 @@ void check_invariant(const table_t & t) {
+ 
+ // ---- wip/host-expert-dio-cache Phase 2: the bounded pinned host tier (L2) -------------------------
+ 
++// Host-pool file I/O portability (issue #130).  The bounded host pool is a POSIX feature; every
++// file call goes through these four helpers so the Windows build compiles.  There `pool_open_file`
++// returns -1, the pool marks itself failed, and a miss is served from the pinned master exactly as
++// if the pool were disabled.  A real Windows pool (ReadFile with an OVERLAPPED offset,
++// FILE_FLAG_NO_BUFFERING for the DIO mode, _aligned_malloc) would be the proper fix if wanted.
++#if defined(_WIN32)
++typedef int pool_ssize_t;
++static int  pool_open_file(const char * path, bool dio) { (void) path; (void) dio; return -1; }
++static void pool_fd_align(int fd, size_t * align) { (void) fd; (void) align; }
++static pool_ssize_t pool_pread(int fd, void * dst, size_t len, size_t off) { (void) fd; (void) dst; (void) len; (void) off; return -1; }
++static bool pool_aligned_alloc(size_t align, size_t size, void ** out) { (void) align; (void) size; (void) out; return false; }
++#else
++typedef ssize_t pool_ssize_t;
++static int  pool_open_file(const char * path, bool dio) {
++    return open(path, O_RDONLY | (dio ? O_DIRECT : 0));
++}
++static void pool_fd_align(int fd, size_t * align) {
++    struct stat st;
++    if (fstat(fd, &st) == 0 && st.st_blksize > 0) {
++        *align = (size_t) st.st_blksize;
++    }
++}
++static pool_ssize_t pool_pread(int fd, void * dst, size_t len, size_t off) {
++    return pread(fd, dst, len, (off_t) off);
++}
++static bool pool_aligned_alloc(size_t align, size_t size, void ** out) {
++    return posix_memalign(out, align, size) == 0;
++}
++#endif
++
+ // One O_DIRECT read (the debug fallback; the default fill is a plain buffered `pread`) of `len` bytes at
+ // `off` into `dst`, through a process-global aligned bounce buffer (O_DIRECT needs an aligned buffer,
+ // length and offset).  Caller holds `g_mutex`.
+@@ -611,8 +641,8 @@ static bool pool_dio_read(int fd, void * dst, size_t len, size_t off, size_t ali
+         align = 4096;
+     }
+     if (off % align == 0 && len % align == 0 && ((uintptr_t) dst % align) == 0) {
+-        const ssize_t n = pread(fd, dst, len, (off_t) off);
+-        return n == (ssize_t) len;
++        const pool_ssize_t n = pool_pread(fd, dst, len, off);
++        return n == (pool_ssize_t) len;
+     }
+     const size_t aoff = off & ~(align - 1);
+     const size_t skip = off - aoff;
+@@ -624,13 +654,13 @@ static bool pool_dio_read(int fd, void * dst, size_t len, size_t off, size_t ali
+         bounce = nullptr;
+         bounce_size = 0;
+         void * p = nullptr;
+-        if (posix_memalign(&p, align, blen) != 0) {
++        if (!pool_aligned_alloc(align, blen, &p)) {
+             return false;
+         }
+         bounce = p;
+         bounce_size = blen;
+     }
+-    const ssize_t n = pread(fd, bounce, blen, (off_t) aoff);
++    const pool_ssize_t n = pool_pread(fd, bounce, blen, aoff);
+     if (n < 0 || (size_t) n < skip + len) {
+         return false;
+     }
+@@ -861,20 +891,17 @@ static char * pool_slot_locked(host_pool_t & p, int expert, int * out_slot, bool
+         return nullptr;
+     }
+     if (p.fd < 0) {
+-        p.fd = open(p.path.c_str(), O_RDONLY | (g_pool_dio ? O_DIRECT : 0));
++        p.fd = pool_open_file(p.path.c_str(), g_pool_dio);
+         if (p.fd < 0) {
+             p.failed = true;
+             return nullptr;
+         }
+-        struct stat st;
+-        if (fstat(p.fd, &st) == 0 && st.st_blksize > 0) {
+-            p.align = (size_t) st.st_blksize;
+-        }
++        pool_fd_align(p.fd, &p.align);
+     }
+     const size_t off = p.file_offs + (size_t) expert * p.host_bytes;
+     char *       dst = p.base + (size_t) slot * p.host_bytes;
+     const bool ok = g_pool_dio ? pool_dio_read(p.fd, dst, p.host_bytes, off, p.align)
+-                               : (pread(p.fd, dst, p.host_bytes, (off_t) off) == (ssize_t) p.host_bytes);
++                               : (pool_pread(p.fd, dst, p.host_bytes, off) == (pool_ssize_t) p.host_bytes);
+     if (!ok) {
+         p.failed = true;
+         return nullptr;
+@@ -987,15 +1014,12 @@ static void pool_bg_worker() {
+                 continue;   // every slot is reserved or retiring: drop the prefetch
+             }
+             if (p->fd < 0) {
+-                p->fd = open(p->path.c_str(), O_RDONLY | (g_pool_dio ? O_DIRECT : 0));
++                p->fd = pool_open_file(p->path.c_str(), g_pool_dio);
+                 if (p->fd < 0) {
+                     p->failed = true;
+                     continue;
+                 }
+-                struct stat st;
+-                if (fstat(p->fd, &st) == 0 && st.st_blksize > 0) {
+-                    p->align = (size_t) st.st_blksize;
+-                }
++                pool_fd_align(p->fd, &p->align);
+             }
+             p->slot_expert[(size_t) slot] = ex;
+             p->expert_slot[ex]            = slot;
+@@ -1008,7 +1032,7 @@ static void pool_bg_worker() {
+             dst   = p->base + (size_t) slot * p->host_bytes;
+         }
+         const bool ok = g_pool_dio ? pool_dio_read(fd, dst, hb, off, align)
+-                                   : (pread(fd, dst, hb, (off_t) off) == (ssize_t) hb);
++                                   : (pool_pread(fd, dst, hb, off) == (pool_ssize_t) hb);
+         {
+             std::lock_guard<std::mutex> lk(g_mutex);
+             if (p->slot_state[(size_t) slot] == 3) {
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 44ae21dff..28c982b1d 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1003,10 +1003,22 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+ 
+         // if we have enough unused cells before the current head ->
+         //   better to start searching from the beginning of the cache, hoping to fill it
+-        if (head_cur > cells.get_used() + 2*n_tokens) {
++        if (!getenv("LLAMA_KV_NO_RESET") && head_cur > cells.get_used() + 2*n_tokens) {
+             head_cur = 0;
+         }
+ 
++        // WIP test (TODO #52 part C): pad the allocation start to a multiple of the FA
++        // reduction tile so a sequence's cells are anchored to the tile grid.
++        if (const char * a = getenv("LLAMA_KV_ALIGN")) {
++            const uint32_t align = (uint32_t) atoi(a);
++            if (align > 0 && head_cur % align != 0) {
++                head_cur += align - (head_cur % align);
++                if (head_cur >= cells.size()) {
++                    head_cur = 0;
++                }
++            }
++        }
++
+         if (n_tokens > cells.size()) {
+             LLAMA_LOG_ERROR("%s: n_tokens = %d > size = %u\n", __func__, n_tokens, cells.size());
+             return { };
+@@ -1088,6 +1100,11 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+         if (res.idxs[s].size() < n_tokens) {
+             return { };
+         }
++
++        if (getenv("LLAMA_KV_OFFSET_DEBUG")) {
++            fprintf(stderr, "KVSLOT seq=%d first=%u last=%u n=%zu\n",
++                    (int) seq_id, res.idxs[s].front(), res.idxs[s].back(), res.idxs[s].size());
++        }
+     }
+ 
+     assert(res.s1 >= res.s0);
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 10aa8b2ab..cb62766b2 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -36,6 +36,8 @@ llama_memory_recurrent::llama_memory_recurrent(
+     this->n_rs_seq   = n_rs_seq;
+     this->n_rs_batch = n_rs_batch > 0 ? n_rs_batch : n_rs_seq + 1;
+     rs_idx.assign(n_seq_max, 0);
++    last_ubatch_nseq_tokens_by_seq.assign(n_seq_max, 0);
++    last_ubatch_pos_last_by_seq.assign(n_seq_max, -1);
+ 
+     cells.clear();
+     cells.resize(mem_size);
+@@ -186,6 +188,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+     const bool rm_all = p0 == 0 && p1 == std::numeric_limits<llama_pos>::max();
+     if (rm_all) {
+         set_rs_idx(seq_id, 0);
++        // issue #131: a fully removed sequence's last-batch shape is no longer meaningful
++        if (seq_id < 0) {
++            std::fill(last_ubatch_nseq_tokens_by_seq.begin(), last_ubatch_nseq_tokens_by_seq.end(), 0);
++            std::fill(last_ubatch_pos_last_by_seq.begin(), last_ubatch_pos_last_by_seq.end(), -1);
++        } else if ((size_t) seq_id < last_ubatch_nseq_tokens_by_seq.size()) {
++            last_ubatch_nseq_tokens_by_seq[seq_id] = 0;
++            last_ubatch_pos_last_by_seq[seq_id]    = -1;
++        }
+     }
+ 
+     // models like Mamba or RWKV can't have a state partially erased at the end
+@@ -209,6 +219,11 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                 const llama_pos rollback = cell.pos - (p0 - 1);
+                 // pending rollback is single-use
+                 const bool pending = rs_idx[seq_id] != 0;
++                // The sequence's own last batch (issue #131), not the global last batch.
++                const uint32_t  last_seq_nseq = ((size_t) seq_id < last_ubatch_nseq_tokens_by_seq.size())
++                        ? last_ubatch_nseq_tokens_by_seq[seq_id] : 0;
++                const llama_pos last_seq_pos  = ((size_t) seq_id < last_ubatch_pos_last_by_seq.size())
++                        ? last_ubatch_pos_last_by_seq[seq_id] : -1;
+                 if (!pending && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
+                     // Guard: the snapshot path assumes a rollback only removes tokens the last
+                     // batch decoded, i.e. that only batches at or below n_rs_batch -- speculative
+@@ -217,17 +232,17 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                     // GDN_CHUNKED_MIN_TOKENS) writes only the newest snapshot for it, so restoring
+                     // snapshot `rollback` would read an unwritten slot.  Warn once rather than
+                     // corrupt silently.
+-                    if (!warned_rollback_boundary && last_ubatch_nseq_tokens > n_rs_batch) {
++                    if (!warned_rollback_boundary && last_seq_nseq > n_rs_batch) {
+                         warned_rollback_boundary = true;
+                         LLAMA_LOG_WARN("%s: rollback crossed a batch boundary: seq %d rollback=%d but "
+-                                "the last batch decoded %u tokens (last pos %d, n_rs_seq=%u, n_rs_batch=%u). The "
++                                "the sequence's last batch decoded %u tokens (last pos %d, n_rs_seq=%u, n_rs_batch=%u). The "
+                                 "recurrent snapshot path assumes only verify batches (<= n_rs_batch "
+                                 "tokens) are rolled back into; if that batch exceeded the chunked-GDN "
+                                 "threshold it wrote no usable snapshot and the restored state is "
+                                 "wrong -- set GGML_CUDA_GDN_CHUNKED=0 for the sequential kernel. "
+                                 "Please report this at github.com/stew675/llama-cpp-rdna-boosts/issues\n",
+-                                __func__, (int) seq_id, (int) rollback, last_ubatch_nseq_tokens,
+-                                (int) last_ubatch_pos_last, n_rs_seq, n_rs_batch);
++                                __func__, (int) seq_id, (int) rollback, last_seq_nseq,
++                                (int) last_seq_pos, n_rs_seq, n_rs_batch);
+                     }
+                     set_rs_idx(seq_id, (uint32_t) rollback);
+                     cell.pos = p0 - 1;
+@@ -537,6 +552,24 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
+         const llama_ubatch & ub = ubatches.back();
+         last_ubatch_nseq_tokens = ub.n_seq_tokens;
+         last_ubatch_pos_last    = ub.n_tokens > 0 ? ub.pos[ub.n_tokens - 1] : -1;
++        // issue #131: per-sequence last-batch shape.  Only the sequences present in this ubatch are
++        // updated; the others keep the count from the last batch they ran in.
++        for (uint32_t s = 0; s < ub.n_seqs_unq; ++s) {
++            const llama_seq_id sid = ub.seq_id_unq[s];
++            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                last_ubatch_nseq_tokens_by_seq[sid] = 0;
++                last_ubatch_pos_last_by_seq[sid]    = -1;
++            }
++        }
++        for (uint32_t i = 0; i < ub.n_tokens; ++i) {
++            const llama_seq_id sid = ub.seq_id[i][0];
++            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                last_ubatch_nseq_tokens_by_seq[sid]++;
++                if (ub.pos != nullptr) {
++                    last_ubatch_pos_last_by_seq[sid] = ub.pos[i * ub.n_pos];
++                }
++            }
++        }
+     }
+ 
+     return success;
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index e7e3a7a32..5711521f5 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -86,6 +86,13 @@ public:
+     // rolled back into never decodes more than n_rs_batch tokens.  See the guard there.
+     uint32_t  last_ubatch_nseq_tokens = 0;
+     llama_pos last_ubatch_pos_last    = -1;
++    // Per-sequence shape of the last batch each sequence ran in (issue #131): a rollback may only
++    // read the snapshot planes its own sequence's last batch wrote, so the guard below must use the
++    // sequence's own value, not the last batch of whichever sequence was prepared last.  Only the
++    // sequences present in the last ubatch are updated; the others keep the count from the last
++    // batch they ran in.
++    std::vector<uint32_t>  last_ubatch_nseq_tokens_by_seq;
++    std::vector<llama_pos> last_ubatch_pos_last_by_seq;
+     bool      warned_rollback_boundary = false;
+ 
+     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index e7f7e663e..6c0e86544 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -14,12 +14,11 @@
+ #include <future>
+ #include <regex>
+ 
+-// wip/host-expert-dio-cache Phase 1 (plumbing, inert): the host-expert on-disk source registry lives in
+-// ggml-cuda.  libllama already links libggml-hip, so declaring it here avoids a layering include.  The
+-// call is a no-op unless MOE_HOST_POOL_MIB > 0, so with the env unset/0 nothing is created.
+-void moe_cache_set_host_source(const void * tensor_data, const char * path, size_t offs,
+-                               int n_experts, size_t host_bytes, size_t total_bytes);
+-void moe_cache_set_host_pool(bool on);
++// wip/host-expert-dio-cache Phase 1 (plumbing, inert): the host-expert on-disk source registry and the
++// host-pool enable live in ggml-cuda.  They are routed through the device API (issue #130) instead of a
++// direct forward declaration, because libllama must not reference a ggml-cuda symbol on a backend-DL
++// build (and a Windows DLL only exports what is marked GGML_API).  Both calls are no-ops unless the host
++// pool is requested, and are served by whichever device provides the callback.
+ 
+ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+@@ -577,7 +576,11 @@ llama_model_loader::llama_model_loader(
+                        "by a no-XNACK GPU, issue #116); using pinned instead\n", __func__);
+     }
+     if (host_experts_mode == LLAMA_HOST_EXPERTS_MODE_POOL) {
+-        moe_cache_set_host_pool(true);
++        // issue #130: route through the device API (the pool is global in ggml-cuda, so any device serves;
++        // a backend without the callback is a no-op).
++        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++            ggml_backend_dev_moe_cache_set_host_pool(ggml_backend_dev_get(i), true);
++        }
+         LLAMA_LOG_INFO("%s: host_experts_mode=POOL: bounded pinned host pool enabled "
+                        "(MOE_HOST_POOL_MIB, default 25%% of the MoE host expert bytes)\n", __func__);
+     }
+@@ -1898,8 +1901,10 @@ bool llama_model_loader::load_all_data(
+         if (cur->data != nullptr && cur->buffer != nullptr && cur->ne[2] > 1 &&
+                 ggml_backend_buffer_is_host(cur->buffer) &&
+                 std::string(ggml_get_name(cur)).find("exps") != std::string::npos) {
+-            moe_cache_set_host_source(cur->data, files.at(weight->idx)->path().c_str(), weight->offs,
+-                                      (int) cur->ne[2], (size_t) cur->nb[2], ggml_nbytes(cur));
++            ggml_backend_dev_moe_cache_set_host_source(
++                    ggml_backend_buft_get_device(ggml_backend_buffer_get_type(cur->buffer)),
++                    cur->data, files.at(weight->idx)->path().c_str(), weight->offs,
++                    (int) cur->ne[2], (size_t) cur->nb[2], ggml_nbytes(cur));
+         }
+ 
+         size_done += n_size;
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index cd036742b..769fd5efb 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -151,6 +151,7 @@ endif ()
+ llama_build(test-recurrent-state-rollback.cpp)
+ llama_build(test-recurrent-state-depth.cpp)
+ llama_build(test-logits-width-probe.cpp)
++llama_build(test-multiseq-offset.cpp)
+ llama_build(test-save-load-state.cpp)
+ 
+ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
