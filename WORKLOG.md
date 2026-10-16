@@ -51,6 +51,16 @@ risk local to this change; the residual ~0.4 % from the report is unattributed u
 `a55e952b8 -> 097cf33d9` drift (not bisected).  Campaign record:
 `archive/work/issue-151-host-path-regression/` (with `RESOLUTION.md`).
 
+**Published (2026-10-15).**  The delivery repo `main` was pushed (`a93594b..0045046`) and the release
+tagged **`v12-097cf33d9-r68`** (annotated).  The personal fork's `rdna-boosts` branch was force-pushed
+to the same tree (`1597d80f4 -> fc6dcad9f`, `--force-with-lease`, fork only) from a clean 12-commit
+chain on the base (`applied tree ffe83269...`, `validate-set.sh` green on a fresh tarball; the
+coherence + `gate-prefill-logits.sh` runs above are on that tree).  The ROCm container images (7.14.1 +
+10.1, `full`/`light`/`server` + immutable `-097cf33d9` variants, `latest` on 10.1) were rebuilt and
+pushed locally with `scripts/build-containers.sh --rocm "7.14.1 10.1" --push` (log
+`/tmp/containers-r68.log`; the GHCR retention prune found nothing outside the 7-day window).  Issue #151
+has the public write-up for `@DanoPTT`.
+
 ## 261015.005 (r67) -- block-09 host-expert ring arming + the r66 MUL_MAT_ID prefill regression
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r67` (base `097cf33d9`; canonical tip
