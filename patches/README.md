@@ -11,7 +11,21 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r72` (2026-10-16) -- issue #164 follow-up: the H2D ring must hold the largest staged expert slice (per-device), plus a 1-GPU crash fix:**
+> **Current release `v12-097cf33d9-r73` (2026-10-16) -- MoE heat map: one unified sidecar per model (block 09):**
+> canonical tip `08c6c53c7`, net tree `7252e49b41fb67c74e6bcd4d81a7aeab2d479f44`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended, no new block.
+> The heat-map sidecar was named from the exact model path the loader handed it -- the first host-expert
+> tensor's shard -- so a sharded GGUF wrote one map per shard (non-deterministic by load order) and a
+> single-file model carried a redundant `.gguf` in the name.  It is now **one unified index per model**:
+> `heat_map_base_name()` strips a trailing `.gguf` and the llama.cpp `-NNNNN-of-NNNNN` split marker, so
+> `Qwen3.8-Flash-Next-...-00001-of-00009.gguf` -> `Qwen3.8-Flash-Next-....moe-heatmap` and
+> `model.gguf` -> `model.moe-heatmap`.  Clean break: the retired `<gguf>.moe-heatmap` name is never read
+> or written, and a stale one next to the model logs a `WARN` naming it and the new unified name (the four
+> scattered Flash-Next sidecars were deleted; the map relearns from cold).  Verified end-to-end
+> (shard-suffixed and plain names, the load path, and the warning) and `validate-set.sh` green.  Record:
+> `../WORKLOG.md` 261016.008.
+>
+> **Previous release `v12-097cf33d9-r72` (2026-10-16) -- issue #164 follow-up: the H2D ring must hold the largest staged expert slice (per-device), plus a 1-GPU crash fix:**
 > canonical tip `78740c1ca`, net tree `431154256c190b64657a89c461c884a47fcfcca6`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.
 > The r71 auto-size used the prefill-throughput knee alone; a model whose per-device expert-table slice is

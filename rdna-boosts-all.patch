@@ -42997,10 +42997,10 @@ index 5605bf7a4..10b689844 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..0b4ed345f
+index 000000000..ad1c3628c
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4647 @@
+@@ -0,0 +1,4723 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -43017,6 +43017,7 @@ index 000000000..0b4ed345f
 +#include <cstring>
 +#include <map>
 +#if !defined(_WIN32)
++#include <dirent.h>
 +#include <fcntl.h>
 +#include <sys/resource.h>
 +#include <sys/stat.h>
@@ -44823,6 +44824,78 @@ index 000000000..0b4ed345f
 +#endif
 +}
 +
++// V2.0 block 09: the shard-independent sidecar stem.  A sharded GGUF is handed to the loader as
++// whichever shard owns the first host-expert tensor, so keying the sidecar on the raw path wrote one
++// map per shard and which one existed depended on the load order (the observed mess: 00001/00003/
++// 00004/00008 in one directory).  Normalise to the model base name: strip a trailing ".gguf", then the
++// llama.cpp split marker "-NNNNN-of-NNNNN" (see `llama_split_path`, `src/llama.cpp`), so every shard of
++// one model maps to exactly one name.  The ".moe-heatmap" extension is added by the caller.
++static std::string heat_map_base_name(const std::string & name) {
++    std::string s = name;
++    static const char * const ext = ".gguf";
++    const size_t ext_len = strlen(ext);
++    if (s.size() > ext_len && s.compare(s.size() - ext_len, ext_len, ext) == 0) {
++        s.resize(s.size() - ext_len);
++    }
++    // ``-NNNNN-of-NNNNN`` (exactly the `llama_split_path` format) at the very end.
++    const size_t digits = 5;
++    if (s.size() > 1 + digits + 4 + digits) {
++        const size_t pos = s.size() - (1 + digits + 4 + digits);
++        bool ok = s[pos] == '-';
++        for (size_t i = 0; ok && i < digits; i++) {
++            ok = s[pos + 1 + i] >= '0' && s[pos + 1 + i] <= '9';
++        }
++        ok = ok && s.compare(pos + 1 + digits, 4, "-of-") == 0;
++        for (size_t i = 0; ok && i < digits; i++) {
++            ok = s[pos + 1 + digits + 4 + i] >= '0' && s[pos + 1 + digits + 4 + i] <= '9';
++        }
++        if (ok) {
++            s.resize(pos);
++        }
++    }
++    return s;
++}
++
++// V2.0 block 09: the sidecar is one unified map per model, named by the shard-independent base.  Before
++// this it was `<gguf>.moe-heatmap` -- one file per GGUF shard, and a redundant `.gguf` for a single-file
++// model.  That layout is retired: it is never read or written now, so warn the user when stale ones are
++// present next to the model so they can be removed (the map relearns from a cold start otherwise).
++static void heat_map_warn_retired_locked(const std::string & dir, const std::string & base_name) {
++#if !defined(_WIN32)
++    DIR * d = opendir(dir.empty() ? "." : dir.c_str());
++    if (d == nullptr) {
++        return;   // no readable model directory (or no permission): nothing to report
++    }
++    static const char * const retired = ".moe-heatmap";
++    const size_t retired_len = strlen(retired);
++    int found = 0;
++    while (struct dirent * e = readdir(d)) {
++        const std::string name(e->d_name);
++        if (name.size() <= retired_len || name.compare(name.size() - retired_len, retired_len, retired) != 0) {
++            continue;   // not a heat map
++        }
++        const std::string bare = name.substr(0, name.size() - retired_len);   // the `<gguf>` it was keyed on
++        if (bare == base_name) {
++            continue;   // the current unified name (`<base>.moe-heatmap`)
++        }
++        if (heat_map_base_name(bare) == base_name) {
++            found++;
++            GGML_LOG_WARN("%s: ignoring retired heat map %s%s; heat maps are now one unified index per "
++                          "model named %s%s%s (the retired `<gguf>.moe-heatmap` naming is no longer used)\n",
++                          __func__, dir.c_str(), name.c_str(), dir.c_str(), base_name.c_str(), retired);
++        }
++    }
++    closedir(d);
++    if (found > 0) {
++        GGML_LOG_WARN("%s: %d retired heat-map file(s) ignored; delete them to silence this warning\n",
++                      __func__, found);
++    }
++#else
++    GGML_UNUSED(dir);
++    GGML_UNUSED(base_name);
++#endif
++}
++
 +// Resolve the sidecar path (model dir, else a writable cache dir) and load it.  Called once, from the
 +// loader's first host-source registration (which carries the GGUF path).  Caller holds `g_mutex`.
 +static void heat_map_open_locked(const char * model_path) {
@@ -44834,7 +44907,10 @@ index 000000000..0b4ed345f
 +    const std::string mp(model_path);
 +    const size_t slash = mp.find_last_of('/');
 +    const std::string stem = slash == std::string::npos ? mp : mp.substr(slash + 1);
-+    const std::string primary = mp + ".moe-heatmap";
++    const std::string base_name = heat_map_base_name(stem);
++    const std::string dir  = slash == std::string::npos ? std::string() : mp.substr(0, slash + 1);
++    const std::string primary = dir + base_name + ".moe-heatmap";
++    heat_map_warn_retired_locked(dir, base_name);
 +    const char * env_dir = getenv("MOE_EXPERT_HEATMAP_DIR");
 +#if !defined(_WIN32)
 +    // Is there a readable sidecar next to the model?  If so it is AUTHORITATIVE: a read-only one is
@@ -44849,7 +44925,7 @@ index 000000000..0b4ed345f
 +        return false;
 +    }();
 +    if (env_dir != nullptr && env_dir[0] != '\0') {
-+        g_heat_path     = std::string(env_dir) + "/" + stem + ".moe-heatmap";
++        g_heat_path     = std::string(env_dir) + "/" + base_name + ".moe-heatmap";
 +        g_heat_write_ok = access(env_dir, W_OK) == 0;
 +    } else if (g_heat_frozen) {
 +        g_heat_path     = primary;   // MOE_EXPERT_HEATMAP=load: load + seed, never write
@@ -44875,7 +44951,7 @@ index 000000000..0b4ed345f
 +                          : std::string("/tmp");
 +        base += "/llama-moe-heatmap";
 +        (void) mkdir(base.c_str(), 0755);
-+        g_heat_path     = base + "/" + stem + ".moe-heatmap";
++        g_heat_path     = base + "/" + base_name + ".moe-heatmap";
 +        g_heat_write_ok = access(base.c_str(), W_OK) == 0;
 +        if (!g_heat_write_ok) {
 +            g_heat_frozen = true;

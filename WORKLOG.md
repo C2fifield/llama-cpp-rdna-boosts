@@ -1,5 +1,34 @@
 # WORKLOG - dated delivery records
 
+## 261016.008 (r73) -- MoE heat map: one unified sidecar name per model (block 09)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r73` (base `097cf33d9`; canonical tip
+`08c6c53c7cc1428311b5bb6614224220aaeb2673`, net tree `7252e49b41fb67c74e6bcd4d81a7aeab2d479f44`; 12
+blocks; `validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded
+tree).  **No new block:** block 09 amended.
+
+**The bug.**  The heat-map sidecar name was `<model_path>.moe-heatmap` -- the *exact* path the loader
+happened to hand `moe_cache_set_host_source`, which is the shard that owns the first host-expert tensor.
+For a sharded GGUF the first shard depends on load order, so runs wrote one map per shard
+(`...-00001-of-00009.gguf.moe-heatmap`, `...-00003-...`, `...-00004-...`, `...-00008-...` in one
+directory) and a single-file model got a redundant `<name>.gguf.moe-heatmap`.  A heat map is a per-model
+prior, so a per-shard name is wrong by construction.
+
+**The fix.**  A new `heat_map_base_name()` normalises the basename: strip a trailing `.gguf`, then a
+trailing llama.cpp split marker `-NNNNN-of-NNNNN` (the exact `llama_split_path` format; the two strips are
+independent, so a name with neither -- or only one -- passes through correctly).  `heat_map_open_locked`
+now derives one `primary = <dir>/<base>.moe-heatmap` and uses `<base>` for the `MOE_EXPERT_HEATMAP_DIR`
+and XDG-cache fallbacks too.  **Clean break:** the retired `<gguf>.moe-heatmap` name is never read or
+written; a new `heat_map_warn_retired_locked()` scans the model directory and logs a `WARN` naming each
+stale file and the new unified name (delete them; the map relearns from cold).  The four existing
+scattered sidecars next to `Qwen3.8-Flash-Next-IQ4_NL-PROJFIX` were deleted.
+
+**Verification.**  Build OK.  End-to-end with a gpt-oss-20b symlink named
+`Qwen3.8-...-00001-of-00009.gguf`: a cold run wrote `Qwen3.8-...PROJFIX.moe-heatmap` and the next run's
+verbose log showed `loaded 69 heat entries from ...PROJFIX.moe-heatmap`; a no-suffix `gpt-oss-...gguf`
+wrote `gpt-oss-...MOE.moe-heatmap`; stale shard-style and single-file legacy files each produced the
+warning and were ignored.  `validate-set.sh` green (strict 12/12, tree `7252e49b4`).
+
 ## 261016.007 (r72) -- issue #164 follow-up: the ring must hold the largest staged expert slice (per-device), plus a 1-GPU crash fix
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r72` (base `097cf33d9`; canonical tip

@@ -94,16 +94,22 @@ the slack up front moves the cost to before the arena is sized.
 | `GGML_MOE_CACHE_MAX_TOK` | device MMVQ band (16 on RDNA4; 8 on RDNA3, NVIDIA) | kill-switch | caps the expert-cache **decode/verify band** (routed `MUL_MAT_ID` tokens the cache serves from the arena).  It defaults to the routed-expert MMVQ kernel's own band on the device since r31; `8` restores the pre-r31 band (band widening in `archive/work/moe-cache-band16/`).  A non-numeric value silently yields 1. |
 | `GGML_MOE_GATHER_ONCE` | off | diagnostic | gather each expert once per pass. |
 
-> **Heat map (r60).**  The per-expert heat map is **on by default** whenever the cache is active on
-> host-expert tables (`MOE_EXPERT_CACHE_MIB` auto/positive and a `-ncmoe`/`-cmoe` model).  Its sidecar
-> is `<gguf>.moe-heatmap` (geometry-keyed, atomic `tmp`+`rename`, debounced 60 s, non-fatal on failure);
-> if the model directory is read-only it falls back to `MOE_EXPERT_HEATMAP_DIR` / the XDG cache.  It is
+> **Heat map (r60; unified naming r73).**  The per-expert heat map is **on by default** whenever the
+> cache is active on host-expert tables (`MOE_EXPERT_CACHE_MIB` auto/positive and a `-ncmoe`/`-cmoe`
+> model).  Its sidecar is a **single unified index per model**, `<base>.moe-heatmap`, where `<base>` is
+> the model filename with the `.gguf` extension and any llama.cpp split marker (`-NNNNN-of-NNNNN`)
+> stripped -- so every shard of a sharded GGUF shares one file (`Qwen3.8-Flash-Next-...-00001-of-00009.gguf`
+> -> `Qwen3.8-Flash-Next-....moe-heatmap`), and an unsharded `model.gguf` -> `model.moe-heatmap`.  It is
+> geometry-keyed, atomic (`tmp`+`rename`), debounced 60 s and non-fatal on failure; if the model
+> directory is read-only it falls back to `MOE_EXPERT_HEATMAP_DIR` / the XDG cache.  It is
 > a **placement prior only**: the expert bytes are unchanged, so a run's output is bit-identical and
-> `MOE_EXPERT_HEATMAP=0` reproduces the pre-change behaviour exactly.  The in-run
+> `MOE_EXPERT_HEATMAP=0` reproduces the pre-change behaviour exactly.  The retired per-shard
+> `<gguf>.moe-heatmap` naming is **never read or written**; a stale file in that form next to the model
+> is ignored with a warning (delete it -- the map relearns from a cold start).  The in-run
 > `MOE_EXPERT_CACHE_PREFILL_SEED` remains as a second (weaker) seed source; the heat map is applied
 > first.  **Freezing a map (r61):** set `MOE_EXPERT_HEATMAP=load`, or simply make the heat-map file
-> read-only (`chmod 400 <gguf>.moe-heatmap`).  A read-only file is loaded and used to seed, is never
-> overwritten, and is not relocated.  See `patches/README.md` (block 09, r60/r61) and
+> read-only (`chmod 400 <base>.moe-heatmap`).  A read-only file is loaded and used to seed, is never
+> overwritten, and is not relocated.  See `patches/README.md` (block 09, r60/r61/r73) and
 > `archive/work/moe-heatmap-persistence/`.
 
 > **REMOVED — do not reintroduce (2026-10-10, released r40).**  The device-remap path and its whole family
