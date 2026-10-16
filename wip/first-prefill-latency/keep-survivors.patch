@@ -1,0 +1,67 @@
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index ad1c3628c..bfe18eb57 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -343,6 +343,9 @@ bool                                g_heat_dirty      = false;
+ std::chrono::steady_clock::time_point g_heat_last_save{};
+ bool                                g_prov_evict      = false; // MOE_EXPERT_CACHE_PROVISIONAL=1: pre-filled entries are evictable like empty slots until first hit
+ int                                 g_prefill_seed_n  = 0;     // MOE_EXPERT_CACHE_PREFILL_SEED_N: cap seeded experts/table (0 = all slots)
++// wip/first-prefill-latency: keep the still-valid survivors of a cut layer instead of freeing and
++// re-seeding them on a re-arm (see `moe_cache_rearm`).  Opt-in prototype, NOT part of the delivery.
++bool                                g_rearm_keep_survivors = false;
+ int64_t                             g_alloc_clamped   = 0;
+ int64_t                             g_alloc_failed    = 0;
+ 
+@@ -615,6 +618,7 @@ void parse_env() {
+     if (g_prefill_seed_n < 0) {
+         g_prefill_seed_n = 0;
+     }
++    g_rearm_keep_survivors = env_int("MOE_EXPERT_CACHE_REARM_KEEP_SURVIVORS", 0) != 0;
+     if (g_period < 1) {
+         g_period = 1;
+     }
+@@ -3236,6 +3240,44 @@ bool moe_cache_rearm() {
+         std::stable_sort(ids.begin(), ids.end(), [](int a, int b) {
+             return g_tables[a].expert_bytes > g_tables[b].expert_bytes;
+         });
++        // wip/first-prefill-latency: a survivor (a table that kept its slots across the eviction) lies
++        // outside the taken slab range, so its arena and residents are valid and its slot count already
++        // equals the per-layer target.  Keep it and rebuild only the stood-down tables -- the whole-layer
++        // free below would discard its resident bytes and force the heat/prefill seed to re-copy them.
++        // If the partial rebuild cannot reach the target, fall through to the whole-layer path (the shrink
++        // retry needs every table of the layer free to re-size uniformly).
++        if (g_rearm_keep_survivors) {
++            bool keep    = true;
++            int  n_stood = 0;
++            for (int i : ids) {
++                if (g_tables[i].slots > 0 && g_tables[i].slots != target) {
++                    keep = false;   // a survivor is not at the target: the layer is already non-uniform
++                    break;
++                }
++                if (g_tables[i].slots == 0) {
++                    n_stood++;
++                }
++            }
++            if (keep) {
++                for (int i : ids) {
++                    if (g_tables[i].slots == 0) {
++                        alloc_table_locked(g_tables[i], target);
++                    }
++                }
++                int mn = target;
++                for (int i : ids) {
++                    if (g_tables[i].slots < mn) {
++                        mn = g_tables[i].slots;
++                    }
++                }
++                if (mn == target) {
++                    n_rearmed += n_stood;
++                    GGML_LOG_INFO("%s: layer %d re-armed %d stood-down table(s), kept %d survivor(s) "
++                                  "(no re-seed)\n", __func__, layer, n_stood, (int) ids.size() - n_stood);
++                    continue;
++                }
++            }
++        }
+         for (int attempt = 0; attempt < 8; ++attempt) {
+             for (int i : ids) {
+                 if (g_tables[i].slots > 0) {

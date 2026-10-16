@@ -1,0 +1,167 @@
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index ad1c3628c..9cb8bde80 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -31,6 +31,12 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++// wip/first-prefill-latency: temporary phase profiling, only when RDNA_PROF is set.  NOT for the delivery.
++static bool moe_prof_on() {
++    static const bool on = getenv("RDNA_PROF") != nullptr;
++    return on;
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // state
+ // ---------------------------------------------------------------------------------------------
+@@ -1507,6 +1513,7 @@ void apply_prefill_seed_locked(table_t & t) {
+     if (from_tally && (int) t.prefill_count.size() != t.n_experts) {
+         return;
+     }
++    const int64_t prof_t0 = ggml_time_us();
+     // Rank order.  From the tally: descending prefill frequency (expert id asc on a tie).
+     std::vector<int32_t> rank((size_t) t.n_experts);
+     for (int e = 0; e < t.n_experts; e++) {
+@@ -1581,6 +1588,12 @@ void apply_prefill_seed_locked(table_t & t) {
+         GGML_LOG_INFO("%s: layer=%d role=%s prefill-%s %d/%d slots (%d experts; %lld prefill tokens)\n",
+                       __func__, t.layer, t.role.c_str(), from_tally ? "seeded" : "loaded",
+                       seeded, t.slots, t.n_experts, (long long) t.prefill_tokens);
++        if (moe_prof_on()) {
++            GGML_LOG_WARN("[PROF] prefill_seed layer=%d role=%s seeded=%d slots=%d bytes=%lld ms=%.1f",
++                          t.layer, t.role.c_str(), seeded, t.slots,
++                          (long long) seeded * (long long) t.expert_bytes,
++                          (double) (ggml_time_us() - prof_t0) / 1000.0);
++        }
+     }
+ }
+ 
+@@ -1596,6 +1609,7 @@ void apply_heat_seed_locked(table_t & t) {
+     if ((int) t.heat.size() != t.n_experts || t.n_experts <= 0) {
+         return;
+     }
++    const int64_t prof_t0 = ggml_time_us();
+     uint64_t total = 0;
+     for (uint32_t v : t.heat) {
+         total += v;
+@@ -1661,6 +1675,12 @@ void apply_heat_seed_locked(table_t & t) {
+         t.slot_dirty = true;
+         GGML_LOG_INFO("%s: layer=%d role=%s heat-seeded %d/%d slots from the persisted map (%d experts)\n",
+                       __func__, t.layer, t.role.c_str(), seeded, t.slots, t.n_experts);
++        if (moe_prof_on()) {
++            GGML_LOG_WARN("[PROF] heat_seed layer=%d role=%s seeded=%d slots=%d bytes=%lld ms=%.1f",
++                          t.layer, t.role.c_str(), seeded, t.slots,
++                          (long long) seeded * (long long) t.expert_bytes,
++                          (double) (ggml_time_us() - prof_t0) / 1000.0);
++        }
+     }
+ }
+ 
+@@ -2388,6 +2408,7 @@ static bool moe_cache_tables_complete_locked() {
+ // pass runs uncached (the scheduler copies the full experts), the second sizes and starts filling.
+ void alloc_all_locked() {
+     g_write_seq++;
++    const int64_t prof_t0 = ggml_time_us();
+     if (g_sized) {
+         return;
+     }
+@@ -2737,6 +2758,10 @@ void alloc_all_locked() {
+             g_rearm_slots[t.layer] = t.slots;
+         }
+     }
++    if (moe_prof_on()) {
++        GGML_LOG_WARN("[PROF] alloc_all_locked arena=%.1f MiB ms=%.1f",
++                      (double) g_arena_bytes / (1024 * 1024), (double) (ggml_time_us() - prof_t0) / 1000.0);
++    }
+ }
+ 
+ } // namespace
+@@ -3200,6 +3225,7 @@ bool moe_cache_rearm() {
+     if (!g_sized || g_tables.empty()) {
+         return false;
+     }
++    const int64_t prof_t0 = ggml_time_us();
+ 
+     // Which layers have stood-down tables?  A layer is re-armed as a unit: gate/up/down must stay
+     // slot-uniform, or the shared remap points a role at the wrong expert.  A stood-down table is one
+@@ -3273,6 +3299,11 @@ bool moe_cache_rearm() {
+         GGML_LOG_WARN("%s: re-armed %d stood-down expert-cache tables after a compute-buffer drop "
+                       "(arena now %.1f MiB)\n", __func__, n_rearmed, (double) g_arena_bytes / (1024 * 1024));
+     }
++    if (moe_prof_on()) {
++        GGML_LOG_WARN("[PROF] rearm n=%d arena=%.1f MiB ms=%.1f",
++                      n_rearmed, (double) g_arena_bytes / (1024 * 1024),
++                      (double) (ggml_time_us() - prof_t0) / 1000.0);
++    }
+     return n_rearmed > 0;
+ }
+ 
+@@ -3295,6 +3326,7 @@ size_t moe_cache_evict_slab_range(int device, void * lo, void * hi) {
+     if (!g_sized || g_tables.empty() || lo == nullptr || hi == nullptr || lo >= hi) {
+         return 0;
+     }
++    const int64_t prof_t0 = ggml_time_us();
+     const size_t unit    = ggml_cuda_slab_arena_unit(device);
+     const uintptr_t a_lo = (uintptr_t) lo;
+     const uintptr_t a_hi = (uintptr_t) hi;
+@@ -3337,6 +3369,10 @@ size_t moe_cache_evict_slab_range(int device, void * lo, void * hi) {
+         GGML_LOG_WARN("%s: evicted %.1f MiB of arena tables from the taken slab chunks (arena now %.1f MiB)\n",
+                       __func__, (double) freed / (1024 * 1024), (double) g_arena_bytes / (1024 * 1024));
+     }
++    if (moe_prof_on()) {
++        GGML_LOG_WARN("[PROF] slab_evict device=%d freed=%.1f MiB ms=%.1f",
++                      device, (double) freed / (1024 * 1024), (double) (ggml_time_us() - prof_t0) / 1000.0);
++    }
+     return freed;
+ }
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index ef600e788..bf3df06a0 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -23,6 +23,12 @@
+ #include <string>
+ #include <unordered_map>
+ 
++// wip/first-prefill-latency: temporary phase profiling, only when RDNA_PROF is set.  NOT for the delivery.
++static bool ll_prof_on() {
++    static const bool on = getenv("RDNA_PROF") != nullptr;
++    return on;
++}
++
+ //
+ // llama_context
+ //
+@@ -2040,6 +2046,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         }
+     }
+     if (drop_now) {
++        const int64_t prof_drop_t0 = ggml_time_us();
+         ggml_backend_sched_drop_buffers(sched.get());
+         // re-reserve the widest post-prefill (verify) layout so the first decode graphs fit.
+         // The reserve must use the CURRENT ubatch's sequence count, not a fixed 1: the memory context
+@@ -2143,6 +2150,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+                 }
+             }
+         }
++        if (ll_prof_on()) {
++            LLAMA_LOG_WARN("[PROF] drop+rearm ms=%.1f", (double) (ggml_time_us() - prof_drop_t0) / 1000.0);
++        }
+     }
+ 
+     static const bool draft_sched2 = [] {
+@@ -2682,7 +2692,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+         ggml_status status;
+ 
++        const int64_t prof_t0 = ggml_time_us();
+         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
++        if (ll_prof_on()) {
++            ggml_backend_sched_synchronize(sched.get());
++            LLAMA_LOG_WARN("[PROF] ubatch tokens=%u seqs=%u res=%d ms=%.1f",
++                           ubatch.n_tokens, ubatch.n_seqs, res != nullptr,
++                           (double) (ggml_time_us() - prof_t0) / 1000.0);
++        }
+ 
+         if (!res) {
+             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
