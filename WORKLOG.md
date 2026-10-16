@@ -47,6 +47,18 @@ the open platform validation; the `beta/rdna2/` candidate and tester checklist m
 recorded gates stand and no new runtime gate was run; RDNA2 hardware was not available.  External
 confirmation is requested on issue #158.
 
+**Published (2026-10-16).**  The delivery repo `main` was pushed (`8b2aa60..bbbe57d`) and the release
+tagged **`v12-097cf33d9-r70`** (annotated, tag object `844cbebdb`); CI `Validate delivery set` and
+`Release patch set` are green and the GitHub Release carries `patches.tar.gz`,
+`rdna-boosts-all.patch`, `release.json` and `SHA256SUMS`.  The personal fork's `rdna-boosts` branch was
+force-pushed to the same tree (`d210c73b7 -> 4686472c1`, `--force-with-lease`, fork only) from a clean
+12-commit chain on the base (`applied tree 592a097cd...`, `validate-set.sh` green on a fresh tarball;
+the same-seed 4B Q8_0 coherence run on that build is `f051d98e4e30`, byte-identical to r69).  The ROCm
+container images (7.14.1 + 10.1, `full`/`light`/`server` + the immutable `-097cf33d9` variants,
+`latest` on 10.1) are built and pushed off host by the `radiance` worker
+(`scripts/container-watch.sh`), which polls the tag; nothing ran on the primary box.  Issue #158 has
+the public write-up for `@slavap` and is closed.
+
 ## 261016.001 (r69) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) and PR #163 (Q8_1 launch fusion); `GGML_CUDA_ASYNC_INPUT` reverted to opt-in
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r69` (base `097cf33d9`; canonical tip
