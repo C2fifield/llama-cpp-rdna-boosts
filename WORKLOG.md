@@ -1,5 +1,56 @@
 # WORKLOG - dated delivery records
 
+## 261016.006 (r71) -- issue #164: ring-region-guarded prefill drop, decode-only ring release, and auto ring sizing
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r71` (base `097cf33d9`; canonical tip
+`0eae5b86a268f6bbba59364a0bf1722018e6a8f0`, net tree `dc2cc150df2a7b8242c4a8668237e91e26302bdf`; 12
+blocks; `validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded
+tree).  **No new block:** blocks 09/10/11 are amended (`ggml-backend{,-impl}.h`; `ggml-backend.cpp`,
+`ggml-backend-meta.cpp`, `ggml-cuda/{common.cuh,ggml-cuda.cu,ggml-cuda-slab.cu,ggml-cuda-vmm.h}`;
+`ggml-cpu.cpp`, `ggml-rpc.cpp`, `llama-context.cpp`).
+
+**Issue #164 (reporter's toggle points at the r67 narrow -> wide compute-buffer drop).**  On the
+reporter's config (gfx1201, 2x R9700, GSQ IQ3_XXS + shared MTP, `-sm tensor -ncmoe 16 -ub 2048`, q8_0
+KV, `draft-mtp n3`) the r67 narrow -> wide drop (`if (ring_arm && n_tokens_prev < 64)`) fires even though
+the slab carved **no** H2D ring hole (`ring_req=6 GiB` > `mapped` 5.62/5.75 GiB, so `ring_region=0`): the
+drop only exists to force a wide view to re-place above a carved hole, and with no hole it just churns
+the compute layout.  With HIP graphs on it costs ~13-16 % decode (measured r68 stock **101.8** vs the
+reporter's drop-off toggle **118.2** t/s; r69 stock **100.0**; graphs off both ~104-105; identical
+acceptance 0.85928, identical greedy text, identical cache hit/traffic).  Fix: a new
+`ggml_backend_dev_slab_ring_region(dev)` accessor (`ring_region > 0`) and only drop when a hole exists
+(`llama-context.cpp`).  Fixed on the reporter's config: **118.4-118.5** t/s, 0 evictions.
+
+**Ring release on decode (the second finding).**  In a ring-armed config the first prefill -> decode
+`drop_now` released the wide view but re-reserved the narrow one **above** the ring, because
+`ggml_backend_cuda_device_slab_ring_set` skipped the disarm while `!moe_cache_is_sized()` and the cache
+is only (re)armed after that reserve: the boundary fell 9472 -> 9216 MiB instead of to the 1536 MiB
+narrow floor, and the width recorder then baselined at 9216 so it never re-dropped.  The 6 GiB hole was
+held for the whole decode.  The gate existed to prevent an arena-sizes-into-the-hole then evict/cold
+re-arm MTP NaN (`archive/work/slab-ring-region/` 9.4), but that consumer (whole-table staging **from**
+the cache, `stage_from_cache`) has since been removed and the NaN no longer reproduces (GSQ and IQ4_NL
+field configs, 0 NaN).  Retired the gate so a decode-only pass returns the ring+wide to the arena; the
+deferred `alloc_all_locked` then sizes the decode arena across it.  Measured GSQ `-ncmoe 48`: arena
+**8371 -> 33571 MiB**, hit **0.94 -> 0.985**, decode **92.3 -> 132.6** t/s (2000-token warmup + 2500-token
+decode), greedy text byte-identical (`e12a175a6ad4`) and acceptance identical.  A prefill that follows
+re-arms and evicts only what filled the hole while decode-only.
+
+**Auto ring sizing (per GPU).**  The 6144 MiB `GGML_CUDA_SLAB_RING_MIB` default was the cap on a bound
+derived from a *merged* host tensor, applied per device -- ~4x oversized on 2 GPUs.  Measured prefill
+knees (per-device ring vs 31.5k-token pp, `-ncmoe 48`): n1 ub2048 ~3 GiB / ub8192 ~6 GiB; n2 ub8192
+~1.5 GiB; n3 ub8192 <1 GiB; decode flat and text-identical across every ring size.  Auto-size when the
+env is unset: `min(1800/n + ub/(1.7 n^2), 0.25 * VRAM)` MiB per GPU (n = host-expert device count,
+smallest cap wins), applied in `llama_context` before `sched_reserve()` via
+`ggml_backend_dev_slab_set_ring_cap`; `GGML_CUDA_SLAB_RING_MIB` stays a verbatim per-GPU override.
+Validated at the formula's sizes: n1 ub2048 630 (plateau 630), n1 ub8192 2143 (2141), n2 ub2048 897
+(896), n2 ub4096 1527 (1526), n2 ub8192 1917 (2000, run noise), n3 ub8192 2031 (2054).  Warm-cache #164
+re-check: `-ncmoe 16` 120.2 -> **138.0** t/s, `-ncmoe 48` 92.3 -> **132.6** t/s, text byte-identical.
+3 concurrent sessions (`-np 3`, `-ncmoe 48`): 0 NaN, arena 36.4 GiB.
+
+**Gates.**  `validate-set.sh` green on a fresh tarball (strict 12/12, tree match).  Same-seed greedy text
+byte-identical stock vs fix on both the no-ring (`-ncmoe 16`) and ring (`-ncmoe 48`) configs, warm and
+cold.  Decode deterministic and text-identical across all ring sizes tested.  Issue #164 to be answered
+and closed.
+
 ## 261016.005 (no release) -- #67 wording re-correction: keep the three non-determinism axes separate
 
 **No delivery change.**  Follow-up to 261016.004: the first re-correction still read as if HIP graphs

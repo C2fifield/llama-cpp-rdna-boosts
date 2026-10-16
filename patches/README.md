@@ -11,7 +11,19 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r70` (2026-10-16) -- RDNA2 (`gfx1030`) best-effort bring-up (issue #158):**
+> **Current release `v12-097cf33d9-r71` (2026-10-16) -- issue #164: ring-region-guarded prefill drop, decode-only ring release, and auto ring sizing:**
+> canonical tip `0eae5b86a`, net tree `dc2cc150df2a7b8242c4a8668237e91e26302bdf`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.
+> The r67 narrow -> wide compute-buffer drop is now guarded on a carved H2D ring hole
+> (`ggml_backend_dev_slab_ring_region`), so a config whose hole does not fit no longer pays ~13-16 %
+> decode; a decode-only pass now releases the ring+wide (the hold-until-sized gate is retired), letting
+> the deferred arena sizing span it (GSQ `-ncmoe 48`: arena 8371 -> 33571 MiB, hit 0.94 -> 0.985, decode
+> 92 -> 133 t/s); and the ring auto-sizes per GPU as `min(1800/n + ub/(1.7 n^2), 0.25*VRAM)` MiB when
+> `GGML_CUDA_SLAB_RING_MIB` is unset (`n` = host-expert device count; the env stays a verbatim per-GPU
+> override).  Same-seed greedy text byte-identical on the `-ncmoe 16` and `-ncmoe 48` configs, warm and
+> cold.  Record: `../WORKLOG.md` 261016.006.
+>
+> **Previous release `v12-097cf33d9-r70` (2026-10-16) -- RDNA2 (`gfx1030`) best-effort bring-up (issue #158):**
 > canonical tip `2afc3a041`, net tree `592a097cd6cef3ef1d179f1d79441fa798a88439`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 06 and 10** amended, no new block.
 > A `gfx1030` compile audit found two WMMA helper shims that fell through to the first-gen gfx11

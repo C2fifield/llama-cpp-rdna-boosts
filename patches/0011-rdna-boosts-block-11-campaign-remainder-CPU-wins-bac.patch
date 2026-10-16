@@ -1,4 +1,4 @@
-From 2afc3a04135bf0057a61e76054ca56eb98dc1015 Mon Sep 17 00:00:00 2001
+From 0eae5b86a268f6bbba59364a0bf1722018e6a8f0 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -24,7 +24,7 @@ fills were written, which left a -Wmissing-field-initializers warning.
  ggml/src/ggml-cann/ggml-cann.cpp              |   1 +
  ggml/src/ggml-cpu/arch-fallback.h             |   1 -
  ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++++
- ggml/src/ggml-cpu/ggml-cpu.cpp                |   8 +-
+ ggml/src/ggml-cpu/ggml-cpu.cpp                |  10 +-
  ggml/src/ggml-cpu/repack.cpp                  |   3 +
  .../template-instances/generate_cu_files.py   |  46 ++--
  ggml/src/ggml-et/ggml-et.cpp                  |   1 +
@@ -32,21 +32,21 @@ fills were written, which left a -Wmissing-field-initializers warning.
  ggml/src/ggml-metal/ggml-metal.cpp            |   1 +
  ggml/src/ggml-opencl/ggml-opencl.cpp          |   1 +
  ggml/src/ggml-openvino/ggml-openvino.cpp      |   1 +
- ggml/src/ggml-rpc/ggml-rpc.cpp                |   9 +
+ ggml/src/ggml-rpc/ggml-rpc.cpp                |  11 +
  ggml/src/ggml-sycl/ggml-sycl.cpp              |   1 +
  ggml/src/ggml-virtgpu/ggml-backend.cpp        |   1 +
  ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   1 +
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
- src/llama-context.cpp                         | 113 ++++++++-
+ src/llama-context.cpp                         | 149 +++++++++++-
  src/llama-context.h                           |   4 +
  src/llama-ext.h                               |   6 +
  src/llama-model.cpp                           |   8 +
  src/llama-model.h                             |   3 +
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 30 files changed, 683 insertions(+), 88 deletions(-)
+ 30 files changed, 723 insertions(+), 88 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -751,7 +751,7 @@ index ea54cfe44..a7d8182c3 100644
      const int qk = QK8_0;
      const int nb = n / qk;
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 05f74e0fa..e36d9b422 100644
+index 05f74e0fa..0cb0329a8 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
@@ -771,7 +771,7 @@ index 05f74e0fa..e36d9b422 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -699,6 +700,11 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+@@ -699,6 +700,13 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -780,6 +780,8 @@ index 05f74e0fa..e36d9b422 100644
 +    /* .moe_cache_set_host_pool   = */ nullptr,
 +    /* .moe_cache_set_host_source = */ nullptr,
 +    /* .slab_compute_plain   = */ nullptr,
++    /* .slab_ring_region     = */ nullptr,
++    /* .slab_set_ring_cap    = */ nullptr,
  };
  
  // CPU backend - backend (reg)
@@ -915,7 +917,7 @@ index d5106a568..7f8e826f9 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index 80f094dab..1011e8b3c 100644
+index 80f094dab..236abb063 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -1114,6 +1114,9 @@ static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
@@ -936,7 +938,7 @@ index 80f094dab..1011e8b3c 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -2918,6 +2922,11 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+@@ -2918,6 +2922,13 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -945,6 +947,8 @@ index 80f094dab..1011e8b3c 100644
 +    /* .moe_cache_set_host_pool   = */ nullptr,
 +    /* .moe_cache_set_host_source = */ nullptr,
 +    /* .slab_compute_plain   = */ nullptr,
++    /* .slab_ring_region     = */ nullptr,
++    /* .slab_set_ring_cap    = */ nullptr,
  };
  
  // backend reg interface
@@ -1021,7 +1025,7 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 6ab35e5ac..bfac0264d 100644
+index 6ab35e5ac..dad4bcade 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -310,6 +310,11 @@ llama_context::llama_context(
@@ -1036,7 +1040,42 @@ index 6ab35e5ac..bfac0264d 100644
  
      cparams.ctx_type          = params.ctx_type;
      cparams.rope_scaling_type = params.rope_scaling_type;
-@@ -1670,6 +1675,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+@@ -705,6 +710,34 @@ llama_context::llama_context(
+             moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs, backend_buft, cparams.moe_cache_size);
+         }
+ 
++        // wip/slab-ring-region (issue #164): auto-size the H2D staging ring (per GPU).  The ring only has to
++        // keep the prefill staging fed; too large and it evicts more arena on each wide pass.  Measured
++        // knees on gfx1201 (GSQ -ncmoe 48, 31.5k prompt): n=1 ub2048 ~3 GiB, n=1 ub8192 ~6 GiB, n=2 ub8192
++        // ~1.5 GiB, n=3 ub8192 <1 GiB -- i.e. the per-device need scales with 1/n (slices shrink) and
++        // 1/n^2 (each device feeds a smaller share of the prefill).  1800/n + ub/(1.7 n^2) fits those.
++        // Capped at 1/4 of the smallest staging device's VRAM so it scales down on a small card, and the
++        // ring is one global region, so the smallest cap wins.  `GGML_CUDA_SLAB_RING_MIB` is a verbatim
++        // per-GPU override and always wins.  Runs before `sched_reserve`, i.e. before the slab exists.
++        if (!model.moe_host_expert_bytes.empty() && getenv("GGML_CUDA_SLAB_RING_MIB") == nullptr) {
++            const double n_stage = (double) model.moe_host_expert_bytes.size();
++            if (n_stage > 0.0) {
++                size_t ring_bytes = (size_t) ((1800.0 / n_stage +
++                        (double) cparams.n_ubatch / (1.7 * n_stage * n_stage)) * 1024.0 * 1024.0);
++                size_t vram_cap = (size_t) -1;
++                for (const auto & kv : model.moe_host_expert_bytes) {
++                    size_t free_b = 0, total_b = 0;
++                    ggml_backend_dev_memory(kv.first, &free_b, &total_b);
++                    if (total_b > 0) {
++                        vram_cap = std::min(vram_cap, total_b / 4);
++                    }
++                }
++                if (vram_cap != (size_t) -1) {
++                    ring_bytes = std::min(ring_bytes, vram_cap);
++                }
++                ggml_backend_dev_slab_set_ring_cap(model.moe_host_expert_bytes.begin()->first, ring_bytes);
++            }
++        }
++
+         sched_reserve();
+ 
+         if (!cparams.flash_attn) {
+@@ -1670,6 +1703,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
  
      GGML_ASSERT(lid <= model.hparams.n_layer());
  
@@ -1049,7 +1088,7 @@ index 6ab35e5ac..bfac0264d 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -1886,6 +1897,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1886,6 +1925,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          }
      }
  
@@ -1091,8 +1130,24 @@ index 6ab35e5ac..bfac0264d 100644
      // wip/slab-ring-region: the H2D staging ring is one meta-unit with the WIDE (prefill) compute layout.
      // It is armed for a wide pass (>= the staging gate floor, 64 tokens) and disarmed for a narrow one, so
      // a decode-only stretch returns its hole to the arena.  This runs BEFORE the drop's cache re-arm, so a
-@@ -1902,6 +1948,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1894,14 +1968,35 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // while the ring is used on every wide pass.  `ring_set` is a no-op when the state already matches.
+     if (!model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+         const bool ring_arm = ubatch.n_tokens >= 64;
++        // wip/slab-ring-region (issue #164): the narrow -> wide drop below exists only to force the wide
++        // view to re-place ABOVE a carved ring hole so the ring arms.  When the slab carved no hole
++        // (`ring_region == 0`; e.g. the requested hole does not fit under `mapped`), the drop has nothing
++        // to arm and merely churns the compute layout -- measured ~13-16 % decode on a pinned-host-expert
++        // MoE config, where the replayed HIP graph lost its replay benefit.  Only drop when a hole exists.
++        bool ring_carved = false;
+         for (const auto & kv : model.moe_host_expert_bytes) {
+             ggml_backend_dev_slab_ring_set(kv.first, ring_arm);
++            ring_carved = ring_carved || ggml_backend_dev_slab_ring_region(kv.first) > 0;
+         }
+         for (size_t d = 0; d < model.devices.size(); ++d) {
+             if (!model.devices[d].is_meta) {
                  ggml_backend_dev_slab_ring_set(model.devices[d].dev, ring_arm);
++                ring_carved = ring_carved || ggml_backend_dev_slab_ring_region(model.devices[d].dev) > 0;
              }
          }
 +        // wip/slab-ring-region (prefill arming): the WIDE (prefill) view is what places the ring -- the
@@ -1105,13 +1160,13 @@ index 6ab35e5ac..bfac0264d 100644
 +        // re-reserves above the ring (`ring_set` has already marked the request wide).  Symmetric with the
 +        // `drop_now` wide -> narrow transition below; consecutive prefill ubatches (`n_tokens_prev >= 64`)
 +        // keep the wide buffer.
-+        if (ring_arm && n_tokens_prev < 64) {
++        if (ring_carved && ring_arm && n_tokens_prev < 64) {
 +            ggml_backend_sched_drop_buffers(sched.get());
 +        }
      }
      if (drop_now) {
          ggml_backend_sched_drop_buffers(sched.get());
-@@ -3676,9 +3735,57 @@ public:
+@@ -3676,9 +3771,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
