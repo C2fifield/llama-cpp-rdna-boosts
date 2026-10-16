@@ -1,5 +1,58 @@
 # WORKLOG - dated delivery records
 
+## 261016.001 (r69) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) and PR #163 (Q8_1 launch fusion); `GGML_CUDA_ASYNC_INPUT` reverted to opt-in
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r69` (base `097cf33d9`; canonical tip
+`ee1fe82f2`, net tree `9e2cdef733e2afee7e3eb54151593e1ac3fdfdb2`; 12 blocks; `validate-set.sh` green on
+a fresh tarball -- strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:**
+blocks 07/08/10 are amended.  Both PRs arrived from `@briansp2020` as `wip/` packets (the PRs added
+`wip/rdna3-mmvq-q4k-vdr4/` and `wip/q8-quantize-fusion/`); they are archived under `archive/work/`
+with a `RESOLUTION.md` each, with no `wip/` stub left behind.
+
+**PR #162 `rdna3-mmvq-q4k-vdr4` (blocks 07 + 08 + 10).**  A 32-element dense Q4_K VDR-4 dot product
+(`vec_dot_q4_K_q8_1_vdr4_dense`, block 07 `vecdotq.cuh`), 2 rows/block for Q6_K verify batches and
+4 -> 2 rows for Q4_K verify batches with the new dot product (block 08 `mmvq-rdna-params.cuh`), and the
+host/device VDR selection `get_vdr_mmvq_dense` (block 10 `mmvq.cu` + `mmvq-vecdot.cuh`, the last owner
+of those files).  The RDNA4 arm is a **build-time opt-in** `-DGGML_HIP_RDNA4_Q4K_DENSE_VDR4`, default
+off (it cannot be a runtime env var: the choice is a `constexpr __device__` and the host K-split must
+match).  No delivery change on gfx1201 unless that flag is passed.
+
+*Native-Linux gfx1100 (fingon, 7900 XTX, ROCm 7.14).*  Qwen3.8-27B UD-Q4_K_M, MTP draft `n_max 3`,
+code prompt with **identical text** (`5b98d5f7e862`): r68 baseline `101.4 / 101.6` -> candidate
+`103.7 / 103.5` t/s (**+2.1 %**); `llama-bench tg128` interleaved `42.00 -> 42.27` (**+0.6 %**; the
+first `29.77 ± 1.24` row was a warm-up, the settled value is `30.84 ± 0.03`).  Width probe **PASS**
+(worst maxdiff 0) on r68 and candidate; `none == draft-mtp n3` byte-identical (`5b98d5f7e862`).
+
+*Gates (r69 candidate, gfx1201).*  Prefill-logit **PASS** (mean KLD **0.000707** / same-top-p
+**98.755 %**, identical to the recorded base).  4B Q8_0 `-n 64` greedy `f051d98e4e30` (== r65's
+64-token arm); 27B Q4_K_XL plain greedy `f05cec89f4cb` x3 (== r65); MTP verify `36f05bf6f888`;
+`none == draft-mtp n3` `36f05bf6f888`; width probe **PASS** (worst maxdiff 0).  The 0004 flag measured
+only `30.84 -> 30.93` `tg128` (about +0.3 %, inside noise) and changed greedy text on some prompts
+(`f05cec89f4cb` vs `3c109f236a3f`), deterministically, so it stays off by default.  CUDA and RDNA3_5
+were not built.
+
+**PR #163 `q8-quantize-fusion` (block 10).**  Three output-identical parts, each with an A/B switch:
+the canonical Q8_1 cache key (`GGML_CUDA_Q8_1_CACHE_EXACT` restores the exact-shape match), the
+qwen4exp shared-expert-first node order (`LLAMA_SHEXP_FIRST=0`), and the `hc_mix_bf16_up_collapse2`
+Q8_1 epilogue (`GGML_HC_MIX_Q8=0`).  Validated on Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS (`-sm tensor` +
+shared MTP Q8_0, q8_0 KV, 3x R9700): output **bit-identical** on/off and `none == draft-mtp`
+(`bbb21c2fb19a`); the shared-expert down+gate fusion is inert on this model (identical output with
+`GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1`).  Decode speed on `108.0` vs off `108.0` t/s (3 interleaved
+rounds), so the reporter's ~1 % did not reproduce on this 3-GPU box; accepted as a no-regression
+launch-count reduction rather than a measured local win.  A one-off Flash-Next `--spec-type none`
+VRAM-fit abort did not reproduce.
+
+**`GGML_CUDA_ASYNC_INPUT` reverted to opt-in (block 10).**  A `-ub 8` `llama-perplexity`
+`--kl-divergence-base` **self-comparison** (the same binary run twice, `n_seq > 1`) is the instrument:
+r65 `build-rocm-hybrid` `RMS Δp 0.001 % / same-top-p 100.000 %`; r68+r69-candidate `4.4 % / 93.9 %`;
+the same with PR #163 fully off `4.2 % / 95.3 %`, with `GGML_CUDA_GDN_GATHER_INDEX=0` `3.5 % /
+94.5 %`, and with **`GGML_CUDA_ASYNC_INPUT=0`** `0.001 % / 100.000 %`.  So the r68 run-to-run logits
+divergence is the default-on async graph-input upload (issue #151), not either PR.  It is narrow
+(single-sequence greedy at `-ub 8` is deterministic 3/3, and the official default-ubatch prefill-logit
+gate was always clean), but it is a correctness regression in the r68 default, so r69 makes
+`GGML_CUDA_ASYNC_INPUT` **opt-in** (`=1` enables; the async path is unchanged).  The GDN gather index
+and the r68 log-level changes stay.
+
 ## 261015.006 (r68) -- issue #151: async graph-input uploads default-on + per-graph GDN state-gather index
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r68` (base `097cf33d9`; canonical tip

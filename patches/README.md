@@ -11,7 +11,28 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r68` (2026-10-15) -- issue #151 host-path fix: async graph-input uploads default-on + per-graph GDN state-gather index:**
+> **Current release `v12-097cf33d9-r69` (2026-10-16) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) + PR #163 (Q8_1 launch fusion) + `GGML_CUDA_ASYNC_INPUT` reverted to opt-in:**
+> canonical tip `ee1fe82f2`, net tree `9e2cdef733e2afee7e3eb54151593e1ac3fdfdb2`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 07/08/10** amended, no new block.
+> (1) `@briansp2020`'s **PR #162**: a 32-element dense Q4_K VDR-4 dot product on gfx1100
+> (`vec_dot_q4_K_q8_1_vdr4_dense`, block 07), 2 rows/block for Q6_K and 4 -> 2 rows for Q4_K verify
+> batches (block 08), and the host/device VDR selection (block 10).  Native-Linux gfx1100 (7900 XTX,
+> ROCm 7.14): MTP **101.5 -> 103.6 t/s (+2.1 %)** with identical code-prompt text, `tg128` **+0.6 %**.
+> The RDNA4 arm is a **build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_DENSE_VDR4`, default off): only
+> ~+0.3 % `tg128` on the R9700 and it changes greedy text on some prompts, deterministically.
+> (2) **PR #163** (block 10): canonical Q8_1 cache key, qwen4exp shared-expert-first, and the
+> `hc_mix_bf16_up_collapse2` Q8_1 epilogue; output **bit-identical**, accepted as a no-regression
+> launch-count cleanup (the reporter's ~1 % did not reproduce on our 3-GPU box).  (3)
+> `GGML_CUDA_ASYNC_INPUT` is reverted to **opt-in** (`=1` enables): a `-ub 8` perplexity
+> self-comparison (same build twice, `n_seq > 1`) showed r68 run-to-run logits divergence (`RMS Δp`
+> 4-6 %, same-top-p 93-94 %) with the r68 default, while `=0` is bit-identical (prefill-logit, single
+> sequence greedy and the default-ubatch gate were already fine).  Gates: prefill-logit **0.000707 /
+> 98.755 %**, 4B coherence `f051d98e4e30` (`-n 64` arm, == r65), 27B Q4_K_XL no-flag `f05cec89f4cb`
+> (== r65), `none == draft-mtp` on gfx1100 / gfx1201 / Flash-Next, width probe **PASS** (worst maxdiff
+> 0), deterministic.  Records: `archive/work/rdna3-mmvq-q4k-vdr4/`,
+> `archive/work/q8-quantize-fusion/`; see `../WORKLOG.md` 261016.001.
+>
+> **Previous release `v12-097cf33d9-r68` (2026-10-15) -- issue #151 host-path fix: async graph-input uploads default-on + per-graph GDN state-gather index:**
 > canonical tip `fc6dcad9f`, net tree `ffe832696698786865f4adf18216a019b61b160e`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10** amended, no new block.
 > (1) `GGML_CUDA_ASYNC_INPUT` is now **default-on** (`=0` restores the synchronous path); the

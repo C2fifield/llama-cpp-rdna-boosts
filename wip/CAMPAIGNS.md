@@ -34,6 +34,15 @@ is the signature of a stub, not of a campaign.
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
 
+**Promoted (r69, 2026-10-16).**  Two contributor PRs from `@briansp2020` (#162, #163) were merged and
+folded into their owner blocks (07/08/10; the delivery stays a 12-block set), then archived with a
+`RESOLUTION.md` each under `archive/work/`: `rdna3-mmvq-q4k-vdr4/` (gfx1100 dense Q4_K VDR-4 plus the
+Q6_K/Q4_K verify row rules; +2.1 % MTP on the 7900 XTX; the RDNA4 arm is a build-time opt-in
+`-DGGML_HIP_RDNA4_Q4K_DENSE_VDR4`, default off) and `q8-quantize-fusion/` (fewer `quantize_q8_1`
+launches in `-sm tensor` decode; output bit-identical, accepted as a no-regression cleanup).  The same
+release reverts `GGML_CUDA_ASYNC_INPUT` to opt-in (`=1`, default off) after a `-ub 8` perplexity
+self-comparison exposed r68 run-to-run logits divergence.  See `WORKLOG.md` 261016.001.
+
 **Promoted (r68, 2026-10-15).**  `issue-151-host-path-regression/` left `wip/`: both candidate patches
 plus a log-hygiene change shipped in `v12-097cf33d9-r68` (canonical tip `fc6dcad9f`, net tree
 `ffe832696698786865f4adf18216a019b61b160e`).  `GGML_CUDA_ASYNC_INPUT` is now **default-on** (`=0`

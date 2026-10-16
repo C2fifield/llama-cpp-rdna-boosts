@@ -1,4 +1,4 @@
-From 98c7469fcde3cd1e2536e63c8a7b7116f02f680f Mon Sep 17 00:00:00 2001
+From 354d58ee8336b4f1efbb19dd8299b155a5cbaf50 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:04:08 -0500
 Subject: [PATCH 08/11] rdna-boosts: block 08: fused kernels (old-08 fusions +
@@ -37,7 +37,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/mmq-vec-dot.cuh            |   16 +-
  ggml/src/ggml-cuda/mmq.cu                     |  406 +++-
  ggml/src/ggml-cuda/mmq.cuh                    |  439 +++-
- ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |  103 +
+ ggml/src/ggml-cuda/mmvq-rdna-params.cuh       |  111 +
  ggml/src/ggml-cuda/mmvq-rdna.cuh              |   66 +
  ggml/src/ggml-cuda/mmvq.cu                    | 1899 +++++++++++++++--
  ggml/src/ggml-cuda/mmvq.cuh                   |   31 +
@@ -61,7 +61,7 @@ width_purity PASS; MUL_MAT 2444/2444.
  ggml/src/ggml-cuda/unary.cu                   |  224 ++
  ggml/src/ggml-cuda/unary.cuh                  |   12 +
  tests/test-backend-ops.cpp                    |    2 +-
- 35 files changed, 5170 insertions(+), 437 deletions(-)
+ 35 files changed, 5178 insertions(+), 437 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cu
  create mode 100644 ggml/src/ggml-cuda/gdn-conv.cuh
  create mode 100644 ggml/src/ggml-cuda/mmvq-rdna-params.cuh
@@ -2475,10 +2475,10 @@ index ccd32f809..f849c2e01 100644
  bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
 diff --git a/ggml/src/ggml-cuda/mmvq-rdna-params.cuh b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
 new file mode 100644
-index 000000000..a722da7df
+index 000000000..fc16fa265
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-rdna-params.cuh
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,111 @@
 +#pragma once
 +
 +#include "common.cuh"
@@ -2534,15 +2534,23 @@ index 000000000..a722da7df
 +// gfx1100 (RDNA3_0) rows per block for a Q4_K verify batch (ncols_dst 2..8), same row-block
 +// decomposition as the RDNA4 rule below: each row's accumulation is unchanged (bit-identical).
 +// gfx1100 sweep (nwarps 1/2/4/8 x rows 1/2/4, Qwen3.8-27B Q4_K_M, MTP n-max 3): 4 rows at
-+// nwarps 1 is the fastest bit-identical point (~+7 % MTP decode), greedy text unchanged;
-+// nwarps > 1 changes the K-split order and was no faster.  The multi-row guard in mmvq.cu is only
-+// compiled for types where RDNA4 also takes >1 row: extend it before adding other types here.
++// nwarps 1 was the fastest bit-identical point (~+7 % MTP decode), greedy text unchanged;
++// nwarps > 1 changes the K-split order and was no faster.  With the 32-element dot product
++// (vec_dot_q4_K_q8_1_vdr4_dense) 2 rows is faster: W = 4 kernel times vs 4 rows, ffn_gate/up
++// 71.4 -> 69.4 us, attn_qkv 41.8 -> 39.3, attn_q 48.3 -> 46.5; 8 rows is slower everywhere.
++// The multi-row guard in mmvq.cu is only compiled for types where RDNA4 also takes >1 row:
++// extend it before adding other types here.
 +#ifndef GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB
-+#define GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB 4
++#define GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB 2
 +#endif
 +static constexpr __host__ __device__ int calc_rows_per_block_weight(ggml_type type, int ncols_dst, int table_id, bool small_k, int nwarps) {
 +    if (table_id == MMVQ_PARAMETERS_RDNA3_0 && type == GGML_TYPE_Q4_K && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
 +        return GGML_MMVQ_RDNA3_Q4K_WEIGHT_RPB;
++    }
++    // Q6_K (8-warp blocks) peaks at 2 rows: gfx1100 W = 4 kernel times vs 1 row, Qwen3.8-27B: lm_head 248320 x 5120
++    // -18 %, attn_qkv 10240 x 5120 -14 %, ffn_down 5120 x 17408 -3 %; 4 rows is slower on the last two, 8 spills.
++    if (table_id == MMVQ_PARAMETERS_RDNA3_0 && type == GGML_TYPE_Q6_K && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
++        return 2;
 +    }
 +    if (table_id == MMVQ_PARAMETERS_RDNA4 && ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
 +        // Multi-row blocks only pay off for one-wave blocks: the 8-wave Q8_0 short-K block
