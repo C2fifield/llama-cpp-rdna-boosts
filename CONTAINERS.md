@@ -353,7 +353,10 @@ The watcher fetches tags, takes the newest `v12-*` release **by tag creation dat
 (not a version sort: the base SHA is in the tag name, so a re-base to a lower-sorting
 base would otherwise be missed), and if it differs from
 `~/.cache/rdna-containers/last-built`, checks it out and runs that tag's
-`scripts/build-containers.sh --rocm "7.14.1 10.1" --push`.  A `flock` serialises
+`scripts/build-containers.sh --rocm "7.14.1 10.1" --push --prune`.  `--prune`
+removes the images just built plus dangling layers after a successful push, so the
+worker's disk stays bounded; the ROCm base images (~20 GB each) and the ccache
+store (bounded at `CCACHE_MAXSIZE=20G`) are deliberately kept.  A `flock` serialises
 builds; the log is `~/.cache/rdna-containers/build-<tag>.log`.  `FORCE_TAG=<tag>` and
 `BUILD_EXTRA=--no-cleanup` (or the other envs in the script header) override behaviour.
 To build a release immediately instead of waiting for cron:

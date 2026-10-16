@@ -85,7 +85,12 @@ git checkout --quiet --force --detach "$tag"
 LOG="$STATE_DIR/build-$tag.log"
 # LLAMA_DIR is forwarded so build-containers.sh can borrow the canonical tip when
 # present; otherwise it reconstructs the tree from the base tarball + the patches.
-if LLAMA_CPP_DIR="$LLAMA_DIR" ./scripts/build-containers.sh --rocm "$ROCM_LINES" --push $BUILD_EXTRA >"$LOG" 2>&1; then
+# --prune keeps the local disk bounded: after a successful push it removes the
+# images just built and any dangling build layers, but keeps the ROCm base images
+# and the ccache store (both bounded: ~20 GB/base and CCACHE_MAXSIZE=20G).  A
+# failed push aborts before the prune (build-containers.sh is `set -e`), so a
+# broken image is left for inspection.
+if LLAMA_CPP_DIR="$LLAMA_DIR" ./scripts/build-containers.sh --rocm "$ROCM_LINES" --push --prune $BUILD_EXTRA >"$LOG" 2>&1; then
     echo "$tag" > "$STATE_DIR/last-built"
     log "$tag pushed (log: $LOG)"
 else
