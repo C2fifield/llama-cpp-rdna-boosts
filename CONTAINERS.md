@@ -1,11 +1,12 @@
 # Prebuilt ROCm containers (GHCR)
 
-The ROCm container images are built and published **locally** by
-[`scripts/build-containers.sh`](scripts/build-containers.sh)
+The ROCm container images are built and published by the off-host worker
+(`radiance`) running [`scripts/container-watch.sh`](scripts/container-watch.sh),
+which invokes [`scripts/build-containers.sh`](scripts/build-containers.sh)
 (`ghcr.io/stew675/llama-cpp-rdna-boosts`).  A tag-push CI build took ~5 h for
 two ROCm lines, and because a failed/timed-out run wrote no registry cache,
-every retry started cold; the same build here is minutes-to-tens-of-minutes
-and fails with a usable log.  The old matrix lives on in
+every retry started cold; the same build on a worker is
+minutes-to-tens-of-minutes and fails with a usable log.  The old matrix lives on in
 [`.github/workflows/docker-ghcr.yml`](.github/workflows/docker-ghcr.yml) as a
 **manual `workflow_dispatch` fallback only**.
 
@@ -193,7 +194,7 @@ that base's revision: `r1` is the release that lands the re-base and `r2`,
 exactly the tag — `validate.yml` checks the manifest, and
 [`release.yml`](.github/workflows/release.yml) refuses to package a tag that
 disagrees with it or does not match `v<blocks>-<base-sha>-r<N>`.  Only a **tag push**
-cuts a release; the local image build never bumps the revision and never
+cuts a release; an image build never bumps the revision and never
 creates a Release.  (The historical `v16-790cf51aa` tag predates the explicit
 `-rN`; it is the `r1` of its base.  Two revisions were never tagged —
 `v16-790cf51aa-r5` was built by a dispatch and `v16-d1d3c3396-r1` is the

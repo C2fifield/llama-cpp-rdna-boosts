@@ -410,7 +410,7 @@ Measured single-arch: cold compile 10m01s → cache-warm rebuild 1m28s (835/836 
 whose sources mostly match the previous one recompiles only the delta.
 
 **Prune only the built images, never the base images.**  `--push --prune` publishes and then removes the
-locally built `ghcr.io/...` images and dangling build layers, keeping the ROCm base images and the ccache
+just-built `ghcr.io/...` images and dangling build layers, keeping the ROCm base images and the ccache
 store so the next build neither re-pulls ~20 GB per line nor recompiles from cold.  Do **not** use
 `podman system prune -a` for this (it takes the base images and ccache with it).
 
