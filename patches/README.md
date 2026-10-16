@@ -11,7 +11,22 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r73` (2026-10-16) -- MoE heat map: one unified sidecar per model (block 09):**
+> **Current release `v12-097cf33d9-r74` (2026-10-16) -- the MoE arena is sized at warmup, with the ring + wide prefill region reserved first (blocks 09/10/11):**
+> canonical tip `d6f59a05d`, net tree `599befc66eba9ebba1ed38956e3fedd2fc32bd37`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.  The
+> warmup only *primes* the host-expert tables, so `alloc_all_locked` never ran there and the first user
+> decode paid the whole arena sizing + heat/prefill seed on the first token (measured 446 ms of H2D on a
+> 5.3 GiB arena); the first wide prefill then evicted >5 GiB of the freshly seeded arena.  The priming
+> pass now sizes too, `slab_extend_all` is skipped there (it over-mapped the reserve at the empty-context
+> moment and a later graph capture then OOM'd), and the context reserves the **ring + wide prefill**
+> region before the arena via a new `ggml_cuda_slab_reserve_wide` hook whose layout comes from the shared
+> `ggml_cuda_slab_ring_layout` (also used by the real wide placement, so the two cannot disagree).
+> Result (GSQ-IQ3_XXS, `-ncmoe 48 -sm tensor`, 13.8K prompt): arena 5355 MiB at load, first-prefill
+> eviction 5810 -> **84 MiB**, decode 29.2 -> **37.1 t/s** (1 GPU), **84.4 t/s** (2 GPU), **100 %
+> resident** (3 GPU), no OOM.  Default on (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` is the kill switch).
+> Records: `../WORKLOG.md` 261016.009, `archive/work/first-prefill-latency/`.
+>
+> **Previous release `v12-097cf33d9-r73` (2026-10-16) -- MoE heat map: one unified sidecar per model (block 09):**
 > canonical tip `08c6c53c7`, net tree `7252e49b41fb67c74e6bcd4d81a7aeab2d479f44`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended, no new block.
 > The heat-map sidecar was named from the exact model path the loader handed it -- the first host-expert

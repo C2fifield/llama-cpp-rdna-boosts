@@ -267,23 +267,10 @@ index afe0ddffc..ad7f556da 100644
      /* .slab_compute_narrow2    = */ ggml_backend_cuda_device_slab_compute_narrow2,
      /* .moe_cache_set_host_pool   = */ ggml_backend_cuda_device_moe_cache_set_host_pool,
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
-index ad1c3628c..b03f2cbe0 100644
+index ad1c3628c..c403fe8e9 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -31,6 +31,12 @@
- #include <unordered_set>
- #include <vector>
- 
-+// wip/first-prefill-latency: temporary warmup completeness instrumentation, only when RDNA_PROF is set.
-+static bool moe_prof_on() {
-+    static const bool on = getenv("RDNA_PROF") != nullptr;
-+    return on;
-+}
-+
- // ---------------------------------------------------------------------------------------------
- // state
- // ---------------------------------------------------------------------------------------------
-@@ -343,6 +349,12 @@ bool                                g_heat_dirty      = false;
+@@ -343,6 +343,12 @@ bool                                g_heat_dirty      = false;
  std::chrono::steady_clock::time_point g_heat_last_save{};
  bool                                g_prov_evict      = false; // MOE_EXPERT_CACHE_PROVISIONAL=1: pre-filled entries are evictable like empty slots until first hit
  int                                 g_prefill_seed_n  = 0;     // MOE_EXPERT_CACHE_PREFILL_SEED_N: cap seeded experts/table (0 = all slots)
@@ -296,7 +283,7 @@ index ad1c3628c..b03f2cbe0 100644
  int64_t                             g_alloc_clamped   = 0;
  int64_t                             g_alloc_failed    = 0;
  
-@@ -612,6 +624,7 @@ void parse_env() {
+@@ -612,6 +618,7 @@ void parse_env() {
      // behaviourally a no-op for an empty arena.
      g_prov_evict     = env_int("MOE_EXPERT_CACHE_PROVISIONAL", 1) != 0;
      g_prefill_seed_n = env_int("MOE_EXPERT_CACHE_PREFILL_SEED_N", 0);
@@ -304,27 +291,7 @@ index ad1c3628c..b03f2cbe0 100644
      if (g_prefill_seed_n < 0) {
          g_prefill_seed_n = 0;
      }
-@@ -2378,6 +2391,19 @@ static bool moe_cache_tables_complete_locked() {
-             expected += g_preflight_device_bytes[d];
-         }
-     }
-+    if (moe_prof_on()) {
-+        static int64_t last_reg = -1;
-+        static int64_t last_exp = -1;
-+        static size_t  last_n   = 0;
-+        if (registered != last_reg || expected != last_exp || g_tables.size() != last_n) {
-+            last_reg = registered;
-+            last_exp = expected;
-+            last_n   = g_tables.size();
-+            GGML_LOG_WARN("[PROF] complete? registered=%lld expected=%lld tables=%zu (%.1f%%)",
-+                          (long long) registered, (long long) expected, g_tables.size(),
-+                          expected > 0 ? 100.0 * (double) registered / (double) expected : 100.0);
-+        }
-+    }
-     return registered >= expected;
- }
- 
-@@ -2404,6 +2430,12 @@ void alloc_all_locked() {
+@@ -2404,6 +2411,12 @@ void alloc_all_locked() {
          return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
      }
      g_sized = true;
@@ -337,7 +304,7 @@ index ad1c3628c..b03f2cbe0 100644
      // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
      // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
      // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash
-@@ -2438,7 +2470,13 @@ void alloc_all_locked() {
+@@ -2438,7 +2451,13 @@ void alloc_all_locked() {
              ggml_cuda_slab_headroom_at_least_mib(6144);
          }
      }
@@ -352,7 +319,7 @@ index ad1c3628c..b03f2cbe0 100644
      // Fail-soft / --fit (§3.1 #5, issue #33): the arena is the LOWEST-priority VRAM consumer.  Size it
      // from what is actually free NOW - after --fit, the compute-graph reserve and the KV cache have all
      // taken theirs - minus the configured reserve for later growth (a bigger ubatch, more context, a
-@@ -4125,6 +4163,15 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -4125,6 +4144,15 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
              t.primed = true;
              g_total_expert_bytes += (int64_t) expert_bytes;
              g_total_one_expert_bytes += (int64_t) expert_bytes;

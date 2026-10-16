@@ -1,4 +1,4 @@
-From 55e6b9285c823c52c8b0673686a6c32066b6bb25 Mon Sep 17 00:00:00 2001
+From 2040b108c494789b32ff9b16844f8288bf6d9a7e Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -32,9 +32,9 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  common/speculative.cpp                   |   17 +
  docs/multi-gpu.md                        |    4 +-
  ggml/include/ggml-alloc.h                |    1 +
- ggml/include/ggml-backend.h              |  102 +
+ ggml/include/ggml-backend.h              |  107 +
  ggml/src/ggml-alloc.c                    |   85 +-
- ggml/src/ggml-backend-impl.h             |  208 +
+ ggml/src/ggml-backend-impl.h             |  213 +
  ggml/src/ggml-backend-meta.cpp           | 1258 +++++-
  ggml/src/ggml-backend.cpp                | 1156 +++++-
  ggml/src/ggml-blas/ggml-blas.cpp         |    6 +
@@ -49,7 +49,7 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  ggml/src/ggml-cuda/ggml-cuda.cu          | 2493 +++++++++++-
  ggml/src/ggml-cuda/mmvq.cu               |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh              |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu   | 4723 ++++++++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu   | 4752 ++++++++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h    |  301 ++
  ggml/src/ggml-cuda/norm.cu               |   35 +
  ggml/src/ggml-cuda/norm.cuh              |    1 +
@@ -84,7 +84,7 @@ returns a buffer that the next getenv() call overwrites, so a cached pointer is 
  src/llama.cpp                            |   16 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   65 +-
- 59 files changed, 13007 insertions(+), 381 deletions(-)
+ 59 files changed, 13046 insertions(+), 381 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -729,10 +729,10 @@ index 81cce2e2a..278b2f5ba 100644
  GGML_API size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id);
  
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index 7a65d8121..6bfd16198 100644
+index 7a65d8121..0ff98e861 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -44,6 +44,82 @@ extern "C" {
+@@ -44,6 +44,87 @@ extern "C" {
      GGML_API bool                  ggml_backend_buft_is_host         (ggml_backend_buffer_type_t buft);
      GGML_API ggml_backend_dev_t    ggml_backend_buft_get_device      (ggml_backend_buffer_type_t buft);
  
@@ -771,6 +771,11 @@ index 7a65d8121..6bfd16198 100644
 +    // wip/slab-ring-region: pin the always-resident narrow (decode/verify) work size, so the allocator can
 +    // place the staging ring above it.  No-op for a backend without a slab.
 +    GGML_API void                  ggml_backend_dev_slab_narrow_floor(ggml_backend_dev_t dev, size_t bytes);
++
++    // wip/first-prefill-latency: reserve the wide (prefill) work region above the narrow floor + ring,
++    // so the MoE cache's load-time arena is placed above the region the first wide prefill will use.
++    // No-op for a backend without a slab.
++    GGML_API void                  ggml_backend_dev_slab_reserve_wide(ggml_backend_dev_t dev, size_t bytes);
 +
 +    // wip/moe-verify-fusions (narrow-2): pin the MTP draft's COMPUTE region at the top of the slab's
 +    // reserved VA, so it cannot alias the target's narrow verify buffer at slab base 0.  Idempotent;
@@ -815,7 +820,7 @@ index 7a65d8121..6bfd16198 100644
      //
      // Backend buffer
      //
-@@ -342,6 +418,11 @@ extern "C" {
+@@ -342,6 +423,11 @@ extern "C" {
      GGML_API void                 ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes);
      GGML_API bool                 ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph); // returns success
  
@@ -827,7 +832,7 @@ index 7a65d8121..6bfd16198 100644
      GGML_API int                  ggml_backend_sched_get_n_backends(ggml_backend_sched_t sched);
      GGML_API ggml_backend_t       ggml_backend_sched_get_backend(ggml_backend_sched_t sched, int i);
  
-@@ -430,6 +511,27 @@ extern "C" {
+@@ -430,6 +516,27 @@ extern "C" {
      GGML_API ggml_backend_dev_t ggml_backend_meta_device(
          ggml_backend_dev_t * devs, size_t n_devs, ggml_backend_meta_get_split_state_t get_split_state, void * get_split_state_ud);
  
@@ -970,7 +975,7 @@ index cfe0b113c..337709f31 100644
 +    galloc->layout_valid = false;
 +}
 diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
-index dc7367dec..801c22b29 100644
+index dc7367dec..0ec066f58 100644
 --- a/ggml/src/ggml-backend-impl.h
 +++ b/ggml/src/ggml-backend-impl.h
 @@ -30,6 +30,26 @@ extern "C" {
@@ -1121,7 +1126,7 @@ index dc7367dec..801c22b29 100644
      };
  
      struct ggml_backend {
-@@ -216,6 +334,96 @@ extern "C" {
+@@ -216,6 +334,101 @@ extern "C" {
          ggml_backend_event_t (*event_new)         (ggml_backend_dev_t dev);
          void                 (*event_free)        (ggml_backend_dev_t dev, ggml_backend_event_t event);
          void                 (*event_synchronize) (ggml_backend_dev_t dev, ggml_backend_event_t event);
@@ -1173,6 +1178,11 @@ index dc7367dec..801c22b29 100644
 +        // (optional) wip/slab-ring-region: pin the always-resident narrow (decode/verify) work size, so
 +        // the allocator can place the staging ring above it.  Appended like the fields above.
 +        void (*slab_narrow_floor)(ggml_backend_dev_t dev, size_t bytes);
++
++        // (optional) wip/first-prefill-latency: reserve the wide (prefill) work region before the MoE
++        // cache sizes its arena, so the load-time arena is placed above the first wide prefill's region.
++        // Appended like the fields above, so backends that do not set it are zero-initialized.
++        void (*slab_reserve_wide)(ggml_backend_dev_t dev, size_t bytes);
 +
 +        // (optional) wip/moe-verify-fusions (narrow-2): pin the MTP draft's COMPUTE region at the top of
 +        // the slab's reserved VA (idempotent), so it cannot alias the target's narrow verify buffer at
@@ -8747,10 +8757,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..ad1c3628c
+index 000000000..c60d26fcc
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4723 @@
+@@ -0,0 +1,4752 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -9096,6 +9106,13 @@ index 000000000..ad1c3628c
 +std::chrono::steady_clock::time_point g_heat_last_save{};
 +bool                                g_prov_evict      = false; // MOE_EXPERT_CACHE_PROVISIONAL=1: pre-filled entries are evictable like empty slots until first hit
 +int                                 g_prefill_seed_n  = 0;     // MOE_EXPERT_CACHE_PREFILL_SEED_N: cap seeded experts/table (0 = all slots)
++// V2.0 block 09 (r74): size+seed the arena on the priming pass (the warmup), not the first real decode,
++// so the first request does not pay the arena allocation + seed.  DEFAULT ON
++// (`MOE_EXPERT_CACHE_SIZE_AT_PRIME=0` restores the deferred sizing).  See ENVIRONMENT.md §2.
++bool                                g_size_at_prime   = true;
++// V2.0 block 09 (r74): true only for the priming-time sizing, so it does not call `slab_extend_all`
++// (which would map the reserve the wide prefill/transients still need).
++bool                                g_alloc_priming   = false;
 +int64_t                             g_alloc_clamped   = 0;
 +int64_t                             g_alloc_failed    = 0;
 +
@@ -9365,6 +9382,7 @@ index 000000000..ad1c3628c
 +    // behaviourally a no-op for an empty arena.
 +    g_prov_evict     = env_int("MOE_EXPERT_CACHE_PROVISIONAL", 1) != 0;
 +    g_prefill_seed_n = env_int("MOE_EXPERT_CACHE_PREFILL_SEED_N", 0);
++    g_size_at_prime  = env_int("MOE_EXPERT_CACHE_SIZE_AT_PRIME", 1) != 0;
 +    if (g_prefill_seed_n < 0) {
 +        g_prefill_seed_n = 0;
 +    }
@@ -11157,6 +11175,12 @@ index 000000000..ad1c3628c
 +        return;   // defer: `g_sized` stays false, so a later decode-band pass re-enters
 +    }
 +    g_sized = true;
++    // wip/first-prefill-latency: realise the wide work reservation now that the narrow floor + ring are
++    // known, BEFORE the budget/arena sizing reads the slab's arena capacity (the boundary must already
++    // include the wide region).
++    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
++        ggml_cuda_slab_realize_wide(d);
++    }
 +    // Issue #136 (item B): the invariant is "cache enabled => slab armed".  When it is broken -- the slab
 +    // was configured on but never armed (backend-init ordering, a missing preflight, a per-device
 +    // decline) -- the arena is a raw cudaMalloc outside the movable boundary, which is the pre-slab crash
@@ -11191,7 +11215,13 @@ index 000000000..ad1c3628c
 +            ggml_cuda_slab_headroom_at_least_mib(6144);
 +        }
 +    }
-+    ggml_cuda_slab_extend_all();
++    // wip/first-prefill-latency: at the priming sizing the context is empty, so `slab_extend_all` maps
++    // the reserve the first wide prefill's work view and outside-slab transients still need (measured:
++    // 3.88 GiB mapped, leaving only the 4 GiB headroom, then a decode capture OOMs).  Skip it here; the
++    // arena is then capped to what was reserved before the request's real memory existed.
++    if (!g_alloc_priming) {
++        ggml_cuda_slab_extend_all();
++    }
 +    // Fail-soft / --fit (§3.1 #5, issue #33): the arena is the LOWEST-priority VRAM consumer.  Size it
 +    // from what is actually free NOW - after --fit, the compute-graph reserve and the KV cache have all
 +    // taken theirs - minus the configured reserve for later growth (a bigger ubatch, more context, a
@@ -12878,6 +12908,15 @@ index 000000000..ad1c3628c
 +            t.primed = true;
 +            g_total_expert_bytes += (int64_t) expert_bytes;
 +            g_total_one_expert_bytes += (int64_t) expert_bytes;
++            // wip/first-prefill-latency: a single-pass warmup primes every host table but never
++            // re-sights one, so the sizing check below is unreachable and the first real decode pays the
++            // whole seed.  Also evaluate the deferred sizing here; `alloc_all_locked`'s completeness gate
++            // is what prevents latching on a partial set, so this is safe to call on every priming.
++            if (g_size_at_prime && !g_sized && n_tok <= 8) {
++                g_alloc_priming = true;
++                alloc_all_locked();
++                g_alloc_priming = false;
++            }
 +            return false;   // priming pass
 +        }
 +        if (!g_sized) {
