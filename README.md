@@ -511,7 +511,9 @@ own start-to-start nondeterminism that `--no-kv-unified` does **not** remove.  O
 (R9700 / gfx1201, Windows, graphs on) the **first** request on a fresh server already differed between
 starts, both with `--kv-unified` and with `--no-kv-unified`, on identical fixed-schedule
 `/completion` requests; graphs off was stable.  It reproduces on older releases (r30), so it is not a
-delivery regression; it is tracked as TODO #67.  Where strict reproducibility matters, keep
+delivery regression; it is tracked as TODO #67 (it did **not** reproduce on Linux/ROCm 7.14; see
+`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`, so it is most likely the
+known Windows-only per-start flip).  Where strict reproducibility matters, keep
 `GGML_CUDA_DISABLE_GRAPHS=1` in addition to `--no-kv-unified`.
 
 ## When upstream master moves

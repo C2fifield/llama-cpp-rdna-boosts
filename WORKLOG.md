@@ -1,5 +1,38 @@
 # WORKLOG - dated delivery records
 
+## 261016.004 (no release) -- kv-cell-offset revalidated on r69; the issue #151 graphs-on start-to-start flip does not reproduce on Linux
+
+**No delivery change.**  `release.json` stays `v12-097cf33d9-r70`; no patch, block or `release.json`
+byte changes.  This entry records a WIP revalidation, a tracker reclassification and a wording fix in
+the parked campaign.
+
+**Campaign revalidated (r69, gfx1201, GSQ IQ3_XXS, `-sm tensor -ncmoe 48`, 2 GPU).**  Ran the
+campaign's own `msq_plain.sh` (`-np 2`, `--spec-type none`):
+
+- `--kv-unified` **still red**: A_solo `8630d276db97`; A_conc1/2/3 `0d408c30b5ba` / `8c3d3fe03c60` /
+  `1a566838a4f1` (a different text on every concurrent repeat).
+- `--no-kv-unified`: concurrent repeats **green** (`5c051c43b20f` in both of two fresh server
+  starts), but A_solo `90156eb6d2e4` differs from concurrent.  So the campaign's "`--no-kv-unified` is
+  fully green (solo == conc)" was too strong: the cell-offset effect is gone, but a separate
+  **cross-sequence batching** effect keeps solo != concurrent (deterministic).  Corrected in the
+  campaign README.
+
+Record: `wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`.
+
+**TODO #67 not reproduced on Linux.**  The reporter's graphs-on start-to-start flip under
+`--no-kv-unified` does not appear here at the **decode-logit** level (`test-logits-width-probe`, W=1..8,
+fresh process per start): bit-identical across starts and across `GGML_CUDA_DISABLE_GRAPHS=1` on the 4B
+Q8_0 (`433d2e19e6f7bcac`) and on the reporter's 27B Swift Q5_K_M + q8_0 KV (`cec25c2aa3cc3e21` at
+P=256, `143a4ba08e1e20fe` at P=512).  The forward/prefill self-comparison
+(`llama-perplexity --kl-divergence-base`, `-ub 8`) is `RMS Δp 0.001 %`.  The reporter is on
+Windows/ROCm 10, where this start-to-start class is already documented twice from the same box: the
+`rope -> view -> set_rows` contraction (`#58` item D, fixed in r25) and the residual **hipBLASLt
+solution selection** (the *old* issue #67, closed as external; `ROCBLAS_USE_HIPBLASLT=0`).  Both are
+prefill-driven and graphs are not involved, so **TODO #67 is reclassified** to "not reproduced on
+Linux; likely the known Windows per-start flip" and waits on the reporter's Windows bisection.  New
+WIP tools: `wip/kv-cell-offset-nondeterminism/tools/decodestart.sh` (decode) and `selfkld.sh`
+(forward/prefill only; `llama-perplexity` cannot see decode nondeterminism).
+
 ## 261016.003 (no release) -- record correction: the HIP-graphs start-to-start nondeterminism is not #134 (issue #151 follow-up)
 
 **No delivery change.**  `release.json` stays `v12-097cf33d9-r70`; no patch, block or `release.json`

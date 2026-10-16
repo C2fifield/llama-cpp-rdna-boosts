@@ -6,6 +6,14 @@ may be applied to the fork without the maintainer's go-ahead (see the WIP and pr
 `AGENTS.md`). This is the working home for the residual that survived the r42 (part A) and r43 (part B)
 fixes to issue #134 / TODO #52.
 
+> **2026-10-16 revalidation (r69).**  The core effect still reproduces on the current tree, but
+> `--no-kv-unified` is **not** "fully green": its *concurrent repeats* are reproducible, while solo vs
+> concurrent still differ (the cross-sequence **batching** effect, not the cell set).  The issue #151
+> claim that HIP graphs add a start-to-start flip under `--no-kv-unified` was **not reproduced** here
+> at the decode-logit level, on the reporter's own model/KV, graphs on and off; it is most likely the
+> known Windows-only prefill/fusion/hipBLASLt per-start flip (the *old* issue #67).  See
+> [`FINDINGS-2026-10-16-revalidation.md`](FINDINGS-2026-10-16-revalidation.md) and TODO #67.
+
 > **2026-10-11 disposition — PARKED, not archived.** The pragmatic call is to stop here: a proper fix
 > means per-sequence contiguous, tile-aligned KV regions (or per-region anchored reductions) in the
 > unified attention cache, i.e. a fundamental change to upstream's design, and there are more pressing
@@ -99,13 +107,15 @@ A_conc3 d9aacf6b95a2   # != conc1/2, != solo
 ```
 
 Same shape on IQ3_XXS (`--spec-type none`) and on unmodified upstream `a55e952b8`. `--no-kv-unified`
-with the same requests is **fully green** (solo == conc1 == conc2 == conc3).
+with the same requests is green **for concurrent repeats** (`conc1 == conc2 == conc3`); solo vs
+concurrent still differs deterministically (the cross-sequence batching effect).  Revalidated
+2026-10-16 — see `FINDINGS-2026-10-16-revalidation.md` §1.
 
 ## 2. What is NOT the cause (tested and excluded — do not re-litigate)
 
 | arm | result |
 |---|---|
-| `--no-kv-unified` | **green** (the only green axis) |
+| `--no-kv-unified` | concurrent repeats **green**; solo vs concurrent differ (cross-sequence batching, deterministic) |
 | `-sm layer` vs `-sm tensor` | both red |
 | `-ncmoe 0` / no `-ncmoe` (all experts on GPU, 3 GPUs) | red, byte-identical to each other |
 | `MOE_EXPERT_CACHE_MIB=0` | red |
