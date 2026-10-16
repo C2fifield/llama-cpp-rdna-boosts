@@ -349,7 +349,9 @@ login session's temporary `$XDG_RUNTIME_DIR/containers/auth.json`; no separate
 `podman login` is needed once `gh` is authenticated.  `loginctl enable-linger` is
 required so rootless podman still has a runtime dir when the user is logged out.
 
-The watcher fetches tags, takes the newest `v12-*` release, and if it differs from
+The watcher fetches tags, takes the newest `v12-*` release **by tag creation date**
+(not a version sort: the base SHA is in the tag name, so a re-base to a lower-sorting
+base would otherwise be missed), and if it differs from
 `~/.cache/rdna-containers/last-built`, checks it out and runs that tag's
 `scripts/build-containers.sh --rocm "7.14.1 10.1" --push`.  A `flock` serialises
 builds; the log is `~/.cache/rdna-containers/build-<tag>.log`.  `FORCE_TAG=<tag>` and

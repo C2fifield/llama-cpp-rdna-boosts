@@ -7,9 +7,11 @@
 # separate, beefier worker poll the delivery repo for a new release tag and run
 # `scripts/build-containers.sh --push` in the background (cron or a systemd timer).
 #
-# It fetches tags, finds the newest `v12-*` release, and if it differs from the last
-# successfully pushed tag, checks that tag out and runs the tag's own
-# `scripts/build-containers.sh`.  A `flock` prevents two builds at once and a state
+# It fetches tags, finds the newest `v12-*` release BY TAG CREATION DATE, and if it
+# differs from the last successfully pushed tag, checks that tag out and runs the
+# tag's own `scripts/build-containers.sh`.  The creation-date sort matters: a
+# version sort (`-v:refname`) mis-orders tags across a re-base, because the base SHA
+# is part of the tag name (`v12-<base>-rN`) and the next base need not sort higher.  A `flock` prevents two builds at once and a state
 # file stops a tag being rebuilt.  See CONTAINERS.md, "Offload the image build".
 #
 # Env (all optional):
@@ -63,7 +65,10 @@ if [ -n "$FORCE_TAG" ]; then
     tag="$FORCE_TAG"
 else
     git fetch --quiet --tags origin
-    tag="$(git tag -l 'v12-*' --sort=-v:refname | head -1)"
+    # -creatordate, not -v:refname: the base SHA is in the tag name, so a re-base to a
+    # "lower" base would otherwise be missed.  Release tags are annotated, so this is
+    # the release order.
+    tag="$(git tag -l 'v12-*' --sort=-creatordate | head -1)"
     [ -n "$tag" ] || { log "no v12-* release tag found"; exit 0; }
 fi
 
