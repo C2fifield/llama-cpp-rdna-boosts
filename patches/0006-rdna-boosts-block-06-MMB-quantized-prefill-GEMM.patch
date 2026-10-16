@@ -1,4 +1,4 @@
-From c6c48bf30f8541719f41617398a4cdaf8f6dae1a Mon Sep 17 00:00:00 2001
+From afbd409fa024022e7e4decc6ff3489ec7327a7f9 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 16:59:02 -0500
 Subject: [PATCH 06/11] rdna-boosts: block 06: MMB quantized prefill GEMM
@@ -13,11 +13,11 @@ Ships tests/test-logits-width-probe.cpp (the width/purity oracle) and the
 MMVF-vs-MMF verify-batch dispatch uniformity for n_q <= 8.
 ---
  ggml/src/ggml-cuda/ggml-cuda.cu   |   36 +-
- ggml/src/ggml-cuda/mmb.cu         | 2364 +++++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/mmb.cu         | 2368 +++++++++++++++++++++++++++++
  ggml/src/ggml-cuda/mmb.cuh        |   33 +
  tests/CMakeLists.txt              |    1 +
  tests/test-logits-width-probe.cpp |  185 +++
- 5 files changed, 2616 insertions(+), 3 deletions(-)
+ 5 files changed, 2620 insertions(+), 3 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/mmb.cu
  create mode 100644 ggml/src/ggml-cuda/mmb.cuh
  create mode 100644 tests/test-logits-width-probe.cpp
@@ -110,10 +110,10 @@ index cda66f1bf..b55bda2b7 100644
      const void * graph_key = nullptr;
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
 new file mode 100644
-index 000000000..ad6bacb69
+index 000000000..5e6e6c5e7
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmb.cu
-@@ -0,0 +1,2364 @@
+@@ -0,0 +1,2368 @@
 +#include "mmb.cuh"
 +#include "unary.cuh"
 +#include <unordered_map>
@@ -181,15 +181,19 @@ index 000000000..ad6bacb69
 +__device__ __forceinline__ v8f mmb_wmma_bf16(mmb_frag_t a, mmb_frag_t b, v8f c) {
 +#if defined(RDNA4)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(__builtin_bit_cast(mmb_bf16_frag_t, a), __builtin_bit_cast(mmb_bf16_frag_t, b), c);
-+#else
++#elif defined(RDNA3)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
++#else
++    return c; // RDNA1/RDNA2: no WMMA; mmb_enabled() is false so this is never executed
 +#endif
 +}
 +__device__ __forceinline__ v8f mmb_wmma_f16(mmb_frag_t a, mmb_frag_t b, v8f c) {
 +#if defined(RDNA4)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(__builtin_bit_cast(mmb_f16_frag_t, a), __builtin_bit_cast(mmb_f16_frag_t, b), c);
-+#else
++#elif defined(RDNA3)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
++#else
++    return c; // RDNA1/RDNA2: no WMMA; mmb_enabled() is false so this is never executed
 +#endif
 +}
 +

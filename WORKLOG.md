@@ -1,5 +1,52 @@
 # WORKLOG - dated delivery records
 
+## 261016.002 (r70) -- RDNA2 (`gfx1030`) best-effort bring-up (issue #158): gfx1030 WMMA compile guards + container arch
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r70` (base `097cf33d9`; canonical tip
+`2afc3a041`, net tree `592a097cd6cef3ef1d179f1d79441fa798a88439`; 12 blocks; `validate-set.sh` green on
+a fresh tarball -- strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:**
+blocks 06 and 10 are amended; the r69..r70 code diff is exactly the two guard files below.
+
+**Why.**  Issue #158: the published image is built for `gfx1100;gfx1150;gfx1151;gfx1200;gfx1201`, so an
+RDNA2 device has no code object and every kernel launch fails (`ROCm error: invalid kernel file`,
+surfaced in `ggml_cuda_op_rms_norm_fused` only because that is the first kernel `ggml_cuda_try_fuse`
+launches, not because the fused norm is broken).  The maintainer has no usable RDNA2 device, so RDNA2
+ships **best-effort / unvalidated**; this release removes the blanket core dump and lets RDNA2 owners
+pick up the generic, runtime-dispatched work.
+
+**Guard fold (block 06 `mmb.cu`, block 10 `fattn-qsa3.cu`).**  A `gfx1030` compile audit (build-only,
+ROCm 7.14.1 clang, `make -k` over the HIP backend) found exactly two failing TUs: `mmb.cu` and
+`fattn-qsa3.cu`.  Both are the "portable WMMA dispatch" helper falling through to the first-gen gfx11
+intrinsic in an unconditional `#else`:
+
+```
+error: '__builtin_amdgcn_wmma_f32_16x16x16_f16_w32' needs target feature wmma-256b-insts,wavefrontsize32
+```
+
+Fixed with `#else` -> `#elif defined(RDNA3)` plus a new `#else return c;` arm.  The RDNA2 arm is never
+launched (`mmb_enabled()` and `ggml_cuda_flash_attn_qsa3_supported()` return false for `gfx1030`), and
+the RDNA3/RDNA4 preprocessed source is unchanged (gfx1201 still takes the `RDNA4` arm, gfx1100 the
+`RDNA3` arm), so their codegen is byte-identical.  After the fold the whole HIP backend and `llama-cli`
+build clean for `gfx1030`, and `libggml-hip.so` carries only `amdgcn-amd-amdhsa--gfx1030` code objects.
+Everything else already falls back at runtime: the `MMVQ_PARAMETERS_RDNA2` table, and the upstream
+dp4a / tile-FA paths.
+
+**Container (`.devops/rdna-rocm.Dockerfile`).**  `ROCM_DOCKER_ARCH` gains `gfx1030`.  Verified in the
+`7.14.1-full` and `10.1.0-full` base images that rocBLAS carries `gfx1030` Tensile kernels (hipBLASLt
+does not, but llama.cpp routes BLAS through rocBLAS unless `ROCBLAS_USE_HIPBLASLT` is set, which the
+delivery does not).  The worker (`scripts/container-watch.sh`) builds and pushes the images off the r70
+tag; nothing runs on the primary box.
+
+**Docs.**  README "Supported architectures" gains an RDNA2 row and a best-effort caveat; CONTAINERS
+gains an "RDNA2 (gfx1030)" section (fallbacks, guards, rocBLAS, and the `-fa on` risk: upstream RDNA2
+tile-kernel defects per `sixvolts/llama-navi21-furnace`, so run `-fa off` on an abort); TODO #66 tracks
+the open platform validation; the `beta/rdna2/` candidate and tester checklist move to
+`archive/work/rdna2/` with the fold.
+
+**Gates.**  Compile audit as above.  RDNA3/RDNA4 codegen is unchanged by construction, so r69's
+recorded gates stand and no new runtime gate was run; RDNA2 hardware was not available.  External
+confirmation is requested on issue #158.
+
 ## 261016.001 (r69) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) and PR #163 (Q8_1 launch fusion); `GGML_CUDA_ASYNC_INPUT` reverted to opt-in
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r69` (base `097cf33d9`; canonical tip

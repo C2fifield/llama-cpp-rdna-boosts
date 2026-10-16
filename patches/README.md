@@ -11,7 +11,19 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r69` (2026-10-16) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) + PR #163 (Q8_1 launch fusion) + `GGML_CUDA_ASYNC_INPUT` reverted to opt-in:**
+> **Current release `v12-097cf33d9-r70` (2026-10-16) -- RDNA2 (`gfx1030`) best-effort bring-up (issue #158):**
+> canonical tip `2afc3a041`, net tree `592a097cd6cef3ef1d179f1d79441fa798a88439`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 06 and 10** amended, no new block.
+> A `gfx1030` compile audit found two WMMA helper shims that fell through to the first-gen gfx11
+> builtin in an unconditional `#else` (`mmb.cu` block 06, `fattn-qsa3.cu` block 10); `#else` ->
+> `#elif defined(RDNA3)` plus a dead `#else return c;` arm.  The RDNA2 arm is never launched (the
+> runtime predicates gate both kernels off for `gfx1030`) and RDNA3/RDNA4 codegen is byte-identical.
+> `.devops/rdna-rocm.Dockerfile` gains `gfx1030`, so the image stops aborting every kernel launch with
+> `ROCm error: invalid kernel file`.  RDNA2 is **best-effort / not validated** (no RDNA2 device here);
+> `-fa on` carries the known upstream RDNA2 tile-kernel risk, so use `-fa off` on an abort.  Records:
+> `../archive/work/rdna2/`, `../WORKLOG.md` 261016.002.
+>
+> **Previous release `v12-097cf33d9-r69` (2026-10-16) -- PR #162 (gfx1100 mmvq Q4_K VDR-4 + verify rows) + PR #163 (Q8_1 launch fusion) + `GGML_CUDA_ASYNC_INPUT` reverted to opt-in:**
 > canonical tip `ee1fe82f2`, net tree `9e2cdef733e2afee7e3eb54151593e1ac3fdfdb2`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 07/08/10** amended, no new block.
 > (1) `@briansp2020`'s **PR #162**: a 32-element dense Q4_K VDR-4 dot product on gfx1100

@@ -32,7 +32,10 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
 
 ## Current candidates
 
-_None — `fa-stage-prealloc` (issue #138) was promoted into r53 blocks 09/10 and moved to
+_None — `rdna2` (issue #158) was folded into r70 blocks 06/10 and moved to `archive/work/rdna2/`
+(record: `WORKLOG.md` 261016.002)._
+
+_`fa-stage-prealloc` (issue #138) was promoted into r53 blocks 09/10 and moved to
 `archive/work/fa-stage-prealloc/` (record: `WORKLOG.md` 261013.003)._
 
 **Recently promoted.**  `fa-stage-prealloc/` (issue #138): the FA prefill staging arena is allocated

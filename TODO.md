@@ -57,6 +57,18 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 66. RDNA2 (`gfx1030`) best-effort bring-up — issue #158 — PLATFORM VALIDATION (open)
+
+**Opened 2026-10-16; the code shipped in r70; the platform validation is open.**  r70 folded the two
+`gfx1030` WMMA compile guards into blocks 06/10 and added `gfx1030` to `ROCM_DOCKER_ARCH`, so the image
+now runs on RDNA2 instead of aborting every kernel launch with `invalid kernel file`.  The runtime
+paths already fall back (`mmb_enabled()`, `qsa3_supported()`, the `MMVQ_PARAMETERS_RDNA2` table,
+upstream dp4a / tile FA).  No RDNA2 hardware is available here, so RDNA2 stays **best-effort /
+unvalidated** (no perf claims, no purity gates) and `-fa on` carries the known upstream RDNA2
+tile-kernel risk.  Open items: external confirmation on a real `gfx1030` (issue #158) and, if someone
+takes it on, a port of the RDNA2 tile-FA fixes (`sixvolts/llama-navi21-furnace`).  Record and tester
+checklist: `archive/work/rdna2/`.
+
 ### 65. IQ4_NL field (MTP) + `--host-experts pool` decode collapses — MEMORY
 
 The Qwen3.8-Flash-Next IQ4_NL 70K field config (`--n-cpu-moe 48`, MTP n7, `--cache-ram 16384`)

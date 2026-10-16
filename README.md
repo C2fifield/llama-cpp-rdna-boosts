@@ -82,13 +82,14 @@ re-base of the set onto that fork point and every later `rN` is a dated change r
 
 ## Supported architectures
 
-The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families:
+The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families, with RDNA2 as best-effort:
 
-| family | arches | example parts |
-|--------|--------|---------------|
-| RDNA 3 | `gfx1100` | RX 7900 XTX/XT, RX 7800 XT, ... |
-| RDNA 3.5 | `gfx1150`/`gfx1151` | Strix Point / Strix Halo APUs |
-| RDNA 4 | `gfx1200`/`gfx1201` | RX 9060 XT; RX 9070 / 9070 XT |
+| family | arches | example parts | status |
+|--------|--------|---------------|--------|
+| RDNA 3 | `gfx1100` | RX 7900 XTX/XT, RX 7800 XT, ... | supported |
+| RDNA 3.5 | `gfx1150`/`gfx1151` | Strix Point / Strix Halo APUs | supported |
+| RDNA 4 | `gfx1200`/`gfx1201` | RX 9060 XT; RX 9070 / 9070 XT | supported |
+| RDNA 2 | `gfx1030` | RX 6800/6800 XT/6900 XT, Radeon Pro V620 | best-effort, **not validated** |
 
 > **Strix Point (`gfx1150`) is in the target set as of 2026-10-05.**  Images
 > published before then (for example the `server-rocm-10.0` build at `2dbece4`)
@@ -98,6 +99,15 @@ The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families:
 > runtime to select the `gfx1151` code objects.  See [Strix Point
 > (gfx1150)](CONTAINERS.md#strix-point-gfx1150) for the validation and both
 > paths.
+
+> **RDNA2 (`gfx1030`) is best-effort and NOT validated on hardware.**  It is
+> compiled into the image so RDNA2 owners pick up the generic, runtime-dispatched
+> boosts instead of a first-kernel `ROCm error: invalid kernel file` (issue
+> #158), and the RDNA3/4-only paths fall back to the upstream non-WMMA kernels at
+> runtime.  There are no performance claims and no purity gates for it, and
+> `-fa on` may hit upstream RDNA2 tile-kernel defects — use `-fa off` if a
+> long-context prompt aborts.  See [RDNA2
+> (gfx1030)](CONTAINERS.md#rdna2-gfx1030--best-effort-not-validated-on-hardware).
 
 **RDNA4 (gfx120x) sees the most benefit** — the WMMA flash-attn path, the
 chunked-GDN kernel, the k-quant VDR boosts and block 12's internal
@@ -114,11 +124,12 @@ gated off:
 - block 10 adds a **dedicated RDNA3.5 mmvq parameter table** (previously
   folded into the RDNA2 fallback) on top of the RDNA4 k-quant boosts.
 
-Arch selection is **runtime** everywhere in the set (device `cc` /
-`gcnArchName`; there is no compile-time arch gating), so a multi-arch
-build such as `GPU_TARGETS="gfx1100;gfx1151;gfx1201"` yields one binary
-that picks the right path on whichever of these it runs on. The one
-genuine exception is **block 12** — its internal all-reduce is RDNA4-only
+Arch selection is **runtime** everywhere in the set (device `cc` / `gcnArchName`),
+so a multi-arch build such as `GPU_TARGETS="gfx1030;gfx1100;gfx1151;gfx1201"`
+yields one binary that picks the right path on whichever of these it runs on.
+The WMMA kernel *bodies* are compile-gated by `RDNA3`/`RDNA4`; on RDNA2 the
+non-WMMA arms compile and the runtime predicates keep the WMMA kernels from
+being launched. The one genuine exception is **block 12** — its internal all-reduce is RDNA4-only
 (gfx1200/gfx1201) and falls back to RCCL elsewhere (see
 `patches/README.md` for the gate and env knobs).  Block 13's fused
 MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated

@@ -52,10 +52,10 @@ point (currently `<tag>-a55e952b8`; earlier releases used
 `<tag>-84e76d8a2`, `<tag>-ebbb18522`, `<tag>-d1d3c3396` and `<tag>-790cf51aa`). `rocm-<version>` is an alias of `server-rocm-<version>` (the serving
 image); `latest` points at the newest ROCm (10.1) server image.
 
-The binaries are built for `gfx1100;gfx1150;gfx1151;gfx1200;gfx1201` (RDNA3 /
-RDNA3.5 / RDNA4) with runtime dispatch, so one image serves every targeted GPU
-family. `server` exposes the HTTP API on `8080`, `light` is CLI-only, `full`
-adds the Python conversion tooling.
+The binaries are built for `gfx1030;gfx1100;gfx1150;gfx1151;gfx1200;gfx1201`
+(RDNA2 best-effort / RDNA3 / RDNA3.5 / RDNA4) with runtime dispatch, so one
+image serves every targeted GPU family. `server` exposes the HTTP API on
+`8080`, `light` is CLI-only, `full` adds the Python conversion tooling.
 
 ### Strix Point (gfx1150)
 
@@ -111,6 +111,41 @@ The ROCm `>= 7.14` `-full` base images do not register `/opt/rocm/lib` with the
 dynamic loader (no `/etc/ld.so.conf.d` entry, no `LD_LIBRARY_PATH`), so the
 image sets `LD_LIBRARY_PATH=/opt/rocm/lib` in its `base` stage — without it the
 HIP backend cannot dlopen and llama.cpp reports "no usable GPU found".
+
+### RDNA2 (gfx1030) — best-effort, not validated on hardware
+
+`gfx1030` (Navi 21: RX 6800/6800 XT/6900 XT, Radeon Pro V620/W6800) is
+**compiled into the image as of this change** so RDNA2 owners get the generic,
+runtime-dispatched paths instead of a first-kernel `ROCm error: invalid kernel
+file` (issue #158).  It is **not** a supported or validated target: the
+maintainer has no usable RDNA2 device, so there are no performance claims and
+no purity gates for it.  Treat an RDNA2 result as informational, never as a
+delivery gate.
+
+What applies / what does not:
+
+* The RDNA3/4-only features fall back at runtime by design: `mmb_enabled()`
+  and the QSA3 support predicate return false for RDNA2, the MMVQ path has a
+  dedicated `MMVQ_PARAMETERS_RDNA2` table, and the dp4a / tile-FA fallbacks
+  are upstream.  The generic wins (scheduling, host-resident MoE, k-quant
+  decode, prefill MMQ) do apply.
+* Two WMMA helper shims had to gain an RDNA2 compile branch for the set to
+  build at all (`mmb.cu`, `fattn-qsa3.cu`).  They are now `#if defined(RDNA4)
+  ... #elif defined(RDNA3) ... #else <no-op> #endif`, so RDNA2 compiles a dead
+  arm that is never launched; RDNA3/RDNA4 codegen is byte-identical.
+* **BLAS routing is covered.**  rocBLAS in the `7.14.1-full` and `10.1.0-full`
+  base images carries `gfx1030` Tensile kernels (verified), so the `cublas`
+  fallback works.  hipBLASLt does **not** ship `gfx1030`, but llama.cpp uses
+  rocBLAS unless `ROCBLAS_USE_HIPBLASLT` is set — which this delivery does not
+  set.
+* **`-fa on` is the known risk.**  RDNA2 tile flash-attention has upstream
+  defects (sixvolts/llama-navi21-furnace: RDNA2 register-file occupancy and a
+  partial-KV-batch pointer fault).  Until someone ports and validates a fix,
+  run `-fa off` on RDNA2 if a long-context Qwen3.8/GLM prompt aborts.
+
+Validation path: build from source with `gfx1030` in the target list, or pull
+this image, and report back on issue #158.  The tester checklist is
+`archive/work/rdna2/BETA-TESTING.md`.
 
 ## Running
 

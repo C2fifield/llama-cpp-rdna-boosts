@@ -13677,10 +13677,10 @@ index 000000000..2fae29ceb
 +bool ggml_cuda_flash_attn_qsa3_supported(int device, const ggml_tensor * dst);
 diff --git a/ggml/src/ggml-cuda/fattn-qsa3.cu b/ggml/src/ggml-cuda/fattn-qsa3.cu
 new file mode 100644
-index 000000000..3335bd380
+index 000000000..a2037d6e2
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fattn-qsa3.cu
-@@ -0,0 +1,731 @@
+@@ -0,0 +1,733 @@
 +#include "common.cuh"
 +#include "fattn-qsa.cuh"
 +#include <cstdio>
@@ -13747,8 +13747,10 @@ index 000000000..3335bd380
 +static __device__ __forceinline__ v8f qsa3_wmma_f16(const qsa3_frag_t a, const qsa3_frag_t b, const v8f c) {
 +#if defined(RDNA4)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
-+#else
++#elif defined(RDNA3)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
++#else
++    return c; // RDNA1/RDNA2: no WMMA; qsa3 is runtime-gated to RDNA3/RDNA4
 +#endif
 +}
 +
@@ -33906,10 +33908,10 @@ index 429d2e200..011129db5 100644
 +}
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
 new file mode 100644
-index 000000000..43a4986a7
+index 000000000..0fe5eb163
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmb.cu
-@@ -0,0 +1,2519 @@
+@@ -0,0 +1,2523 @@
 +#include "mmb.cuh"
 +#include "unary.cuh"
 +#include <unordered_map>
@@ -33977,15 +33979,19 @@ index 000000000..43a4986a7
 +__device__ __forceinline__ v8f mmb_wmma_bf16(mmb_frag_t a, mmb_frag_t b, v8f c) {
 +#if defined(RDNA4)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(__builtin_bit_cast(mmb_bf16_frag_t, a), __builtin_bit_cast(mmb_bf16_frag_t, b), c);
-+#else
++#elif defined(RDNA3)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
++#else
++    return c; // RDNA1/RDNA2: no WMMA; mmb_enabled() is false so this is never executed
 +#endif
 +}
 +__device__ __forceinline__ v8f mmb_wmma_f16(mmb_frag_t a, mmb_frag_t b, v8f c) {
 +#if defined(RDNA4)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(__builtin_bit_cast(mmb_f16_frag_t, a), __builtin_bit_cast(mmb_f16_frag_t, b), c);
-+#else
++#elif defined(RDNA3)
 +    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
++#else
++    return c; // RDNA1/RDNA2: no WMMA; mmb_enabled() is false so this is never executed
 +#endif
 +}
 +
