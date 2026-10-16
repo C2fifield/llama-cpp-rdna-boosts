@@ -1,8 +1,9 @@
 # issue-151-host-path-regression
 
-**Status: OPEN — seeding + scoping (2026-10-15).**  Nothing in this directory is part of the delivery,
-and nothing here may be applied to the fork without the maintainer's explicit go-ahead (see the WIP and
-promotion rules in `../../AGENTS.md`).
+**Status: OPEN — candidate fix implemented + validated locally (2026-10-15); awaiting the promote / hold
+/ beta decision.**  Nothing in this directory is part of the delivery, and nothing here may be applied to
+the fork without the maintainer's explicit go-ahead (see the WIP and promotion rules in
+`../../AGENTS.md`).
 
 **Issue:** https://github.com/stew675/llama-cpp-rdna-boosts/issues/151
 **Reporter:** `@DanoPTT` (R9700/gfx1201, **Windows 11**, Ryzen 5 PRO 4650G, Swift Qwen3.8-27B Q6_K /
@@ -97,6 +98,8 @@ Shipped in `v12-097cf33d9-r66` (see `../../WORKLOG.md` 261015.003):
 
 ## 4. Candidate work, in priority order
 
+> **Done in the 2026-10-15 session — see §8 for the two patches, the host-time saving and the validation.**
+
 1. **Port the gather index.**  Replace the forward walk in
    `ggml_cuda_gdn_state_gather_deferrable` (`ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu`, owner **block
    10** in the V2.0 set) with one index built per `ggml_cuda_graph_evaluate_and_capture` pass (gather →
@@ -117,8 +120,6 @@ Shipped in `v12-097cf33d9-r66` (see `../../WORKLOG.md` 261015.003):
 4. Optional: a git-history search for any other per-node/per-graph host addition between r30 and r56
    (the `ADD` at 160 µs/op host is measured here; the reporter saw 256 µs and it is a relocated wait,
    not new cost).
-
----
 
 ## 5. Exact reproduction (this box)
 
@@ -171,3 +172,64 @@ theirs.
 3. Does the residual ~0.4 % come from upstream `a55e952b8` → `097cf33d9`?  Requires building both bases.
 4. Is the reporter's 4650G host path representative enough to gate the delivery on, or does this stay a
    documented slow-host improvement?
+
+## 8. Candidate fix (2026-10-15 session) — two patches, both validated
+
+Built on the r67 tree in `~/llama-fold` (branch `issue151-candidate`, commits `28fd91be0` + `1814bd3f3`),
+patches cut against `release.json` (`c536e9703`).
+
+| patch | what | env |
+|---|---|---|
+| `0001-async-input-default-on.patch` | flip `GGML_CUDA_ASYNC_INPUT` to **default on** (`=0` restores the synchronous path); the log line moves to `INFO` and names the kill-switch | `GGML_CUDA_ASYNC_INPUT` |
+| `0002-gdn-gather-index.patch` | replace the `O(gathers × nodes)` GDN state-gather walk with a per-graph index, built **lazily on the first candidate** so a non-GDN graph pays only a pointer check per `GET_ROWS` | `GGML_CUDA_GDN_GATHER_INDEX` (`0` walk, `2` both+abort) |
+
+### Local measurements (gfx1201, 1× R9700, 27B Q6_K, `GGML_CUDA_DISABLE_GRAPHS=1`, `-t 8`, Firefox closed)
+
+Combined candidate vs the old defaults, 5 interleaved `-r 10` rounds: **24.600 → 24.659 t/s (+0.24 %)**
+(old 24.610/24.595/24.600/24.592/24.605 vs new 24.641/24.655/24.664/24.668/24.669).  Prefill `pp4096`
+identical (1077.1 both).
+
+Host cost per graph (`GGML_CUDA_GCDBG=1 -n 64 -r 1`: 65 graphs / 250055 nodes):
+
+| arm | `host_total` | per graph | `ev_rest` | `fuse` | `fwd` |
+|---|---:|---:|---:|---:|---:|
+| walk + sync | 323.3 ms | 4.97 ms | 323.2 | 236.5 | 40.7 |
+| index + sync | **281.9 ms** | **4.34 ms** | 281.8 | 235.6 | 40.3 |
+| index + async | 280.9 ms | 4.32 ms | 280.8 | 234.3 | 40.6 |
+
+The **index saves 0.63 ms/graph (~13 %)** of host work — almost all of `ev_rest − fuse − fwd` (0.71 → 0.09
+ms/graph).  `async` does not show in `host_total` because the `set_tensor` sync is outside
+`graph_compute`; its local effect is the `+0.21 %` tg of the sync→async arm on its own (the 16 MiB pinned
+ring / event handshake is cheaper than `cudaStreamSynchronize` per copy even here).
+
+### Validation (all on the candidate tree)
+
+- **Prefill-logit gate: PASS** — mean KLD **0.000707**, same-top-p **98.755 %** (limit 0.005 / 98.0 %),
+  unchanged from the recorded base.
+- **`GGML_CUDA_GDN_GATHER_INDEX=2`** (index and walk must agree, abort otherwise — `GGML_ABORT`): clean on
+  4B Q8_0, 27B Q6_K, 27B Swift UD-Q5_K_M, 35B-A3B (`-ncmoe 99` single GPU **and** `-sm tensor -ncmoe 20`
+  2 GPU), Gemma4 E4B (non-GDN), with graphs **on and off**, and with `--spec-type draft-mtp` (the
+  2-8-token verify band).
+- **Same-seed coherence, byte-identical** across `{index 0/1} × {async 0/1} × {graphs on/off}` on 4B Q8_0
+  (8 arms); 27B Q6_K 2-GPU `-sm tensor`; 35B-A3B 2-GPU `-sm tensor -ncmoe 20`; Gemma4 E4B.  MTP `n-max 3`
+  greedy text identical on 27B Q6_K (2235 chars, same hash).
+
+### Why the index is safe to default-on
+
+Any index/walk disagreement is **one-directional**: the index's per-gather fields are computed over the
+*whole* graph (a reader before the gather still counts as an `other_reader`, and every GDN that reads the
+gather counts toward `n_gdn`), while the walk only sees the nodes *after* the gather.  So the index can
+only answer `false` where the walk answers `true` — a dropped deferral, i.e. the ordinary un-skipped
+`GET_ROWS` (bit-identical), never a skip the walk would have refused.  `=2` verified exact agreement on
+every real graph tested.  This also means the reporter's 1-in-12 index-arm output difference (their
+comment) cannot be the index changing a decision; it is consistent with the tree's own numeric drift
+(r56 vs r30 draft acceptance already differs, and their graphs-on near-tie exists on r30).
+
+### Decision needed (maintainer)
+
+1. Promote **both** into the owning blocks (async upload path → **block 09**, which defines it; the walk →
+   **block 10**) and update `ENVIRONMENT.md`?  Or async only?
+2. Or keep both WIP and hand `0001`/`0002` to `@DanoPTT` as a build to re-run their matrix on?
+
+Per the default-on policy, a beneficial gated feature ships default-on; both are default-on here with a
+kill-switch.  The delivery stays 12 blocks either way (no new block: both touch files blocks 09/10 own).

@@ -1,0 +1,26 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 15dd50551..f94cb4a1e 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1012,9 +1012,11 @@ struct ggml_cuda_async_input_dev {
+     bool        has_done = false;
+ };
+ static ggml_cuda_async_input_dev g_async_input[GGML_CUDA_MAX_DEVICES];
++// Default ON: the synchronous path blocks the host on every small graph-input copy, which is a measurable cost
++// on a slow host and invisible on a fast one.  GGML_CUDA_ASYNC_INPUT=0 restores the synchronous path.
+ static const bool g_async_input_on = [] {
+     const char * e = getenv("GGML_CUDA_ASYNC_INPUT");
+-    return e != nullptr && atoi(e) != 0;
++    return e == nullptr || atoi(e) != 0;
+ }();
+ static constexpr size_t GGML_CUDA_ASYNC_INPUT_MAX  = 1u << 20;
+ static constexpr size_t GGML_CUDA_ASYNC_INPUT_RING = 16u << 20;
+@@ -1048,7 +1050,7 @@ static bool ggml_cuda_async_input_set(int device, void * dst, const void * src,
+     CUDA_CHECK(cudaEventRecord(d.ev, cudaStreamPerThread));
+     d.pending = true;
+     if (d.hits++ == 0) {
+-        GGML_LOG_WARN("%s: device %d: async graph-input uploads on (GGML_CUDA_ASYNC_INPUT=1)\n", __func__, device);
++        GGML_LOG_INFO("%s: device %d: async graph-input uploads on (GGML_CUDA_ASYNC_INPUT=0 disables)\n", __func__, device);
+     }
+     return true;
+ }

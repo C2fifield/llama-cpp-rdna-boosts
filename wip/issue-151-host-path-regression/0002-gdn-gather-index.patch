@@ -1,0 +1,250 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
+index 3cd2fd7f5..fa7d96a33 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
+@@ -85,6 +85,7 @@
+ #include "ggml-cuda/cumsum.cuh"
+ #include "ggml-cuda/fill.cuh"
+ #include "ggml-cuda/lightning-indexer.cuh"
++#include "ggml-cuda/ggml-cuda-try-fuse.cuh"
+ #include "ggml.h"
+ #include <algorithm>
+ #include <numeric>
+@@ -338,26 +339,49 @@ static bool ggml_cuda_should_fuse_rms_norm_mul_rope(const ggml_tensor * rms_norm
+ // in this graph, in the decode/verify band (single sequence, <= 16 tokens: the sequential kernel), every other reader
+ // of the gathered rows is empty (the zero-row extra-states copy of a single sequence), and no node in between writes
+ // the cache tensor.
+-bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_idx) {
+-    const ggml_tensor * gr = cgraph->nodes[node_idx];
++static const ggml_tensor * gdn_gather_root_of(const ggml_tensor * t) {
++    while (t != nullptr && t->view_src != nullptr) {
++        t = t->view_src;
++    }
++    return t;
++}
++
++// the gather-side conditions: the cache root, or nullptr when the gather does not qualify
++static const ggml_tensor * gdn_gather_candidate(const ggml_tensor * gr) {
+     if (gr->op != GGML_OP_GET_ROWS || gr->type != GGML_TYPE_F32 || (gr->flags & GGML_TENSOR_FLAG_OUTPUT) ||
+         gr->src[0]->type != GGML_TYPE_F32 || gr->src[0]->nb[0] != sizeof(float) || gr->src[0]->ne[0] != gr->ne[0] ||
+         gr->src[1]->type != GGML_TYPE_I32 || gr->src[1]->nb[0] != sizeof(int32_t) || !ggml_is_contiguous(gr)) {
+-        return false;
++        return nullptr;
++    }
++    // the row ids are read when the GDN runs, so they must outlive the gather: graph outputs are never reused
++    if (!(gdn_gather_root_of(gr->src[1])->flags & GGML_TENSOR_FLAG_OUTPUT)) {
++        return nullptr;
+     }
++    return gdn_gather_root_of(gr->src[0]);
++}
+ 
+-    auto root_of = [](const ggml_tensor * t) {
+-        while (t != nullptr && t->view_src != nullptr) {
+-            t = t->view_src;
+-        }
+-        return t;
+-    };
+-    const ggml_tensor * cache_root = root_of(gr->src[0]);
++const ggml_tensor * ggml_cuda_gdn_gather_candidate(const ggml_cgraph * cgraph, int node_idx) {
++    return gdn_gather_candidate(cgraph->nodes[node_idx]);
++}
+ 
+-    // the row ids are read when the GDN runs, so they must outlive the gather: graph outputs are never reused
+-    if (!(root_of(gr->src[1])->flags & GGML_TENSOR_FLAG_OUTPUT)) {
++// the GDN-side conditions
++static bool gdn_gather_gdn_ok(const ggml_tensor * gr, const ggml_tensor * gdn) {
++    if (gdn == nullptr || (gdn->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+         return false;
+     }
++    const ggml_tensor * src_v = gdn->src[2];
++    const ggml_tensor * state = gdn->src[5];
++    return src_v->ne[2] <= 16 && src_v->ne[3] == 1 && state->data == gr->data &&
++           ggml_nelements(state) == gr->ne[0] && gr->ne[0] == src_v->ne[0] * src_v->ne[0] * src_v->ne[1];
++}
++
++bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_idx) {
++    const ggml_tensor * gr = cgraph->nodes[node_idx];
++    const ggml_tensor * cache_root = gdn_gather_candidate(gr);
++    if (cache_root == nullptr) {
++        return false;
++    }
++    const auto root_of = gdn_gather_root_of;
+ 
+     const ggml_tensor * gdn = nullptr;
+     for (int j = node_idx + 1; j < cgraph->n_nodes; ++j) {
+@@ -387,14 +411,93 @@ bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_
+             return false;
+         }
+     }
+-    if (gdn == nullptr || (gdn->flags & GGML_TENSOR_FLAG_OUTPUT)) {
++    return gdn_gather_gdn_ok(gr, gdn);
++}
++
++void ggml_cuda_gdn_gather_index_build(const ggml_cgraph * cgraph, ggml_cuda_gdn_gather_index & idx) {
++    idx.gathers.clear();
++    idx.writers.clear();
++    idx.built = true;
++    for (int j = 0; j < cgraph->n_nodes; ++j) {
++        const ggml_tensor * cache_root = gdn_gather_candidate(cgraph->nodes[j]);
++        if (cache_root != nullptr) {
++            idx.gathers.emplace(cgraph->nodes[j], ggml_cuda_gdn_gather_index::gather_info{});
++            idx.writers.emplace(cache_root, std::vector<int>{});
++        }
++    }
++    if (idx.gathers.empty()) {
++        return;
++    }
++
++    const auto root_of = gdn_gather_root_of;
++    for (int j = 0; j < cgraph->n_nodes; ++j) {
++        const ggml_tensor * n = cgraph->nodes[j];
++        if (ggml_is_empty(n)) {
++            continue;
++        }
++        const bool view_or_noop = ggml_cuda_is_view_or_noop(n);
++        const ggml_tensor * gdn_root =
++            n->op == GGML_OP_GATED_DELTA_NET && n->src[5] != nullptr ? root_of(n->src[5]) : nullptr;
++
++        // a non-view node reading a gather is a reader that blocks the deferral, unless it is that gather's GDN
++        if (!view_or_noop) {
++            const ggml_tensor * read[GGML_MAX_SRC + 1];
++            int n_read = 0;
++            if (n->view_src != nullptr) {
++                read[n_read++] = root_of(n);
++            }
++            for (int s = 0; s < GGML_MAX_SRC; ++s) {
++                if (n->src[s] != nullptr) {
++                    read[n_read++] = root_of(n->src[s]);
++                }
++            }
++            for (int k = 0; k < n_read; ++k) {
++                if (read[k] == gdn_root) {
++                    continue;
++                }
++                auto it = idx.gathers.find(read[k]);
++                if (it != idx.gathers.end()) {
++                    it->second.other_reader = true;
++                }
++            }
++        }
++        if (gdn_root != nullptr) {
++            auto it = idx.gathers.find(gdn_root);
++            if (it != idx.gathers.end()) {
++                it->second.gdn = j;
++                it->second.n_gdn++;
++            }
++        }
++        if (!view_or_noop) {
++            auto it = idx.writers.find(root_of(n));
++            if (it != idx.writers.end()) {
++                it->second.push_back(j);
++            }
++        }
++    }
++}
++
++// same answer as the per-gather walk above, read from the index
++bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_idx, const ggml_cuda_gdn_gather_index & idx) {
++    const ggml_tensor * gr = cgraph->nodes[node_idx];
++    const auto g = idx.gathers.find(gr);
++    if (g == idx.gathers.end() || g->second.n_gdn != 1 || g->second.other_reader) {
++        return false;
++    }
++    const int gdn_idx = g->second.gdn;
++    if (gdn_idx < node_idx) {
+         return false;
+     }
+ 
+-    const ggml_tensor * src_v = gdn->src[2];
+-    const ggml_tensor * state = gdn->src[5];
+-    return src_v->ne[2] <= 16 && src_v->ne[3] == 1 && state->data == gr->data &&
+-           ggml_nelements(state) == gr->ne[0] && gr->ne[0] == src_v->ne[0] * src_v->ne[0] * src_v->ne[1];
++    // nothing may write the cache between the gather and the GDN
++    const auto w = idx.writers.find(gdn_gather_root_of(gr->src[0]));
++    if (w != idx.writers.end()) {
++        const auto first_after = std::upper_bound(w->second.begin(), w->second.end(), node_idx);
++        if (first_after != w->second.end() && *first_after < gdn_idx) {
++            return false;
++        }
++    }
++    return gdn_gather_gdn_ok(gr, cgraph->nodes[gdn_idx]);
+ }
+ 
+ static bool ggml_cuda_topk_moe_fusion_disabled() {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh
+index 3b5666269..0a4b93eeb 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh
++++ b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh
+@@ -8,5 +8,27 @@ int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgrap
+ 
+ // Also used by the graph optimizer in ggml-cuda.cu.
+ bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_idx);
++
++// Cheap prefilter: non-null (the gather's cache root) when the node is a GDN-state-gather candidate.
++// The graph loop uses it so the index below is built only on a graph that actually has candidates.
++const ggml_tensor * ggml_cuda_gdn_gather_candidate(const ggml_cgraph * cgraph, int node_idx);
++
++// One pass over the graph answers ggml_cuda_gdn_state_gather_deferrable for every gather, replacing the
++// per-gather forward walk (O(gathers x nodes): ~48 gathers x ~1900 nodes on a 64-layer GDN decode graph).
++// Conservative relative to the walk -- any disagreement can only drop a deferral, never add one, so the
++// kernel path is unchanged either way.  GGML_CUDA_GDN_GATHER_INDEX=0 selects the walk; =2 runs both and
++// aborts on a different answer.
++struct ggml_cuda_gdn_gather_index {
++    struct gather_info {
++        int  gdn          = -1;    // index of the GATED_DELTA_NET whose state (src[5]) roots at the gather
++        int  n_gdn        = 0;
++        bool other_reader = false; // a non-view node other than that GDN reads the gathered rows
++    };
++    std::unordered_map<const ggml_tensor *, gather_info>      gathers; // keyed by the candidate GET_ROWS
++    std::unordered_map<const ggml_tensor *, std::vector<int>> writers; // cache root -> non-view nodes rooted at it
++    bool built = false;
++};
++void ggml_cuda_gdn_gather_index_build(const ggml_cgraph * cgraph, ggml_cuda_gdn_gather_index & idx);
++bool ggml_cuda_gdn_state_gather_deferrable(const ggml_cgraph * cgraph, int node_idx, const ggml_cuda_gdn_gather_index & idx);
+ struct ggml_cuda_topk_moe_args;
+ bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, struct ggml_cuda_topk_moe_args & args);
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index f94cb4a1e..9500ff03f 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -4235,6 +4235,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+             static const bool fuse_gdn_state_gather =
+                 (getenv("GGML_CUDA_FUSE_GDN_STATE_GATHER") == nullptr || atoi(getenv("GGML_CUDA_FUSE_GDN_STATE_GATHER")) != 0) &&
+                 (getenv("GGML_CUDA_DISABLE_FUSION") == nullptr || atoi(getenv("GGML_CUDA_DISABLE_FUSION")) == 0);
++            // GGML_CUDA_GDN_GATHER_INDEX=0: per-gather walk instead of the per-graph index (A/B);
++            // =2: both, abort on a different answer
++            static const int gdn_gather_index_mode =
++                getenv("GGML_CUDA_GDN_GATHER_INDEX") ? atoi(getenv("GGML_CUDA_GDN_GATHER_INDEX")) : 1;
++            ggml_cuda_gdn_gather_index gdn_gather_index;
+             cuda_ctx->gdn_deferred_gathers.clear();
+             for (int i = 0; i < cgraph->n_nodes; i++) {
+                 ggml_tensor * node = cgraph->nodes[i];
+@@ -4278,9 +4283,25 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                     continue;
+                 }
+ 
+-                if (fuse_gdn_state_gather && node->op == GGML_OP_GET_ROWS && ggml_cuda_gdn_state_gather_deferrable(cgraph, i)) {
+-                    cuda_ctx->gdn_deferred_gathers.push_back(node);
+-                    continue;
++                if (fuse_gdn_state_gather && node->op == GGML_OP_GET_ROWS &&
++                    ggml_cuda_gdn_gather_candidate(cgraph, i) != nullptr) {
++                    bool deferrable;
++                    if (gdn_gather_index_mode == 0) {
++                        deferrable = ggml_cuda_gdn_state_gather_deferrable(cgraph, i);
++                    } else {
++                        if (!gdn_gather_index.built) {
++                            ggml_cuda_gdn_gather_index_build(cgraph, gdn_gather_index);
++                        }
++                        deferrable = ggml_cuda_gdn_state_gather_deferrable(cgraph, i, gdn_gather_index);
++                        if (gdn_gather_index_mode == 2 && deferrable != ggml_cuda_gdn_state_gather_deferrable(cgraph, i)) {
++                            GGML_ABORT("GDN gather index mismatch at node %d (%s): index %d, walk %d",
++                                       i, node->name, (int) deferrable, (int) !deferrable);
++                        }
++                    }
++                    if (deferrable) {
++                        cuda_ctx->gdn_deferred_gathers.push_back(node);
++                        continue;
++                    }
+                 }
+ 
+                 if (op_timing) {
