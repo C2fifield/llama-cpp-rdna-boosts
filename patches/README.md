@@ -11,7 +11,23 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r71` (2026-10-16) -- issue #164: ring-region-guarded prefill drop, decode-only ring release, and auto ring sizing:**
+> **Current release `v12-097cf33d9-r72` (2026-10-16) -- issue #164 follow-up: the H2D ring must hold the largest staged expert slice (per-device), plus a 1-GPU crash fix:**
+> canonical tip `78740c1ca`, net tree `431154256c190b64657a89c461c884a47fcfcca6`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.
+> The r71 auto-size used the prefill-throughput knee alone; a model whose per-device expert-table slice is
+> larger than `ring_region / ring_slots` fell back to a cudaMalloc staging buffer, which the optional-allocation
+> cap then refused once the arena had grown (reporter's IQ4_NL `--n-cpu-moe 46`: pp 755 t/s, 1 refusal).
+> A new `ggml_backend_meta_split_dev_bytes` (the single size rule; the meta staging and the new
+> `llama_model::max_host_expert_slice_bytes` scan both use it) sizes the hole as
+> `min(1/4 VRAM, max(knee, ring_slots * (largest per-device slice + 512)))` -- the split is
+> granularity-rounded and measured 180/270 MiB on one 450 MiB table over two devices.  `h2d_stage_buffer`
+> serves a slot at its real size so the `unit` rounding cannot re-open the gap; a too-small explicit
+> `GGML_CUDA_SLAB_RING_MIB` now logs a non-fatal error naming the floor (only when the slab is enabled).
+> Also fixes a 1-GPU segfault from an uninitialized `llama_meta_device_get_split_state_userdata`.
+> IQ4_NL ring 1.47 -> 2.11 GiB, pp 755 -> 1131, 0 refusals; 73K prefill after a decode pp 1157; texts
+> byte-identical to r71.  Records: `../WORKLOG.md` 261016.007.
+>
+> **Previous release `v12-097cf33d9-r71` (2026-10-16) -- issue #164: ring-region-guarded prefill drop, decode-only ring release, and auto ring sizing:**
 > canonical tip `0eae5b86a`, net tree `dc2cc150df2a7b8242c4a8668237e91e26302bdf`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 09/10/11** amended, no new block.
 > The r67 narrow -> wide compute-buffer drop is now guarded on a carved H2D ring hole

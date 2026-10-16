@@ -1,5 +1,49 @@
 # WORKLOG - dated delivery records
 
+## 261016.007 (r72) -- issue #164 follow-up: the ring must hold the largest staged expert slice (per-device), plus a 1-GPU crash fix
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r72` (base `097cf33d9`; canonical tip
+`78740c1ca39e16296f9b8981a21106f7cd29e709`, net tree `431154256c190b64657a89c461c884a47fcfcca6`; 12
+blocks; `validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded
+tree).  **No new block:** blocks 09/10/11 amended.
+
+**The bug.**  r71 auto-sized the H2D staging-ring hole from the prefill-throughput knee alone, so a model
+whose *per-device expert-table slice* is larger than `ring_region / ring_slots` fell back to a cudaMalloc
+staging buffer for those slots.  Once the arena has grown, `GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT` (50 %)
+refuses that fallback, so a large prefill after a decode streamed at roughly half speed (the reporter's
+Qwen3.8-Flash-Next IQ4_NL `--n-cpu-moe 46`: **pp 755 t/s**, one refusal; GSQ control with a fitting ring:
+1462 t/s).  The ring *was* re-armed -- only its per-slot capacity was too small.
+
+**The fix (single source of truth).**  The per-device slice is not `table / devices`: the meta split is
+granularity-rounded and measured **180 MiB / 270 MiB on one 450 MiB table with two devices** (40/60).  A
+new `ggml_backend_meta_split_dev_bytes(tensor, split_state, n_devs, dev)` defines the size
+(`sum_s ne[s*n_devs+dev]*nr[s]` along the split axis, scaled by `nbytes/ne[axis]`); the meta staging
+(`ggml_backend_meta_stage_input`) now sizes its ring-slot request with it, and
+`llama_model::max_host_expert_slice_bytes()` scans the host `exps` weights through the same split-state
+callback the backend uses and takes the max.  The context sizes the hole as
+`min(1/4 VRAM, max(throughput knee, ring_slots * (slice + 512)))`.  `h2d_stage_buffer` additionally serves
+a slot at its real size (bump-allocated, stable VA) so the `unit` rounding cannot re-open the gap.  A
+too-small explicit `GGML_CUDA_SLAB_RING_MIB` (a verbatim override) now emits a non-fatal **error** naming
+the floor, but only when the slab is enabled (new `ggml_backend_dev_slab_enabled` hook).
+
+**Results** (gfx1201, texts byte-identical to r71 throughout): IQ4_NL ring 1.47 -> **2.11 GiB**, refusals
+1 -> **0**, pp 755 -> **1131**, tg 24.8; GSQ ring 1.47 -> 2.11 GiB, pp 1451, tg 45.2; reporter's full **73K
+prefill after a decode: pp 1157**, 0 refusals.
+
+**Found and fixed en route -- a 1-GPU segfault.**  `llama_meta_device_get_split_state_userdata` had no
+initializer and `n_devices`/`model` are only set when the meta wrapper exists, so on a single device the
+new scan read indeterminate bytes and dereferenced a garbage `model` in the `--fit` context probe.  The
+struct now default-initializes (`= 0` / `= nullptr`, which also fixes the pre-existing uninitialized read
+at `llama-context.cpp` `n_devices == 1`) and the scan requires `n_devs > 1 && n_devs <= 16 && model !=
+nullptr`.
+
+**Gates.**  `gate-prefill-logits.sh` PASS (mean KLD 0.000707, same-top-p 98.755 %); an explicit
+host-expert prefill-logit comparison (GSQ `-ncmoe 48`, base recorded with the r71 ring 1502 MiB vs the new
+auto 2.11 GiB) gives **mean KLD 0.000000, same-top-p 100.000 %**; warm 2500-decode `e12a175a6ad4` and cold
+300-decode `687d15eaecea` are exact r71 matches; 3 concurrent sessions 0 NaN; 3-GPU ring 1.41 GiB; `-sm
+layer` ring 3.52 GiB; dense 27B/4B no ring; Qwen3.6-35B-A3B ring 1.17 GiB.  All configurations exercised
+without a refusal or a crash.
+
 ## 261016.006 (r71) -- issue #164: ring-region-guarded prefill drop, decode-only ring release, and auto ring sizing
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r71` (base `097cf33d9`; canonical tip

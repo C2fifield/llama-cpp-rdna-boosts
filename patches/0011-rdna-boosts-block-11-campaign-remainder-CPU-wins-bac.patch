@@ -1,4 +1,4 @@
-From 0eae5b86a268f6bbba59364a0bf1722018e6a8f0 Mon Sep 17 00:00:00 2001
+From 78740c1ca39e16296f9b8981a21106f7cd29e709 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -24,7 +24,7 @@ fills were written, which left a -Wmissing-field-initializers warning.
  ggml/src/ggml-cann/ggml-cann.cpp              |   1 +
  ggml/src/ggml-cpu/arch-fallback.h             |   1 -
  ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++++
- ggml/src/ggml-cpu/ggml-cpu.cpp                |  10 +-
+ ggml/src/ggml-cpu/ggml-cpu.cpp                |  12 +-
  ggml/src/ggml-cpu/repack.cpp                  |   3 +
  .../template-instances/generate_cu_files.py   |  46 ++--
  ggml/src/ggml-et/ggml-et.cpp                  |   1 +
@@ -32,21 +32,21 @@ fills were written, which left a -Wmissing-field-initializers warning.
  ggml/src/ggml-metal/ggml-metal.cpp            |   1 +
  ggml/src/ggml-opencl/ggml-opencl.cpp          |   1 +
  ggml/src/ggml-openvino/ggml-openvino.cpp      |   1 +
- ggml/src/ggml-rpc/ggml-rpc.cpp                |  11 +
+ ggml/src/ggml-rpc/ggml-rpc.cpp                |  13 +
  ggml/src/ggml-sycl/ggml-sycl.cpp              |   1 +
  ggml/src/ggml-virtgpu/ggml-backend.cpp        |   1 +
  ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   1 +
  ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
- src/llama-context.cpp                         | 149 +++++++++++-
+ src/llama-context.cpp                         | 190 ++++++++++++++-
  src/llama-context.h                           |   4 +
  src/llama-ext.h                               |   6 +
- src/llama-model.cpp                           |   8 +
- src/llama-model.h                             |   3 +
+ src/llama-model.cpp                           |  44 ++++
+ src/llama-model.h                             |  16 +-
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 30 files changed, 723 insertions(+), 88 deletions(-)
+ 30 files changed, 815 insertions(+), 90 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -751,7 +751,7 @@ index ea54cfe44..a7d8182c3 100644
      const int qk = QK8_0;
      const int nb = n / qk;
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 05f74e0fa..0cb0329a8 100644
+index 05f74e0fa..6f8b612c3 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
@@ -771,7 +771,7 @@ index 05f74e0fa..0cb0329a8 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -699,6 +700,13 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+@@ -699,6 +700,15 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -782,6 +782,8 @@ index 05f74e0fa..0cb0329a8 100644
 +    /* .slab_compute_plain   = */ nullptr,
 +    /* .slab_ring_region     = */ nullptr,
 +    /* .slab_set_ring_cap    = */ nullptr,
++    /* .slab_enabled         = */ nullptr,
++    /* .slab_ring_slots      = */ nullptr,
  };
  
  // CPU backend - backend (reg)
@@ -917,7 +919,7 @@ index d5106a568..7f8e826f9 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index 80f094dab..236abb063 100644
+index 80f094dab..ea4ad20b2 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -1114,6 +1114,9 @@ static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
@@ -938,7 +940,7 @@ index 80f094dab..236abb063 100644
      /* .stage_wait              = */ NULL,
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
-@@ -2918,6 +2922,13 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+@@ -2918,6 +2922,15 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
      /* .slab_headroom_bytes  = */ nullptr,
      /* .slab_ring_set        = */ nullptr,
      /* .slab_narrow_floor    = */ nullptr,
@@ -949,6 +951,8 @@ index 80f094dab..236abb063 100644
 +    /* .slab_compute_plain   = */ nullptr,
 +    /* .slab_ring_region     = */ nullptr,
 +    /* .slab_set_ring_cap    = */ nullptr,
++    /* .slab_enabled         = */ nullptr,
++    /* .slab_ring_slots      = */ nullptr,
  };
  
  // backend reg interface
@@ -1025,7 +1029,7 @@ index fe0eba002..a3d9f00da 100644
      /* .stage_d2d               = */ NULL,
      /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 6ab35e5ac..dad4bcade 100644
+index 6ab35e5ac..ef600e788 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -310,6 +310,11 @@ llama_context::llama_context(
@@ -1040,7 +1044,7 @@ index 6ab35e5ac..dad4bcade 100644
  
      cparams.ctx_type          = params.ctx_type;
      cparams.rope_scaling_type = params.rope_scaling_type;
-@@ -705,6 +710,34 @@ llama_context::llama_context(
+@@ -705,6 +710,75 @@ llama_context::llama_context(
              moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs, backend_buft, cparams.moe_cache_size);
          }
  
@@ -1052,30 +1056,71 @@ index 6ab35e5ac..dad4bcade 100644
 +        // Capped at 1/4 of the smallest staging device's VRAM so it scales down on a small card, and the
 +        // ring is one global region, so the smallest cap wins.  `GGML_CUDA_SLAB_RING_MIB` is a verbatim
 +        // per-GPU override and always wins.  Runs before `sched_reserve`, i.e. before the slab exists.
-+        if (!model.moe_host_expert_bytes.empty() && getenv("GGML_CUDA_SLAB_RING_MIB") == nullptr) {
-+            const double n_stage = (double) model.moe_host_expert_bytes.size();
-+            if (n_stage > 0.0) {
-+                size_t ring_bytes = (size_t) ((1800.0 / n_stage +
-+                        (double) cparams.n_ubatch / (1.7 * n_stage * n_stage)) * 1024.0 * 1024.0);
-+                size_t vram_cap = (size_t) -1;
-+                for (const auto & kv : model.moe_host_expert_bytes) {
-+                    size_t free_b = 0, total_b = 0;
-+                    ggml_backend_dev_memory(kv.first, &free_b, &total_b);
-+                    if (total_b > 0) {
-+                        vram_cap = std::min(vram_cap, total_b / 4);
++        // issue #164: `GGML_CUDA_SLAB_RING_MIB` is a verbatim per-GPU override and always wins, but a value
++        // below the slice floor makes the H2D staging fall back to a cudaMalloc buffer -- which the
++        // optional-allocation cap may then refuse -- so say so (non-fatal: the override is still honoured).
++        const char * ring_env = getenv("GGML_CUDA_SLAB_RING_MIB");
++        if (!model.moe_host_expert_bytes.empty()) {
++            const ggml_backend_dev_t stage_dev = model.moe_host_expert_bytes.begin()->first;
++            const bool slab_enabled = ggml_backend_dev_slab_enabled(stage_dev);
++            // issue #164: the knee above only balances prefill speed against arena retention; it
++            // assumes the ring can hold one staged upload per slot.  A model whose per-device
++            // expert-table slice is larger than ring/slots quietly falls back to a cudaMalloc staging
++            // buffer, and once the arena has grown that fallback is refused by the optional-allocation
++            // cap -- a large prefill after a decode then streams at ~half speed (measured 1462 -> 755
++            // t/s on Qwen3.8-Flash-Next IQ4_NL `-ncmoe 46`).  Require room for `ring_slots` slices of
++            // the largest staged table; the throughput knee is the floor, this is the fit requirement.
++            // `llama_model::max_host_expert_slice_bytes` and `ggml_backend_meta_stage_input` share the rule.
++            size_t slice = 0, n_slots = 0, slice_floor = 0;
++            if (slab_enabled) {
++                slice = model.max_host_expert_slice_bytes();
++                if (slice > 0) {
++                    n_slots = ggml_backend_dev_slab_ring_slots(stage_dev);
++                    if (n_slots == 0) {
++                        n_slots = 8;
 +                    }
++                    slice_floor = n_slots * (slice + 512);
 +                }
-+                if (vram_cap != (size_t) -1) {
-+                    ring_bytes = std::min(ring_bytes, vram_cap);
++            }
++            if (ring_env == nullptr) {
++                const double n_stage = (double) model.moe_host_expert_bytes.size();
++                if (n_stage > 0.0) {
++                    size_t ring_bytes = (size_t) ((1800.0 / n_stage +
++                            (double) cparams.n_ubatch / (1.7 * n_stage * n_stage)) * 1024.0 * 1024.0);
++                    if (slice_floor > ring_bytes) {
++                        ring_bytes = slice_floor;
++                    }
++                    size_t vram_cap = (size_t) -1;
++                    for (const auto & kv : model.moe_host_expert_bytes) {
++                        size_t free_b = 0, total_b = 0;
++                        ggml_backend_dev_memory(kv.first, &free_b, &total_b);
++                        if (total_b > 0) {
++                            vram_cap = std::min(vram_cap, total_b / 4);
++                        }
++                    }
++                    if (vram_cap != (size_t) -1) {
++                        ring_bytes = std::min(ring_bytes, vram_cap);
++                    }
++                    ggml_backend_dev_slab_set_ring_cap(stage_dev, ring_bytes);
 +                }
-+                ggml_backend_dev_slab_set_ring_cap(model.moe_host_expert_bytes.begin()->first, ring_bytes);
++            } else if (slab_enabled && slice_floor > 0) {
++                const size_t env_bytes = (size_t) atoll(ring_env) << 20;
++                if (env_bytes < slice_floor) {
++                    LLAMA_LOG_ERROR("%s: GGML_CUDA_SLAB_RING_MIB=%zu MiB is below the H2D staging slice floor of "
++                            "%zu MiB (%zu slots x (%zu MiB largest per-device expert slice + 512 B)); the H2D "
++                            "staging ring falls back to a cudaMalloc buffer, which the optional-allocation cap "
++                            "may refuse, so a large prefill can stream at roughly half speed.  Raise it to at "
++                            "least %zu MiB, or unset it to auto-size.\n",
++                            __func__, env_bytes >> 20, slice_floor >> 20, n_slots, slice >> 20,
++                            (slice_floor + (1u << 20) - 1) >> 20);
++                }
 +            }
 +        }
 +
          sched_reserve();
  
          if (!cparams.flash_attn) {
-@@ -1670,6 +1703,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+@@ -1670,6 +1744,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
  
      GGML_ASSERT(lid <= model.hparams.n_layer());
  
@@ -1088,7 +1133,7 @@ index 6ab35e5ac..dad4bcade 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -1886,6 +1925,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1886,6 +1966,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          }
      }
  
@@ -1130,7 +1175,7 @@ index 6ab35e5ac..dad4bcade 100644
      // wip/slab-ring-region: the H2D staging ring is one meta-unit with the WIDE (prefill) compute layout.
      // It is armed for a wide pass (>= the staging gate floor, 64 tokens) and disarmed for a narrow one, so
      // a decode-only stretch returns its hole to the arena.  This runs BEFORE the drop's cache re-arm, so a
-@@ -1894,14 +1968,35 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1894,14 +2009,35 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
      // while the ring is used on every wide pass.  `ring_set` is a no-op when the state already matches.
      if (!model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
          const bool ring_arm = ubatch.n_tokens >= 64;
@@ -1166,7 +1211,7 @@ index 6ab35e5ac..dad4bcade 100644
      }
      if (drop_now) {
          ggml_backend_sched_drop_buffers(sched.get());
-@@ -3676,9 +3771,57 @@ public:
+@@ -3676,9 +3812,57 @@ public:
              uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
  
      ~llama_io_write_host() {
@@ -1260,10 +1305,53 @@ index 9ac8eff63..170efb75a 100644
  // returns total number of elements or 0 on error
  // if out is nullptr, returns the number of tokens without writing to out
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 2f4b0d2a4..aa0dfeb3d 100644
+index 2f4b0d2a4..b72762156 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -4090,6 +4090,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+@@ -2508,6 +2508,42 @@ size_t llama_model::max_host_weight_tensor_bytes() const {
+     return max_bytes;
+ }
+ 
++size_t llama_model::max_host_expert_slice_bytes() const {
++    // issue #164: the per-device slice of a host expert table is not the table divided by the device count
++    // -- the meta split is granularity-rounded and came out 180 MiB / 270 MiB on a 450 MiB table with two
++    // devices.  Ask the split-state callback (the same one the meta backend uses for the staging copies)
++    // and the shared size rule, so this and the staging always agree.
++    const size_t n_devs = get_split_state_ud.n_devices;
++    const bool   split  = n_devs > 1 && n_devs <= GGML_BACKEND_META_MAX_DEVICES && get_split_state_ud.model != nullptr;
++    size_t max_slice = 0;
++    for (const auto & [ctx, bufs] : pimpl->ctxs_bufs) {
++        ggml_context * c = ctx.get();
++        for (ggml_tensor * t = ggml_get_first_tensor(c); t != nullptr; t = ggml_get_next_tensor(c, t)) {
++            if (t->buffer == nullptr || !ggml_backend_buffer_is_host(t->buffer)) {
++                continue;
++            }
++            if (ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
++                continue;
++            }
++            if (std::string(t->name).find("exps") == std::string::npos) {
++                continue;
++            }
++            if (split) {
++                const ggml_backend_meta_split_state ss = llama_meta_device_get_split_state(t, const_cast<void *>(static_cast<const void *>(&get_split_state_ud)));
++                for (size_t d = 0; d < n_devs; d++) {
++                    const size_t b = ggml_backend_meta_split_dev_bytes(t, &ss, n_devs, d);
++                    if (b > max_slice) {
++                        max_slice = b;
++                    }
++                }
++            } else if (ggml_nbytes(t) > max_slice) {
++                max_slice = ggml_nbytes(t);
++            }
++        }
++    }
++    return max_slice;
++}
++
+ uint64_t llama_model::n_elements() const {
+     return pimpl->n_elements;
+ }
+@@ -4090,6 +4126,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
      return (uint32_t) model->target_layer_ids.size();
  }
  
@@ -1279,10 +1367,25 @@ index 2f4b0d2a4..aa0dfeb3d 100644
      if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
          return 0;
 diff --git a/src/llama-model.h b/src/llama-model.h
-index 50731dfce..c345789c3 100644
+index 50731dfce..b56921b28 100644
 --- a/src/llama-model.h
 +++ b/src/llama-model.h
-@@ -764,6 +764,9 @@ struct llama_model {
+@@ -619,8 +619,12 @@ struct llama_device {
+ };
+ 
+ struct llama_meta_device_get_split_state_userdata {
+-    size_t                     n_devices;
+-    const struct llama_model * model;
++    // Zero-initialized on purpose: the meta wrapper (and so this assignment) exists only for a >= 2-device
++    // tensor split, and a consumer that reads it on a non-meta model (single device, `-sm layer`) must see
++    // 0/nullptr rather than indeterminate bytes -- issue #164: `llama_model::max_host_expert_slice_bytes`
++    // dereferences `model` through this struct.
++    size_t                     n_devices = 0;
++    const struct llama_model * model     = nullptr;
+ };
+ 
+ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const struct ggml_tensor * tensor, void * userdata);
+@@ -764,6 +768,9 @@ struct llama_model {
      // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
      std::vector<int32_t> target_layer_ids;
  
@@ -1292,6 +1395,18 @@ index 50731dfce..c345789c3 100644
      std::vector<llama_layer> layers;
  
      //Dense linear projections for SentenceTransformers models like embeddinggemma
+@@ -823,6 +830,11 @@ struct llama_model {
+     // `slots x this`.
+     size_t max_host_weight_tensor_bytes() const;
+ 
++    // issue #164: the largest per-device slice of a host-resident expert table (see
++    // `ggml_backend_meta_split_dev_bytes`).  It is the *slice* -- not the whole table -- that one H2D ring
++    // slot has to hold, and the split is not necessarily even (it is granularity-rounded).
++    size_t max_host_expert_slice_bytes() const;
++
+     // total number of parameters in the model
+     uint64_t n_elements() const;
+ 
 diff --git a/src/llama.cpp b/src/llama.cpp
 index ddea45b44..cc189c193 100644
 --- a/src/llama.cpp

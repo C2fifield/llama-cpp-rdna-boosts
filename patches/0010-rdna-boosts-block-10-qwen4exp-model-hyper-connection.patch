@@ -1,4 +1,4 @@
-From 47acf97d1650070be45ff27fea368ed6af39ada1 Mon Sep 17 00:00:00 2001
+From 8aca6794a866c5b9de3d6ec62c1f8b449a604a1c Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -36,12 +36,12 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  ggml/include/ggml-rpc.h                       |    4 +-
  ggml/include/ggml.h                           |  184 +-
  ggml/src/ggml-alloc.c                         |   28 +-
- ggml/src/ggml-backend-meta.cpp                |   59 +
- ggml/src/ggml-backend.cpp                     |   75 +-
+ ggml/src/ggml-backend-meta.cpp                |  102 +-
+ ggml/src/ggml-backend.cpp                     |   93 +-
  ggml/src/ggml-cpu/ggml-cpu.c                  |   37 +
  ggml/src/ggml-cpu/ops.cpp                     |  580 ++
  ggml/src/ggml-cpu/ops.h                       |    4 +
- ggml/src/ggml-cuda/common.cuh                 |  187 +-
+ ggml/src/ggml-cuda/common.cuh                 |  201 +-
  ggml/src/ggml-cuda/concat.cu                  |   82 +
  ggml/src/ggml-cuda/cpy-batch.cu               |   10 +
  ggml/src/ggml-cuda/cpy-batch.cuh              |    1 +
@@ -65,7 +65,7 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2312 ++++++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   34 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |   13 +
- ggml/src/ggml-cuda/ggml-cuda.cu               | 4707 ++++-------------
+ ggml/src/ggml-cuda/ggml-cuda.cu               | 4710 ++++-------------
  ggml/src/ggml-cuda/hc-mix.cu                  | 1400 +++++
  ggml/src/ggml-cuda/hc-mix.cuh                 |    8 +
  ggml/src/ggml-cuda/hyperconn.cu               | 1119 ++++
@@ -130,7 +130,7 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 19651 insertions(+), 4902 deletions(-)
+ 99 files changed, 19730 insertions(+), 4901 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -498,19 +498,64 @@ index 337709f31..9cac9c2c3 100644
  
  bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index aabe150bb..0d470d0ad 100644
+index aabe150bb..2af35115f 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
-@@ -306,6 +306,8 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
+@@ -306,6 +306,10 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
      /* .moe_cache_set_host_pool   = */ nullptr,
      /* .moe_cache_set_host_source = */ nullptr,
      /* .slab_compute_plain   = */ ggml_backend_meta_device_slab_compute_plain,
 +    /* .slab_ring_region     = */ nullptr,
 +    /* .slab_set_ring_cap    = */ nullptr,
++    /* .slab_enabled         = */ nullptr,
++    /* .slab_ring_slots      = */ nullptr,
  };
  
  bool ggml_backend_dev_is_meta(ggml_backend_dev_t dev) {
-@@ -1256,6 +1258,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -325,6 +329,42 @@ ggml_backend_dev_t ggml_backend_meta_dev_simple_dev(ggml_backend_dev_t meta_dev,
+     return meta_dev_ctx->simple_devs[index];
+ }
+ 
++// issue #164: the byte size of device `dev`'s slice of a tensor under the meta split.  THIS is the
++// definition of the per-device split size.  `ggml_backend_meta_stage_input` sizes the H2D ring slot with
++// it, and `llama_model::max_host_expert_slice_bytes` sizes the slab ring hole from the same rule, so the
++// ring can always hold the largest upload the staging will ask for.  `extent` is the same per-segment sum
++// `ggml_backend_meta_buffer_init_tensor_impl` uses to build each device's tensor (the split is
++// granularity-rounded, so it need not be even), and the byte size scales linearly with it because the
++// tensor is contiguous.
++size_t ggml_backend_meta_split_dev_bytes(const struct ggml_tensor * tensor,
++        const struct ggml_backend_meta_split_state * split_state, size_t n_devs, size_t dev) {
++    if (tensor == nullptr || split_state == nullptr || dev >= n_devs) {
++        return 0;
++    }
++    if (split_state->axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
++        return ggml_nbytes(tensor);
++    }
++    if (split_state->axis < 0 || split_state->axis >= GGML_MAX_DIMS) {
++        return 0;
++    }
++    const int64_t ne_axis = tensor->ne[split_state->axis];
++    if (ne_axis <= 0) {
++        return 0;
++    }
++    int64_t extent = 0;
++    for (uint32_t s = 0; s < split_state->n_segments; s++) {
++        extent += split_state->ne[s*n_devs + dev] * split_state->nr[s];
++    }
++    if (extent <= 0) {
++        return 0;
++    }
++    const size_t nbytes = ggml_nbytes(tensor);
++    if (nbytes % (size_t) ne_axis != 0) {
++        return nbytes;   // non-contiguous tensor: the whole tensor is the safe bound
++    }
++    return (nbytes / (size_t) ne_axis) * (size_t) extent;
++}
++
+ ggml_backend_dev_t ggml_backend_meta_device(
+         ggml_backend_dev_t * devs, size_t n_devs, ggml_backend_meta_get_split_state_t get_split_state, void * get_split_state_ud) {
+     GGML_ASSERT(n_devs <= GGML_BACKEND_META_MAX_DEVICES);
+@@ -1256,6 +1296,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_FLASH_ATTN_EXT: {
                  split_state = handle_flash_attn_ext(src_ss);
              } break;
@@ -551,7 +596,7 @@ index aabe150bb..0d470d0ad 100644
              case GGML_OP_FLASH_ATTN_BACK: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
-@@ -1284,6 +1320,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1284,6 +1358,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_DSV4_HC_POST: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
@@ -581,11 +626,23 @@ index aabe150bb..0d470d0ad 100644
              case GGML_OP_UNARY: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ false);
              } break;
+@@ -2562,7 +2659,10 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+         if (chunk_size_j == 0) {
+             continue;
+         }
+-        const size_t copy_bytes = gather ? n_chunks * chunk_size_j : chunk_size_j;
++        // The ring slot request comes from the shared split-size rule, so the slab hole (sized from the
++        // same rule, `llama_model::max_host_expert_slice_bytes`) always holds it.
++        const size_t copy_bytes = ggml_backend_meta_split_dev_bytes(input_cpy, &split_state, n_backends, j);
++        GGML_ASSERT(copy_bytes == (gather ? n_chunks * chunk_size_j : chunk_size_j));
+         void * slot_ptr = simple_backend->iface.stage_buffer(simple_backend, slot, copy_bytes);
+         if (slot_ptr == nullptr) {
+             return false;
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 68fe5d987..f4c163b08 100644
+index 68fe5d987..39476dbe4 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -328,6 +328,24 @@ void ggml_backend_dev_slab_ring_set(ggml_backend_dev_t dev, bool arm) {
+@@ -328,6 +328,42 @@ void ggml_backend_dev_slab_ring_set(ggml_backend_dev_t dev, bool arm) {
      dev->iface.slab_ring_set(dev, arm);
  }
  
@@ -607,10 +664,28 @@ index 68fe5d987..f4c163b08 100644
 +    dev->iface.slab_set_ring_cap(dev, bytes);
 +}
 +
++bool ggml_backend_dev_slab_enabled(ggml_backend_dev_t dev) {
++    // issue #164: report whether this device's slab is enabled.  Optional hook; a backend without a slab
++    // reports false (the ring sizing then does not warn).
++    if (dev == nullptr || dev->iface.slab_enabled == nullptr) {
++        return false;
++    }
++    return dev->iface.slab_enabled(dev);
++}
++
++size_t ggml_backend_dev_slab_ring_slots(ggml_backend_dev_t dev) {
++    // issue #164: the ring depth, so the context can size the ring region for one staged table per slot.
++    // Optional hook; 0 means "unknown" and the caller falls back to the default depth.
++    if (dev == nullptr || dev->iface.slab_ring_slots == nullptr) {
++        return 0;
++    }
++    return dev->iface.slab_ring_slots(dev);
++}
++
  void ggml_backend_dev_slab_narrow_floor(ggml_backend_dev_t dev, size_t bytes) {
      // wip/slab-ring-region: pin the narrow (decode/verify) work floor.  Optional hook.
      if (dev == nullptr || dev->iface.slab_narrow_floor == nullptr) {
-@@ -1293,6 +1311,15 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
+@@ -1293,6 +1329,15 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
      // skip FLASH_ATTN_EXT since the sinks tensor is too small to choose a based based on it
      allow = allow && tensor->op != GGML_OP_FLASH_ATTN_EXT;
  
@@ -626,7 +701,7 @@ index 68fe5d987..f4c163b08 100644
      if (allow) {
          for (int i = 0; i < GGML_MAX_SRC; i++) {
              const struct ggml_tensor * src = tensor->src[i];
-@@ -2180,15 +2207,49 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+@@ -2180,15 +2225,49 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
              }
          }
  
@@ -682,7 +757,7 @@ index 68fe5d987..f4c163b08 100644
          }
          if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
              GGML_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-@@ -3313,6 +3374,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
+@@ -3313,6 +3392,8 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
  bool ggml_op_alloc_size_may_expand(enum ggml_op op) {
      switch (op) {
          case GGML_OP_FLASH_ATTN_EXT:
@@ -1394,7 +1469,7 @@ index 2728b08b6..55a4ecf86 100644
  void ggml_compute_forward_map_custom2(const struct ggml_compute_params * params, struct ggml_tensor * dst);
  void ggml_compute_forward_map_custom3(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index bb8794527..ec25f5f21 100644
+index bb8794527..39c9d71cf 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -102,6 +102,7 @@ static inline bool ggml_cuda_cache_geom_debug() {
@@ -1617,7 +1692,30 @@ index bb8794527..ec25f5f21 100644
          if (bound > cap) {
              bound = cap;
          }
-@@ -2329,6 +2411,40 @@ struct ggml_backend_cuda_context {
+@@ -2100,12 +2182,18 @@ struct ggml_backend_cuda_context {
+             // it does not draw on the free VRAM the G4 cap protects.
+             if (!h2d_stage_slab[slot]) {
+                 const size_t cap = ggml_cuda_slab_ring_slot_capacity(device);
+-                if (cap >= new_size) {
+-                    void * p = ggml_cuda_slab_arena_alloc_transient(device, cap);
++                // issue #164: when the ring is armed, serve the slot at its real size (bump-allocated, so
++                // its VA is still stable) rather than only when it fits the even per-slot capacity.  A
++                // model whose largest staged slice exceeds `ring_region / slots` would otherwise fall
++                // back to cudaMalloc even though the region has room.  The region bound is enforced in
++                // `ggml_cuda_slab_arena_alloc_transient`.
++                if (cap > 0) {
++                    const size_t want = cap >= new_size ? cap : new_size;
++                    void * p = ggml_cuda_slab_arena_alloc_transient(device, want);
+                     if (p != nullptr) {
+                         h2d_stage[slot]      = p;
+-                        h2d_stage_size[slot] = cap;
+-                        h2d_stage_total     += cap - old_size;
++                        h2d_stage_size[slot] = want;
++                        h2d_stage_total     += want - old_size;
+                         h2d_stage_slab[slot] = true;
+                         return p;
+                     }
+@@ -2329,6 +2417,40 @@ struct ggml_backend_cuda_context {
      }
  };
  
@@ -1658,7 +1756,7 @@ index bb8794527..ec25f5f21 100644
  struct ggml_cuda_mm_fusion_args_host {
      const ggml_tensor * x_bias = nullptr;
      const ggml_tensor * gate = nullptr;
-@@ -2498,6 +2614,3 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+@@ -2498,6 +2620,3 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
      kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
      CUDA_CHECK(cudaGetLastError());
  }
@@ -8036,7 +8134,7 @@ index 8005b57b4..70fd8d518 100644
 +size_t ggml_cuda_slab_headroom_bytes();
 +void   ggml_cuda_slab_set_narrow_floor(int device, size_t bytes);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index d4efa9436..a6dab4b2b 100644
+index d4efa9436..afe0ddffc 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,5 +1,6 @@
@@ -9926,17 +10024,10 @@ index d4efa9436..a6dab4b2b 100644
  #ifdef USE_CUDA_GRAPH
  static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
  
-@@ -4864,2408 +4014,113 @@ static ggml_cuda_graph_key ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
- // Whether a CUDA/HIP graph should skip the graph-capture path.  Only a true PRE-FILL (a
- // varying ubatch, where capture never amortises) is skipped; single-token decode and the
- // spec-verify widths (n_tokens <= MMVQ_MAX_BATCH_SIZE, a fixed shape every step) keep HIP
--// graph replay.  GGML_CUDA_DISABLE_VERIFY_GRAPHS=1 restores the pre-r20 behaviour where
--// every multi-token graph skipped the graph path.
--static bool ggml_cuda_graph_is_multi_token(const ggml_cgraph * cgraph) {
--    static const bool verify_graphs_off = getenv("GGML_CUDA_DISABLE_VERIFY_GRAPHS") != nullptr;
--    return ggml_cuda_graph_n_tokens(cgraph) > (verify_graphs_off ? 1 : MMVQ_MAX_BATCH_SIZE);
--}
--
+@@ -4871,2401 +4021,106 @@ static bool ggml_cuda_graph_is_multi_token(const ggml_cgraph * cgraph) {
+     return ggml_cuda_graph_n_tokens(cgraph) > (verify_graphs_off ? 1 : MMVQ_MAX_BATCH_SIZE);
+ }
+ 
 -static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
 -    bool res = false;
 -
@@ -12124,13 +12215,7 @@ index d4efa9436..a6dab4b2b 100644
 -        const ggml_tensor * src0 = mm_node->src[0];
 -        const ggml_tensor * src1 = mm_node->src[1];
 -        const ggml_tensor * ids  = mm_node->src[2];
-+// graph replay.  GGML_CUDA_DISABLE_VERIFY_GRAPHS=1 restores the pre-r20 behaviour where
-+// every multi-token graph skipped the graph path.
-+static bool ggml_cuda_graph_is_multi_token(const ggml_cgraph * cgraph) {
-+    static const bool verify_graphs_off = getenv("GGML_CUDA_DISABLE_VERIFY_GRAPHS") != nullptr;
-+    return ggml_cuda_graph_n_tokens(cgraph) > (verify_graphs_off ? 1 : MMVQ_MAX_BATCH_SIZE);
-+}
- 
+-
 -        if (bias_op == GGML_OP_ADD_ID && bias_node->src[2] != ids) {
 -            continue;
 -        }
@@ -13162,7 +13247,7 @@ index d4efa9436..a6dab4b2b 100644
      }
      return on;
  }
-@@ -9178,6 +6280,22 @@ static size_t ggml_backend_cuda_device_slab_work_size(ggml_backend_dev_t dev) {
+@@ -9178,6 +6280,35 @@ static size_t ggml_backend_cuda_device_slab_work_size(ggml_backend_dev_t dev) {
      return ggml_cuda_slab_active(ctx->device) ? ggml_cuda_slab_work_size(ctx->device) : 0;
  }
  
@@ -13172,6 +13257,19 @@ index d4efa9436..a6dab4b2b 100644
 +    // but its region exists, so `llama_context` can skip the drop that would only churn the layout.
 +    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
 +    return ggml_cuda_slab_active(ctx->device) ? ggml_cuda_slab_ring_region(ctx->device) : 0;
++}
++
++static bool ggml_backend_cuda_device_slab_enabled(ggml_backend_dev_t dev) {
++    // issue #164: the slab's global arm state (`GGML_CUDA_SLAB` env AND the MoE preflight's arm).
++    GGML_UNUSED(dev);
++    return ggml_cuda_slab_enabled();
++}
++
++static size_t ggml_backend_cuda_device_slab_ring_slots(ggml_backend_dev_t dev) {
++    // issue #164: the H2D staging-ring depth; the context sizes the slab ring region so one staged table
++    // fits per slot.  Model-global, so the device is not consulted.
++    GGML_UNUSED(dev);
++    return (size_t) ggml_backend_cuda_context::h2d_stage_slots();
 +}
 +
 +static void ggml_backend_cuda_device_slab_set_ring_cap(ggml_backend_dev_t dev, size_t bytes) {
@@ -13185,7 +13283,7 @@ index d4efa9436..a6dab4b2b 100644
  static size_t ggml_backend_cuda_device_slab_headroom_bytes(ggml_backend_dev_t dev) {
      // wip/fit-slab-accounting (Phase 1, re-cut for r37): the configured slab headroom, reported even
      // though the slab is not armed yet.  `--fit` runs BEFORE the MoE preflight arms the slab, and r37
-@@ -9193,17 +6311,18 @@ static size_t ggml_backend_cuda_device_slab_headroom_bytes(ggml_backend_dev_t de
+@@ -9193,17 +6324,18 @@ static size_t ggml_backend_cuda_device_slab_headroom_bytes(ggml_backend_dev_t de
  }
  
  static void ggml_backend_cuda_device_slab_ring_set(ggml_backend_dev_t dev, bool arm) {
@@ -13214,7 +13312,7 @@ index d4efa9436..a6dab4b2b 100644
      ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
      ggml_cuda_slab_ring_set(ctx->device, arm);
  }
-@@ -9226,16 +6345,12 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
+@@ -9226,16 +6358,12 @@ static void ggml_backend_cuda_device_slab_compute_narrow2(ggml_backend_dev_t dev
      // Default: route them to the slab's pinned second narrow region.  `GGML_CUDA_SLAB_NARROW2=0` is the
      // A/B arm -- the draft bypasses the slab entirely (raw cudaMalloc), the session's quick fix.
      GGML_UNUSED(dev);
@@ -13237,17 +13335,19 @@ index d4efa9436..a6dab4b2b 100644
  }
  
  static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
-@@ -9266,6 +6381,9 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+@@ -9266,6 +6394,11 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .slab_compute_narrow2    = */ ggml_backend_cuda_device_slab_compute_narrow2,
      /* .moe_cache_set_host_pool   = */ ggml_backend_cuda_device_moe_cache_set_host_pool,
      /* .moe_cache_set_host_source = */ ggml_backend_cuda_device_moe_cache_set_host_source,
 +    /* .slab_compute_plain        = */ ggml_backend_cuda_device_slab_compute_plain,
 +    /* .slab_ring_region          = */ ggml_backend_cuda_device_slab_ring_region,
 +    /* .slab_set_ring_cap         = */ ggml_backend_cuda_device_slab_set_ring_cap,
++    /* .slab_enabled              = */ ggml_backend_cuda_device_slab_enabled,
++    /* .slab_ring_slots           = */ ggml_backend_cuda_device_slab_ring_slots,
  };
  
  // backend reg
-@@ -9347,8 +6465,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+@@ -9347,8 +6480,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
      GGML_UNUSED(reg);
  }
  
