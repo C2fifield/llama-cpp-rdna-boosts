@@ -641,3 +641,23 @@ a nicety.
 **Recommendation from the data:** ship **2048 / 3584** as the default (safe on both the field `-ub 4096`
 config and the wide `-ub 6144` config, +2.5 GiB arena vs the r80 default) and keep 1024 / 3584 as a
 documented opt-in for `-ub <= 4096` field use, where the seesaw bottoms out at ~205 MiB outside.
+
+### 10.4 Two GPUs, both split modes (2026-10-17)
+
+Same GSQ + MTP field command, `HIP_VISIBLE_DEVICES=0,1`, headroom **2048 / aux 3584**, 5 262-token prefill,
+24 greedy tokens.  `GGML_CUDA_SLAB_HEADROOM_MIB` is explicit, so it wins over the r36 `-sm layer` floor of
+6144 (that floor was measured on a 255k `-ts 59,41` run -- not covered here).
+
+| | `-sm tensor` | `-sm layer` |
+|---|---|---|
+| SLAB_INIT (both devices) | mapped 21.94 GiB, `va_spare` 3.50 GiB | mapped 23.12 / 22.81 GiB, `va_spare` 3.50 GiB |
+| arena (total) | **40 725.1 MiB (99.5 %)** | **40 199.1 MiB (98.2 %)** |
+| free outside at wide-drop | 2 118.5 MiB per device | 1 097.5 MiB per device |
+| pool at wide-drop | 294 MiB | 279 / 393 MiB |
+| prefill | 810.6 t/s | 763.0 t/s |
+| greedy output | `sha=394193591d4d` | **same `sha=394193591d4d`** |
+| errors / aborts | none | none |
+
+Both modes run clean at the low headroom, and they produced **identical greedy text** on this prompt.
+Caveat: the layer-mode headroom floor (r36, 6144) was for a 255k `-ts 59,41` config; a long-context
+`-sm layer` run is the remaining gate before an explicit low headroom is blessed for that topology.
