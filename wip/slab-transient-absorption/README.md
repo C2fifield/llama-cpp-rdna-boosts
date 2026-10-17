@@ -1097,3 +1097,60 @@ narrow-2 is pinned per device).
 
 **Recovery:** fork WIP `d6938507dd5446f0687609d5d6eb28f96ab7050b`, patch **1 691 lines, sha256
 `bfa96cd4eb02c7a5f8be1cd870bd5bd1dac4789438e40d3ae888661ac154ab50`** (`git diff 00f4b1ef8..d6938507d`).
+
+---
+
+## 10.11 2026-10-17 — step 2 (fit): `--fit` now reserves the MTP draft
+
+**Correction to §10.10.**  The claim there ("`--fit` does not include the draft at all") was right about the
+*effect* and wrong about the *mechanism*: `--fit` does have an exact per-device draft accounting
+(`common_fit_extra_model` -> `common_get_device_memory_data` measures the draft's model + context + compute,
+with `shares_model` zeroing the weights for an embedded head).  But for an **MTP** draft that measurement
+cannot work, and the failure is silent:
+
+```
+operator(): getting device memory data for the extra model at a context size of 262144:
+llama_init_from_model: failed to initialize the context: qwen4exp requires ctx_other to be set
+operator(): failed to measure the memory of the extra model, fitting without it
+```
+
+The draft context needs `ctx_other`, and `--fit` runs *before* the target context exists — so the throw is
+unavoidable, the catch path set the draft's memory to **zero**, and fit sized the target as if the draft were
+free.  The draft then had to come out of the slab's reserve, i.e. the outside cushion collapsed by `D` — and
+with a lowered headroom that is the `cudaMalloc` abort.  That is the real `--fit` hole, and it is the one
+"gnarly" interaction: *the reserve and `--fit` must agree on `D` or the projection is fiction.*
+
+**Fix** (fork WIP `aec734be8`, ~60 lines, 3 files):
+
+1. `common_fit_extra_model` gains `reserve_bytes` — the derived reserve from `draft-reserve.h` (§10.10), used
+   **when the extra model cannot be measured**; `0` keeps the old behaviour.
+2. Both failure paths use it: the per-device one (`add_extra_memory`) splits the weights + KV by the tensor
+   split and adds the compute/transient tier to **every** device (the draft's narrow-2 exists per device);
+   the Meta-device one (`extra_estimate`, the `-sm tensor` case) returns the total via a shared helper.
+3. The draft reserve is derived **once** in `common_init_from_params`, *before* both `--fit` and the MoE
+   preflight, so the projection and the slab reserve use the same number (the preflight no longer re-derives).
+4. `n_ctx == 0` ("from the model") now resolves inside the estimator to the draft GGUF's declared
+   `context_length` — the previous `0` would have under-estimated the KV term, the dangerous direction.
+
+**Crash found on the way:** the fallback must `return` after filling in the estimate — the pre-existing code
+below it dereferences `measured.back()` on the (empty) failed measurement.  It segfaulted inside `--fit`
+before the `return` was added.
+
+**Measured** (`--fit on`, `-c 0`, no user `-ngl` so fit actually runs):
+
+| run | fit's draft reserve | outside at the drop | arena | sha |
+|---|---:|---|---:|---|
+| wide IQ4_NL, `-ub 6144`, headroom 1024 | **4 469 MiB** (was 0) | 1 007 | 11 072 | `746954a1038b` (same) |
+| 2-GPU `-sm tensor`, `-ub 4096`, headroom 2048 | **4 213 MiB** (was 0) | 2 596.5 / device | 14 592 | `394193591d4d` (same) |
+
+Both paths (per-device and Meta) fire and both are now accounted; prefill 618 t/s (wide).  The 2-GPU value is
+lower than the wide one by exactly the compute-tier difference (512 vs 768) — the ubatch-keyed term from
+§10.10 doing its job.
+
+**What is left for `--fit` is now only the *numbers*, not the plumbing:** with `D` derived and reserved in
+both places, the remaining decision is machine-wide — `reserve = D + headroom` per device, so the headroom is
+the outside cushion and `--fit` sizes `n_ctx` around it.  That is the reserve matrix (scope note §6), and it
+is now the only thing standing between this work and a lowered default.
+
+**Recovery:** fork WIP `aec734be88c1187305371c67a3c5ae4908c90340`, patch **1 856 lines, sha256
+`ecfcb97c4503a2bcad3445fe8719b1b2aa941173e291f15eba4eb3299540a8e0`** (`git diff 00f4b1ef8..aec734be8`).

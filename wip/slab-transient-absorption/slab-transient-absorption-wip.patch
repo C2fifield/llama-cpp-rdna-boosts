@@ -12,7 +12,7 @@ index 2b307c59d..395cb43fd 100644
      fit.h
      hf-cache.cpp
 diff --git a/common/common.cpp b/common/common.cpp
-index a5b31c8a0..73821886f 100644
+index a5b31c8a0..c06980fe8 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -7,6 +7,7 @@
@@ -23,7 +23,46 @@ index a5b31c8a0..73821886f 100644
  #include "fit.h"
  #include "log.h"
  #include "llama.h"
-@@ -1371,14 +1372,50 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+@@ -1240,6 +1241,30 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     auto mparams = common_model_params_to_llama(params);
+     auto cparams = common_context_params_to_llama(params);
+ 
++    // wip/slab-transient-absorption (step 2): derive the draft's post-slab footprint ONCE, before `--fit` and
++    // the MoE preflight, so both use the same number.  `--fit` normally MEASURES the draft per device, but
++    // that measurement cannot work for an MTP draft (its context requires `ctx_other`, which does not exist
++    // while fitting) and silently fell back to zero -- i.e. fit sized the target as if the draft were free.
++    common_draft_reserve draft_reserve;
++    {
++        const bool has_aux = params.speculative.has_dft() || params.speculative.has_mtp();
++        const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
++        if (has_aux) {
++            if (e != nullptr) {
++                draft_reserve.total = (size_t) atoll(e) * 1024 * 1024;
++                draft_reserve.ok    = true;
++            } else {
++                // `n_ctx == 0` ("from the model") is resolved inside the estimator from the draft GGUF's own
++                // `context_length`: estimating with 0 would UNDER-estimate the reserve, the dangerous direction.
++                draft_reserve = common_draft_reserve_estimate(
++                        params.speculative.draft.mparams.path,
++                        params.n_ctx,
++                        params.n_ubatch,
++                        params.cache_type_k, params.cache_type_v);
++            }
++        }
++    }
++
+     if (params.fit_params) {
+         COM_TRC("%s", "fitting params to device memory ...\n");
+         COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");
+@@ -1262,6 +1287,7 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+             /*.mparams      =*/ &mparams_dft,
+             /*.cparams      =*/ &cparams_dft,
+             /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
++            /*.reserve_bytes =*/ draft_reserve.ok ? draft_reserve.total : 0,   // used when measuring fails
+         };
+ 
+         common_fit_params(params.model.path.c_str(), &mparams, &cparams,
+@@ -1371,14 +1397,44 @@ common_init_result::common_init_result(common_params & params, bool model_only)
      // makes the MTP draft and the target plan different kernels -- and (b) the projected arena reflects
      // the VRAM the WEIGHTS left free.  Called after the context instead, it would see only the headroom
      // left after the KV cache, the compute buffers and the slab, and would decline the cache on every
@@ -43,46 +82,40 @@ index a5b31c8a0..73821886f 100644
          const bool has_aux = params.speculative.has_dft() || params.speculative.has_mtp();
          size_t aux_bytes = 0;
          if (has_aux) {
++            // wip/slab-transient-absorption (step 1/2): the reserve derived above (the same value `--fit`
++            // uses as its fallback), or the flat default when it could not be derived.
              const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
 -            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
-+            if (e != nullptr) {
-+                aux_bytes = (size_t) atoll(e) * 1024 * 1024;
-+                LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft reserve\n",
-+                        __func__, (double) aux_bytes / 1048576.0);
-+            } else {
-+                // `-c 0` means "from the model": estimating the KV with 0 would UNDER-estimate the reserve,
-+                // which is the dangerous direction -- use the trained context in that case.
-+                const uint32_t est_ctx = params.n_ctx > 0 ? params.n_ctx
-+                                                          : (uint32_t) llama_model_n_ctx_train(model);
-+                const common_draft_reserve est = common_draft_reserve_estimate(
-+                        params.speculative.draft.mparams.path, est_ctx, params.n_ubatch,
-+                        params.cache_type_k, params.cache_type_v);
-+                if (est.ok) {
-+                    aux_bytes = est.total;
++            if (draft_reserve.ok) {
++                aux_bytes = draft_reserve.total;
++                if (e != nullptr) {
++                    LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft reserve\n",
++                            __func__, (double) aux_bytes / 1048576.0);
++                } else {
 +                    LOG_WRN("%s: slab draft reserve derived from '%s': %.0f MiB (weights %.0f + kv %.0f + "
 +                            "compute %.0f + slack %.0f); the flat default is %d MiB.  The reserve is "
 +                            "headroom + this, and the draft is created after the slab, so this is the "
 +                            "outside VRAM it needs -- MOE_EXPERT_CACHE_AUX_RESERVE_MIB overrides it.\n",
 +                            __func__, params.speculative.draft.mparams.path.c_str(),
-+                            (double) est.total / 1048576.0, (double) est.weights / 1048576.0,
-+                            (double) est.kv / 1048576.0, (double) est.compute / 1048576.0,
-+                            (double) est.slack / 1048576.0, LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT);
-+                } else {
-+                    aux_bytes = (size_t) LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT * 1024 * 1024;
-+                    LOG_INF("%s: keeping the flat %d MiB draft reserve (%s)\n", __func__,
-+                            LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT,
-+                            est.note.empty() ? "not derivable" : est.note.c_str());
++                            (double) draft_reserve.total / 1048576.0, (double) draft_reserve.weights / 1048576.0,
++                            (double) draft_reserve.kv / 1048576.0, (double) draft_reserve.compute / 1048576.0,
++                            (double) draft_reserve.slack / 1048576.0, LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT);
 +                }
++            } else {
++                aux_bytes = (size_t) LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT * 1024 * 1024;
++                LOG_INF("%s: keeping the flat %d MiB draft reserve (%s)\n", __func__,
++                        LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT,
++                        draft_reserve.note.empty() ? "not derivable" : draft_reserve.note.c_str());
 +            }
          }
          llama_model_moe_cache_preflight(model, aux_bytes);
      }
 diff --git a/common/draft-reserve.cpp b/common/draft-reserve.cpp
 new file mode 100644
-index 000000000..8ce075326
+index 000000000..c86f4b984
 --- /dev/null
 +++ b/common/draft-reserve.cpp
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,212 @@
 +#include "draft-reserve.h"
 +
 +#include "log.h"
@@ -217,6 +250,15 @@ index 000000000..8ce075326
 +    }
 +    r.weights = weights;
 +
++    // `n_ctx == 0` means "from the model": estimating the KV with 0 would UNDER-estimate the reserve (the
++    // dangerous direction), so fall back to the context the draft itself declares as its trained maximum.
++    if (n_ctx == 0) {
++        uint32_t ctx_train = 0;
++        if (read_u32_max(g, arch + ".context_length", ctx_train) && ctx_train > 0) {
++            n_ctx = ctx_train;
++        }
++    }
++
 +    // --- KV: needs the layer geometry ----------------------------------------------------------
 +    uint32_t block_count = 0;
 +    uint32_t n_nextn      = 0;
@@ -336,6 +378,129 @@ index 000000000..8e65564b6
 +                                                   uint32_t n_ubatch,
 +                                                   ggml_type type_k,
 +                                                   ggml_type type_v);
+diff --git a/common/fit.cpp b/common/fit.cpp
+index e27677e16..110080524 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -256,6 +256,27 @@ common_device_memory_data_vec common_get_device_memory_data(
+     return ret;
+ }
+ 
++// wip/slab-transient-absorption (step 2): the DERIVED reserve to use when the extra (draft) model cannot be
++// MEASURED.  That is the normal MTP case: its context cannot be created while fitting (`qwen4exp requires
++// ctx_other to be set`, and fitting runs before the target context exists), so the measurement throws and
++// fit used to size the main model as if the draft did not exist -- the draft then came out of the slab's
++// reserve, the outside cushion collapsed by ~D, and a lowered headroom aborted on an outside `cudaMalloc`.
++//
++// Layout: the weights + KV are ONE pool (they are tensor-split over the devices the draft shares with the
++// main model) while the compute buffer (the draft's narrow-2 region) and its transients exist on EVERY
++// device.  `n_dev` devices therefore need the compute tier each, plus the split of the rest.  Returns the
++// TOTAL over `n_dev` devices.
++static int64_t fit_extra_reserve_total(const common_fit_extra_model * extra, size_t n_dev) {
++    if (extra == nullptr || extra->reserve_bytes == 0) {
++        return 0;
++    }
++    if (n_dev == 0) {
++        n_dev = 1;
++    }
++    const int64_t per_dev = (int64_t) 1024 << 20;   // the estimator's compute + slack tier, rounded up
++    return (int64_t) extra->reserve_bytes + (int64_t) (n_dev - 1) * per_dev;
++}
++
+ static void common_params_fit_impl(
+         const char * path_model, struct llama_model_params * mparams, struct llama_context_params * cparams,
+         float * tensor_split, struct llama_model_tensor_buft_override * tensor_buft_overrides,
+@@ -300,10 +321,48 @@ static void common_params_fit_impl(
+                 measured = common_get_device_memory_data_impl(
+                     extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+             } catch (const std::runtime_error & e) {
+-                // the extra model is optional, fit the main model alone rather than giving up
+-                LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
++                // wip/slab-transient-absorption (step 2): the extra model could not be MEASURED.  That is the
++                // normal MTP case (`qwen4exp requires ctx_other to be set` -- during fitting there is no target
++                // context yet to point it at), and fitting the main model alone used to silently ignore the
++                // draft's whole footprint: the draft then had to come out of the slab's reserve, the outside
++                // cushion collapsed by ~D, and a lowered headroom aborted on an outside `cudaMalloc`.
++                // Reserve the DERIVED estimate instead (`draft-reserve.h`) and split it over the devices the
++                // draft shares with the main model.
+                 dmds_extra = dmds_t(devs.size() + 1);
+                 n_ctx_extra = cparams->n_ctx;
++                if (extra->reserve_bytes == 0) {
++                    LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n",
++                            __func__, e.what());
++                    return;
++                }
++                // Per device: the weights + KV follow the tensor split (the draft context uses the main model's
++                // split), while the compute buffer (the draft's narrow-2 region) and its transients exist on
++                // EVERY device it runs on.  So the portion of the estimate that is per-device is added to each
++                // device, and the rest is distributed by the split.  For one device this is exactly the
++                // estimate; for N > 1 it over-reserves by (N-1) x that portion, which is the safe direction.
++                const size_t per_dev = (size_t) 1024 << 20;   // the estimator's compute + slack tier, rounded up
++                const size_t split   = extra->reserve_bytes > per_dev ? extra->reserve_bytes - per_dev : 0;
++                double share_sum = 0.0;
++                std::vector<double> share(devs.size(), 0.0);
++                for (size_t id = 0; id < devs.size(); id++) {
++                    share[id] = tensor_split != nullptr && tensor_split[id] > 0.0f ? (double) tensor_split[id] : 0.0;
++                    share_sum += share[id];
++                }
++                if (share_sum <= 0.0) {
++                    for (size_t id = 0; id < devs.size(); id++) {
++                        share[id] = 1.0 / (double) devs.size();
++                    }
++                    share_sum = 1.0;
++                }
++                for (size_t id = 0; id < devs.size(); id++) {
++                    dmds_extra[id].mb.model   = (size_t) ((double) split * share[id] / share_sum);
++                    dmds_extra[id].mb.compute = per_dev;
++                }
++                LOG_WRN("%s: the extra model cannot be measured during fitting (%s); reserving the DERIVED %.0f MiB "
++                        "as a per-device-split reserve instead -- this is the MTP case, which needs ctx_other "
++                        "while fitting has no target context yet\n", __func__, e.what(),
++                        (double) extra->reserve_bytes / (double) (1024*1024));
++                // `measured` is empty: the code below dereferences it, so the fallback must not fall through.
+                 return;
+             }
+ 
+@@ -544,8 +603,19 @@ static void common_params_fit_impl(
+                 measured = common_get_device_memory_data_impl(
+                     extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+             } catch (const std::runtime_error & e) {
+-                LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
+-                return 0;
++                // wip/slab-transient-absorption (step 2): the derived reserve, not zero -- see
++                // `fit_extra_reserve_total` (this is the MTP / Meta-device path, where the measurement always
++                // fails because the draft context needs ctx_other).
++                const int64_t fb = fit_extra_reserve_total(extra, devs.size());
++                if (fb == 0) {
++                    LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n",
++                            __func__, e.what());
++                    return 0;
++                }
++                LOG_WRN("%s: the extra model cannot be measured during fitting (%s); reserving the DERIVED "
++                        "%.0f MiB instead (MTP needs ctx_other, which fitting does not have yet)\n", __func__,
++                        e.what(), (double) fb / (double) (1024*1024));
++                return fb;
+             }
+             int64_t model = 0;
+             int64_t ctx   = 0;
+diff --git a/common/fit.h b/common/fit.h
+index 824d386b0..9b171b54b 100644
+--- a/common/fit.h
++++ b/common/fit.h
+@@ -19,6 +19,13 @@ struct common_fit_extra_model {
+     llama_model_params * mparams;
+     llama_context_params * cparams;
+     bool shares_model;
++    // wip/slab-transient-absorption (step 2): per-device VRAM reserve to use when the extra model cannot be
++    // MEASURED.  That is the MTP case: its context cannot be created during fitting (`qwen4exp requires
++    // ctx_other to be set`, and during fitting there is no target context to point it at), so the
++    // measurement fails and fit used to silently size the main model as if the draft did not exist -- the
++    // draft's whole footprint then came out of the slab reserve and the outside cushion collapsed.
++    // `draft-reserve.h` derives this value from the draft's own GGUF; 0 keeps the old behaviour.
++    size_t reserve_bytes;
+ };
+ 
+ // fits mparams and cparams to free device memory (assumes system memory is unlimited)
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 index 648014967..2e39b27ab 100644
 --- a/ggml/src/ggml-cuda/allreduce-hip.cu
