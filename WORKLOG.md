@@ -1,5 +1,42 @@
 # WORKLOG - dated delivery records
 
+## 261017.006 -- where the ~10 GiB of arena gap against Strata actually is, and the two levers that close part of it
+
+**No release change** (`release.json` untouched, no block amended, no tag; `ENVIRONMENT.md` and the
+campaign record updated).  Follow-up to 261017.005: the r80 field run showed the same arena as r79
+(15 666.6 MiB), so the question was what Strata spends its VRAM on to fit 25.46 GiB.
+
+**The gap is five buckets, measured from both engines' logs on the same card and model** (full table in
+`wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1): ~4.1 GiB idle headroom (ours;
+they leave 584 MiB free), +2.2 GiB MTP draft (we load a Q8_0 draft GGUF with its own KV and compute;
+they use 2-bit draft experts + a 417 MiB Q5_K head), +2.2 GiB an always-mapped narrow compute region
+(1 792 MiB + 512 MiB; their decode buffers are ~70 MiB), +1.6 GiB KV (we hold the whole 131 072-cell
+window; they keep 32 768 of 131 072 cells resident and stream the rest from pinned RAM), +0.4 GiB dense
+weights.  **Our prefill ring/wide band is already borrowed from the arena and returned** -- the code says
+so (`ggml-cuda-slab.cu:126-132`) and the field run shows the first prefill evicting 6 150 MiB and
+`moe_cache_rearm` restoring the arena, which is Strata's slot-loan mechanism.  The difference is that
+their *decode-time* buffers are tiny.
+
+**Two levers measured on the idle box, same command, same model (1 GPU):**
+
+1. **`GGML_CUDA_SLAB_HEADROOM_MIB` is worth ~1 pt of hit rate per GiB moved into the arena.** 4096 (the
+   default) -> arena 15 666.6 MiB / hit 0.9056; 3072 -> 16 705.7 / 0.9147; 2048 -> 17 744.8 / 0.9223
+   (16 KB prompt, 400 generated, cold start).  On a 16 384-token prompt: 0.9165 -> **0.9380** at 2048,
+   generated text identical, arena re-armed to the larger size, no warnings.  **The default stays 4096**
+   (the earlier 3072 rejection was `-ub 6144 -c 204800`); `ENVIRONMENT.md` now carries this measured
+   envelope as a per-config tuning value.
+2. **The r80 heat map is worth +1.4 pts of hit rate** -- isolated at a fixed arena and workload
+   (`MOE_EXPERT_HEATMAP=0` 0.9022 vs `=load` 0.9163, same 434 760 reaches).  Pre-r80 both arms were the
+   same configuration (a poisoned map ranked by expert id), which is why the r74 -> r80 field number
+   looked unchanged: the feature had been delivering nothing.
+
+**Structural, not measured:** a smaller MTP draft (Q4/Q2 experts) returns ~1.5-2 GiB to the arena; KV
+window streaming (Strata's `--kv-resident 32768`) returns ~1.3 GiB more and is an engine campaign of its
+own (llama.cpp has no equivalent; `--cache-ram` is idle-slot offload, not residency).
+
+**Records.** `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1, `ENVIRONMENT.md`
+(`GGML_CUDA_SLAB_HEADROOM_MIB`).
+
 ## 261017.005 (r80) -- the MoE heat map doubled itself into saturation; the campaign retargets to "coverage" and the heat map is re-recorded (block 09)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r80` (base `097cf33d9`; canonical tip

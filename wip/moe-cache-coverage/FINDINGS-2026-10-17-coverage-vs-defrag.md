@@ -289,6 +289,86 @@ per-table slot rounding.  The 8 GiB and the 4 GiB are outside the region: held b
 
 ---
 
+## 6.1 Where the ~10 GiB of arena actually is (2026-10-17, measured)
+
+The field GSQ config on one 32 GiB R9700 (`SLAB_INIT dev=0 free=25.38 GiB reserve=8.00 GiB
+headroom=4.00 GiB aux=4.00 GiB size(VA)=21.38 GiB mapped=17.38 GiB boundary=1.75 GiB va_spare=4.00 GiB
+ring_req=4.11 GiB`; arena 15 666.6 MiB) against Strata's own log on the same card and model ("expert
+cache 15667 slots, 25.46 GiB"; "584 MiB of VRAM free with everything loaded"):
+
+| VRAM bucket | us (MiB) | Strata (MiB) | delta |
+|---|---:|---:|---:|
+| expert arena | 15 667 | 26 071 | **-10 404** |
+| dense weights | 3 665 | 3 247 | +418 |
+| MTP draft (weights + KV + compute) | 3 447 | 1 252 (835 draft + 417 Q5_K head) | +2 195 |
+| KV + recurrent state | 3 025 | ~1 400 (streamed; see below) | +1 625 |
+| always-mapped narrow compute | 1 792 (+512 narrow-2) | ~70 (decode buffers) | +2 230 |
+| idle free at steady state | ~4 700 | 584 | +4 100 |
+| **total** | ~32 600 | ~32 600 | |
+
+**It is five things, not one, and the biggest is our own slack:**
+
+1. **~4.1 GiB of idle VRAM** — `GGML_CUDA_SLAB_HEADROOM_MIB` (4096) + the unspent part of the draft `aux`
+   estimate.  `ENVIRONMENT.md` measured ~3.7 GiB of post-slab allocations this headroom really pays for
+   (MTP draft buffer 762 MiB, FA-QSA workspace 762 MiB, hipBLASLt Tensile objects + workspace, pool
+   high-water), so it is not pure waste — but it is a *policy* number, not a hardware limit.
+2. **+2.2 GiB: our MTP draft.**  We load a separate Q8_0 draft GGUF (2 647 MiB weights + 288 KV + 512
+   compute); they use 2-bit draft experts + a 417 MiB Q5_K head (1 252 MiB).
+3. **+2.2 GiB: an always-mapped narrow compute region.**  Our decode/verify compute view is resident at
+   all times (1 792 MiB, plus 512 MiB for the draft context); their decode devices buffers are ~70 MiB
+   because *every* buffer, prompt included, is borrowed from the arena.
+4. **+1.6 GiB: KV.**  We keep the whole 131 072-cell window in VRAM (q8_0 K/V 1 836 MiB + 901 MiB
+   recurrent state + 288 draft KV); they keep **32 768 of 131 072 cells per layer resident** and stream
+   the rest from pinned RAM ("KV streaming: 32768 of 131072 cells ... the K/V in 1.55 GiB of pinned
+   RAM").  Their KV VRAM at this context is ~1.4 GiB.
+5. **+0.4 GiB: dense weights** (3 665 vs 3 247) — quant/pack choice, negligible.
+
+**We already do their borrow trick.**  `ggml-cuda-slab.cu:126-132`: "the always-resident NARROW
+(decode/verify) compute view owns `[0, narrow_floor)`, the H2D staging ring owns
+`[narrow_floor, narrow_floor + ring_region)`, and the transient WIDE (prefill) compute view owns
+`[narrow_floor + ring_region, boundary)`.  The arena is always `[boundary, mapped)` ... When the wide
+view is dropped the boundary shrinks back to `narrow_floor` and the ring + wide regions return to the
+arena".  Measured on the field run: the first prefill evicts **6150 MiB** (the band) and
+`moe_cache_rearm` restores the full 15 666.6 MiB; the r74 seed floor exists so nothing is pre-seeded into
+that band.  Strata's "the prompt path borrows 4374 CUDA0 cache slots (7.13 GiB)" is the same mechanism —
+the difference is that their *decode-time* buffers are tiny and ours are a permanent 1.8 GiB.
+
+### Measured levers (same card, same model, same command, box idle)
+
+**(a) The outside-slab headroom is worth ~1 pt of hit rate per GiB** — `GGML_CUDA_SLAB_HEADROOM_MIB`,
+16 KB prose prompt + 400 generated, MTP, cold start each time:
+
+| headroom | arena | residency | first-prefill eviction | hit rate |
+|---|---:|---:|---:|---:|
+| 4096 (default) | 15 666.6 MiB | 38.3 % | 6 150 MiB | 0.9056 |
+| 3072 | 16 705.7 MiB | 40.8 % | — | 0.9147 |
+| 2048 | 17 744.8 MiB | 43.4 % | 6 208 MiB | 0.9223 |
+
+and on a 16 384-token prompt (4x the prose file, 200 generated): 0.9165 -> **0.9380** at 2048, generated
+text **byte-identical** (`9ac8737781aa…` at 1x; the 4x pair both start identically and produce the same
+answer), arena re-armed to the larger size in both arms.  **The default stays 4096** — `ENVIRONMENT.md`
+records that 3072 was rejected on a harsher config (`-ub 6144 -c 204800`, `--fit off`, `-sm tensor`), so
+this is a documented per-config tuning value, not a new default.  It is the cheapest ~2 GiB available.
+
+**(b) The heat map itself is worth +1.4 pts of hit rate** — same 16 384-token prompt, same arena
+(15 666.6 MiB), same reaches (434 760), only the map differs:
+
+| arm | hit rate | hits / reaches |
+|---|---:|---|
+| `MOE_EXPERT_HEATMAP=0` (no seed, id-order placement) | 0.9022 | 392 229 / 434 760 |
+| `MOE_EXPERT_HEATMAP=load` (clean map: seeded + heat-ordered placement) | **0.9163** | 398 385 / 434 760 |
+
+That is the value r60 was *supposed* to be delivering: pre-r80 the same two arms were the same
+configuration (a poisoned map ranked by expert id), which is why the r74 -> r80 field number looked
+unchanged.  Turn time was 0.53 s vs 0.52 s — the hit gain is real but the remaining ~2 % of misses still
+dominates the step.
+
+**(c) Not measured, but structural:** a smaller MTP draft (Q4/Q2 experts instead of the Q8_0 GGUF) would
+hand ~1.5-2 GiB to the arena; KV window streaming (Strata's `--kv-resident`) would hand ~1.3 GiB more.
+Both are engine/content changes, and the second is a campaign of its own.
+
+---
+
 ## 7. Verdict on the "defrag" premise
 
 | premise | verdict | evidence |
