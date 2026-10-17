@@ -131,7 +131,7 @@ legitimately follow it.
   **not** committed to the delivery): `LLAMA_RS_ROLLBACK_DEBUG=1` prints `RSPREP` (per prepare, with
   `n_seq_tokens`, `n_seqs`, `n_seqs_unq`, `seq_ids`) and `RSROLL` (per partial rollback, with the global
   and per-sequence last-batch counts). The per-sequence tracker is in `src/llama-memory-recurrent.{h,cpp}`.
-- Build: `BUILD_DIR=build-rocm-hybrid EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS=" ~/bin/build-llama-rocm-714`
+- Build: `BUILD_DIR=build-rocm-hybrid ~/bin/build-llama-rocm`
   in the worktree, then `cmake --build build-rocm-hybrid --target llama-server -j 16`.
 
 ## 5. Gates to keep green

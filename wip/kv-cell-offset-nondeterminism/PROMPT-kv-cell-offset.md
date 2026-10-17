@@ -39,7 +39,7 @@ The predecessor campaign is archived at `archive/work/moe-verify-fusions/` — r
 
 Reproduce on a canonical build (any recent release tree; `release.json` names the base/tip, or a fresh
 `release.json.base` + `scripts/apply-all.sh`, then
-`BUILD_DIR=build-rocm-hybrid EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS=" ~/bin/build-llama-rocm-714`). The
+`BUILD_DIR=build-rocm-hybrid ~/bin/build-llama-rocm`). The
 server reproducer is `archive/work/moe-verify-fusions/tools/multiseq.sh` (and its `_plain` / `_np2`
 variants; note it never passes `-np`, so the server auto-sets `-np 4` and forces `kv_unified=true`). The
 in-process offset probe is `archive/work/moe-verify-fusions/tools/test-multiseq-same.cpp` (copy into

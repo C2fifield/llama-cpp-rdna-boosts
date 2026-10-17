@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261017.003 -- docs: the canonical local build is `~/bin/build-llama-rocm` (ROCm 10.1.0); `EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS="` is now actively wrong
+
+**No release change** (`release.json` untouched, no block amended).  Documentation-only fix, but it was
+blocking work: the policy layer still instructed agents to build with
+`BUILD_DIR=build-rocm-hybrid EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS=" ~/bin/build-llama-rocm-714`, which is
+wrong in three ways today.
+
+1. **Wrong toolchain.**  The canonical local source build is **`~/bin/build-llama-rocm`** (ROCm
+   **10.1.0**, `/opt/rocm-10.1.0-gfx120X`, `BUILD_DIR=build-rocm`).  `build-llama-rocm-714` (ROCm 7.14.1)
+   still exists and is valid for a 7.14-specific check, but it is not the default; `AGENTS.md` named it as
+   *the* build in four places.
+2. **The `EXTRA_CMAKE_FLAGS` override now aborts the configure.**  Both scripts pass a joined
+   `-isystem<rocm>/include` in `CMAKE_HIP_FLAGS` and then verify the flag reached
+   `ggml-hip/CMakeFiles/flags.make` and that `<hip/hip_bf16.h>` resolves from that tree (the
+   include-order guard).  An `EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS="` clears the flag and trips the
+   guard: `error: ...flags.make does not carry -isystem/opt/rocm-.../include`.  The CMake >= 4.3 problem
+   the override was introduced for (a bare `-mllvm` swallowing the injected `--cuda-host-only`) no
+   longer exists -- neither script passes `-mllvm`.
+3. **The build dir is no longer wiped.**  The scripts reuse `BUILD_DIR` incrementally and only `rm -rf`
+   it when `clean` is passed (ccache makes even a wiped rebuild cheap).
+
+**Changed:** `AGENTS.md` (Common tasks -> "Build the fork": canonical command, the `clean`/reuse rule and
+an explicit "do not override `CMAKE_HIP_FLAGS`" note; the three other `build-llama-rocm-714` mentions),
+`CONTAINERS.md` and `ENVIRONMENT.md` (ccache/clang cross-reference), and the three live `wip/` campaigns
+that carried the stale command line (`kv-cell-offset-nondeterminism/README.md` +
+`PROMPT-kv-cell-offset.md`, `rs-rollback-boundary/README.md`).  Dated records (`WORKLOG.md`,
+`archive/`, the benchmark notes) keep the command that was correct when they were written.
+
 ## 261017.002 (r79) -- Q4_K VDR-4 for the MoE expert kernel (PR #167, blocks 07/10; RDNA3_0 default-on, RDNA4 opt-in) and `LLAMA_KV_N_PAD_PREFILL` default-on for a multi-device split (block 10)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r79` (base `097cf33d9`; canonical tip

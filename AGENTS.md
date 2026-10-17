@@ -55,7 +55,7 @@ amendment, or a note in the relevant record).
   `CONTAINERS.md` → "Offload the image build to a worker".  **Do not run the full container image build
   (all targets, both ROCm lines) on the primary box during a release**: it pins all cores for tens of
   minutes and contaminates any benchmark running beside it.  Nothing here changes the normal local
-  **source** build for testing and development (`~/bin/build-llama-rocm-714`, Common tasks → "Build the
+  **source** build for testing and development (`~/bin/build-llama-rocm`, Common tasks → "Build the
   fork"), which stays on the primary box.  The local `scripts/build-containers.sh` is for a smoke test or
   a manual worker-less container build only.  CI no longer builds them (the tag-push matrix took ~5 h and its failure mode was a cold
   retry).  The fork-branch refresh and the worker image push are both part of tagging a release.
@@ -354,15 +354,24 @@ commits. Then re-verify the clean-apply simulation (fresh worktree, apply, build
 ### Build the fork
 
 ```bash
-cd ~/llama.cpp && BUILD_DIR=build-rocm-hybrid EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS=" ~/bin/build-llama-rocm-714
-# fast loop: cmake --build build-rocm-hybrid --target llama-cli llama-bench -j 16
-# runtime libs: LD_LIBRARY_PATH=/opt/rocm-7.14-gfx120X/lib
+cd ~/llama.cpp && ~/bin/build-llama-rocm          # default BUILD_DIR=build-rocm, ROCm 10.1.0
+# fast loop: cmake --build build-rocm --target llama-cli llama-bench -j 16
+# runtime libs: LD_LIBRARY_PATH=/opt/rocm-10.1.0-gfx120X/lib
 ```
 
-`EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS="` is required with CMake >= 4.3 (the script's bare `-mllvm`
-swallows the injected `--cuda-host-only` and configure aborts). **ccache is on by default** when
-present (the script `rm -rf`s the build dir; ccache turns a wiped rebuild of unchanged sources into
-seconds). The FA instances are deliberately force-inlined — do **not** outline the FA loader
+**`~/bin/build-llama-rocm` (ROCm 10.1.0, `/opt/rocm-10.1.0-gfx120X`) is the canonical build tree.**
+`~/bin/build-llama-rocm-714` is the older ROCm 7.14 tree (its own `BUILD_DIR`, `build-rocm-714`); it is
+still valid for a 7.14-specific check, but do not present it as the default. **Do not pass
+`EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS="`** (or any `-DCMAKE_HIP_FLAGS` override): both scripts pass a
+joined `-isystem<rocm>/include` there and abort the configure if the flag does not reach the HIP compile
+line (the include-order guard). That guard exists because the failure is otherwise silent -- HIP headers
+resolve from Fedora's ROCm 7.1 in `/usr/include`, and the resulting binary still produces identical
+greedy text on 7.14. The old CMake >= 4.3 problem (a bare `-mllvm` swallowing the injected
+`--cuda-host-only`) is already handled by not passing `-mllvm` at all. **ccache is on by default** when
+present (the build dir is reused incrementally unless you pass `clean`; ccache makes even a wiped
+rebuild of unchanged sources a cache hit).
+
+The FA instances are deliberately force-inlined — do **not** outline the FA loader
 (measured: a universal 1.5-2.5 % prefill loss). This is the sanctioned answer to "the build is slow";
 detail in `archive/work/build-time-regression/`.
 
@@ -380,7 +389,7 @@ for the worker's one-time setup, or for a smoke build on the primary box; **do n
 carrying `rdna-boosts-all.patch`, `patches.tar.gz`, `release.json` and `SHA256SUMS`).
 
 **Scope: this is the container image build only.**  The normal local source build used for testing,
-benchmarking and the release gates (`~/bin/build-llama-rocm-714`, `build-pr`/`build-r69`/..., plus the
+benchmarking and the release gates (`~/bin/build-llama-rocm`, `build-pr`/`build-r69`/..., plus the
 coherence, MTP and prefill-logit runs) is unaffected and is still done on the primary box.  "Do not run
 the full build locally" means the `podman` image build below, not `cmake --build`.
 
@@ -411,7 +420,7 @@ pushes to `ghcr.io/stew675/llama-cpp-rdna-boosts`.  `docker-ghcr.yml` remains on
 
 **ccache is on.**  `.devops/rdna-rocm.Dockerfile` installs the upstream static ccache **4.12.3** (the
 version the host validates, not Ubuntu's older package), sets `CCACHE_DIR=/root/.ccache` and adds
-`-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache` (mirroring `~/bin/build-llama-rocm-714`), with
+`-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache` (mirroring `~/bin/build-llama-rocm`), with
 `/root/.ccache` as a build cache-mount — never an image layer, so the published images are unchanged.
 Measured single-arch: cold compile 10m01s → cache-warm rebuild 1m28s (835/836 direct hits).  A release
 whose sources mostly match the previous one recompiles only the delta.

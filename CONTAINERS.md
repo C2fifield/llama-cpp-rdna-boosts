@@ -292,7 +292,7 @@ smoke build — the published image uses the Dockerfile's full RDNA set
 `.devops/rdna-rocm.Dockerfile` installs the upstream static ccache **4.12.3**
 (the version the maintainer's host validates, not Ubuntu's older package) and
 compiles with `-DCMAKE_{HIP,C,CXX}_COMPILER_LAUNCHER=ccache`, mirroring
-`~/bin/build-llama-rocm-714`.  The cache lives in a `/root/.ccache` build
+`~/bin/build-llama-rocm`.  The cache lives in a `/root/.ccache` build
 cache-mount, so it is never an image layer and does not change the published
 images.  Measured single-arch (`gfx1201`, `light`): a cold compile is ~10 min;
 a `--no-cache` rebuild replays from ccache in **~1m28s** (835/836 direct hits).

@@ -502,7 +502,7 @@ These are compile-time, because a device-side runtime gate does not work cleanly
 
 The `llama` C++ target compiles with `-Wshadow=local` under **GCC** and plain `-Wshadow` under **clang**
 (block 00).  The container build's host compiler is GCC (the `rocm/dev-ubuntu` image default, unlike the
-local `~/bin/build-llama-rocm-714`, which forces clang), and GCC's `-Wshadow` additionally reports
+local `~/bin/build-llama-rocm`, which forces clang), and GCC's `-Wshadow` additionally reports
 "declaration shadows a member" / "hides constructor" for the ubiquitous `Foo(int x) : x(x) {}` idiom.
 `-Wshadow=local` keeps the class the gate exists for (a local shadowing a local) and drops that
 member/global output; clang has no `=local` form.  The container's `RUN cmake` step zeroes ccache stats

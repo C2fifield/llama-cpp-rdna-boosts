@@ -137,8 +137,8 @@ any of these arms — that fix addressed the multi-ubatch logits copy (job B), n
 ```bash
 git clone https://github.com/stew675/llama.cpp && cd llama.cpp
 git fetch origin rdna-boosts && git checkout rdna-boosts
-BUILD_DIR=build-rocm-hybrid EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS=" ~/bin/build-llama-rocm-714
-export LD_LIBRARY_PATH=/opt/rocm-7.14.1-gfx120X/lib
+BUILD_DIR=build-rocm-hybrid ~/bin/build-llama-rocm
+export LD_LIBRARY_PATH=/opt/rocm-10.1.0-gfx120X/lib
 ```
 
 **Server gate** (`archive/work/moe-verify-fusions/tools/multiseq.sh` and its `_plain`/`_np2` variants):
