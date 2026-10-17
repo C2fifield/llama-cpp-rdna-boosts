@@ -661,3 +661,22 @@ Same GSQ + MTP field command, `HIP_VISIBLE_DEVICES=0,1`, headroom **2048 / aux 3
 Both modes run clean at the low headroom, and they produced **identical greedy text** on this prompt.
 Caveat: the layer-mode headroom floor (r36, 6144) was for a 255k `-ts 59,41` config; a long-context
 `-sm layer` run is the remaining gate before an explicit low headroom is blessed for that topology.
+
+### 10.5 The wide gate at headroom 1536 (IQ4_NL, measured)
+
+`-ub 6144 -c 204800`, 6 657-token prefill, 24 greedy tokens, aux 3584:
+
+| | 2048 | **1536** | 1024 |
+|---|---:|---:|---:|
+| mapped | 20 160 MiB | **20 672 MiB** | (not run) |
+| arena slots | 17 718.8 MiB (27.3 %) | **18 225.0 MiB (28.1 %)** | (not run) |
+| free at wide-arm | 1 562 | **1 050** | — |
+| free at wide-drop | 629 | **459** | — |
+| pool at wide-drop | 671 | 335 | — |
+| prefill | 614 t/s | 610 t/s | — |
+| greedy sha | `746954a1038b` | **`746954a1038b`** | — |
+
+**1536 is clean and comfortable on the widest config (459 MiB left), and the greedy output is identical to
+the 2048 run.**  Note the pool figure is not repeatable (671 vs 335 MiB for the same config), so 1024 on
+the wide config must be *measured*, not extrapolated (−43 MiB was the arithmetic from the 671 run; the 335
+run would leave ~+120).  The next-session plan is `HANDOVER-2026-10-17-pool-redirect.md`.
