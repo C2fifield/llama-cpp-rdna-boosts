@@ -5,10 +5,17 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r76`** (canonical tip `68ee2e466`, net tree
-`06a91a1f76bcc4101398c17729edbf76450484fc`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean, `ggml-hip` compiles for
-`gfx1030;gfx1100;gfx1151;gfx1201`.  r76 folds the RDNA2 (gfx1030) tuned tile-FA + k-quant work (PR
+**`097cf33d9`**, released as **`v12-097cf33d9-r77`** (canonical tip `6d8edf445`, net tree
+`e726101ddc3ee855adc903cc07c3b7009d0a27fc`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r77 folds two contributor PRs into **blocks 08/10**: the
+q8_0 `SET_ROWS` K/V-write kernel (one 32-lane group per block) and the register-quantizing
+`rms_norm_q8_1` (PR #171, bit-identical, MTP decode +0.6-0.7 %, no regression at the verify widths), and
+an **opt-in** coarse prefill KV pad (`LLAMA_KV_N_PAD_PREFILL`, off by default; +2.0 % prefill on 35B-A3B
+at 2 GPUs, +1.0 % on the dense 27B at 3 GPUs, -0.35 % at 1 GPU).  Gates: same-seed text byte-identical
+to r76 on the dense 27B and the MoE 35B-A3B (`none == draft-mtp n3`), MTP acceptance unchanged
+(0.79055 / 0.75653), width purity `PASS` maxdiff 0 at 256/3584, prefill-logit **0.000000 / 100.000 %**
+(512-ctx) and 0.000000 / 99.996 % (8 k-ctx), `SET_ROWS` 159/159, `RMS_NORM` 53/53.  Before it, r76 folds
+the RDNA2 (gfx1030) tuned tile-FA + k-quant work (PR
 #165) into **blocks 05/07**, gated to RDNA2: same-seed greedy text is identical on gfx1201 / gfx1100 /
 gfx1151 and `gate-prefill-logits.sh` is **0.000000 / 100.000 %**, **0.000000 / 99.990 %** and
 **0.000000 / 100.000 %** on those three families.  Before it, r75 was: strict 12/12, whitespace-clean,

@@ -2,8 +2,13 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r76`** (canonical tip `68ee2e466`, net tree
-`06a91a1f76bcc4101398c17729edbf76450484fc`).  r76 folds the RDNA2 (gfx1030) tuned tile-FA + k-quant
+**`v12-097cf33d9-r77`** (canonical tip `6d8edf445`, net tree
+`e726101ddc3ee855adc903cc07c3b7009d0a27fc`).  r77 folds two contributor PRs into **blocks 08/10**: the
+q8_0 `SET_ROWS` K/V-write kernel and the register-quantizing `rms_norm_q8_1` (PR #171; bit-identical,
+no `try_fuse`/band change, MTP decode +0.6-0.7 %, no regression at the verify widths), plus an
+**opt-in** coarse prefill KV pad (`LLAMA_KV_N_PAD_PREFILL`, default off: +2.0 % prefill on 35B-A3B at 2
+GPUs, +1.0 % on the dense 27B at 3 GPUs, -0.35 % at 1 GPU -- which is why it is not default-on).  Before
+it, r76 folds the RDNA2 (gfx1030) tuned tile-FA + k-quant
 work (PR #165) into **blocks 05/07**, gated to RDNA2 (`#if defined(RDNA2)` /
 `GGML_CUDA_CC_IS_RDNA2`): gfx1201 / gfx1100 / gfx1151 keep their previous numerics (same-seed greedy
 text identical; prefill-logit mean KLD 0.000000 / 99.990-100.000 % on all three).  Before it, r75 fixed

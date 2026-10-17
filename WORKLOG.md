@@ -1,5 +1,80 @@
 # WORKLOG - dated delivery records
 
+## 261016.012 (r77) -- q8_0 K/V-write + `rms_norm_q8_1` decode kernels (PR #171, block 08), opt-in coarse prefill KV pad (PR #168, block 10)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r77` (base `097cf33d9`; canonical tip
+`6d8edf445`, net tree `e726101ddc3ee855adc903cc07c3b7009d0a27fc`; 12 blocks; `validate-set.sh` green --
+checksums OK, strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:** blocks
+08 and 10 amended.  Two `@briansp2020` PRs reviewed against r76 on gfx1201 (3x R9700, ROCm 7.14.1).
+
+**Accepted: PR #171 (`q8-decode-small-kernels`), folded into block 08 (both parts).**  (1) The q8_0
+`SET_ROWS` (the K/V cache write) now runs one 32-lane group per `block_q8_0` instead of one thread
+looping over 32 values: amax via an xor-shuffle `fmaxf` seeded with 0 (as `quantize_f32_q8_0_block`),
+same `d`, `id = d ? 1/d : 0` and `roundf`, same index math, coalesced byte stores.  (2)
+`rms_norm_q8_1` quantizes the value it already holds in a register, so the dst write loop folds into the
+quantize loop and the `__syncthreads()` + dst reload go away; the `has_add && y == nullptr` early-out
+becomes a uniform `continue`.  Neither kernel participates in the mmvq band (`nwarps`/VDR) or in
+`try_fuse`, so no reduction-order anchor moves.  Reviewed for: the mask used by `__shfl_xor_sync`
+(`0xffffffff`) names only its own group in practice -- CUDA's warp is exactly one `QK8_0` group, and
+HIP ignores the mask -- so a tail block cannot desynchronise a live group.
+
+**Correctness (PR #171).**  Same-seed greedy text **byte-identical to r76** on both model classes, in
+both spec modes: dense 27B UD-Q4_K_XL 3-GPU tensor `sha 16c09ff04038` (6228 chars) and MoE 35B-A3B
+UD-Q4_K_M `sha 2bd86932038b` (6177 chars), `--spec-type none` == `draft-mtp` (n-max 3) on each, seed 42,
+temp 0, prose prompt, `-n 3000`, q8_0 KV.  MTP acceptance identical to r76: dense `0.79055`
+(1940/2454), MoE `0.75653` (1507/1992).  `test-logits-width-probe` (`SPLIT=tensor`, `KV=q8_0`) **PASS,
+worst maxdiff 0**, with the r76 hashes at P=256 and P=3584 on both models.  `test-backend-ops -o
+SET_ROWS` 159/159 and `-o RMS_NORM` 53/53.  Prefill-logit gate **0.000000 / 100.000 %** against the
+r76 512-ctx base and **0.000000 / 99.996 %** against the r76 8 k-ctx base (the 99.996 % is the
+harness's own r76-vs-r76 figure at that length).
+
+**Accepted: PR #168 (`kv-pad-prefill`), folded into block 10 -- OPT-IN, default off.**  `get_n_kv` now
+takes the ubatch size; a prompt-sized ubatch (`n_tokens > 64`) is padded to `LLAMA_KV_N_PAD_PREFILL`
+(rounded up to a power of two) once the decode-padded occupancy exceeds `LLAMA_KV_N_PAD_PREFILL_FROM`
+(default 4096), so consecutive prompt chunks share one graph.  Decode/verify batches keep the decode
+pad, `n_kv` is still capped at the cache size, and the extra cells are masked as before.  **The default
+is unchanged (`0`)**, because the win is shape-dependent and the maintainer's rule is no regression on
+any shipped default: it is a `tuning (opt-in)` value next to the existing `LLAMA_KV_N_PAD_MIN`.
+
+**Prefill pad measurements (r77 build, `-ub 2048 -b 2048`, q8_0 KV, 31.7 k-token prompt, MTP n3).**
+35B-A3B UD-Q4_K_M 2-GPU tensor: **4383 -> 4471 t/s (+2.0 %)**; dense 27B UD-Q4_K_XL 3-GPU tensor:
+**1573 -> 1589 (+1.0 %)**; the same dense model on **1 GPU: 1156 -> 1152 (-0.35 %)**, consistent over two
+rounds (a single GPU rebuilds its graph cheaply, so the coarser pad only adds masked attention work).
+Output is unchanged either way: the 31.5 k-prompt completions hash identically with and without the pad
+(MoE `f1610e5940f6`, dense `01f03fc68e13`), and the prefill-logit gate at 8 k ctx with `=8192` is
+`0.000000 / 99.996 %` -- the same as pad off.  `ENVIRONMENT.md` documents both variables with these
+numbers.
+
+**No perf regression in the defaults.**  r76 -> r77 (`llama-bench`, 3 reps): dense 27B 3-GPU q8_0 KV
+pp512 2050.7 -> 2053.5, tg128 50.16 -> 50.23; MoE 35B-A3B 2-GPU q8_0 KV pp512 5345.8 -> 5362.4, tg128
+109.77 -> 110.07.  4B Q8_0 3-GPU same-seed coherence identical.  MTP decode +0.6-0.7 % (dense
+113.3 -> 114.1, MoE 181.2 -> 182.3 t/s); `llama-batched-bench -npl 1,4,8` (dense 27B, q8_0 KV) TG
+B=1 28.19 -> 28.41, B=4 105.27 -> 106.46, B=8 185.88 -> 185.56 (rule-5 gate: no worse at B=4/B=8).
+`ggml-hip` compiles for `gfx1030;gfx1100;gfx1151;gfx1201`.
+
+**Rejected: PR #169 (`spec-batch-budget`), an opt-in `LLAMA_SPEC_BATCH_BUDGET` MTP draft cap.**  It
+regresses on this box.  Same binary (r76 + #171 + #168 + #169), fresh server per arm, 4 concurrent
+300-token requests, q8_0 KV, `--spec-draft-n-max 3`, two/three repetitions per arm:
+
+| config | budget unset (cap 3) | `LLAMA_SPEC_BATCH_BUDGET=8` (cap 1) |
+|---|---|---|
+| MoE 35B-A3B Q4_K_M, 3 GPU tensor | 279.5 / 259.1 / 278.0 t/s | 232.8 / 211.9 / 213.0 t/s (**-16 %**) |
+| MoE 35B-A3B Q4_K_M, 2 GPU tensor | 314.6 / 320.7 / 326.9 | 304.7 / 308.7 / 323.4 (**-2.7 %**) |
+| dense 27B Q4_K_XL, 3 GPU tensor | 134.3 / 142.4 / 151.9 | 128.9 / 126.2 / 122.6 (**-12 %**) |
+| single request, same arms | unchanged | unchanged |
+
+A budget of 12 (cap 2) is neutral and 16/32 (cap 3 = no cap) reproduce the unset column, so the loss is
+specifically the cap-to-1 arm: the 16-token verify batch (4 slots x 4) is *cheaper* per accepted token
+here, not dearer.  The same class of defect exists structurally: the adaptive controller is fed
+`n_accepted` against its own `n_cur`, not against the load-capped depth, so a multi-slot burst drains it
+to the floor and a later single-request run has to climb back.  Not shipped; the record is kept at
+`archive/work/spec-batch-budget/` with a `RESOLUTION.md` (re-entry conditions, incl. the 2-GPU row the
+reporter's own config maps to).
+
+**Records.**  `archive/work/q8-decode-small-kernels/` and `archive/work/kv-pad-prefill/` (contributor
+README + patches + `RESOLUTION.md` each).  `wip/` never carried these campaigns on `main` (they arrived
+as PR branches), so nothing had to be removed from the open set.
+
 ## 261016.011 (r76) -- RDNA2 (gfx1030) tuned tile-FA + k-quant MMQ/MMVQ (PR #165, blocks 05/07)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r76` (base `097cf33d9`; canonical tip

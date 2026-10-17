@@ -1,4 +1,4 @@
-From 049730b2b7fee2777557ad0afea7942837209b4a Mon Sep 17 00:00:00 2001
+From 1081857a669e0719e36e2dfed67706fa707d3ae2 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -110,8 +110,8 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  src/llama-ext.h                               |   12 +
  src/llama-graph.cpp                           |    3 +
  src/llama-graph.h                             |    5 +
- src/llama-kv-cache.cpp                        |   10 +-
- src/llama-kv-cache.h                          |    5 +-
+ src/llama-kv-cache.cpp                        |   37 +-
+ src/llama-kv-cache.h                          |    7 +-
  src/llama-lazy-reader.cpp                     |  330 ++
  src/llama-lazy-reader.h                       |   91 +
  src/llama-memory-hybrid-idx.cpp               |  792 ++-
@@ -130,7 +130,7 @@ linked against the CUDA common.cuh), so it uses a local static instead of the CU
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 99 files changed, 19795 insertions(+), 4900 deletions(-)
+ 99 files changed, 19820 insertions(+), 4904 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -20814,7 +20814,7 @@ index e8b5888dc..261e9697e 100644
  void ggml_cuda_op_norm_gated(ggml_backend_cuda_context & ctx, const ggml_cuda_norm_gated_match & m);
 +int  ggml_cuda_norm_rows_try_fuse(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
 diff --git a/ggml/src/ggml-cuda/norm.cu b/ggml/src/ggml-cuda/norm.cu
-index 82737d7d9..2de7014e3 100644
+index 1aa237bb8..1faf821fd 100644
 --- a/ggml/src/ggml-cuda/norm.cu
 +++ b/ggml/src/ggml-cuda/norm.cu
 @@ -1,5 +1,6 @@
@@ -20824,7 +20824,7 @@ index 82737d7d9..2de7014e3 100644
  #include <cstdint>
  
  // RNE f32 -> bf16, bit-identical to mmb.cu's mmb_f2bf (used to emit the HC normalized stream's
-@@ -935,10 +936,18 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor *
+@@ -924,10 +925,18 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor *
      GGML_ASSERT(mul_tensor->type == GGML_TYPE_F32);
      GGML_ASSERT(eps >= 0.0f);
  
@@ -20845,7 +20845,7 @@ index 82737d7d9..2de7014e3 100644
  
      const int64_t ne00 = rms_norm_src->ne[0];
      const int64_t ne01 = rms_norm_src->ne[1];
-@@ -1109,6 +1118,73 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+@@ -1098,6 +1107,73 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
  
      l2_norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
  }
@@ -22782,7 +22782,7 @@ index 0a12fc537..76b0b7102 100644
              return false;
          }
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 71ddb4683..aa5271156 100644
+index 71ddb4683..dcc097417 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -79,7 +79,8 @@ llama_kv_cache::llama_kv_cache(
@@ -22804,7 +22804,13 @@ index 71ddb4683..aa5271156 100644
  
          ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
          ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
-@@ -1285,7 +1286,10 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
+@@ -1280,17 +1281,41 @@ uint32_t llama_kv_cache::get_stream(llama_seq_id seq_id) const {
+     return seq_to_stream[seq_id];
+ }
+ 
+-uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
++uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo, uint32_t n_tokens) const {
+     uint32_t result = 0;
  
      // pad the n_kv value so that the graph remains constant across batches and can be reused
      // note: this also helps some backends with performance (f.ex https://github.com/ggml-org/llama.cpp/pull/16812#issuecomment-3455112220)
@@ -22812,12 +22818,48 @@ index 71ddb4683..aa5271156 100644
 +    // LLAMA_KV_N_PAD_MIN raises the 256-cell floor: n_kv - and with it the graph layout - then stays constant for longer,
 +    // so fewer captured graphs are invalidated as the context grows (-sm tensor splits each token into ~100 graphs)
 +    static const uint32_t n_pad_min = getenv("LLAMA_KV_N_PAD_MIN") ? (uint32_t) atoi(getenv("LLAMA_KV_N_PAD_MIN")) : 256u;
++    // LLAMA_KV_N_PAD_PREFILL: a coarser pad for prompt-sized ubatches (> 64 tokens) once the cache is past
++    // LLAMA_KV_N_PAD_PREFILL_FROM cells (default 4096; compared with the decode-padded occupancy).  Every prompt ubatch grows the cache by its own size, so with the
++    // decode pad n_kv - and the graph - changes at every ubatch and the whole graph is rebuilt (split state, allocation);
++    // a pad several ubatches wide lets consecutive ubatches reuse one graph.  Below the threshold the decode pad stays, so
++    // a model's small-context shortcuts keyed on n_kv (qwen4exp's dense attention for the first ~2051 tokens) still apply.
++    // Decode and verify batches keep the decode pad (a coarse pad there slows every step and changes its numerics).
++    // Rounded up to a power of two (GGML_PAD is a bit mask).  0: off.  Not for training (its graphs assert n_kv == n_tokens).
++    static const uint32_t n_pad_prefill = [] {
++        const int      e = getenv("LLAMA_KV_N_PAD_PREFILL") ? atoi(getenv("LLAMA_KV_N_PAD_PREFILL")) : 0;
++        const uint32_t v = e > 0 && e <= (1 << 24) ? (uint32_t) e : 0u;   // ignore negative / absurd values
++        uint32_t p2 = 1;
++        while (p2 < v) {
++            p2 <<= 1;
++        }
++        return v > 0 ? p2 : 0u;
++    }();
++    static const uint32_t n_pad_prefill_from = getenv("LLAMA_KV_N_PAD_PREFILL_FROM") ? (uint32_t) atoi(getenv("LLAMA_KV_N_PAD_PREFILL_FROM")) : 4096u;
 +    const uint32_t n_pad_cur = std::max(n_pad, n_pad_min);
++    const bool     prefill   = n_tokens > 64 && n_pad_prefill > n_pad_cur;
  
      for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
          const auto & cells = v_cells[sinfo.strm[s]];
+ 
+-        result = std::max(std::min(cells.size(), std::max(n_pad_cur, GGML_PAD(cells.used_max_p1(), n_pad_cur))), result);
++        const uint32_t used = cells.used_max_p1();
++        const uint32_t pad  = prefill && GGML_PAD(used, n_pad_cur) > n_pad_prefill_from ? n_pad_prefill : n_pad_cur;
++
++        result = std::max(std::min(cells.size(), std::max(pad, GGML_PAD(used, pad))), result);
+     }
+ 
+     return result;
+@@ -3039,7 +3064,7 @@ bool llama_kv_cache_context::apply() {
+     }
+ 
+     kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
+-    n_kv = kv->get_n_kv(sinfos[i_cur]);
++    n_kv = kv->get_n_kv(sinfos[i_cur], ubatches[i_cur].n_tokens);
+ 
+     return true;
+ }
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 6e34d8a54..79aadbade 100644
+index 6e34d8a54..0456a518a 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -114,7 +114,10 @@ public:
@@ -22832,6 +22874,15 @@ index 6e34d8a54..79aadbade 100644
  
      ~llama_kv_cache() = default;
  
+@@ -190,7 +193,7 @@ public:
+     // graph_build API
+     //
+ 
+-    uint32_t get_n_kv(const slot_info & sinfo) const;
++    uint32_t get_n_kv(const slot_info & sinfo, uint32_t n_tokens = 0) const;
+ 
+     // get views of the current state of the cache
+     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 diff --git a/src/llama-lazy-reader.cpp b/src/llama-lazy-reader.cpp
 new file mode 100644
 index 000000000..9f9779b8c

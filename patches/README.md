@@ -11,7 +11,32 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r76` (2026-10-16) -- RDNA2 (`gfx1030`) tuned flash-attention tile + k-quant MMQ/MMVQ (PR #165, issue #158):**
+> **Current release `v12-097cf33d9-r77` (2026-10-16) -- q8_0 KV-write + `rms_norm_q8_1` decode kernels (PR #171), opt-in coarse prefill KV pad (PR #168):**
+> canonical tip `6d8edf445`, net tree `e726101ddc3ee855adc903cc07c3b7009d0a27fc`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 08 and 10** amended, no new block.
+> **block 08** gains PR #171 (both parts, bit-identical): the q8_0 `SET_ROWS` (the K/V cache write) runs
+> one 32-lane group per `block_q8_0` instead of one thread looping over 32 values (`k_set_rows_q8_0_group`:
+> shuffle `fmaxf` amax seeded with 0, same `d` / `id` / `roundf`, coalesced byte stores), and
+> `rms_norm_q8_1` quantizes the value it already holds in a register, dropping a `__syncthreads()` and the
+> dst reload (the `has_add` + `y == nullptr` early-out becomes a uniform `continue`).  These are decode
+> kernels (no band/`nwarps` participation, no `try_fuse` change).  **block 10** gains PR #168:
+> `get_n_kv` takes the ubatch size and pads prompt-sized ubatches (`n_tokens > 64`) to
+> `LLAMA_KV_N_PAD_PREFILL` (power of two) once the decode-padded occupancy passes
+> `LLAMA_KV_N_PAD_PREFILL_FROM` (default 4096), so `-ub 2048` prompt chunks reuse one graph; **default 0
+> (off)**, decode/verify batches keep the decode pad, and the extra cells are masked as before.
+> Verified on gfx1201 (3x R9700): same-seed text **byte-identical to r76** on both model classes and both
+> spec modes (dense 27B `sha 16c09ff04038`, MoE 35B-A3B `sha 2bd86932038b`, `none == draft-mtp n3`), MTP
+> acceptance unchanged (0.79055 dense, 0.75653 MoE), `test-logits-width-probe` PASS maxdiff **0** with the
+> r76 hashes at P=256/3584 on both models, `test-backend-ops -o SET_ROWS` 159/159 and `-o RMS_NORM`
+> 53/53, prefill-logit **0.000000 / 100.000 %** (512-ctx base) and **0.000000 / 99.996 %** (8 k-ctx base,
+> pad off and `=8192`).  Perf: MTP decode +0.6-0.7 % (dense 113.3 -> 114.1, MoE 181.2 -> 182.3 t/s),
+> batched decode B=1 28.19 -> 28.41 and B=4 105.27 -> 106.46 (B=8 unchanged), `llama-bench` tg128/pp512
+> within +0.1-0.3 % (no regression).  The pad is opt-in because it costs 0.35 % on a single GPU (see
+> `../ENVIRONMENT.md`); its measured win is +2.0 % prefill (MoE, 2 GPUs) and +1.0 % (dense 27B, 3 GPUs).
+> Record: `../WORKLOG.md` 261016.012; campaign records `../archive/work/q8-decode-small-kernels/` and
+> `../archive/work/kv-pad-prefill/`.
+>
+> **Previous release `v12-097cf33d9-r76` (2026-10-16) -- RDNA2 (`gfx1030`) tuned flash-attention tile + k-quant MMQ/MMVQ (PR #165, issue #158):**
 > canonical tip `68ee2e466`, net tree `06a91a1f76bcc4101398c17729edbf76450484fc`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 05 and 07** amended, no new block.
 > Folds `@slavap`'s RDNA2 add-on (PR #165), ported from `sixvolts/llama-halo-hybrid`:

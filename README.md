@@ -12,7 +12,20 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r75`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r77`**.
+
+r77 folds two contributor PRs into the blocks that own them (blocks 08/10, no new block) and adds no
+default behaviour change: the q8_0 `SET_ROWS` K/V-cache write now runs one 32-lane group per block
+instead of one thread looping over 32 values, and `rms_norm_q8_1` quantizes from the register it already
+holds (PR #171, bit-identical: same-seed text, MTP acceptance, and the W=1..8 logits probe all unchanged;
+MTP decode +0.6-0.7 %, no regression at the verify widths).  PR #168 adds an **opt-in** coarse KV pad for
+prompt ubatches (`LLAMA_KV_N_PAD_PREFILL=8192`, off by default), so consecutive prompt chunks share one
+graph: +2.0 % prefill on 35B-A3B at 2 GPUs and +1.0 % on the dense 27B at 3 GPUs, but -0.35 % at 1 GPU,
+which is why it stays a tuning value rather than a default (`WORKLOG.md` 261016.012).
+
+r76 folds the RDNA2 (`gfx1030`) tuned flash-attention tile and k-quant MMQ/MMVQ work (PR #165) into
+blocks 05/07, gated to RDNA2 so gfx1100/gfx1151/gfx1201 keep their numerics (prefill-logit 0.000000 on
+all three families).
 
 r75 carries the r73/r74 work plus a release-blocker fix.  r74 sizes the MoE expert-cache arena at the
 **warmup** (not the first real decode) and stops the prefill seed at the band a wide prefill immediately

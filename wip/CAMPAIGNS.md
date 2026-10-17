@@ -35,6 +35,18 @@ is the signature of a stub, not of a campaign.
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
 
+**Promoted and rejected (r77, 2026-10-16).**  Three contributor PRs were reviewed; **none of them was ever
+a `wip/` entry on `main`** (they arrived as PR branches under their own `wip/<name>/`, so the open set
+here was not touched and no stub was created or removed).  **#171 `q8-decode-small-kernels`** promoted
+into **block 08** (q8_0 `SET_ROWS` one 32-lane group per block; `rms_norm_q8_1` quantizes from
+registers -- bit-identical, MTP decode +0.6-0.7 %, no regression at the verify widths).  **#168
+`kv-pad-prefill`** promoted into **block 10** as an **opt-in** tuning value (`LLAMA_KV_N_PAD_PREFILL`,
+default off: +2.0 % prefill on 35B-A3B at 2 GPUs and +1.0 % on the dense 27B at 3 GPUs, but -0.35 % at
+1 GPU, so it is not default-on).  **#169 `spec-batch-budget` rejected** (its cap-to-1 arm is -16 % on the
+MoE at 3 GPUs, -2.7 % in the reporter's own 2-GPU topology, -12 % on the dense 27B; plus the adaptive
+controller is fed the uncapped depth, so a burst drains it).  All three records are under
+`archive/work/` with a `RESOLUTION.md`; see `WORKLOG.md` 261016.012 (r77).
+
 **Promoted (r75, 2026-10-16).**  `first-prefill-latency/` left `wip/`: the MoE arena is now sized at the
 warmup (the priming pass), with the arena sized to the **full** region and the seed capped at the prefill
 reclaim boundary (`narrow_floor + ring + wide`) via the shared `ggml_cuda_slab_ring_layout` helper.  Folded

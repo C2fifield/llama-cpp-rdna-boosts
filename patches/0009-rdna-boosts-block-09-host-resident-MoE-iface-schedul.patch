@@ -1,4 +1,4 @@
-From e1938b34aa27036710b1d1b205cb615fff0ebd81 Mon Sep 17 00:00:00 2001
+From 9e5f6b4d5531b92ff3af9c3c244a9012ebe0f010 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -13835,10 +13835,10 @@ index 000000000..87d7fd37d
 +void moe_cache_selftest();         // synthetic arena fill/verify
 +void moe_cache_report();           // hit/miss/fill/eviction summary
 diff --git a/ggml/src/ggml-cuda/norm.cu b/ggml/src/ggml-cuda/norm.cu
-index 64e335342..82737d7d9 100644
+index 23822a342..1aa237bb8 100644
 --- a/ggml/src/ggml-cuda/norm.cu
 +++ b/ggml/src/ggml-cuda/norm.cu
-@@ -1109,3 +1109,38 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+@@ -1098,3 +1098,38 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
  
      l2_norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
  }
