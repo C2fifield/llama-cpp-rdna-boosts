@@ -1220,3 +1220,59 @@ the WIP against `release.json.base`, run the release gates (`gate-prefill-logits
 
 **Recovery:** fork WIP `9c46d14dfc4b08be2cd0feb8582ed3df705bc264`, patch **1 916 lines, sha256
 `70dd2283d27077caac14bb7d05a673bb2ab82abd4f5865d652fcfaa76ff550cf`**.
+
+---
+
+## 10.13 2026-10-17 — step 3b: the default scales per GPU (`512 + 128 x n`), not flat
+
+§10.12 shipped a flat 1024.  Two better-aimed questions followed ("why not 600?" then "why not
+`512 + 128/GPU`?"), and the measurements answered them: **`T` is per DEVICE**, so a flat value is either too
+generous on one card or too thin on several.
+
+| headroom | 1-GPU field GSQ seesaw | 2-GPU `-sm layer` | 3-GPU `-sm layer` | wide IQ4_NL (-ub 6144) | 2-GPU `-sm tensor` |
+|---:|---|---|---|---|---|
+| 512 (flat) | 214.5 | — | — | 471 | — |
+| **600 (flat)** | 346.5 | **209.5** | — | — | — |
+| 640 | **346.5** | — | — | **599.0** | — |
+| 768 | — | **401.5** | — | — | **1 296.5** |
+| 896 | — | — | **519.5** | — | — |
+| 1024 (flat) | 714.5 | 657.5 | — | 983 | 1 552.5 |
+| 2048 (flat) | — | 1 681.5 | — | — | 2 576.5 |
+
+**Flat 600 is rejected**: the 2-GPU `-sm layer` case drops to **209.5 MiB**, under the 300 MiB target, while
+the 1-GPU field seesaw is comfortable at 346.5.  `T` ≈ 300 MiB on one card, ≈ 390 on two, ≈ 500 on three —
+each device runs its own pools, Q8_1 arena and rocBLAS workspace, so the cushion must be per card.
+
+### Shipped default
+
+```
+GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT   512   (base)
+GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU   128   (per device)
+default headroom = 512 + 128 x n_gpu   ->  1 GPU 640, 2 GPU 768, 3 GPU 896 MiB
+```
+
+Verified with **no env set**, per device:
+
+| config | effective headroom | excess | arena at the wide-arm | greedy |
+|---|---:|---:|---:|---|
+| 1 GPU, field GSQ seesaw (4 reqs) | **640** | **346.5** | **19 776** MiB | 4/4 identical |
+| 1 GPU, wide IQ4_NL (-ub 6144) | 640 | 599.0 | 12 416 MiB | `746954a1038b` |
+| 2 GPU, `-sm layer` | **768** | 401.5 /device | 17 344 MiB | `394193591d4d` (arena-pinned) |
+| 2 GPU, `-sm tensor` | 768 | 1 296.5 /device | 17 344 MiB | `394193591d4d` |
+| 3 GPU, `-sm layer` | **896** | 519.5 /device (all 3) | 17 664-18 176 MiB | clean |
+| 35B-A3B coherence (no draft) | — | — | — | **identical** |
+
+Every case lands **>= the 300 MiB target** with a 15-70 MiB cushion, and the field arena is **19 776 MiB**
+vs 15 666.6 at the r80 default — **+4.0 GiB of arena** (reserve 7 680 -> 4 222 MiB).
+
+**Semantics that were kept:** an explicit `GGML_CUDA_SLAB_HEADROOM_MIB` is taken **verbatim** (a total, not a
+per-card value), matching every other explicit override in this tree;
+`ggml_cuda_slab_headroom_at_least_mib()` still only **raises** and only when the env is unset (so the 6144
+`-sm layer` floor for a partially host-resident multi-device MoE is unaffected); and a **fully resident**
+model (no `-ncmoe`) has no slab and no arena, so nothing is sized there.
+
+**Note the quantum:** the reserve is `headroom + aux` mapped in slab **chunk** units (64 MiB), so values
+inside one chunk of each other measure identically — 600 and 640 are the same on one GPU.
+
+**Recovery:** fork WIP `5d461d67f`, patch **1 946 lines, sha256
+`ff2035ed69c1e7bcfbd264d6f5265bf41b640ed883cd08961b1701264527f41d`**.

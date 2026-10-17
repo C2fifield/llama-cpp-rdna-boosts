@@ -960,7 +960,7 @@ index a443887e4..d33123708 100644
      return bw[dev];
  }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-index f6eeec2c8..cd0302b24 100644
+index f6eeec2c8..8e6596779 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 @@ -7,6 +7,7 @@
@@ -1004,7 +1004,7 @@ index f6eeec2c8..cd0302b24 100644
      bool                     ring_requested = false; // the context classified the live ubatch as wide (prefill)
                                                  //  (`ring_set`, n_tokens >= 64).  `work_alloc` places
                                                  //  such a view above the ring even when its buffer is no
-@@ -375,12 +402,44 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
+@@ -375,24 +402,53 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
  // the allocations that can still appear later.  `0` disables the extension (the slab then keeps exactly
  // the reserve it took at creation).
  //
@@ -1014,57 +1014,87 @@ index f6eeec2c8..cd0302b24 100644
 -// loud (see the 2048 table in `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s,
 -// and the older `hipModuleLoad failed` abort at `-ub 4096 -c 163860`).  The requirement grows with prefill
 -// width/context.
-+// DEFAULT 4096 MiB -> **1024 MiB** (wip/slab-transient-absorption, 2026-10-17).
-+//
-+// The headroom is the STEADY-STATE FREE VRAM kept outside the slab, i.e. the cushion every allocation that
-+// cannot live in the slab draws on: hipBLASLt/Tensile's workspace (104 MiB measured, library-owned), the Q8_1
-+// arena, and the transients that are not (yet) slab-served.  It is NOT slack to be maximised -- it is
-+// permanently withheld from the arena, and the arena is what the expert cache lives in (measured: ~1 pt of
-+// hit rate per GiB moved from headroom to arena).
-+//
-+// 4096 dated from before the transient work.  Since then the H2D ring, the FA prefill staging, the QSA3/GDN
-+// prefill scratch, the load-time calibration probe and the workspace pool's large prefill temporaries all
-+// come out of the slab, and the per-graph caches (MMB activation + BF16 src1) are released at the graph end
-+// (wip/slab-transient-absorption §10.6-§10.8).  The measured steady-state outside demand is now `T` ~= 500
-+// MiB for a 4-request session and ~210-330 MiB for a single prefill (README §10.9), so 1024 keeps a ~2x
-+// margin over the worst measurement.
-+//
-+// MEASURED (2026-10-17, 1x R9700 gfx1201 (+ a 2-GPU pair), derived draft reserve, `GGML_CUDA_SLAB_STATS=1`;
-+// "excess" = free VRAM outside the slab at the worst arm/drop of the run):
-+//
-+//   headroom | field GSQ seesaw (-ub 4096) | wide IQ4_NL (-ub 6144) | 2-GPU tensor | 2-GPU layer
-+//   ---------+-----------------------------+-----------------------+---------------+-------------
-+//       512  | floor 214.5 MiB             | drop 471 MiB          | -             | -
-+//      1024  | floor 714.5 MiB             | drop 1175 MiB         | 1552 MiB/dev  | 657 MiB/dev
-+//      2048  | -                           | -                     | 2576 MiB/dev  | 1681 MiB/dev
-+//
-+// 1024 is the shipped default: every measured config keeps >= ~657 MiB of excess (the target was ~300), and
-+// it buys +3.5 GiB of arena on the field config vs 4096 (19 136 -> 21 440... see the SLAB_STATS `arena`
-+// figure; the reserve drops from 7 680 to 4 806 MiB).  512 was measured and REJECTED: the field seesaw bottoms
-+// out at 214.5 MiB, under the 300 MiB target.  A thin headroom can also fail SILENTLY rather than loudly (see
-+// the 2048 table in `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s, and the older
-+// `hipModuleLoad failed` abort at `-ub 4096 -c 163860`), which is why the cushion is kept at ~2x `T` rather
-+// than at the measured value.
-+//
-+// `-sm layer` with a partially host-resident MoE on more than one device raises this automatically
-+// (`ggml_cuda_slab_headroom_at_least_mib(6144)` from `alloc_all_locked`, the r36 255k needle floor) -- that
-+// floor only ever RAISES the value and only when the env is unset, so a lower default cannot weaken it.
-+//
-+// Set it in MiB with `GGML_CUDA_SLAB_HEADROOM_MIB`; the value is the steady-state free VRAM kept outside the
-+// slab after `ggml_cuda_slab_extend` reclaims the reserve.
++// DEFAULT: **512 MiB per GPU, plus 128 MiB for every additional GPU** (wip/slab-transient-absorption,
++// 2026-10-17): 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.  See `ggml_cuda_slab_headroom_bytes`.
  //
- // Set it in MiB with `GGML_CUDA_SLAB_HEADROOM_MIB` (there is no boolean switch): the value is the
- // steady-state free VRAM kept outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
-@@ -392,7 +451,7 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
- // `-ngl 99 -sm tensor -ncmoe 48 -ub 6144 -c 204800`, 5697-token prefill) 4096 is clean (312 t/s, 0
- // corruption) while 3072 dies with `Hip error: 'out of memory' at hipblaslt.cpp:164`.  So the default
- // stays 4096 and lowering it remains a per-user choice via the env var, not a shipped default.
+-// Set it in MiB with `GGML_CUDA_SLAB_HEADROOM_MIB` (there is no boolean switch): the value is the
+-// steady-state free VRAM kept outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
++// The headroom is the STEADY-STATE FREE VRAM kept outside the slab: the cushion every allocation that cannot
++// live in the slab draws on.  Since the transient work it is (measured) only `T` = the hipBLASLt/Tensile
++// workspace (104 MiB, library-owned), the Q8_1 arena, and the transients that are not slab-served -- every
++// other prefill transient now lives in the slab (H2D ring, FA staging, QSA3/GDN scratch, the calibration
++// probe, the workspace pool's large temporaries) and the two per-graph caches are released at the graph end
++// (wip/slab-transient-absorption §10.6-§10.8).  It is NOT slack to be maximised: it is permanently withheld
++// from the arena, and the arena is where the expert cache lives (~1 pt of hit rate per GiB moved).
+ //
+-// TRIALLED 3072 (2026-10-10, `wip/slab-ring-region/`): the op-offload H2D staging ring moved INSIDE the
+-// slab, so it no longer spends ~1 GiB of this headroom (r38 refused a 990 MiB ring growth here), and on
+-// the field config 3072 measured +8.5 % decode step rate (arena residency 61.7 -> 64.9 %).  REJECTED:
+-// it is not safe once the context is force-fitted.  On the §2.2 wide-prefill config (`--fit off`, IQ4_XS,
+-// `-ngl 99 -sm tensor -ncmoe 48 -ub 6144 -c 204800`, 5697-token prefill) 4096 is clean (312 t/s, 0
+-// corruption) while 3072 dies with `Hip error: 'out of memory' at hipblaslt.cpp:164`.  So the default
+-// stays 4096 and lowering it remains a per-user choice via the env var, not a shipped default.
 -#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 4096
-+#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 1024
++// T IS PER DEVICE (each card runs its own pools, Q8_1 arena and rocBLAS workspace), which is why the default
++// scales with the device count instead of being flat.  Measured 2026-10-17 (derived draft reserve,
++// `GGML_CUDA_SLAB_STATS=1`; "excess" = free VRAM outside the slab at the worst arm/drop of the run):
++//
++//   headroom | field GSQ seesaw (-ub 4096, 1 GPU) | wide IQ4_NL (-ub 6144) | 2-GPU tensor | 2-GPU layer
++//   ---------+-------------------------------------+-----------------------+---------------+-------------
++//       512  | floor 214.5 MiB                     | drop 471 MiB          | -             | -
++//       600  | floor 346.5 MiB                     | -                     | -             | 209.5 MiB/dev
++//       640  | floor 346.5 MiB  <- 1-GPU default   | ~559 (T=41)           | -             | -
++//       768  | -                                   | -                     | -             | 401.5 MiB/dev <- 2-GPU default
++//      1024  | floor 714.5 MiB                     | drop 983 MiB          | 1552.5 /dev   | 657.5 MiB/dev
++//      2048  | -                                   | -                     | 2576.5 /dev   | 1681.5 MiB/dev
++//
++// So T ~= 300 MiB per device plus ~90 per extra device, and the shipped default leaves ~350-400 MiB of excess
++// on every measured config (the target was ~300).  A FLAT 600 was measured and REJECTED: the 2-GPU
++// `-sm layer` case drops to 209.5 MiB there, because T there is ~390, not ~300 -- that is the whole reason the
++// default scales with the device count.  (512 flat is 214.5 on the 1-GPU field seesaw: also under target.)
++//
++// The effective quantum is the slab CHUNK (64 MiB): the reserve is `headroom + aux` mapped in chunk units, so
++// values inside one chunk of each other measure identically (600 and 640 are the same on 1 GPU).
++//
++// A thin headroom can fail SILENTLY rather than loudly (see the 2048 table in
++// `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s, and the older `hipModuleLoad failed`
++// abort at `-ub 4096 -c 163860`), which is why the cushion is kept at ~1.2x T per device rather than at the
++// measured value.
++//
++// `-sm layer` with a partially host-resident MoE on more than one device raises this further
++// (`ggml_cuda_slab_headroom_at_least_mib(6144)` from `alloc_all_locked`, the r36 255k needle floor) -- that
++// floor only ever RAISES the value and only when the env is unset, so a lower default cannot weaken it.  A
++// FULLY RESIDENT model (no `-ncmoe`) has no slab and no arena at all, so nothing is sized there.
++//
++// `GGML_CUDA_SLAB_HEADROOM_MIB` sets the value VERBATIM (no per-GPU addition), like every other explicit
++// override; the per-GPU scaling applies only to the default.  The value is the steady-state free VRAM kept
++// outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
++#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 512   // base; the default is 512 + 128 x n_gpu
++#define GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU 128   // per device, so 1->640, 2->768, 3->896 MiB
  
  static size_t g_slab_headroom_min_mib = 0;
  void ggml_cuda_slab_headroom_at_least_mib(size_t mib) {
-@@ -734,6 +793,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
+@@ -406,7 +462,18 @@ size_t ggml_cuda_slab_headroom_bytes() {
+         env_set = env != NULL;
+         mib = env_set ? (size_t) atoll(env) : GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT;
+     }
+-    const size_t eff = (!env_set && g_slab_headroom_min_mib > mib) ? g_slab_headroom_min_mib : mib;
++    // The outside transients are PER DEVICE, so the default grows with the number of cards (`512 + 128 x n`,
++    // i.e. 640 / 768 / 896 MiB for 1 / 2 / 3 GPUs); an explicit `GGML_CUDA_SLAB_HEADROOM_MIB` is taken
++    // verbatim (an operator asks for a total, not a per-card value).
++    size_t eff = mib;
++    if (!env_set) {
++        // `512 + 128 x n_devices`: 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.
++        const int n_phys = std::max(1, ggml_cuda_info().physical_device_count);
++        eff += (size_t) n_phys * GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU;
++    }
++    if (!env_set && g_slab_headroom_min_mib > eff) {
++        eff = g_slab_headroom_min_mib;
++    }
+     return eff * 1024 * 1024;
+ }
+ 
+@@ -734,6 +801,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
      s.ring_region  = 0;
      s.ring_armed   = false;
      s.ring_used    = 0;
@@ -1074,7 +1104,7 @@ index f6eeec2c8..cd0302b24 100644
      s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
      s.arena_free.clear();
      s.arena_free[w] = s.mapped - w;
-@@ -960,8 +1022,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -960,8 +1030,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
                  device, (double) need/1048576.0, (int) narrow, (double) ret_off/1048576.0,
                  (double) s.narrow_floor/1048576.0, (double) s.ring_region/1048576.0, (double) s.boundary/1048576.0);
          }
@@ -1101,7 +1131,7 @@ index f6eeec2c8..cd0302b24 100644
          if (!s.work_needs.empty()) {
              const size_t mx = *s.work_needs.rbegin();
              if (mx > floor) {
-@@ -972,6 +1052,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -972,6 +1060,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
              floor = contrib;
          }
          const size_t target = ggml_cuda_slab_up(floor, s.chunk);
@@ -1116,7 +1146,7 @@ index f6eeec2c8..cd0302b24 100644
          base    = s.base;
          // wip/moe-verify-fusions: never grow the work pool into a pinned narrow-2 region (the draft's
          // compute VA).  A request that does not fit falls back to cudaMalloc rather than corrupt it.
-@@ -1141,6 +1229,61 @@ size_t ggml_cuda_slab_ring_region(int device) {
+@@ -1141,6 +1237,61 @@ size_t ggml_cuda_slab_ring_region(int device) {
      return s.ring_region;
  }
  
@@ -1178,7 +1208,7 @@ index f6eeec2c8..cd0302b24 100644
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      if (size == 0) {
          return nullptr;
-@@ -1159,6 +1302,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1159,6 +1310,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      return p;
  }
  
@@ -1363,7 +1393,7 @@ index f6eeec2c8..cd0302b24 100644
  // The context classifies each ubatch (prefill: `n_tokens >= 64`; decode/verify: below) and tells the slab
  // here.  The ring itself is still carved with a wip view -- arming is just `boundary >= narrow_floor +
  // ring_region` -- but the classification must NOT be inferred from the work request size: for the
-@@ -1167,13 +1488,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1167,13 +1496,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
  // `boundary == narrow_floor` and `ring_armed == false`.  `work_alloc` reads this flag and places the
  // prefill view above the ring.  A no-op for the generic arm/disarm plumbing stays valid for a future
  // non-slab allocator.
