@@ -265,6 +265,53 @@ index a2037d6e2..e17d4bf60 100644
      {
          // rows-kernel dynamic smem: [ns] keys + the nk-bit presence bitmap + 256 scan offsets.
          // When that does not fit the 48 KiB budget (a very long cache) the kernel falls back to the
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+index a443887e4..d33123708 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+@@ -136,9 +136,25 @@ float ggml_backend_cuda_stage_h2d_gbps(ggml_backend_t backend) {
+     const size_t sz = 512u << 20;
+     void * h = malloc(sz);
+     void * d = nullptr;
+-    if (h == nullptr || cudaMalloc(&d, sz) != cudaSuccess) {
++    // wip/slab-transient-absorption: a ONE-OFF 512 MiB probe run at load, AFTER the slab exists.  Serving
++    // it from the slab's arena (allocated before the cache sizes itself, then freed) removes a 512 MiB
++    // spike from the outside reserve -- the single largest reason a low GGML_CUDA_SLAB_HEADROOM_MIB is
++    // unsafe today.  The arena is the right home here (the ring/wide band is not armed at load); the block
++    // is released immediately, so it cannot be evicted mid-flight.
++    bool d_slab = false;
++    if (ggml_cuda_slab_active(dev)) {
++        d = ggml_cuda_slab_arena_alloc(dev, sz);
++        d_slab = d != nullptr;
++    }
++    if (h == nullptr || (d == nullptr && cudaMalloc(&d, sz) != cudaSuccess)) {
+         (void) cudaGetLastError(); // clear the sticky error
+-        if (d != nullptr) CUDA_CHECK(cudaFree(d));
++        if (d != nullptr) {
++            if (d_slab) {
++                ggml_cuda_slab_arena_free(dev, d, sz);
++            } else {
++                CUDA_CHECK(cudaFree(d));
++            }
++        }
+         free(h);
+         return bw[dev];
+     }
+@@ -155,8 +171,12 @@ float ggml_backend_cuda_stage_h2d_gbps(ggml_backend_t backend) {
+ 
+     const double sec = double(t1 - t0) / 1e6;
+     bw[dev] = sec > 0.0 ? float(3.0*double(sz)/1e9 / sec) : 0.0f;
+-    GGML_LOG_INFO("%s: H2D bandwidth calibration: %.1f GB/s (%zu MiB x3 in %.2f ms)\n", __func__, double(bw[dev]), sz >> 20, 1000.0*sec);
+-    CUDA_CHECK(cudaFree(d));
++    GGML_LOG_INFO("%s: H2D bandwidth calibration: %.1f GB/s (%zu MiB x3 in %.2f ms, from %s)\n", __func__, double(bw[dev]), sz >> 20, 1000.0*sec, d_slab ? "the slab arena" : "cudaMalloc");
++    if (d_slab) {
++        ggml_cuda_slab_arena_free(dev, d, sz);
++    } else {
++        CUDA_CHECK(cudaFree(d));
++    }
+     free(h);
+     return bw[dev];
+ }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 index f6eeec2c8..fc810342d 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
@@ -696,3 +743,26 @@ index ad7f556da..4f484e93b 100644
              CUDA_CHECK(cudaFree(fattn_stage[i]));
          }
      }
+diff --git a/include/llama.h b/include/llama.h
+index 2519ee713..0c99fa0d5 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -643,8 +643,16 @@ extern "C" {
+     LLAMA_API size_t llama_model_moe_host_expert_bytes(const struct llama_model * model, uint32_t dev_index);
+ 
+     // wip/moe-cache-autosize: default auxiliary-context memory reserve subtracted from the cache's
+-    // arena projection (MiB).  Measured ~3.7 GiB for the MTP draft on gfx1201.
+-    #define LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT 4096
++    // arena projection and added to the movable-boundary slab's creation reserve (MiB).
++    //
++    // wip/slab-transient-absorption (2026-10-17): LOWERED 4096 -> 3584.  The old value was the
++    // pre-narrow-2 measurement.  Since the MTP draft's COMPUTE buffer is pinned into the slab's narrow-2
++    // region, the draft's post-slab cost is measured at ~3447 MiB (weights 2647 + KV 288 + narrow-2 512),
++    // so 4096 left ~650 MiB of the reserve permanently unmapped and outside the arena.  3584 keeps a
++    // ~137 MiB margin; a larger draft (or a DFlash one) spills into the slab headroom, which is the
++    // budget that exists for exactly that.  Measured on the field GSQ config: +512 MiB of arena at the
++    // same headroom.
++    #define LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT 3584
+     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
+ 
+     LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);

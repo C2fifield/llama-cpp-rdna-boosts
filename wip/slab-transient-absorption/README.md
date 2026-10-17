@@ -514,3 +514,38 @@ remaining floor is not the headroom any more; it is the ~270 MiB pool remainder 
 `~/llama.cpp` (the tree that produced §8's numbers).  It is **exploration only**: it is cut against the
 r80 tree, it is not part of `patches/`, and `apply-all.sh` does not read it.  Re-cut it against a fresh
 `release.json.base` checkout before evaluating it as a promotion candidate, and re-run the §6 gates.
+
+---
+
+## 9. 2026-10-17 (later) — step 2 (partial) + step 4: aux and the load-time probe
+
+Same box/config, 15 748-token prefill, `GGML_CUDA_SLAB_STATS=1`.
+
+1. **Step 4 — `LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT` 4096 → 3584** (`include/llama.h`).  The old value
+   predates narrow-2; the draft's measured post-slab cost is **~3447 MiB** (weights 2647 + KV 288 +
+   narrow-2 compute 512), so ~650 MiB of the reserve was permanently unmapped and outside the arena.
+   3584 keeps a ~137 MiB margin; a larger draft spills into the headroom, which is the budget for it.
+2. **Step 2a — the H2D 512 MiB bandwidth calibration probe now comes from the slab arena**
+   (`ggml-cuda-moe-cache-hooks.cu`).  It runs once at load, after the slab exists and before the cache
+   sizes itself, and is freed immediately; it was the largest single outside spike (and a hard blocker
+   for a low headroom).  Falls back to `cudaMalloc` when the slab is inactive.
+3. **Negative result: `GGML_CUDA_POOL_CACHE_MB` is not a lever for the pool high-water.**  Capping it at
+   64 MiB on the 15.7k prefill made the high-water *worse* (327.0 vs 271.4 MiB): the pool flushes and
+   re-allocates, and the figure is dominated by **live** prefill temporaries, not cached freed blocks.
+   The remaining pool bytes must be routed per consumer (QSA3 is done; the rest is step 2b).
+
+Measured (cache arena is the slot budget; free is outside the slab):
+
+| headroom / aux | cache arena | residency | free at wide-arm | free at wide-drop |
+|---|---:|---:|---:|---:|
+| 4096 / 4096 (r80 default) | 15 666.6 MiB | 38.3 % | ~2 470 | 1 842 |
+| 2048 / 3584 | 18 224.4 MiB | 44.5 % | 1 958 | 1 430 |
+| **1024 / 3584** | **19 263.5 MiB** | **47.1 %** | **934** | **408** |
+
+The 1024 / 3584 row is the re-assessment of step 1: it survives the 15.7k prefill (1 103 t/s, no errors,
+406-408 MiB left at the drop) and is **+3.6 GiB of arena vs the r80 default**, i.e. ~+2.5-3.5 pts of hit
+rate once the decode hit rate is measured.  The prefill's own consumption is ~526 MiB (pool 271 + hipBLASLt
+~104 + MMB ~40 + q8_1/etc ~110), so the remaining floor is that 526 MiB, not the headroom.  **Do not set a
+default below 2048 until the `-ub 6144 -c 204800` wide matrix passes**; this box has no IQ4_XS model to
+run it.  Remaining step 2b: route the MMB activation cache (~40) and the live prefill pool blocks (~270)
+into the wide band, which would take the prefill demand to ~150-200 MiB and make 512 a candidate.
