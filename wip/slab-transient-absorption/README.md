@@ -1154,3 +1154,69 @@ is now the only thing standing between this work and a lowered default.
 
 **Recovery:** fork WIP `aec734be88c1187305371c67a3c5ae4908c90340`, patch **1 856 lines, sha256
 `ecfcb97c4503a2bcad3445fe8719b1b2aa941173e291f15eba4eb3299540a8e0`** (`git diff 00f4b1ef8..aec734be8`).
+
+---
+
+## 10.12 2026-10-17 — step 3: the targets are set (`headroom` 4096 -> 1024) — campaign complete
+
+With the derived draft reserve (§10.10) and `--fit` reserving the draft (§10.11), the headroom is the **only**
+knob left, and it *is* the outside cushion: `reserve = D + headroom`, `arena = free - reserve` (while the
+draft consumes the reserve), and `--fit` sizes `n_ctx` around `D + max(base, headroom)`.
+
+### The measured matrix (derived aux, `GGML_CUDA_SLAB_STATS=1`; "excess" = free outside the slab at the worst arm/drop of the run)
+
+| headroom | field GSQ seesaw (`-ub 4096`, 4 req) | wide IQ4_NL (`-ub 6144`) | 2-GPU `-sm tensor` | 2-GPU `-sm layer` |
+|---:|---|---|---|---|
+| 512 | floor **214.5** MiB | drop **471** MiB | — | — |
+| **1024 (shipped)** | floor **718.5** MiB | drop **983** MiB | **1 552.5** MiB/dev | **657.5** MiB/dev |
+| 2048 | — | — | 2 576.5 MiB/dev | 1 681.5 MiB/dev |
+
+* **1024 is the default.**  Every measured config keeps **>= ~657 MiB** of excess (the target was ~300) and
+  the field reserve drops **7 680 -> 4 806 MiB**, i.e. **+3.4 GiB of arena** (SLAB_STATS `arena` at the
+  wide-arm: 15 666.6 -> **19 136** MiB; the r80 default was 4096 headroom + 3584 aux).
+* **512 was measured and rejected:** the field seesaw bottoms out at 214.5 MiB, under the 300 MiB target.
+  1024 keeps ~2x the worst measured `T` (§10.9: 502 MiB over a 4-request session, 210-330 single-prefill),
+  which is the margin that matters because a thin headroom can fail *silently* (the fit-slab-accounting
+  §2.2 `!!!!!!!!` case) rather than loudly.
+
+### Verified at the new default, with **no env set**
+
+| run | excess | arena | prefill / decode | greedy |
+|---|---:|---:|---|---|
+| field GSQ seesaw (distinct prompts, 4 arm/drop pairs) | **718.5** MiB | 19 136 MiB | 1 238 t/s | 4/4 shas identical |
+| wide IQ4_NL `-ub 6144 -c 204800` (6 657-token prefill) | **983** MiB | 12 032 MiB | 619 t/s | `746954a1038b` |
+| 2-GPU `-sm tensor` | 1 552.5 MiB/dev | 17 088 MiB | — | `394193591d4d` |
+| 2-GPU `-sm layer` | 657.5 MiB/dev | 17 088 MiB | — | see the finding below |
+| 35B-A3B coherence (no draft) | — | — | gen 91.8 t/s | **identical** |
+| `--fit on -c 0`, wide formula | fit reserves `D`, outside 1 007 MiB | 11 072 MiB | 618 t/s | `746954a1038b` |
+
+**Two notes on what did *not* need doing:**
+
+* **A fully resident model (no `-ncmoe`) has no slab and no arena at all** — `moe_host_expert_bytes` is
+  empty, so the preflight never runs (`-ncmoe 0` on 2 GPUs: not one `SLAB_*` line).  There is nothing to size
+  in that mode.
+* **The 6144 `-sm layer` floor is raise-only and unset-env only** (`eff = (!env_set && min > mib) ? min : mib`),
+  so lowering the default cannot weaken it.  It lives in the *host-expert* path (`alloc_all_locked`), so it
+  applies to a partially host-resident multi-device `-sm layer` run, not to the fully resident one.
+
+### Finding (new, pre-existing, worth knowing)
+
+**The MoE expert-cache hit/miss changes the numerics.**  The 2-GPU `-sm layer` greedy text changed when the
+*arena size* changed (a lower headroom -> a bigger arena -> more cache hits), and it returns to the reference
+sha `394193591d4d` when `MOE_EXPERT_CACHE_MIB` is pinned to the arena the reference run had.  So "identical
+greedy sha across reserve values" is only a valid gate when the **arena is held constant** — a cached expert
+and a streamed expert do not round identically.  This predates the campaign (any VRAM difference already moved
+the arena), but it is the first time it was isolated, and it means the reserve matrix's sha checks are
+*arena-controlled*, not reserve-controlled.
+
+### State of the campaign
+
+All four steps are landed in the fork WIP tree (`9c46d14df`, patch `70dd2283…`):
+step 0 (ring slab-only) + wide-aux region + FA/QSA3/GDN/probe/pool redirects (§8-§10.6), the per-graph cache
+yield (§10.8), the derived draft reserve (§10.10), `--fit` reserving the draft (§10.11), and now the headroom
+default (§10.12).  **Nothing is in `patches/` and nothing is promoted** — promotion is a separate step: re-cut
+the WIP against `release.json.base`, run the release gates (`gate-prefill-logits.sh`, MTP 4-axis, the
+`llama-batched-bench -npl 1,4,8` decode gate), then cut the block with the maintainer's go-ahead.
+
+**Recovery:** fork WIP `9c46d14dfc4b08be2cd0feb8582ed3df705bc264`, patch **1 916 lines, sha256
+`70dd2283d27077caac14bb7d05a673bb2ab82abd4f5865d652fcfaa76ff550cf`**.
