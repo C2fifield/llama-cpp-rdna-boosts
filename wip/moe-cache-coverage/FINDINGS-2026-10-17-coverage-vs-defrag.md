@@ -304,9 +304,11 @@ mean spending multiple sessions on graph-invalidation hazards for ≤ 1 % of are
 
 ---
 
-## 8. Retarget proposal
+## 8. Retarget proposal (APPROVED and done 2026-10-17)
 
-Rename `wip/moe-arena-defrag/` → **`wip/moe-cache-coverage/`** (alternatives: `moe-expert-cache-policy`,
+Rename `wip/moe-arena-defrag/` → **`wip/moe-cache-coverage/`** — **done**, with `TODO.md` #61 and
+`wip/CAMPAIGNS.md` rewritten in the same change; P0 shipped in r80.  (Alternatives considered:
+`moe-expert-cache-policy`,
 `moe-cache-hitrate`; "coverage" is the quantity `H(f)` that all of this is about, and it is what the
 maintainer's "hit rate" question reduces to).  New phases, in value order:
 
@@ -325,10 +327,10 @@ kept as history below, **not planned**.
 
 ## 9. Open questions for the maintainer
 
-1. **P0 is a delivery change** (block 09, default-on feature currently misbehaving).  Fix + release now, or
-   fix as a `beta/` candidate?  Nothing else in this campaign can be measured honestly until it is fixed.
-2. **Rename + `TODO.md` #61 rewrite** — approve `wip/moe-cache-coverage/` (or pick a name)?  This record
-   moves with the directory; `wip/CAMPAIGNS.md` and `TODO.md` #61 get updated in the same change.
+1. ~~P0 is a delivery change~~ **DONE 2026-10-17: shipped in `v12-097cf33d9-r80`** (block 09; delta merge +
+   degenerate-map guard), released and pushed.
+2. ~~Rename + `TODO.md` #61 rewrite~~ **DONE 2026-10-17**: `wip/moe-cache-coverage/`, with `TODO.md` #61
+   and `wip/CAMPAIGNS.md` rewritten in the same change.
 3. ~~The exact 1-GPU GSQ command~~ **DONE 2026-10-17** — the maintainer's field command was used to
    re-record the Flash-Next map on the r80 build (§3.1).  Field check on that run: arena 15 666.6 MiB,
    38.3 % residency, hit 0.9056 (724 928 / 800 520), identical to r74's 0.9057.
