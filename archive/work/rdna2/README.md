@@ -5,6 +5,9 @@
 directory is the archived record, and `rdna2.patch` is kept for provenance only (cut against the r69
 tree before the fold).
 
+**Follow-on (r76):** `@slavap`'s tuned RDNA2 add-on (PR #165) was folded into blocks 05 and 07, and
+the original r68-based add-on files are archived under [`pr165/`](pr165/README.md).
+
 ## What
 
 Two compile guards that let the delivery build for `gfx1030` (RDNA2):
