@@ -1,5 +1,40 @@
 # WORKLOG - dated delivery records
 
+## 261017.004 -- PR #169 (`spec-batch-budget`) re-assessed on r79: still rejected, but the r77 rejection's test scope was too narrow and it exposed a verify-width cliff
+
+**No release change** (`release.json` untouched, no block amended; nothing shipped).  PR #169 was
+re-opened because five releases landed after the rejection; the question was whether its verdict depended
+on commits that were missing at r77.  **It did not:** r77's two kernels were already in the rejection
+build, r78's rope/FWHT fusion is inert on `rope_multi` Qwen, r78's ADD fold is `ne[1] == 1` only, r79's
+MoE Q4_K VDR-4 is RDNA3_0-only on gfx1201 (RDNA4 is a build-time opt-in, off) and the r79 KV pad is
+prefill-only.  Re-measured on r79 with one binary (r79 + #169), the r77 numbers reproduce: MoE 35B-A3B
+3-GPU **-4/-15 %**, 2-GPU neutral, dense 27B 3-GPU **-18/-22 %** at 4 concurrent.
+
+**What the r77 review got wrong was coverage, not commits:** every arm was all-in-VRAM.  On the
+contributor's shape (host-resident experts) the cap is a large win: Flash-Next GSQ-IQ3_XXS, 2 GPUs,
+`-sm tensor --n-cpu-moe 47`, shared Q8_0 MTP head, 4 concurrent 300-token requests: unset **76.5 / 87.0 /
+84.5 t/s** vs `LLAMA_SPEC_BATCH_BUDGET=8` **145.7 / 145.6 / 155.2 t/s** (+80-90 %); `=12` neutral; 2 slots
+still -8.4 %.  Plain decode on that config is 167.5 t/s, so the shipped default runs multi-slot MTP
+*slower than no speculation* there.
+
+**Mechanism: a verify-width cliff at `MMVQ_MAX_BATCH_SIZE == 8`.**  Per-step cost on that shape: width 4
+6.0, width 8 6.4-6.9, width 12 11.5-12.2, width 16 11.5-13.0 ms per accepted token.  Flat across 8 -> 16
+all-in-VRAM on 3 GPUs (5.29 vs 5.17) and on 35B-A3B with host experts (2.85 vs 2.71), so it is specific to
+**qwen4exp + host-resident experts + 2-GPU tensor**; disabling the fused shared-expert epilogue does not
+remove it.  **This is a delivery defect in its own right, in the default config with no env var**; the
+PR's cap is a workaround for it.  Correctness: 300 tokens/request by construction (no truncation), text
+coherent, cap 1 vs cap 3 **byte-identical at 2 slots**, 4-slot arm-to-arm drift is the known
+concurrent-batching nondeterminism, GPU-fault check clean.
+
+**Contributor reply** (PR #169 comment 6234999977): retracts the +8.7 % as unpaired, reports a paired
+8-round +3.47 % [+2.03, +4.92] on Flash-Next GSQ **IQ3_S** with the same `-ncmoe 47` 2-GPU shape, agrees
+it is not shippable as-is and offers the controller work.  Same shape, different magnitude from ours.
+
+**Record.** `archive/work/spec-batch-budget/RESOLUTION.md` (the re-assessment section, the width sweep,
+the commits table above) plus the harness used, `multislot-mtp-probe.py`.  Not promoted to a `wip/`
+campaign on the maintainer's call: the PR author is taking the refinement, and the >8-row verify cliff is
+recorded here as the finding to pick up.  No `TODO.md` item opened.
+
 ## 261017.003 -- docs: the canonical local build is `~/bin/build-llama-rocm` (ROCm 10.1.0); `EXTRA_CMAKE_FLAGS="-DCMAKE_HIP_FLAGS="` is now actively wrong
 
 **No release change** (`release.json` untouched, no block amended).  Documentation-only fix, but it was
