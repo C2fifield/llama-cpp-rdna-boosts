@@ -1,6 +1,8 @@
 # SCOPE — the MMB/BF16 cache yield, and what "aux = 1536" actually means
 
-Date: 2026-10-17 (after step 2b, §10.6).  Status: **scoping note, nothing implemented.**
+Date: 2026-10-17 (after step 2b, §10.6).  Status: **items A+B IMPLEMENTED (step 2b-2, §10.8); the reserve
+matrix (§6) and the default decision (D1/D2) are still open.**  See §10 below for what changed when it was
+built.
 Fork WIP tree at `3f4497d14` (§10.6), delivery `v12-097cf33d9-r80`, 1× R9700 gfx1201 + 2× (gfx1201 pair)
 on the same box.
 
@@ -297,3 +299,27 @@ against `release.json.base`, run the release gates, promote.
 * Do not enable tail effects: `GGML_CUDA_MMB=0`, `ROCBLAS_USE_HIPBLASLT=0`, `GGML_CUDA_QSA3=0` are
   **diagnostic** arms (they change numerics and the greedy sha); a shipped default must be measured with
   the full feature set.
+
+
+---
+
+## 10. What changed when it was built (step 2b-2, README §10.8)
+
+Items A+B are implemented as designed (one RAII `per_graph_cache_yield` in `ggml_backend_cuda_graph_compute`,
+the three pins removed, `ggml_cuda_mmb_yield_caches(ctx)` scoped to the calling context).  Two things the
+scope underestimated:
+
+* **The band allocator, not the caches, was the real work.**  Dropping blocks in it is only free when the
+  frees are strictly LIFO.  The MMB/BF16 blocks live for a whole graph and are released as a *group*, which
+  makes out-of-order frees the norm — measured **7 392 MiB of `wide_aux` and 149 holes in ONE 6.6k prefill**,
+  arena 20 096 -> 4 992 MiB, 417 GiB of allocations refused and re-fallen outside the slab.  A
+  "highest-address-first batch" did **not** fix it (the hole sits below a still-live FA staging block); the
+  fix is the live block set in `ggml-cuda-slab.cu` (§10.8 item 3).  Budget for touching the slab whenever a
+  band user's lifetime stops being per-op.
+* **The target works, the margin does not.**  `aux 1536 / headroom 2560` (sum 4096) now completes the seesaw
+  with identical greedy shas, but the **minimum outside is 52.5 MiB** (§10.8).  Treat §6.1's matrix as the
+  gate for any default, with repeats, and expect to land above sum 4096 (e.g. `aux 1536 / headroom 3072`,
+  sum 4608 — the same reserve as today's tested `1024 / 3584`) unless §6 shows the ~600 MiB steady-state
+  demand can be cut further.
+* Side effect worth knowing: **the wide gate now passes at headroom 1024** (it OOMed at 2b), with 279 MiB at
+  the drop and the same greedy sha — so the 1536 floor from §10.6 was the caches, not the ubatch width.

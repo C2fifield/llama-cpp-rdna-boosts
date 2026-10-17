@@ -27,7 +27,7 @@ index fbbe48432..a5e3a3a44 100644
              bf16_tmp[i].alloc(ne);
              ggml_cuda_set_device(p->devices[i]);
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 39c9d71cf..024e968c4 100644
+index 39c9d71cf..14ec77bf6 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -1347,6 +1347,13 @@ struct ggml_cuda_pool {
@@ -250,17 +250,16 @@ index 39c9d71cf..024e968c4 100644
              // fit-slab-accounting revival (G4, issue #117): bound the ring by the free VRAM it would still
              // leave.  See `optional_alloc_within_free_cap` above.
              if (!optional_alloc_within_free_cap(h2d_stage_total - old_size + new_size)) {
-@@ -2395,6 +2525,9 @@ struct ggml_backend_cuda_context {
+@@ -2395,6 +2525,8 @@ struct ggml_backend_cuda_context {
      nv_bfloat16 * bf16_src1_cache_put(const ggml_tensor * root, int64_t n) {
          auto & c = bf16_src1_cache;
          c.buf.reset();
-+        // wip/slab-transient-absorption (step 2b): RETAINED across graphs (it is only dropped at the next
-+        // graph start), so it must never come from the prefill-only wide band -- pin the alloc off it.
-+        ggml_cuda_pool_wide_pin wide_pin(pool());
++        // wip/slab-transient-absorption (step 2b-2): not pinned any more -- `graph_compute` clears this cache
++        // on scope exit, so the block never outlives the graph and the slab's wide band may serve it.
          c.buf       = std::make_unique<ggml_cuda_pool_alloc<nv_bfloat16>>(pool(), n);
          c.src1      = root;
          c.data      = root->data;
-@@ -2620,3 +2753,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+@@ -2620,3 +2752,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
      kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
      CUDA_CHECK(cudaGetLastError());
  }
@@ -458,10 +457,18 @@ index a443887e4..d33123708 100644
      return bw[dev];
  }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-index f6eeec2c8..4e2a072c5 100644
+index f6eeec2c8..5ec5514a7 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -146,6 +146,14 @@ struct ggml_cuda_slab {
+@@ -7,6 +7,7 @@
+ #include "ggml-impl.h"
+ #include "moe-expert-cache.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cstdint>
+ #include <cstdio>
+@@ -146,6 +147,32 @@ struct ggml_cuda_slab {
      int                      narrow2_live  = 0; // live narrow-2 views (diagnostic/guard)
      size_t                   ring_region  = 0;  // ring bytes above the narrow floor (0 = no ring)
      bool                     ring_armed   = false; // the wide view (hence the ring region) is reserved
@@ -473,10 +480,28 @@ index f6eeec2c8..4e2a072c5 100644
 +    size_t                   wide_aux_off  = 0;
 +    size_t                   wide_aux_size = 0;
 +    size_t                   wide_aux_gen  = 0;
++    // wip/slab-transient-absorption (step 2b-2): a batch of wide-aux frees collected from the PER-GRAPH
++    // caches (MMB activation cache/slots, BF16 src1) and replayed highest-address first.  The region is a
++    // bump stack that only pops its top, so freeing a group of blocks in its owners' order leaves holes and
++    // the region then ratchets upward (measured: wide_aux grew to 13 GiB and the arena to 0 in one 80K
++    // prefill).  Address order makes the whole group pop cleanly.
++    // wip/slab-transient-absorption (step 2b-2): the LIVE blocks of the wide-aux region, `off -> size`
++    // (slab-relative, unit-rounded).  A bump stack that only pops its exact top cannot survive a group of
++    // blocks released in another order: every non-top free leaves a hole that is never reclaimed before the
++    // wide drop, so the region ratchets upward (measured with the per-graph caches in it: 7.4 GiB of holes in
++    // ONE 6.6k prefill, wide_aux 7392 MiB and 149 of 2135 frees unable to pop).  With the live set,
++    // `wide_aux_size` is the extent of the HIGHEST live block: holes below it are bounded and cost nothing,
++    // and a group of frees in any order still returns the region to the live high-water.
++    std::map<size_t, size_t> wide_live;
++    // wip/slab-transient-absorption (step 2b-2) DIAGNOSTIC: why the wide-aux region grows.
++    size_t                   wide_n_pop    = 0;   // frees that shrank the region
++    size_t                   wide_n_hole   = 0;   // frees of a block that was not live (stale/hole)
++    size_t                   wide_n_inval  = 0;   // `work_alloc` released the region (gen bump)
++    size_t                   wide_n_rebase = 0;   // the base was re-established after the stack emptied
      bool                     ring_requested = false; // the context classified the live ubatch as wide (prefill)
                                                  //  (`ring_set`, n_tokens >= 64).  `work_alloc` places
                                                  //  such a view above the ring even when its buffer is no
-@@ -734,6 +742,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
+@@ -734,6 +761,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
      s.ring_region  = 0;
      s.ring_armed   = false;
      s.ring_used    = 0;
@@ -486,7 +511,7 @@ index f6eeec2c8..4e2a072c5 100644
      s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
      s.arena_free.clear();
      s.arena_free[w] = s.mapped - w;
-@@ -960,8 +971,24 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -960,8 +990,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
                  device, (double) need/1048576.0, (int) narrow, (double) ret_off/1048576.0,
                  (double) s.narrow_floor/1048576.0, (double) s.ring_region/1048576.0, (double) s.boundary/1048576.0);
          }
@@ -498,7 +523,9 @@ index f6eeec2c8..4e2a072c5 100644
 +        if (s.wide_aux_off != 0 && ret_off + ggml_cuda_slab_up(need, s.chunk) > s.wide_aux_off) {
 +            s.wide_aux_off  = 0;
 +            s.wide_aux_size = 0;
++            s.wide_live.clear();
 +            s.wide_aux_gen++;
++            s.wide_n_inval++;
 +        }
          const size_t contrib = ret_off + ggml_cuda_slab_up(need, s.chunk);
          size_t floor = s.narrow_floor;
@@ -511,7 +538,7 @@ index f6eeec2c8..4e2a072c5 100644
          if (!s.work_needs.empty()) {
              const size_t mx = *s.work_needs.rbegin();
              if (mx > floor) {
-@@ -972,6 +999,13 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -972,6 +1020,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
              floor = contrib;
          }
          const size_t target = ggml_cuda_slab_up(floor, s.chunk);
@@ -520,12 +547,13 @@ index f6eeec2c8..4e2a072c5 100644
 +            // bytes go back to the arena: drop the base so the next wide aux allocation re-bases.
 +            s.wide_aux_off  = 0;
 +            s.wide_aux_size = 0;
++            s.wide_live.clear();
 +            s.wide_aux_gen++;
 +        }
          base    = s.base;
          // wip/moe-verify-fusions: never grow the work pool into a pinned narrow-2 region (the draft's
          // compute VA).  A request that does not fit falls back to cudaMalloc rather than corrupt it.
-@@ -1141,6 +1175,60 @@ size_t ggml_cuda_slab_ring_region(int device) {
+@@ -1141,6 +1197,61 @@ size_t ggml_cuda_slab_ring_region(int device) {
      return s.ring_region;
  }
  
@@ -564,7 +592,7 @@ index f6eeec2c8..4e2a072c5 100644
 +    GGML_LOG_WARN("SLAB_STATS %s dev=%d slab=%d free=%.1f MiB total=%.1f MiB mapped=%.1f MiB "
 +                  "work=%.1f MiB (narrow=%.1f ring=%.1f wide_aux=%.1f narrow2=%.1f) arena=%.1f MiB "
 +                  "pool=%.1f MiB pool_wide=%.1f MiB/%zu refused=%.1f MiB headroom_cfg=%.1f MiB "
-+                  "aux_cfg=%.1f MiB\n",
++                  "aux_cfg=%.1f MiB wide[n_pop=%zu hole=%zu inval=%zu rebase=%zu]\n",
 +                  tag, device, (int) inited,
 +                  (double) free_b / 1048576.0, (double) total_b / 1048576.0, (double) mapped / 1048576.0,
 +                  (double) boundary / 1048576.0, (double) narrow_floor / 1048576.0,
@@ -575,7 +603,8 @@ index f6eeec2c8..4e2a072c5 100644
 +                  ggml_cuda_pool_wide_blocks(device),
 +                  (double) ggml_cuda_pool_wide_refused(device) / 1048576.0,
 +                  (double) ggml_cuda_slab_headroom_bytes() / 1048576.0,
-+                  (double) g_slab_aux_reserve_bytes / 1048576.0);
++                  (double) g_slab_aux_reserve_bytes / 1048576.0,
++                  s.wide_n_pop, s.wide_n_hole, s.wide_n_inval, s.wide_n_rebase);
 +}
 +
 +void ggml_cuda_slab_log_stats(int device, const char * tag) {
@@ -586,7 +615,7 @@ index f6eeec2c8..4e2a072c5 100644
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      if (size == 0) {
          return nullptr;
-@@ -1159,6 +1247,162 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1159,6 +1270,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      return p;
  }
  
@@ -625,6 +654,7 @@ index f6eeec2c8..4e2a072c5 100644
 +        const size_t want = ggml_cuda_slab_up(size, s.unit);
 +        if (s.wide_aux_size == 0 && s.wide_aux_off == 0) {
 +            s.wide_aux_off = s.boundary;   // just above the wide compute view
++            s.wide_n_rebase++;
 +        }
 +        const size_t aux_end = s.wide_aux_off + s.wide_aux_size;
 +        const size_t target  = ggml_cuda_slab_up(aux_end + want, s.chunk);
@@ -643,6 +673,7 @@ index f6eeec2c8..4e2a072c5 100644
 +        if (target > aux_limit) {
 +            if (s.wide_aux_size == 0) {
 +                s.wide_aux_off = 0;
++                s.wide_live.clear();
 +            }
 +            return nullptr;
 +        }
@@ -653,6 +684,7 @@ index f6eeec2c8..4e2a072c5 100644
 +            hi   = target;
 +            move = true;
 +        } else {
++            s.wide_live[off] = want;
 +            s.wide_aux_size += want;
 +            if (gen_out != nullptr) {
 +                *gen_out = s.wide_aux_gen;
@@ -694,7 +726,9 @@ index f6eeec2c8..4e2a072c5 100644
 +                }
 +            }
 +        }
-+        s.wide_aux_size += ggml_cuda_slab_up(size, s.unit);
++        const size_t want2 = ggml_cuda_slab_up(size, s.unit);
++        s.wide_live[off] = want2;
++        s.wide_aux_size += want2;
 +        if (gen_out != nullptr) {
 +            *gen_out = s.wide_aux_gen;
 +        }
@@ -722,34 +756,51 @@ index f6eeec2c8..4e2a072c5 100644
 +// op launch).  Only the block at the top of the stack is popped; anything else leaves a hole that the wide
 +// drop reclaims, so a non-LIFO caller is safe, just less efficient.  When the stack empties, the region is
 +// re-based on the next allocation and the generation is bumped (no live pointer can exist at that point).
-+void ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size) {
-+    if (ptr == nullptr || size == 0) {
++// Release one wide-aux block.  `g_slab_mutex` must be held; no ROCm call.
++//
++// The block's OWN size comes from the live map, not from the caller, so a free can never corrupt the stack
++// and the region shrinks to the extent of the highest block that is still live.  (A bump stack that only
++// pops its exact top turns every out-of-order free into a permanent hole; see `wide_live`.)
++static void ggml_cuda_slab_wide_aux_free_locked(ggml_cuda_slab & s, void * ptr, size_t size) {
++    GGML_UNUSED(size);
++    if (ptr == nullptr) {
 +        return;
 +    }
-+    std::lock_guard<std::mutex> lock(g_slab_mutex);
-+    ggml_cuda_slab & s = g_slabs[device];
 +    if (!s.inited || s.wide_aux_size == 0) {
 +        return;
 +    }
-+    const size_t want = ggml_cuda_slab_up(size, s.unit);
-+    if (want > s.wide_aux_size) {
-+        return;
++    const size_t rel = (size_t) ((uintptr_t) ptr - (uintptr_t) s.base);
++    const auto it = s.wide_live.find(rel);
++    if (it == s.wide_live.end()) {
++        s.wide_n_hole++;
++        return;   // not a live block of this region (a stale pointer, or already released at the drop)
 +    }
-+    const size_t top = s.wide_aux_off + s.wide_aux_size - want;
-+    if ((uintptr_t) ptr != (uintptr_t) ((char *) s.base + top)) {
-+        return;   // not the top of the stack: leave the hole (reclaimed at the wide drop)
++    s.wide_live.erase(it);
++    const size_t top = s.wide_live.empty()
++                     ? 0
++                     : s.wide_live.rbegin()->first + s.wide_live.rbegin()->second - s.wide_aux_off;
++    if (top < s.wide_aux_size) {
++        s.wide_aux_size = top;
++        s.wide_n_pop++;
 +    }
-+    s.wide_aux_size -= want;
-+    // The base is RETAINED when the stack empties: the next layer's blocks are the same sizes and land in
++    // The base is RETAINED when the block set empties: the next layer's blocks are the same sizes and land in
 +    // the same place, so the boundary does not walk a fresh chunk per layer (measured: 8064 -> 11136 MiB
 +    // over one 15.7k prefill before this, i.e. ~3 GiB of the arena churned per prefill).  `work_alloc`
 +    // invalidates the base if a wider view would overlap it or if the boundary shrinks below it.
 +}
 +
++void ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size) {
++    if (ptr == nullptr || size == 0) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    ggml_cuda_slab_wide_aux_free_locked(g_slabs[device], ptr, size);
++}
++
  // The context classifies each ubatch (prefill: `n_tokens >= 64`; decode/verify: below) and tells the slab
  // here.  The ring itself is still carved with a wip view -- arming is just `boundary >= narrow_floor +
  // ring_region` -- but the classification must NOT be inferred from the work request size: for the
-@@ -1167,13 +1411,51 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1167,13 +1456,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
  // `boundary == narrow_floor` and `ring_armed == false`.  `work_alloc` reads this flag and places the
  // prefill view above the ring.  A no-op for the generic arm/disarm plumbing stays valid for a future
  // non-slab allocator.
@@ -775,6 +826,10 @@ index f6eeec2c8..4e2a072c5 100644
 +        // is logged BEFORE the auxiliary region is cleared so the wide_aux figure is the prefill's.
 +        // `ggml_cuda_slab_log_stats_locked` gates itself on GGML_CUDA_SLAB_STATS.
 +        ggml_cuda_slab_log_stats_locked(device, arm ? "wide-arm" : "wide-drop");
++    }
++    if (!arm) {
++        // The live set must not outlive the region it describes.
++        s.wide_live.clear();
 +    }
 +    if (!arm && s.wide_aux_size > 0) {
 +        // The next `work_alloc` shrinks the boundary back to the narrow floor, returning the region to
@@ -802,10 +857,10 @@ index f6eeec2c8..4e2a072c5 100644
  
  // --- Phase-2 (item 6b): state accessors for the device wrappers kept in ggml-cuda.cu ---
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-index 312476e89..a9d9e78df 100644
+index 312476e89..c392f0c43 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-@@ -80,6 +80,33 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
+@@ -80,6 +80,34 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
  // The ring hole's reserved size (0 when the slab carved none): `llama_context` uses it to skip the
  // narrow -> wide compute-buffer drop when there is no ring to arm.  wip/slab-ring-region (issue #164).
  size_t ggml_cuda_slab_ring_region(int device);
@@ -820,6 +875,7 @@ index 312476e89..a9d9e78df 100644
 +// `ggml_cuda_slab_wide_aux_gen` before reusing a cached pointer.
 +void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out);
 +void   ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size);
++
 +bool   ggml_cuda_slab_wide_available(int device);
 +size_t ggml_cuda_slab_wide_aux_gen(int device);
 +// One-line steady-state layout + transient accounting, gated on GGML_CUDA_SLAB_STATS (diagnostic only).
@@ -840,7 +896,7 @@ index 312476e89..a9d9e78df 100644
  // prefill -> decode transition (returned to the arena, so a decode-only stretch gets the VRAM back).
  // Arming evicts the arena tables the hole had picked up; called with NO lock held.
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index ad7f556da..072952927 100644
+index ad7f556da..ae9f452d3 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -553,8 +553,60 @@ static bool ggml_cuda_pool_floor_refuses(size_t size) {
@@ -1175,31 +1231,103 @@ index ad7f556da..072952927 100644
          tmp[i].pool = &cuda_ctx->pool();
          tmp[i].alloc(ne);
  
+@@ -4514,6 +4744,20 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+     ggml_cuda_mmb_set_active_ctx(cuda_ctx);
+     ggml_cuda_mmb_begin_graph();
+ 
++    // wip/slab-transient-absorption (step 2b-2): the two per-graph activation caches must not OUTLIVE the
++    // graph.  They are cleared at the start of the next compute anyway, so releasing them at scope exit (on
++    // every return path) loses no hit the next graph would have made -- and it means no MMB/BF16 pool block
++    // is live ACROSS a graph boundary, which is what makes them safe to serve from the slab's wide band: the
++    // band is released at the prefill -> decode drop, i.e. between graphs, and a block still live there would
++    // be a silent use-after-free (the `POOL_WIDE_LEAK` tripwire in `ggml_cuda_slab_ring_set`).
++    struct per_graph_cache_yield {
++        ggml_backend_cuda_context * c;
++        ~per_graph_cache_yield() {
++            ggml_cuda_mmb_yield_caches(c);
++            c->bf16_src1_cache_clear();
++        }
++    } per_graph_cache_yield_inst{cuda_ctx};
++
+     bool use_cuda_graph             = false;
+     bool cuda_graph_update_required = false;
+     ggml_cuda_graph_key graph_key = {};
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
-index 0fe5eb163..c9237f2be 100644
+index 0fe5eb163..d788cbb71 100644
 --- a/ggml/src/ggml-cuda/mmb.cu
 +++ b/ggml/src/ggml-cuda/mmb.cu
-@@ -1607,6 +1607,10 @@ static const ggml_tensor * mmb_root(const ggml_tensor * t) { return t->view_src
+@@ -1607,6 +1607,9 @@ static const ggml_tensor * mmb_root(const ggml_tensor * t) { return t->view_src
  static uint16_t * mmb_cache_insert(ggml_backend_cuda_context & ctx, const ggml_tensor * t, const size_t n) {
      std::vector<mmb_cache_entry> & cache = mmb_state().cache;
      if (cache.size() >= mmb_cache_max()) { delete cache.front().buf; cache.erase(cache.begin()); }
-+    // wip/slab-transient-absorption (step 2b): RETAINED across graphs -- this buffer lives in the cache until
-+    // it is evicted (up to `mmb_cache_max()` entries) or the context is destroyed, i.e. well past the
-+    // prefill -> decode transition that releases the slab's wide band.  Pin it off the wide redirect.
-+    ggml_cuda_pool_wide_pin wide_pin(ctx.pool());
++    // wip/slab-transient-absorption (step 2b-2): NOT pinned any more -- this buffer is released at the end
++    // of the compute (`ggml_cuda_mmb_yield_caches`), so it never outlives the graph and the slab's wide band
++    // may serve it (or, when the band is not armed, the pool, exactly as before).
      auto * buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n);
      cache.push_back({mmb_root(t), t->data, n, buf});
      return buf->get();
-@@ -1940,6 +1944,9 @@ uint16_t * ggml_cuda_mmb_slot_reserve(ggml_backend_cuda_context & ctx, int slot,
+@@ -1939,6 +1942,9 @@ const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t) {
+ uint16_t * ggml_cuda_mmb_slot_reserve(ggml_backend_cuda_context & ctx, int slot, const ggml_tensor * t, size_t n) {
      mmb_cache_entry & e = mmb_state().slots[slot];
      size_t & cap = mmb_state().slot_cap[slot];
++    // wip/slab-transient-absorption (step 2b-2): the slot buffer used to be kept for the life of the
++    // context (only its key was reset per graph).  It is now released by `ggml_cuda_mmb_yield_caches` at the
++    // end of every compute, i.e. it is a per-graph buffer like the cache -- so it may come from the wide band.
      if (e.buf && cap < n) { delete e.buf; e.buf = nullptr; }
-+    // wip/slab-transient-absorption (step 2b): the persistent activation slots are RETAINED too (they are
-+    // reused by every graph of the matching shape) -- never serve them from the prefill-only wide band.
-+    ggml_cuda_pool_wide_pin wide_pin(ctx.pool());
      if (!e.buf) { e.buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n); cap = n; }
      e.root = mmb_root(t); e.data = t->data; e.n = n;
-     return e.buf->get();
+@@ -1987,6 +1993,34 @@ void ggml_cuda_mmb_begin_graph() {
+     s.cache.clear();
+     for (auto & e : s.slots) { e.root = nullptr; e.data = nullptr; e.n = 0; }
+ }
++// wip/slab-transient-absorption (step 2b-2): end-of-compute yield for ONE context.  Frees the per-graph
++// activation cache and the producer-slot buffers, keeping every key/mark map intact (the marks describe the
++// graph being optimised and the drop is between graphs).  Scoped to `ctx` on purpose: under `-sm tensor` /
++// `-sm layer` several backend contexts compute at once, and another context's live slots must not be freed
++// from this one's thread -- so this does NOT go through `g_mmb_active_ctx`.
++void ggml_cuda_mmb_yield_caches(const ggml_backend_cuda_context * ctx) {
++    if (ctx == nullptr) {
++        return;
++    }
++    const auto it = g_mmb_state.find(ctx);
++    if (it == g_mmb_state.end()) {
++        return;
++    }
++    mmb_ctx_state & s = it->second;
++    for (auto & e : s.cache) {
++        delete e.buf;
++    }
++    s.cache.clear();
++    for (int i = 0; i < MMB_SLOT_COUNT; ++i) {
++        delete s.slots[i].buf;
++        s.slots[i].buf = nullptr;
++        s.slots[i].root = nullptr;
++        s.slots[i].data = nullptr;
++        s.slots[i].n = 0;
++        s.slot_cap[i] = 0;
++    }
++}
++
+ void ggml_cuda_mmb_release_all() {
+     ggml_cuda_mmb_begin_graph();
+     // free every context's cache/slots, including any that is not the active one
+diff --git a/ggml/src/ggml-cuda/mmb.cuh b/ggml/src/ggml-cuda/mmb.cuh
+index d4dd67707..c02087781 100644
+--- a/ggml/src/ggml-cuda/mmb.cuh
++++ b/ggml/src/ggml-cuda/mmb.cuh
+@@ -9,6 +9,12 @@ bool ggml_cuda_mmb_reads_bf16_act(const ggml_tensor * src0, const ggml_tensor *
+ void ggml_cuda_mul_mat_mmb   (ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
+ void ggml_cuda_mul_mat_id_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst);
+ void ggml_cuda_mmb_begin_graph();
++// wip/slab-transient-absorption (step 2b-2): release THIS context's activation cache and producer-slot
++// buffers at the END of a compute.  They are per-graph anyway (`ggml_cuda_mmb_begin_graph` frees the cache
++// at the start of the next one); freeing them at the end instead means no MMB pool block is ever live
++// ACROSS a graph boundary, which is what lets the slab's wide band serve them (the band is released at the
++// prefill -> decode drop, i.e. between graphs).  The shadow weights (raw cudaMalloc) are NOT touched.
++void ggml_cuda_mmb_yield_caches(const ggml_backend_cuda_context * ctx);
+ // producers that can emit a BF16 copy of an F32 output register it here; returns the BF16 buffer to fill (n elements)
+ uint16_t * ggml_cuda_mmb_cache_reserve(ggml_backend_cuda_context & ctx, const ggml_tensor * t, size_t n);
+ // BF16 copy of tensor t if one is cached for the current graph (consumers may read it instead of the F32 data)
 diff --git a/include/llama.h b/include/llama.h
 index 2519ee713..0c99fa0d5 100644
 --- a/include/llama.h

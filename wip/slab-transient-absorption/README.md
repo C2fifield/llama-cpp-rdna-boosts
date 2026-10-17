@@ -872,3 +872,90 @@ Same field GSQ seesaw (distinct prefixes, one server, 251/80 107/249/80 105 toke
    The unattributed ~300-500 MiB is the next decomposition if the yield alone is not enough (decision D2).
 
 No code landed for this step: it is a scoping note plus the measurements that shape it.
+
+---
+
+## 10.8 2026-10-17 — step 2b-2: the per-graph cache yield landed (MMB + BF16 src1)
+
+The yield scoped in [`SCOPE-2026-10-17-mmb-yield-aux1536.md`](SCOPE-2026-10-17-mmb-yield-aux1536.md) §3-§4,
+**implemented** (fork WIP commit `f639cb646`, still not in `patches/`).
+
+**What landed:**
+
+1. **`per_graph_cache_yield`** — an RAII object in `ggml_backend_cuda_graph_compute`: on scope exit (every
+   return path) it calls the new `ggml_cuda_mmb_yield_caches(ctx)` and `bf16_src1_cache_clear()`.  Both
+   caches were *already* cleared at the start of the next compute, so this loses no hit — it just moves the
+   free to before the graph boundary, so **nothing retained is live across a graph**, which is what makes the
+   wide band safe for them.  The MMB yield is scoped to the calling context (it looks the context up in
+   `g_mmb_state` directly, not through `g_mmb_active_ctx`), so a concurrent backend context's live slots are
+   never freed from another thread.  The shadow weights are untouched.
+2. **The three `ggml_cuda_pool_wide_pin` guards are gone** (`mmb.cu` cache + slots, `common.cuh` BF16 src1):
+   the two caches are band-eligible again and are yielded before the prefill -> decode drop.
+3. **The wide-aux region tracks its LIVE blocks** (`ggml-cuda-slab.cu`).  This is the bug the first attempt
+   exposed and it is worth recording: a bump stack that only pops its *exact top* is fine for per-op scratch
+   (strictly LIFO), but the MMB/BF16 blocks live for a whole graph and are released *as a group* — so
+   out-of-order frees become the norm and every one of them leaves a permanent hole.  Measured on **one**
+   6 657-token prefill: **7 392 MiB of `wide_aux`, 149 of 2 135 frees unable to pop**, the region walked to
+   the mapped top (`work == mapped`, **arena 20 096 -> 4 992 MiB**, 417 GiB of `refused` re-falls outside the
+   slab).  A "free the group highest-address-first" batch did not help (the hole is *below* a still-live FA
+   staging block).  The fix is to keep `off -> size` for every live block: `wide_aux_size` is then the extent
+   of the **highest live block**, so holes below it are bounded and cost nothing, and any free order returns
+   the region to the live high-water.  A free also takes the block's size from the map, so a mismatched free
+   can no longer corrupt the stack.  **`SLAB_STATS` now reports `wide[n_pop= hole= inval= rebase=]`** — that
+   diagnostic is what found it, and `hole=0` is the acceptance signal.
+
+### Measured (same box; `GGML_CUDA_SLAB_STATS=1`; all greedy shas identical to the r80 baseline)
+
+**Field GSQ seesaw, 1024 / 3584** (4 arm/drop pairs, distinct prefixes):
+
+| | pre-2b (§10.2) | 2b (§10.6) | **2b-2** |
+|---|---:|---:|---:|
+| min outside (long-2 arm) | 204.5 | 286.5 | **522.5** |
+| long-1 drop / long-2 drop | 333 / 308 | 415.5 / 390.5 | **651.5 / 626.5** |
+| pool at the drop | 337.4 | 262.9 | **23.6** |
+| `pool_wide` / `refused` / `hole` | — | 0 / 0 / — | **0 / 0 / 0** |
+| prefill (80 105 tok) | 1 165 t/s | 1 247 | 1 238 |
+| decode (16 tok, per request) | 31.7 / 43.8 / 49.6 | — | 31.9 / 42.8 / 49.5 |
+| greedy shas | (baseline) | identical | **identical** (`130d51af8d12` / `7194bf85ff0f` / `8db6010f8533` / `7194bf85ff0f`) |
+
+**Wide gate (IQ4_NL PROJFIX, `-ub 6144 -c 204800`, 6 657-token prefill, aux 3584):**
+
+| headroom | pre-2b | 2b | **2b-2** |
+|---|---:|---:|---:|
+| 1536: free at drop / pool | 459.0 / 335.2 | 477.0 / 315.6 | **791.0 / 6.4** |
+| 1024: free at drop | **OOM** | **OOM** | **279.0** (repeat: 279.0) |
+| greedy sha | `746954a1038b` | same | **same** (both headrooms) |
+| prefill | 610 t/s | 618 | 619 |
+
+**2 GPUs (GSQ + MTP, 5 262-token prefill, 2048 / 3584), free at the drop per device / pool:**
+
+| | pre-2b | 2b | **2b-2** |
+|---|---|---|---|
+| `-sm tensor` | 2 118.5 / 294 | 2 238.5 / 176.2 | **2 384.5 / 32.8** |
+| `-sm layer` | 1 097.5 / 279,393 | 1 349.5 / 249.9,146.5 | **1 489.5 / 4.5,7.7** |
+
+Both clean, same greedy sha `394193591d4d`, no `POOL_WIDE_LEAK`, no dead-generation warning.
+
+**35B-A3B coherence**: text identical to the pre-change build (decode 83.3 t/s, noise).
+**Prefill-logit KLD gate**: **mean KLD 0.000000, same-top-p 100 %** against the base recorded by the
+pre-change build (slab-active 35B + `-ncmoe 40` config).
+
+### What this changes for the `aux = 1536` target (§10.7)
+
+The MMB cache *was* the blocker, and it is gone.  `aux 1536 / headroom 2560` (sum 4096) now **completes the
+full seesaw** (pre-yield: OOM on an 84 MiB = 80 MiB + 5 % MMB request):
+
+| reserve | min outside | drops | pool | shas |
+|---|---:|---|---:|---|
+| **2560 / 1536** (sum 4096) | **52.5** | 151.5 / 52.5 / 126.5 | 14.2 | identical |
+
+So `aux 1536` is **technically reachable**, but that floor is **52.5 MiB** — one more ~50 MiB outside
+allocation from failing, and the pre-yield `refused`/`free=0` failures show how close that is.  It is **not**
+a default anyone should ship on one run: it needs the reserve matrix in the scope note (§6.1-6.3: repeats,
+the wide config, 2 GPUs, and the never-run long-context `-sm layer`), and the "steady-state outside demand"
+decomposition (§10.7 finding 4) is still ~600 MiB at sum 4096, i.e. the cushion is thin by measurement, not
+by luck.  **No default was changed; nothing was promoted.**
+
+**Recovery coordinates:** fork WIP commit **`f639cb646`** (`f639cb646afbbf8b6b964cf9d05d30a4b55c7591`, tree `51e176e04b47`), parent `3f4497d14`;
+`slab-transient-absorption-wip.patch` = `git diff 00f4b1ef8..f639cb646`, **1 353 lines, sha256
+`7807792c977b7ccfb9fca74ffdb02e1016d007bf30adde480e424760a3f7b1d1`**.
