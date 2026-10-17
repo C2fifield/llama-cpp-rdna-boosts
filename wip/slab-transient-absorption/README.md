@@ -959,3 +959,76 @@ by luck.  **No default was changed; nothing was promoted.**
 **Recovery coordinates:** fork WIP commit **`f639cb646`** (`f639cb646afbbf8b6b964cf9d05d30a4b55c7591`, tree `51e176e04b47`), parent `3f4497d14`;
 `slab-transient-absorption-wip.patch` = `git diff 00f4b1ef8..f639cb646`, **1 353 lines, sha256
 `7807792c977b7ccfb9fca74ffdb02e1016d007bf30adde480e424760a3f7b1d1`**.
+
+---
+
+## 10.9 2026-10-17 — the reserve is now computable: `reserve = D + T + excess`
+
+With the transients absorbed (§10.6-§10.8) the outside demand separates into **two measured terms** plus a
+margin.  Measured directly this time: the same wide config **with and without the MTP draft**, reserve
+forced to 4608 (`GGML_CUDA_SLAB_RESERVE_MIB`), `-ub 6144 -c 204800`, 1 GPU:
+
+| arm (reserve 4608) | free at the wide-arm | free at the drop | pool | sha |
+|---|---:|---:|---:|---|
+| with the draft | 538.0 | 279.0 | 6.4 | `746954a1038b` |
+| **no draft** | **4538.0** | **4398.0** | 4.6 | `196f24c1e76d` (expected: no draft) |
+
+So **D = the draft's footprint = 4000 MiB** (`-c 204800`, `-ub 6144`: weights 2 647 + KV ~450 + narrow-2
+768 + ~135 transients).  That is **+416 MiB over the 3584 MiB `aux` default** — i.e. the "unattributed
+400-600 MiB of outside demand" chased in §10.7/§10.8 is the *draft itself*, not a stray transient.  The
+3584 default is exactly the **field** draft's footprint (2 647 + 288 + 512 + ~135 = 3 582), which is
+presumably how it was derived; it is too small for the same draft at a longer context / wider ubatch.
+
+**T = our own steady-state outside demand**, computed as `(reserve - D) - min_free`:
+
+| config | reserve | min free | T |
+|---|---:|---:|---:|
+| field seesaw (`-ub 4096`) | 4 096 | 52.5 | 460 |
+| field seesaw | 4 608 | 522.5 | 502 |
+| field seesaw (default aux 1536 + headroom 4096) | 5 632 | 1 546.5 | 502 |
+| wide, single prefill (`-ub 6144 -c 204800`) | 4 608 | 279 | 329 |
+| wide, single prefill | 6 144 | 1 815 | 329 |
+| wide, **no draft**, single prefill | 4 608 | 4 398 | 210 |
+
+T is **~500 MiB for a 4-request session** and **~210-330 MiB for a single prefill**, and it is *stable
+across reserves* (502 at three different reserves) — so it is a real demand, not an artefact of the split.
+Its measured components: **hipBLASLt 104 MiB** (`ROCBLAS_USE_HIPBLASLT=0` -> drop 279 -> 383, identical
+sha; the only external, library-chosen term), the Q8_1 arena (32 MiB floor, doubling ladder, **0 measured
+growth** — `GGML_CUDA_Q8_1_ARENA_FREE_OLD=1` changed nothing), the cuBLAS workspace 4 MiB, the pool's
+decode-phase high-water 4.6-33 MiB, and the remainder (~350 MiB) unenumerated but bounded by the
+measurement above.
+
+### The formula, and what it says about `aux`
+
+```
+D      = draft weights + KV(n_ctx) + narrow-2(ubatch) + ~135 MiB      (computable at load; measured 3584 / 4000)
+T      = 512 MiB                                                     (measured ceiling 502; 104 of it rocBLAS)
+excess = the cushion we want outside the slab                         (e.g. 300)
+reserve = headroom + aux  =  D + T + excess
+```
+
+| config | D | computed reserve | today |
+|---|---:|---:|---|
+| field `-ub 4096 -c 131072` | 3 584 | **4 396 -> 4 608** | 4 608 opt-in / 7 680 default |
+| wide `-ub 6144 -c 204800` | 4 000 | **4 812 -> 4 864** | 4 608 opt-in / 7 680 default |
+
+Three consequences:
+
+1. **The wide config needs ~4.9 GiB, not 4.6** — which is exactly why it showed 279 MiB at 1024/3584 (just
+   under a 300 MiB excess) and OOMed there before §10.8.  The field config at 4 608 already carries a
+   **522 MiB** excess, i.e. the 1024/3584 opt-in is *not* at the edge for `-ub <= 4096`; it is at the edge
+   *for the wide config only*.
+2. **`aux` is not the right variable** — `D` scales with (n_ctx, ubatch) through the draft's KV and its
+   narrow-2 compute (512 -> 768 between `-ub 4096` and 6144), so if a rule keyed on the ubatch is wanted at
+   all, the defensible one is **`aux >= D(n_ctx, ubatch) - headroom + excess`**, computed from the draft's
+   own GGUF/params — not the earlier "1536 for `-ub <= 4096`, 2048 above" heuristic, which happens to point
+   the right way only because a wider ubatch makes narrow-2 bigger.
+3. **The excess can be *verified*, not just estimated**: `ggml_cuda_slab_extend` already measures the exact
+   post-draft free VRAM.  A one-line check there (`free_b < excess_floor` -> warn, naming D/T/excess) turns
+   the guarantee into something every run reports.  Note the asymmetry that makes this the *only* guarantee
+   available: the failure mode of a thin outside is an **abort** (`cudaMalloc` fails and the slab cannot
+   unmap sub-ranges to help), so there is no graceful degrade to fall back on.
+
+**Not implemented, not proposed as a default** — this section is the model + the measurements; the reserve
+matrix (scope note §6) decides the numbers, and the draft-derived `D` is the piece worth building first
+(it is also the fix for the `-c 204800` under-reserve above).

@@ -102,6 +102,12 @@ arena    = free - max(reserve, headroom + draft_steady)
 outside  = reserve - draft_steady   (or exactly headroom once extend fires)
 ```
 
+> **Measured 2026-10-17 (README §10.9)**: `D` and `T` are now separated by a with/without-draft run at a
+> forced reserve.  `D` = **3 584 MiB** (field draft) / **4 000 MiB** (same draft at `-c 204800`, `-ub 6144`),
+> and `T` = **502 MiB** (4-request session) / 210-330 (single prefill), stable across reserves.  So the
+> `aux` default (3584) is exactly the *field* draft and ~416 MiB short for the long-context one, and the
+> formula below is `reserve = D + 512 + excess`.
+
 So: **minimise `reserve` (that is the arena) and pick `headroom = T` (that is the safety margin)**;
 `aux = reserve - headroom` follows.  Two corollaries:
 
