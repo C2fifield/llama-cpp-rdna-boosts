@@ -1,5 +1,52 @@
 # WORKLOG - dated delivery records
 
+## 261016.011 (r76) -- RDNA2 (gfx1030) tuned tile-FA + k-quant MMQ/MMVQ (PR #165, blocks 05/07)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r76` (base `097cf33d9`; canonical tip
+`68ee2e466`, net tree `06a91a1f76bcc4101398c17729edbf76450484fc`; 12 blocks; `validate-set.sh` green --
+checksums OK, strict 12/12 `git am`, applied tree equals the recorded tree).  **No new block:** blocks
+05 and 07 amended.  Folds `@slavap`'s RDNA2 add-on set (PR #165) after his V620 report on issue #158.
+
+**Provenance.**  Ported from `sixvolts/llama-halo-hybrid`; the halo source commits are listed in the
+PR body (block 00: `8689ed6e 33cf3433 f90e1c08 875b4e69 babf99e0 7c43b8bb fc62f154`; block 01:
+`cc1179bc`; block 02: `40408c28 4d93e972`; block 03: `1a803b9b 131d89e9`).
+
+**Block 05 (FA tile).**  Four pieces, all RDNA2-only: (1) a per-DKQ RDNA2 tile config table
+(`ggml_cuda_fattn_tile_get_config_amd_rdna2`) selected by `GGML_CUDA_CC_IS_RDNA2` on the host and
+`#if defined(RDNA2)` on the device; (2) launch caps (`cols_per_block` / `ncols2`) that keep the wide
+kernels inside the gfx1030 register file and 64 KB LDS/WGP; (3) a WGP-aware occupancy compute in
+`launch_fattn` (HIP's occupancy query assumes `regsPerMultiprocessor = 32768` on RDNA2 -- a quarter of
+the real file -- and reported 0 for the tuned configs, aborting the launch); (4) the partial-batch
+tile-load branch instead of selecting between a global pointer and a pointer to a local zero array
+(the gfx1030 no-flat-scratch fault at unaligned KV lengths; `FLASH_ATTN_EXT` kv=113 class).  The
+Q-from-global-half2 path for the wide kernels (`+~30 %` on the 512-column kernel) is compile-gated by
+`GGML_CUDA_FATTN_TILE_Q_GLOBAL` (HIP+RDNA2) and host-gated by `q_h2`; `Q_tmp` shrinks to a 2-element
+stub there (static shared memory, so the per-arch layout stays consistent).
+
+**Block 07 (k-quant).**  `ggml_cuda_mmq_scale_sumi` scales the MMQ dot-sum in float on RDNA2
+(`v_mul_lo_u32` is quarter rate; the integer product is exact in fp32), and the Navi21
+`MMVQ_PARAMETERS_NAVI21` table supplies the gfx1030 rows_per_block/nwarps values (ncols_dst 1 -> 4
+waves, 2..4 -> 2 waves, 5..8 -> 4 rows/block).
+
+**Cross-arch guarantee.**  The PR's README claimed all four add-on blocks were gfx1030-gated; two were
+not (the partial-batch branch and `ggml_cuda_mmq_scale_sumi` under `#ifdef GGML_USE_HIP`).  Both are
+now `#if defined(RDNA2)`, so gfx1100 / gfx1151 / gfx1201 keep their previous codegen and numerics;
+the RDNA2 MMVQ table and the tile config are selected by device-cc lookup / the `RDNA2` device-pass
+macro.  The only unconditional change is an extra `Q_h2` parameter on the shared `fattn_kernel_t`
+typedef and the three FA kernels -- inert (`nullptr` / never read) off RDNA2.  PR block 04 (WMMA
+compile guards) is **dropped**: r70 already folded the equivalent guards into blocks 06/10, and the
+gfx1030-only build passes without it.
+
+**Validation.**  `ggml-hip` compiles clean for `gfx1030;gfx1100;gfx1151;gfx1201` on ROCm 7.14.1.  No
+RDNA2 device is available here, so RDNA2 stays best-effort: slavap's V620 numbers (`FLASH_ATTN_EXT`
+full pass -- the kv=113 cases abort without the block-01 fix -- `MUL_MAT` full pass; Qwen3.8-27B
+UD-Q6_K_XL pp1024 478.1 t/s, tg128 18.12 t/s) are the RDNA2 evidence, against the r68-based add-on;
+he is asked to re-run the two backend-ops gates on this r76 tree.  Non-RDNA2 gates (r75 build vs this tree, same model on each box): **gfx1201** same-seed greedy
+text identical, prefill-logit mean KLD **0.000000** / same-top-p **100.000 %**; **gfx1100** (fingon,
+Qwen3.8-27B UD-Q4_K_M) identical, **0.000000 / 99.990 %**; **gfx1151** (halo, Qwen3.5-9B Q6_K)
+identical, **0.000000 / 100.000 %**.  That is the gating proof: the RDNA2 paths are inert on the other
+families.
+
 ## 261016.010 (r75) -- fix the H2D-ring/wide-compute alias and stop the MTP drafter sizing the ring (blocks 10/11)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r75` (base `097cf33d9`; canonical tip

@@ -5,12 +5,17 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r75`** (canonical tip `ca33b8647`, net tree
-`8add179f9ddcc33e87e576a38670745f39aa96f0`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean, `gate-prefill-logits.sh` PASS (0.000707 / 98.755 %),
-`gate-qwen4exp-quant-coherence.sh` PASS, adaptive-MTP `none == draft-mtp n3` byte-identical on prose and
-mixed, width purity `none == n1 == n3 == n7`, `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16, full
-`-o MUL_MAT_ID` 947/947.  r75 fixes a release blocker exposed by r74: **block 10** places the wide
+**`097cf33d9`**, released as **`v12-097cf33d9-r76`** (canonical tip `68ee2e466`, net tree
+`06a91a1f76bcc4101398c17729edbf76450484fc`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean, `ggml-hip` compiles for
+`gfx1030;gfx1100;gfx1151;gfx1201`.  r76 folds the RDNA2 (gfx1030) tuned tile-FA + k-quant work (PR
+#165) into **blocks 05/07**, gated to RDNA2: same-seed greedy text is identical on gfx1201 / gfx1100 /
+gfx1151 and `gate-prefill-logits.sh` is **0.000000 / 100.000 %**, **0.000000 / 99.990 %** and
+**0.000000 / 100.000 %** on those three families.  Before it, r75 was: strict 12/12, whitespace-clean,
+`gate-prefill-logits.sh` PASS (0.000707 / 98.755 %), `gate-qwen4exp-quant-coherence.sh` PASS,
+adaptive-MTP `none == draft-mtp n3` byte-identical on prose and mixed, width purity `none == n1 == n3
+== n7`, `test-backend-ops -o MUL_MAT_ID -p 'dup=1'` 16/16, full `-o MUL_MAT_ID` 947/947.  r75 fixed a
+release blocker exposed by r74: **block 10** places the wide
 (prefill) compute view at the end of the **carved** H2D staging ring, not the live re-armed *request*, so
 the wide buffer can no longer alias the ring (pre-fix: a GPU VM fault at the first prefill on 35B-A3B +
 host experts + MTP, `k_get_rows_float` on Q4_K_M / `rope_multi` on Q8_0); **block 11** excludes the MTP

@@ -115,20 +115,29 @@ HIP backend cannot dlopen and llama.cpp reports "no usable GPU found".
 ### RDNA2 (gfx1030) — best-effort, not validated on hardware
 
 `gfx1030` (Navi 21: RX 6800/6800 XT/6900 XT, Radeon Pro V620/W6800) is
-**compiled into the image as of this change** so RDNA2 owners get the generic,
-runtime-dispatched paths instead of a first-kernel `ROCm error: invalid kernel
-file` (issue #158).  It is **not** a supported or validated target: the
-maintainer has no usable RDNA2 device, so there are no performance claims and
-no purity gates for it.  Treat an RDNA2 result as informational, never as a
-delivery gate.
+**compiled into the image** so RDNA2 owners get the generic, runtime-dispatched
+paths instead of a first-kernel `ROCm error: invalid kernel file` (issue #158).
+It is **not** a supported or validated target: the maintainer has no usable RDNA2
+device, so there are no performance claims and no purity gates for it.  Treat an
+RDNA2 result as informational, never as a delivery gate.
 
 What applies / what does not:
 
 * The RDNA3/4-only features fall back at runtime by design: `mmb_enabled()`
-  and the QSA3 support predicate return false for RDNA2, the MMVQ path has a
-  dedicated `MMVQ_PARAMETERS_RDNA2` table, and the dp4a / tile-FA fallbacks
-  are upstream.  The generic wins (scheduling, host-resident MoE, k-quant
-  decode, prefill MMQ) do apply.
+  and the QSA3 support predicate return false for RDNA2, the dp4a / tile-FA
+  fallbacks are upstream, and the generic wins (scheduling, host-resident MoE,
+  k-quant decode, prefill MMQ) do apply.
+* **r76 folds `@slavap`'s tuned RDNA2 paths** (PR #165, from
+  `sixvolts/llama-halo-hybrid`): the tile kernel gets a per-DKQ gfx1030 config
+  table, gfx1030 launch caps and a WGP-aware occupancy compute (HIP's query
+  assumes a quarter of the RDNA2 register file and reported 0 for the tuned
+  configs), the partial-batch load branch fixes the kv=113 no-flat-scratch fault
+  (`-fa on` is now usable), and the wide kernels read Q from a pre-converted
+  global half2 buffer (+~30 % on the 512-column kernel).  The k-quant path gets
+  the Navi21 `MMVQ_PARAMETERS_NAVI21` rows/warps table and the MMQ float scale.
+  **All of it is gated to RDNA2** (`#if defined(RDNA2)` /
+  `GGML_CUDA_CC_IS_RDNA2`), so gfx1100/gfx1151/gfx1201 keep their previous
+  codegen and numerics.
 * Two WMMA helper shims had to gain an RDNA2 compile branch for the set to
   build at all (`mmb.cu`, `fattn-qsa3.cu`).  They are now `#if defined(RDNA4)
   ... #elif defined(RDNA3) ... #else <no-op> #endif`, so RDNA2 compiles a dead
@@ -138,10 +147,10 @@ What applies / what does not:
   fallback works.  hipBLASLt does **not** ship `gfx1030`, but llama.cpp uses
   rocBLAS unless `ROCBLAS_USE_HIPBLASLT` is set — which this delivery does not
   set.
-* **`-fa on` is the known risk.**  RDNA2 tile flash-attention has upstream
-  defects (sixvolts/llama-navi21-furnace: RDNA2 register-file occupancy and a
-  partial-KV-batch pointer fault).  Until someone ports and validates a fix,
-  run `-fa off` on RDNA2 if a long-context Qwen3.8/GLM prompt aborts.
+* **`-fa on` should now be safe on RDNA2** (the kv=113 partial-batch fault is
+  fixed), but it remains unvalidated by the maintainer; slavap's V620 run of
+  `test-backend-ops -o FLASH_ATTN_EXT` is a full pass on the add-on tree.  If a
+  long-context prompt still aborts, run `-fa off` and report it on issue #158.
 
 Validation path: build from source with `gfx1030` in the target list, or pull
 this image, and report back on issue #158.  The tester checklist is

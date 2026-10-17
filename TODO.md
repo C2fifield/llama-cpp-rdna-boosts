@@ -90,14 +90,18 @@ cross-sequence batching).
 
 ### 66. RDNA2 (`gfx1030`) best-effort bring-up — issue #158 — PLATFORM VALIDATION (open)
 
-**Opened 2026-10-16; the code shipped in r70; the platform validation is open.**  r70 folded the two
-`gfx1030` WMMA compile guards into blocks 06/10 and added `gfx1030` to `ROCM_DOCKER_ARCH`, so the image
-now runs on RDNA2 instead of aborting every kernel launch with `invalid kernel file`.  The runtime
-paths already fall back (`mmb_enabled()`, `qsa3_supported()`, the `MMVQ_PARAMETERS_RDNA2` table,
-upstream dp4a / tile FA).  No RDNA2 hardware is available here, so RDNA2 stays **best-effort /
-unvalidated** (no perf claims, no purity gates) and `-fa on` carries the known upstream RDNA2
-tile-kernel risk.  Open items: external confirmation on a real `gfx1030` (issue #158) and, if someone
-takes it on, a port of the RDNA2 tile-FA fixes (`sixvolts/llama-navi21-furnace`).  Record and tester
+**Opened 2026-10-16; the code shipped in r70, the tuned add-on folded in r76; the platform validation
+is open.**  r70 folded the two `gfx1030` WMMA compile guards into blocks 06/10 and added `gfx1030` to
+`ROCM_DOCKER_ARCH`, so the image now runs on RDNA2 instead of aborting every kernel launch with
+`invalid kernel file`.  r76 folds `@slavap`'s tuned RDNA2 add-on (PR #165, from
+`sixvolts/llama-halo-hybrid`): the per-DKQ tile config, gfx1030 launch caps + WGP-aware occupancy, the
+partial-batch tile-load branch (kv=113 fault class), the wide-kernel Q-from-global path, and the
+Navi21 MMVQ table / MMQ float scale.  All of it is gated to RDNA2 (`#if defined(RDNA2)` /
+`GGML_CUDA_CC_IS_RDNA2`), so gfx1100/gfx1151/gfx1201 keep their previous numerics.  No RDNA2 hardware
+is available here, so RDNA2 stays **best-effort / unvalidated** (no perf claims, no purity gates) and
+`-fa on` still carries the known upstream RDNA2 tile-kernel risk.  Open items: external confirmation on
+a real `gfx1030` (issue #158), a re-run of `test-backend-ops -o FLASH_ATTN_EXT` and `-o MUL_MAT` on
+this r76 tree, and the deferred halo sparse-tile walk (`60ecdf8b + e53cee3e`).  Record and tester
 checklist: `archive/work/rdna2/`.
 
 ### 65. IQ4_NL field (MTP) + `--host-experts pool` decode collapses — MEMORY

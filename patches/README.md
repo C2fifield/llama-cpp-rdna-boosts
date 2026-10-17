@@ -11,7 +11,29 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r75` (2026-10-16) -- H2D-ring/wide-compute placement fix + MTP-drafter ring-sizing guard (blocks 10/11):**
+> **Current release `v12-097cf33d9-r76` (2026-10-16) -- RDNA2 (`gfx1030`) tuned flash-attention tile + k-quant MMQ/MMVQ (PR #165, issue #158):**
+> canonical tip `68ee2e466`, net tree `06a91a1f76bcc4101398c17729edbf76450484fc`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 05 and 07** amended, no new block.
+> Folds `@slavap`'s RDNA2 add-on (PR #165), ported from `sixvolts/llama-halo-hybrid`:
+> **block 05** gains the per-DKQ RDNA2 tile config (`ggml_cuda_fattn_tile_get_config_amd_rdna2`), the
+> gfx1030 launch caps (`cols_per_block` / `ncols2`), the WGP-aware occupancy compute in `launch_fattn`
+> (HIP's occupancy query assumes a quarter of the RDNA2 register file, so it reported 0 for the tuned
+> configs), the partial-batch tile-load branch (the kv=113 no-flat-scratch fault class), and the
+> wide-kernel Q-from-global-half2 path (+~30 % on the 512-column kernel; compile-gated
+> `GGML_CUDA_FATTN_TILE_Q_GLOBAL`, host-gated `q_h2`).  **block 07** gains the K-quant MMQ float scale
+> (`ggml_cuda_mmq_scale_sumi`) and the Navi21 `MMVQ_PARAMETERS_NAVI21` rows_per_block/nwarps table.
+> **Every behavioural change is gated to RDNA2** (`#if defined(RDNA2)` / `GGML_CUDA_CC_IS_RDNA2`): the
+> partial-batch branch and the float scale are RDNA2-only, so gfx1100/gfx1151/gfx1201 keep their
+> previous codegen and numerics; the Q-from-global path is compile-gated to HIP+RDNA2; the RDNA2 MMVQ
+> table is selected only for `gfx103x`.  The only unconditional change is an inert extra `Q_h2` kernel
+> parameter that is never used off RDNA2.  PR block 04 (gfx1030 WMMA guards) is **dropped**: r70 already
+> folded the equivalent guards into blocks 06/10, and the gfx1030-only build passes without it.
+> Verified: `ggml-hip` compiles clean for `gfx1030;gfx1100;gfx1151;gfx1201` on ROCm 7.14.1.  RDNA2
+> remains **best-effort / not validated on hardware here**; slavap's V620 run: `FLASH_ATTN_EXT` full
+> pass, `MUL_MAT` full pass, Qwen3.8-27B UD-Q6_K_XL pp1024 478 t/s / tg128 18.1 t/s.  External
+> validation: PR #165 / issue #158.  Record: `../WORKLOG.md` 261016.011.
+>
+> **Previous release `v12-097cf33d9-r75` (2026-10-16) -- H2D-ring/wide-compute placement fix + MTP-drafter ring-sizing guard (blocks 10/11):**
 > canonical tip `ca33b8647`, net tree `8add179f9ddcc33e87e576a38670745f39aa96f0`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 10 and 11** amended, no new block.
 > **Blocker fix (block 10):** `ggml_cuda_slab_work_alloc` placed the wide (prefill) compute view at

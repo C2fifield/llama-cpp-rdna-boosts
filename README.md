@@ -121,9 +121,14 @@ The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families, with RDNA2 as best
 > compiled into the image so RDNA2 owners pick up the generic, runtime-dispatched
 > boosts instead of a first-kernel `ROCm error: invalid kernel file` (issue
 > #158), and the RDNA3/4-only paths fall back to the upstream non-WMMA kernels at
-> runtime.  There are no performance claims and no purity gates for it, and
-> `-fa on` may hit upstream RDNA2 tile-kernel defects — use `-fa off` if a
-> long-context prompt aborts.  See [RDNA2
+> runtime.  As of **r76** the set also folds `@slavap`'s tuned RDNA2 tile-FA and
+> k-quant work (PR #165: per-DKQ tile config, launch caps, WGP-aware occupancy,
+> the kv=113 partial-batch load fix and the wide-kernel Q-from-global path;
+> Navi21 MMVQ rows/warps + MMQ float scale).  All of it is gated to RDNA2, so
+> gfx1100/gfx1151/gfx1201 keep their previous numerics.  There are still no
+> performance claims and no purity gates run here, and `-fa on` may hit upstream
+> RDNA2 tile-kernel defects — use `-fa off` if a long-context prompt aborts.  See
+> [RDNA2
 > (gfx1030)](CONTAINERS.md#rdna2-gfx1030--best-effort-not-validated-on-hardware).
 
 **RDNA4 (gfx120x) sees the most benefit** — the WMMA flash-attn path, the
