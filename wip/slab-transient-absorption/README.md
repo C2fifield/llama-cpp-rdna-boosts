@@ -472,11 +472,15 @@ per consumer, as QSA3 was routed.
 
 ### 8.2 Headroom sweep (same config, 15 748-token prefill, greedy text identical where compared)
 
-| `GGML_CUDA_SLAB_HEADROOM_MIB` | arena | free at wide-drop | prefill | text |
-|---:|---:|---:|---:|---|
-| 4096 | 15 666.6 MiB | ~3.9 GiB (5.2k-token probe) | 787-1164 t/s | coherent |
-| 2048 | 17 744.8 MiB | 1842 → **1942** (post-QSA3) | 1156 t/s | coherent |
-| 1024 | 18 783.9 → **~19 000** MiB mapped 20864 | 818 → **918** (post-QSA3) | 1105 t/s | greedy sha256 identical vs pre-QSA3 |
+| `GGML_CUDA_SLAB_HEADROOM_MIB` | cache arena (reported) | mapped / boundary at the drop | free at wide-drop | prefill |
+|---:|---:|---:|---:|---:|
+| 4096 | 15 666.6 MiB | — (5.2k-token probe: 3925 MiB free) | 3925 | 787 t/s |
+| 2048 | 17 744.8 MiB | 19840 / 8128 MiB | 1842 → **1942** (post-QSA3) | 1156 → 1104 t/s |
+| 1024 | 18 783.9 MiB | 20864 / 8128 MiB | 818 → **918** (post-QSA3) | 1157 → 1105 t/s |
+
+All runs used the same 15 748-token prompt (except the 4096 row's free figure, from the 5 256-token
+probe — the deep 4096 run was not repeated this session).  The deep 1024 run's greedy output
+(`sha256=df10d0b5f19eccb2`) is identical to the pre-QSA3 build, and the 35B-A3B A/B is identical to r80.
 
 The field config therefore has **1.8-1.9 GiB free at the prefill peak even at headroom 1024**, i.e. the
 remaining floor is not the headroom any more; it is the ~270 MiB pool remainder + hipBLASLt + MMB.  The
