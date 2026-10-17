@@ -1,7 +1,8 @@
 # `slab-transient-absorption` — move the optional device transients inside the slab so the headroom (and the arena) can grow
 
-**Status: OPEN, re-verified at r80 (2026-10-17) — this is the next session's work.**  Not part of the
-delivery; nothing here may be applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).
+**Status: OPEN, re-verified at r80 (2026-10-17) — step 0 + the first two absorptions are implemented and
+measured, see §8.**  Not part of the delivery; nothing here may be applied to the fork without the
+maintainer's go-ahead (see `AGENTS.md`).
 Seeded from a code review of the movable-boundary slab and the CUDA backend's raw device allocations
 (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/common.cuh`,
 `ggml/src/ggml-cuda/ggml-cuda.cu`, `ggml/src/ggml-cuda/allreduce.cu`, `ggml/src/ggml-cuda/mmb.cu`).
@@ -418,3 +419,87 @@ A/B is therefore not a global either/or: each consumer takes the mechanism its p
   `archive/work/slab-ring-region/`, `archive/work/moe-cache-autosize/ARENA-UB-TENSION.md`.
 * `ENVIRONMENT.md` — `GGML_CUDA_SLAB_*`, `GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT`,
   `GGML_CUDA_FA_STAGE_PREALLOC`, `GGML_CUDA_FA_STAGE_MAX_MB`, `GGML_SCHED_STAGE_MAX_MB`.
+
+---
+
+## 8. 2026-10-17 session — what landed, measured (r80 tree, 1× R9700)
+
+Work is in the **fork working tree** (`~/llama.cpp`, uncommitted at the time of writing); nothing here is
+in `patches/` yet.  The changes:
+
+1. **Step 0 — the H2D ring is slab-only in host-expert mode** (F5's recommended first move).
+   `h2d_stage_buffer` now refuses a shortfall (`ggml_cuda_slab_active() && ggml_cuda_slab_ring_requested()`)
+   instead of `cudaMalloc`-ing it; the two defects F5 named are closed: the unarmed request no longer
+   bypasses the refusal guard, and a slot that MIGRATES into the slab now frees its old raw block (the
+   slab branch used to return before the `cudaFree`).  Kill switches: `GGML_CUDA_SLAB_RING_FALLBACK=1`
+   restores the old fallback; `GGML_CUDA_SLAB_RING_MIB=0` keeps the whole ring pre-slab (unchanged).
+2. **The FA prefill staging arena is now a slab WIDE-PHASE transient** (`ggml_cuda_slab_wide_aux_alloc`).
+   It is bump-allocated just above the live work boundary (so it sits in the band a wide prefill already
+   claims), grown on demand, and **released at the prefill → decode transition** together with the ring
+   (`ggml_cuda_slab_ring_set(..., false)`); the arena gets its bytes back.  A cached pointer is validated
+   against `ggml_cuda_slab_wide_aux_gen()`.  The refusal path is fail-soft (the native K/V read), and the
+   old raw path remains for slab-inactive devices and the 9..16-row wide-verify case below the ring's
+   arming gate.
+3. **The QSA3 prefill workspace is now in that same wide band** (`fattn-qsa3.cu`, a small RAII
+   `qsa3_scratch<T>`).  The workspace pool (`ggml_cuda_pool_leg`) keeps every freed block, so its
+   high-water (372 MiB on the 15.7k field prefill) was permanently outside the slab; QSA3 is 100 MiB of
+   that.  It is safe to move because the launcher is **prefill-only** (`q->ne[1] >= 128`), i.e. never in a
+   captured decode/verify graph.  The release is LIFO (the seven blocks are destroyed in reverse
+   declaration order); a non-LIFO caller leaves a hole that the wide drop reclaims.  The base is retained
+   when the stack empties so each layer reuses the same region (without that the boundary walked
+   8064 → 11136 MiB, ~3 GiB of arena churn per prefill; with it, one 64 MiB chunk).
+4. **Diagnostic:** `GGML_CUDA_SLAB_STATS=1` logs `SLAB_STATS` at every wide arm/drop and at context exit
+   (free/mapped/work/narrow/ring/wide-aux/narrow-2/arena/**pool** mib, headroom and aux config), plus
+   `SLAB_WIDE_AUX` per growth.  The pool figure is the `ggml_cuda_pool_leg` retained bytes per device.
+
+### 8.1 The field config's outside-slab peak, decomposed (15 748-token prefill, headroom 2048)
+
+`free` is VRAM outside the slab, sampled at the wide drop (i.e. after the prefill, before the reclaim).
+
+| run | free at wide-drop | pool high-water | arena | note |
+|---|---:|---:|---:|---|
+| pre-change (r80) | 1842 MiB | 372.3 MiB | 11776 MiB | — |
+| QSA3 off (`GGML_CUDA_QSA3=0`) | 1942 | — | 11776 | QSA3 = ~100 MiB |
+| MMB off (`GGML_CUDA_MMB=0`) | 1882 | — | 11776 | MMB = ~40 MiB |
+| no hipBLASLt (`ROCBLAS_USE_HIPBLASLT=0`) | 1946 | — | 11776 | hipBLASLt = ~104 MiB |
+| **QSA3 in the slab (this work)** | **1942** | **271.4** | 11712 | boundary churn 64 MiB; greedy text identical |
+
+So the ~628 MiB prefill peak is **pool 372 (QSA3 ~100, now absorbed, + ~270 of other prefill pool
+temporaries) + hipBLASLt ~104 + MMB ~40 + QSA3-off delta noise**, not one thing.  The remaining 271 MiB
+is the next target, but it is *not* a blanket pool redirect: some of those temporary blocks belong to
+graphs that ARE captured at decode, and a captured pointer cannot live in a reclaimed band.  Route them
+per consumer, as QSA3 was routed.
+
+### 8.2 Headroom sweep (same config, 15 748-token prefill, greedy text identical where compared)
+
+| `GGML_CUDA_SLAB_HEADROOM_MIB` | arena | free at wide-drop | prefill | text |
+|---:|---:|---:|---:|---|
+| 4096 | 15 666.6 MiB | ~3.9 GiB (5.2k-token probe) | 787-1164 t/s | coherent |
+| 2048 | 17 744.8 MiB | 1842 → **1942** (post-QSA3) | 1156 t/s | coherent |
+| 1024 | 18 783.9 → **~19 000** MiB mapped 20864 | 818 → **918** (post-QSA3) | 1105 t/s | greedy sha256 identical vs pre-QSA3 |
+
+The field config therefore has **1.8-1.9 GiB free at the prefill peak even at headroom 1024**, i.e. the
+remaining floor is not the headroom any more; it is the ~270 MiB pool remainder + hipBLASLt + MMB.  The
+`-ub 6144 -c 204800` wide config (which rejected 3072 on 2026-10-10) was **not** re-run this session
+(the IQ4_XS model is not on this box) — that is the gate that must pass before any default change.
+
+### 8.3 Coherence
+
+* 35B-A3B Q4_K_M, `-ncmoe 40`, `code-reasoning-mixed.txt`, seed 42, temp 0, `-n 64`: **greedy text
+  identical** to the r80 baseline build (stash/rebuild A/B).
+* Flash-Next GSQ, 15 748-token prompt, seed 0/temp 0, `-n 16`: **sha256 identical** before and after the
+  QSA3 redirect (`df10d0b5f19eccb2`).
+
+### 8.4 Next (in order)
+
+1. Route the **MMB activation cache** (`mmb_state().cache`, a `ggml_cuda_pool_alloc` retained for the
+   process) into the wide band.  It is prefill-only and ~40 MiB here; it needs a yield-on-reclaim rule
+   because the cache is not RAII-scoped (or simply drop the cache at the wide drop and re-convert).
+2. Identify the remaining ~270 MiB of pool high-water (`GGML_CUDA_SLAB_STATS` + `-ub 512` bisect), and
+   route the prefill-only consumers one by one.  Anything that can run in a captured decode/verify graph
+   stays out.
+3. Re-run the wide-prefill matrix on a box with the IQ4_XS model (or the field config at `-ub 6144`), then
+   decide the headroom default.  With the wide-phase transients absorbed, 2048 is the candidate; the data
+   here says 1024 still has ~1.8 GiB at the peak on the 15.7k field prefill.
+4. Consider the aux reserve: it is a flat 4096 MiB per draft, and the draft's *compute* is now narrow-2
+   (inside the slab), so the estimate is ~512 MiB larger than the measured post-slab draft cost.
