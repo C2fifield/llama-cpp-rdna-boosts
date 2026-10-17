@@ -12,7 +12,7 @@ index 2b307c59d..395cb43fd 100644
      fit.h
      hf-cache.cpp
 diff --git a/common/common.cpp b/common/common.cpp
-index a5b31c8a0..c06980fe8 100644
+index a5b31c8a0..1f590cf5c 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -7,6 +7,7 @@
@@ -62,7 +62,7 @@ index a5b31c8a0..c06980fe8 100644
          };
  
          common_fit_params(params.model.path.c_str(), &mparams, &cparams,
-@@ -1371,14 +1397,44 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+@@ -1371,14 +1397,89 @@ common_init_result::common_init_result(common_params & params, bool model_only)
      // makes the MTP draft and the target plan different kernels -- and (b) the projected arena reflects
      // the VRAM the WEIGHTS left free.  Called after the context instead, it would see only the headroom
      // left after the KV cache, the compute buffers and the slab, and would decline the cache on every
@@ -88,6 +88,51 @@ index a5b31c8a0..c06980fe8 100644
 -            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
 +            if (draft_reserve.ok) {
 +                aux_bytes = draft_reserve.total;
++                // wip/slab-transient-absorption (step 3c): the slab's reserve is PER DEVICE, so under
++                // `-sm tensor` -- where the draft's weights and KV are SPLIT across the devices -- charging the
++                // whole draft footprint to every device over-reserves each one by (n-1)/n of it.  Measured on
++                // 2 GPUs: a constant +895 MiB/device of unused outside VRAM at EVERY headroom (768 -> 1296.5,
++                // 1024 -> 1552.5, 2048 -> 2576.5 excess vs 401.5/657.5/1681.5 for `-sm layer`), i.e. ~1.4 GiB
++                // of arena per device left on the table.  Charge each device its SHARE plus the tier that
++                // really is per device (compute + transients): 2 GPUs -> 2371 MiB instead of 3782, measured
++                // excess 300.0 MiB (on target) with the same greedy sha and arena 17 344 -> 18 752 MiB.
++                //
++                // Only for an EQUAL split: with an explicit `-ts a,b` the small-share device would be
++                // under-reserved (the shares are not known per device at this point), and `-sm layer` must keep
++                // the FULL value -- the MTP head's layer lands on ONE device, and the halved value was measured
++                // to fail at draft load (`512.00 MiB allocation failed on device 1`).  Both fall back to the
++                // full reserve, i.e. today's behaviour.
++                bool equal_split = true;
++                for (size_t i = 1; i < sizeof(params.tensor_split)/sizeof(params.tensor_split[0]); ++i) {
++                    if (params.tensor_split[i] != 0.0f) {
++                        equal_split = false;
++                        break;
++                    }
++                }
++                size_t n_gpu = 0;
++                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++                    ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++                    if (dev != nullptr && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
++                        n_gpu++;
++                    }
++                }
++                if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && equal_split && n_gpu > 1) {
++                    // per device: the share of (weights + KV) + the compute/transient tier + a small margin.
++                    // The margin is needed: the estimator's total is a whole-box figure, and the measured
++                    // per-device draw is a little above (weights+kv)/n + tier -- 2 GPUs, tier 704, formula
++                    // 2243 MiB -> 113 MiB SHORT of a 113.87 MiB capture allocation (abort); 2371 MiB (= +128)
++                    // measured exactly the 300 MiB target excess.  The failure mode is a loud OOM, never a
++                    // silent one, so a small margin plus the gates is the right trade.
++                    const size_t tier   = draft_reserve.compute + draft_reserve.slack;
++                    const size_t margin = (size_t) 128 << 20;
++                    const size_t split  = aux_bytes > tier ? aux_bytes - tier : aux_bytes / n_gpu;
++                    aux_bytes = split / n_gpu + tier + margin;
++                    LOG_WRN("%s: -sm tensor with %zu GPUs: charging each device its share of the draft reserve "
++                            "(%.0f MiB = %.0f / %zu + %.0f tier + %.0f margin) instead of the whole %.0f MiB.\n",
++                            __func__, n_gpu, (double) aux_bytes / 1048576.0, (double) split / 1048576.0, n_gpu,
++                            (double) tier / 1048576.0, (double) margin / 1048576.0,
++                            (double) draft_reserve.total / 1048576.0);
++                }
 +                if (e != nullptr) {
 +                    LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft reserve\n",
 +                            __func__, (double) aux_bytes / 1048576.0);

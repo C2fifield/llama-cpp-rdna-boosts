@@ -1276,3 +1276,63 @@ inside one chunk of each other measure identically — 600 and 640 are the same 
 
 **Recovery:** fork WIP `5d461d67f`, patch **1 946 lines, sha256
 `ff2035ed69c1e7bcfbd264d6f5265bf41b640ed883cd08961b1701264527f41d`**.
+
+---
+
+## 10.14 2026-10-17 — step 3c: the draft reserve is split-aware (`-sm tensor`) — the arena win on multi-GPU
+
+The headroom/excess did **not** need split awareness; the **aux** did.  The slab's reserve is *per device*, but
+it was derived as the whole draft footprint on every device — and under `-sm tensor` the draft's weights and KV
+are **split**, so each device reserved the other devices' share too.  The signature was unmistakable: a
+**constant +895 MiB/device** of unused outside VRAM at *every* headroom.
+
+| headroom | 2-GPU `-sm layer` | 2-GPU `-sm tensor` | difference |
+|---:|---|---|---:|
+| 768 | 401.5 | 1 296.5 | +895 |
+| 1024 | 657.5 | 1 552.5 | +895 |
+| 2048 | 1 681.5 | 2 576.5 | +895 |
+
+**Fix** (fork WIP `156f32652`): for an **equal** tensor split, each device is charged its share plus the tier
+that really is per device, plus a small margin:
+
+```
+aux_per_device = (D - tier) / n + tier + 128 MiB        tier = compute + slack
+2 GPUs: 2371 MiB instead of 3782
+```
+
+| topology | excess before | excess after | arena/device before -> after | sha |
+|---|---:|---:|---|---|
+| 2-GPU `-sm tensor` | 1 296.5 | **300.0** | 17 344 -> **18 752** (+1.4 GiB/device, **+2.8 GiB** on the box) | `394193591d4d` |
+| 3-GPU `-sm tensor` | — | **408.0** (all 3) | **20 608** | `394193591d4d` |
+| 2-GPU `-sm layer` | 401.5 | 401.5 (unchanged) | 17 344 | `394193591d4d` |
+| 3-GPU `-sm layer` | 519.5 | 519.5 (unchanged) | 17 664-18 176 | clean |
+
+**Two measured failure modes defined the guards:**
+
+* `-sm layer` with the *split* value → **aborts at draft load** (`512.00 MiB allocation failed on device 1`):
+  the MTP head's layer lands on ONE device, so `-sm layer` keeps the **full** reserve.
+* The margin is load-bearing: without it the 2-GPU tensor reserve came out 2 243 MiB, which was **113 MiB
+  short** of a `113.87 MiB` capture allocation — a *loud* OOM abort (never a silent one, which is what makes a
+  small margin + gates acceptable).  2 371 MiB measured exactly the 300 MiB target.
+* An explicit `-ts` (unequal shares) keeps the full reserve: the per-device shares are not available at that
+  point.  That is the one documented follow-up (it needs the shares plumbed through the preflight API, and a
+  `-ts 59,41` gate — the r36 floor case).
+
+### The finished matrix (all verified with **no env**)
+
+| topology / config | effective headroom | excess/device | arena/device | greedy |
+|---|---:|---:|---:|---|
+| 1 GPU, field GSQ seesaw (4 reqs) | 640 | 346.5 | 19 776 | 4/4 identical |
+| 1 GPU, wide IQ4_NL `-ub 6144` | 640 | 599.0 | 12 416 | `746954a1038b` |
+| 2 GPU `-sm layer` | 768 | 401.5 | 17 344 | `394193591d4d` |
+| 2 GPU `-sm tensor` | 768 | **300.0** | **18 752** | `394193591d4d` |
+| 3 GPU `-sm layer` | 896 | 519.5 | 17 664-18 176 | clean |
+| 3 GPU `-sm tensor` | 896 | **408.0** | **20 608** | `394193591d4d` |
+| 35B-A3B coherence (no draft) | — | — | — | identical |
+
+Every measured configuration now sits **at or above the 300 MiB target** (300.0-599.0), and the arena is
+maximal for that cushion: **19 776 MiB** on the field config (vs 15 666.6 at the r80 default, **+4.0 GiB**)
+and **+2.8 GiB** on a 2-GPU tensor box from this step alone.
+
+**Recovery:** fork WIP `156f3265213b8aec99dc453acff20e6578a73fda`, patch **1 991 lines, sha256
+`478a8e9f395d4467219db3f928c97ddb8c6e613f50fd435b4269e916dc660add`**.
