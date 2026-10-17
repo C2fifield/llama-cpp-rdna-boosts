@@ -828,3 +828,9 @@ promoted** — this is still a WIP campaign.
 
 **Kill switches / knobs:** `GGML_CUDA_POOL_WIDE=0` (whole redirect off), `GGML_CUDA_POOL_WIDE_MIN_MIB`
 (size floor, default 1), `GGML_CUDA_POOL_WIDE_DEBUG=1` (per-allocation trace).
+
+**Recovery coordinates:** fork `~/llama.cpp`, branch `rdna-boosts`, WIP commit
+**`3f4497d14`** (`3f4497d142ee5c957e8cddb76f5df411c2473177`, tree `97df52a6ab0f`), parent `256f589df`;
+local only (never pushed).  `slab-transient-absorption-wip.patch` is `git diff 00f4b1ef8..3f4497d14`,
+**1 225 lines, sha256 `e1a6b843b3e43cb51d04d516e6a6a344ec7bcca41a7d6f373d49fa57071c13a9`**.  Restore as
+in §8.5 (`git checkout 00f4b1ef8`, apply the patch, `~/bin/build-llama-rocm`).
