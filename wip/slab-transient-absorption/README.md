@@ -1032,3 +1032,68 @@ Three consequences:
 **Not implemented, not proposed as a default** — this section is the model + the measurements; the reserve
 matrix (scope note §6) decides the numbers, and the draft-derived `D` is the piece worth building first
 (it is also the fix for the `-c 204800` under-reserve above).
+
+---
+
+## 10.10 2026-10-17 — step 1 of the computable reserve: the draft reserve is DERIVED
+
+`LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT` is no longer the source of truth for the slab's auxiliary
+reserve: it is derived from the draft's own GGUF (fork WIP `d6938507d`; `common/draft-reserve.{h,cpp}` +
+the wiring in `common_init_from_params`).  Nothing is in `patches/`; the constant remains the fallback and
+`MOE_EXPERT_CACHE_AUX_RESERVE_MIB` remains the override.
+
+**Terms** (each documented in the header, all measured/derived, none guessed):
+
+| term | how | notes |
+|---|---|---|
+| weights | Σ GGUF tensor bytes, exact | the dominant term (2 647 MiB of the 3 584 MiB measured) and the part that differs per draft model |
+| kv | `n_ctx` × (k + v) per KV layer at the **real** element size of `-ctk`/`-ctv`, ×1.10 for row/mask padding | KV layers = `nextn_predict_layers` when the GGUF declares an MTP head, else `block_count`; a declared **indexer** key cache is added at f32 (the QSA/indexer cache is not covered by `-ctk`) |
+| compute | measured tier keyed on the ubatch: **512** MiB at `-ub <= 4096`, **768** above | the draft's compute buffer (pinned into the slab's narrow-2) still draws its *mapping* from the outside pool -- this is the one term that genuinely scales with the ubatch |
+| slack | 192 MiB | the draft's own load/steady transients (measured ~135) |
+
+**Calibration** against the measured draft footprint (§10.9: `D` = 3 584 field / 4 000 wide):
+
+| config | weights | kv | compute | slack | **estimate** | measured D | Δ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| field `-ub 4096 -c 131072` | 2 647 | 431 | 512 | 192 | **3 782** | 3 584 | **+198 (5.5 %)** |
+| wide `-ub 6144 -c 204800` | 2 647 | 674 | 768 | 192 | **4 281** | 4 000 | **+281 (7 %)** |
+
+The bias is deliberately upward (an under-estimate is the dangerous direction: the draft eats the cushion
+and an outside `cudaMalloc` aborts).  The constant was exactly the *field* draft, so the same draft at
+`-c 204800` used 3 584 and ran with a 3 680 MiB cushion where the headroom said 4 096 -- i.e. it silently
+over-committed the arena.  That is now fixed by construction.
+
+**Fallbacks** (all → the constant, logged): empty draft path (an embedded / shared MTP head, whose weights
+are the target's), unreadable GGUF, or a required key missing.  `-c 0` estimates with the model's *trained*
+context rather than 0 (a 0 here would under-estimate the KV term).
+
+### Measured effect (aux 3 584 → derived; same headroom, same shas)
+
+| run | reserved aux | outside at the arm/drop | arena | sha |
+|---|---:|---|---:|---|
+| field seesaw `1024/3584` | 3 584 → **3 782** | 522.5 → **714.5** / 626.5 → 818.5 | 19 328 → 19 136 | identical (4/4) |
+| wide IQ4_NL `1536/3584` | 3 584 → **4 281** | 1 754 / 791 → **1 495** | 12 224 → 11 520 | identical |
+| 2-GPU `-sm tensor` `2048/3584` | 3 584 → **3 782** | 2 384.5 → **2 576.5** | 16 256 → 16 064 | identical |
+| 2-GPU `-sm layer` `2048/3584` | 3 584 → **3 782** | 1 489.5 → **1 681.5** | 16 256 → 16 064 | identical |
+
+Prefill 617-621 t/s (unchanged), 35B-A3B coherence identical (that config has no draft, so it takes the
+constant path).
+
+**Read this as a correctness step, not an arena win.**  With the *current* headroom default (4 096) a
+correct aux makes the reserve grow by the same amount, so the arena *shrinks* by 192 MiB (field) / 704 MiB
+(wide) until step 2 lowers the headroom: the formula is `reserve = D + excess`, so `aux = D` is only a gain
+in arena *together with* `headroom = excess` (≈ T + 300 ≈ 800-1 024).  That pairing is what the reserve
+matrix (scope note §6) has to bless — and it is where the ~2.7-3.3 GiB of arena is.
+
+### The `--fit` hole this exposed (for step 2)
+
+`common_fit_cache_reserve::margin()` reserves `max(base, slab_headroom) + arena_budget` per device and
+**does not include the draft at all** (no aux term).  So `--fit` sizes the context as if the draft did not
+exist, and the draft is accounted for only by the slab's reserve — i.e. by silently shrinking the arena,
+never by shrinking the context.  A derived `D` is the prerequisite for putting it into `--fit`'s margin
+properly; that is the next thing to design, together with the multi-device (2/3-GPU `-sm layer`/`tensor`)
+per-device split of `D` (the draft's weights are per-device tensor-split, its KV is per-device, its
+narrow-2 is pinned per device).
+
+**Recovery:** fork WIP `d6938507dd5446f0687609d5d6eb28f96ab7050b`, patch **1 691 lines, sha256
+`bfa96cd4eb02c7a5f8be1cd870bd5bd1dac4789438e40d3ae888661ac154ab50`** (`git diff 00f4b1ef8..d6938507d`).
