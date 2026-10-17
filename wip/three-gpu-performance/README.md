@@ -37,6 +37,24 @@ Two facts to build the campaign on:
 The r55 closure found the opposite (3-GPU MTP 74.3 > 2-GPU 65.0), so the model, the prompt length, or a
 regression between r54 and r73 matters.  Re-measure before theorising.
 
+### 0.1 Related observation (r79): the P-axis MTP drift is not a 3-GPU effect
+
+The r79 PR #167 acceptance pass measured a reproducible prose (P) MTP loss from a rounding-level MoE
+dot-product change.  It is **not** the 3-GPU decode deficit, and it is not specific to 3 GPUs:
+
+| build / topology | R | P | C | K | X (phase-switching) |
+|---|---:|---:|---:|---:|---:|
+| gfx1100 (1 GPU), PR #167 0001 default-on, r78 -> r79 | +1.8 % | **-2.7 %** | +1.2 % | +1.4 % | +3.0 % |
+| gfx1201 (2 GPU tensor), PR #167 0002 opt-in vs default | +3.4 % | **-1.65 %** | -0.5 % | +0.8 % | not run |
+| gfx1201 (3 GPU tensor), PR #167 0002 opt-in vs default | -0.2 % | **-1.4 %** | +0.5 % | +0.4 % | not run |
+
+The P loss tracks drafter acceptance on the new greedy continuation (gfx1100: 0.772 -> 0.718, mean
+accepted length 3.32 -> 3.15), while **plain** decode on the same prompt is faster (gfx1100 +0.7 %,
+gfx1201 flat).  It reproduces at `-n 2000`, `-n 3000` and fixed `n_max 3`, so it is content-dependent
+rounding drift, not a 3-GPU cost.  Keep it out of the 3-GPU diagnosis; if it needs a fix, it belongs to
+the adaptive controller's response to a changed continuation, not to the split/all-reduce path.
+Full numbers: [`../../benchmarks/2026-10-17-pr167-r79-acceptance.md`](../../benchmarks/2026-10-17-pr167-r79-acceptance.md).
+
 ## 1. The work matrix this campaign must fill
 
 Do not chase one number.  Measure the full grid, each with the arena resident and the exact prompt hash:

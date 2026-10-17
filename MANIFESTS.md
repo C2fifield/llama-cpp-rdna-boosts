@@ -5,9 +5,21 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r78`** (canonical tip `a0c4db04c`, net tree
-`b324d53566eb6f064c708047e4e0331c7ac5cc25`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r78 folds two contributor PRs into **block 10**: the
+**`097cf33d9`**, released as **`v12-097cf33d9-r79`** (canonical tip `8408293e2`, net tree
+`c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r79 folds PR #167 into **blocks 07/10**: the MoE expert
+kernel takes `vec_dot_q4_K_q8_1_vdr4_dense` (same layout and VDR 4, one integer chain per sub-block),
+**default on RDNA3_0** and an **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`, off by
+default; the ccache host-visibility constant ships with it).  **Block 10** also flips the PR #168 KV
+prefill pad to **default-on (8192) on a multi-device split** and keeps it inactive on a single GPU.
+Gates on gfx1201: default text **byte-identical to r78**, prefill-logit **0.000000 / 100.000 %**,
+`MUL_MAT_ID` q4_K 84/84, `none == draft-mtp n3` identical.  Independent gfx1100 rerun: tg256
+**+0.83 %**, batched B=1/B=4/B=8 **+1.4 / +1.9 / +2.7 %**, 4-axis MTP R **+1.8 %** / C **+1.2 %** /
+K **+1.4 %** / phase-switching **+3.0 %**, P **-2.7 %** (acceptance-driven content drift; plain decode
+on the same prompt **+0.7 %**; not 3-GPU-specific), KLD **0.004544 / 97.124 %**, prefill-logit
+**0.000000 / 99.990 %**.  KV pad default-on: 3-GPU tensor prefill **+2.5 %** MoE / **+0.8 %** dense,
+3-GPU layer **+42 % / +49 %**, 1-GPU inactive, greedy text identical.  Before it, r78 folds two
+contributor PRs into **block 10**: the
 KV-rotation FWHT fused into the rope kernel (and the projection's Q8_1 written by the attention-output
 FWHT), plus the residual ADD + `rms_norm_q8_1` fusion extended to one token (PR #172 exact, PR #174
 bit-identical; decoder-side, no band or reduction-order move).  Gates on gfx1201: same-seed text

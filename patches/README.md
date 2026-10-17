@@ -11,7 +11,29 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r78` (2026-10-17) -- KV-rotation FWHT fused into the rope kernel and into the projection Q8_1 (PR #172), ADD + `rms_norm_q8_1` for one token (PR #174):**
+> **Current release `v12-097cf33d9-r79` (2026-10-17) -- Q4_K VDR-4 for the MoE expert kernel (PR #167, blocks 07/10) and the multi-GPU KV prefill pad default (PR #168 follow-up, block 10):**
+> canonical tip `8408293e2`, net tree `c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 07 and 10** amended, no new block.
+> **block 07** (`vecdotq.cuh`) and **block 10** (`mmvq-vecdot.cuh`) give the MoE expert kernel
+> `vec_dot_q4_K_q8_1_vdr4_dense` (same 32-element layout and VDR 4; each sub-block's 16 products in one
+> integer `dp4a` chain before the single scale/convert/fma).  It is **default on RDNA3_0** and an
+> **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`, default off; separate from #162's dense
+> flag), with a host-visible constant so ccache keys the HIP object on the device-only flag.  The MoE
+> VDR, the width-uniform selector and the pinned fusion `calc_nwarps` are unchanged.  **block 10** also
+> makes `LLAMA_KV_N_PAD_PREFILL` default to **8192 on a multi-device split** and keeps it inactive on a
+> single GPU (`0` disables); the r77 single-GPU -0.35 % shape is now off by default.  Verified on
+> gfx1201 (3x R9700): default RDNA4 text **byte-identical to r78**, prefill-logit **0.000000 / 100.000 %**,
+> `MUL_MAT_ID` q4_K 84/84, `none == draft-mtp n3` identical.  The 0002 flag on 2-GPU tensor is flat on
+> `llama-bench` tg (+0.06 %) and +0.5-1.5 % at the verify widths, so it stays opt-in.  Independent
+> gfx1100 (7900 XTX) rerun: tg256 **+0.83 %**, batched B=1/B=4/B=8 **+1.4 / +1.9 / +2.7 %**, 4-axis MTP
+> R **+1.8 %** / C **+1.2 %** / K **+1.4 %** / phase-switching **+3.0 %**, P **-2.7 %** (acceptance-driven
+> content drift, plain decode on the same prompt **+0.7 %**; not 3-GPU-specific), KLD **0.004544 /
+> 97.124 %**, prefill-logit **0.000000 / 99.990 %**.  `LLAMA_KV_N_PAD_PREFILL` default-on: 3-GPU tensor
+> prefill **+2.5 %** MoE / **+0.8 %** dense, 3-GPU layer **+42 % / +49 %**, 1-GPU inactive, text
+> identical.  Records: `../WORKLOG.md` 261017.002, `../benchmarks/2026-10-17-pr167-r79-acceptance.md`,
+> `../archive/work/rdna3-mmvq-moe-q4k-vdr4/`.
+>
+> **Previous release `v12-097cf33d9-r78` (2026-10-17) -- KV-rotation FWHT fused into the rope kernel and into the projection Q8_1 (PR #172), ADD + `rms_norm_q8_1` for one token (PR #174):**
 > canonical tip `a0c4db04c`, net tree `b324d53566eb6f064c708047e4e0331c7ac5cc25`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.
 > PR #172 (both parts, bit-identical): a new `fwht_n` instantiation of the fused `rms_norm_mul_rope_f32`

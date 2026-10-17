@@ -40621,10 +40621,10 @@ index 000000000..511afb0b8
 +}
 diff --git a/ggml/src/ggml-cuda/mmvq-vecdot.cuh b/ggml/src/ggml-cuda/mmvq-vecdot.cuh
 new file mode 100644
-index 000000000..ea5cec0a7
+index 000000000..f7b0ffe05
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmvq-vecdot.cuh
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,94 @@
 +// Shared vec-dot / VDR selectors for the MMVQ kernels (immovable module-local
 +// declarations split out of mmvq.cu so the MoE kernel (mmvq-moe.cu) and the dense
 +// dispatch (mmvq.cu) can share them).
@@ -40661,8 +40661,13 @@ index 000000000..ea5cec0a7
 +        case GGML_TYPE_NVFP4:   return vec_dot_nvfp4_q8_1;
 +        case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1;
 +        case GGML_TYPE_Q3_K:    return vec_dot_q3_K_q8_1;
-+#if defined(GGML_CUDA_Q4K_DENSE_VDR4)
++#if defined(GGML_CUDA_Q4K_DENSE_VDR4) && defined(GGML_CUDA_Q4K_MOE_VDR4)
++        // dense and MoE both: same 32-element layout and VDR as vec_dot_q4_K_q8_1_vdr4, one integer chain per sub-block
++        case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1_vdr4_dense;
++#elif defined(GGML_CUDA_Q4K_DENSE_VDR4)
 +        case GGML_TYPE_Q4_K:    return moe ? vec_dot_q4_K_q8_1_vdr4 : vec_dot_q4_K_q8_1_vdr4_dense;
++#elif defined(GGML_CUDA_Q4K_MOE_VDR4)
++        case GGML_TYPE_Q4_K:    return moe ? vec_dot_q4_K_q8_1_vdr4_dense : vec_dot_q4_K_q8_1;
 +#else
 +        case GGML_TYPE_Q4_K:    return moe ? vec_dot_q4_K_q8_1_vdr4 : vec_dot_q4_K_q8_1;
 +#endif
@@ -55418,7 +55423,7 @@ index 04f3af644..5640285ef 100644
 +void ggml_cuda_op_sigmoid_mul_add(ggml_backend_cuda_context & ctx, ggml_tensor * sig, ggml_tensor * mul, ggml_tensor * add);
 +int  ggml_cuda_sigmoid_mul_add_try_fuse(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i);
 diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
-index f65fe530e..4119ff8a0 100644
+index f65fe530e..372db8d0f 100644
 --- a/ggml/src/ggml-cuda/vecdotq.cuh
 +++ b/ggml/src/ggml-cuda/vecdotq.cuh
 @@ -2,6 +2,17 @@
@@ -55817,14 +55822,14 @@ index f65fe530e..4119ff8a0 100644
  
      for (int i = 0; i < QR4_K; ++i) {
          const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
-@@ -962,8 +1152,134 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
+@@ -962,9 +1152,146 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
          u[2*i+1] = q8[4];
      }
  
 -    return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
 +    return vec_dot_q4_K_q8_1_impl_vmmq(v, u, scm, bq4_K->dm, d8);
-+}
-+
+ }
+ 
 +// VDR=4 entry point: iqs must be a multiple of 4 (the mmvq kernel strides kqs
 +// by VDR). Processes 32 elements per call, splitting the ql/u loads over two
 +// 16-element chunks that share the q8_1 block pair, the sub-scale/min pair and
@@ -55888,8 +55893,19 @@ index f65fe530e..4119ff8a0 100644
 +#if defined(RDNA3_0) || (defined(RDNA4) && defined(GGML_HIP_RDNA4_Q4K_DENSE_VDR4))
 +#define GGML_CUDA_Q4K_DENSE_VDR4
 +#endif
++// The MoE expert kernel takes it too, in place of vec_dot_q4_K_q8_1_vdr4 (same 32-element layout and VDR): the default
++// on RDNA3_0, a separate build-time opt-in on RDNA4 (-DGGML_HIP_RDNA4_Q4K_MOE_VDR4), with the same caveat on greedy
++// text.  The MoE VDR is 4 either way, so the host side needs nothing.
++#if defined(RDNA3_0) || (defined(RDNA4) && defined(GGML_HIP_RDNA4_Q4K_MOE_VDR4))
++#define GGML_CUDA_Q4K_MOE_VDR4
++#endif
++// The flag only changes device code, but ccache keys HIP objects on the host-side preprocessing (where RDNA4 is
++// never defined), so toggling it alone would return the cached object.  This makes it visible to the host pass.
++#if defined(GGML_HIP_RDNA4_Q4K_MOE_VDR4)
++[[maybe_unused]] static constexpr bool ggml_cuda_rdna4_q4k_moe_vdr4 = true;
++#endif
 +
-+#if defined(GGML_CUDA_Q4K_DENSE_VDR4)
++#if defined(GGML_CUDA_Q4K_DENSE_VDR4) || defined(GGML_CUDA_Q4K_MOE_VDR4)
 +// gfx1100 (RDNA3_0) dense Q4_K mmvq, 32 elements per call (VDR 4).  The two 16-element chunks of a call belong to
 +// the same two sub-blocks, so each sub-block's 16 products are summed in one integer dot-product chain before its
 +// single scale/convert/fma (|dot1| <= 16*15*127, times the 6-bit scale < 2^21, exact); the mins term uses the same
@@ -55948,12 +55964,13 @@ index f65fe530e..4119ff8a0 100644
 +    const float2 dm4f = __half22float2(bq4_K->dm);
 +
 +    return dm4f.x*sumf_d - dm4f.y*sumf_m;
- }
-+#endif // defined(GGML_CUDA_Q4K_DENSE_VDR4)
- 
++}
++#endif // defined(GGML_CUDA_Q4K_DENSE_VDR4) || defined(GGML_CUDA_Q4K_MOE_VDR4)
++
  static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
-@@ -1016,6 +1332,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
+ 
+@@ -1016,6 +1343,64 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
      return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
  }
  
@@ -56018,7 +56035,7 @@ index f65fe530e..4119ff8a0 100644
  static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
  
-@@ -1042,6 +1416,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
+@@ -1042,6 +1427,41 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
      return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
  }
  
@@ -56060,7 +56077,7 @@ index f65fe530e..4119ff8a0 100644
  #define VDR_IQ2_XXS_Q8_1_MMVQ 2
  #define VDR_IQ2_XXS_Q8_1_MMQ  2
  
-@@ -1060,19 +1469,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
+@@ -1060,19 +1480,17 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
          const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
  
@@ -56083,7 +56100,7 @@ index f65fe530e..4119ff8a0 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1097,12 +1504,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1097,12 +1515,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
          const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l0/2] & 0x1FF];
          const uint32_t signs = unpack_ksigns(q2[l0/2] >> 9);
  
@@ -56098,7 +56115,7 @@ index f65fe530e..4119ff8a0 100644
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
          if (l0 < 4) {
-@@ -1113,7 +1518,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
+@@ -1113,7 +1529,7 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -56107,7 +56124,7 @@ index f65fe530e..4119ff8a0 100644
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1143,11 +1548,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1143,11 +1559,9 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
      for (int l0 = 0; l0 < 8; l0 += 2) {
          const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
  
@@ -56122,7 +56139,7 @@ index f65fe530e..4119ff8a0 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1160,7 +1563,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
+@@ -1160,7 +1574,7 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
              sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
          }
      }
@@ -56131,7 +56148,7 @@ index f65fe530e..4119ff8a0 100644
  
      const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1184,13 +1587,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1184,13 +1598,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
          const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
          const uint32_t signs = unpack_ksigns(aux32 >> (7*l0/2));
  
@@ -56147,7 +56164,7 @@ index f65fe530e..4119ff8a0 100644
  
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
  
-@@ -1199,7 +1600,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
+@@ -1199,7 +1611,7 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
      }
  
      const int ls = aux32 >> 28;
@@ -56156,7 +56173,7 @@ index f65fe530e..4119ff8a0 100644
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
  }
-@@ -1228,11 +1629,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1228,11 +1640,9 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
              iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
              iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
  
@@ -56171,7 +56188,7 @@ index f65fe530e..4119ff8a0 100644
  
          const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
          const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-@@ -1241,7 +1640,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
+@@ -1241,7 +1651,7 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
          sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
      }
  
@@ -56180,7 +56197,7 @@ index f65fe530e..4119ff8a0 100644
  
      const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs/2].ds);
      return d * sumi;
-@@ -1373,7 +1772,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
+@@ -1373,7 +1783,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
      }
  
      const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
@@ -61092,10 +61109,40 @@ index f8caae9d6..3909c4990 100644
          for (const auto & layer : layers) {
              ggml_backend_tensor_copy(layer.kv_stream[ssrc], layer.kv_stream[sdst]);
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 463510caa..dcc097417 100644
+index 463510caa..edd236129 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -79,7 +79,8 @@ llama_kv_cache::llama_kv_cache(
+@@ -62,6 +62,29 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
+ // llama_kv_cache
+ //
+ 
++// LLAMA_KV_N_PAD_PREFILL: a coarser pad for prompt-sized ubatches (see get_n_kv).  The env value is rounded
++// up to a power of two (GGML_PAD is a bit mask); 0 (or an unset value on a single device) turns it off.
++// Default-on only when more than one GPU is in use: a single GPU rebuilds its graph cheaply and the
++// coarser pad only adds masked attention work there (-0.35 % measured on a dense 27B), so the default
++// stays inactive for that shape.  Under -sm tensor the model can be a single Meta device, hence the
++// split-state count as well as the device list.
++static uint32_t kv_n_pad_prefill_default(const llama_model & model) {
++    if (const char * env = getenv("LLAMA_KV_N_PAD_PREFILL")) {
++        const int e = atoi(env);
++        if (e <= 0 || e > (1 << 24)) {
++            return 0;
++        }
++        uint32_t p2 = 1;
++        while (p2 < (uint32_t) e) {
++            p2 <<= 1;
++        }
++        return p2;
++    }
++
++    const bool multi_device = model.get_split_state_ud.n_devices > 1 || model.n_devices() > 1;
++    return multi_device ? 8192u : 0u;
++}
++
+ llama_kv_cache::llama_kv_cache(
+         const llama_model & model,
+         const llama_hparams & hparams,
+@@ -79,9 +102,11 @@ llama_kv_cache::llama_kv_cache(
      const layer_filter_cb & filter,
      const  layer_reuse_cb & reuse,
      const  layer_share_cb & share,
@@ -61103,9 +61150,13 @@ index 463510caa..dcc097417 100644
 +             const char *   name_tag,
 +                     bool   v_enabled) :
      model(model), hparams(hparams), v_trans(v_trans),
-     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
+-    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
++    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad),
++    n_pad_prefill(kv_n_pad_prefill_default(model)), n_swa(n_swa), swa_type(swa_type),
      other(static_cast<llama_kv_cache *>(mem_other)),
-@@ -228,7 +229,7 @@ llama_kv_cache::llama_kv_cache(
+     v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()),
+     v_cells(*v_cells_impl) {
+@@ -228,7 +253,7 @@ llama_kv_cache::llama_kv_cache(
          }
  
          const bool has_k = true;
@@ -61114,7 +61165,7 @@ index 463510caa..dcc097417 100644
  
          ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
          ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
-@@ -420,7 +421,9 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+@@ -420,7 +445,9 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
  
          uint32_t new_head = cells.size();
  
@@ -61125,7 +61176,7 @@ index 463510caa..dcc097417 100644
              if (!cells.pos_in(i, p0, p1)) {
                  continue;
              }
-@@ -444,7 +447,8 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+@@ -444,7 +471,8 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
  
              uint32_t new_head = cells.size();
  
@@ -61135,7 +61186,7 @@ index 463510caa..dcc097417 100644
                  if (!cells.pos_in(i, p0, p1)) {
                      continue;
                  }
-@@ -832,7 +836,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
+@@ -832,7 +860,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
      return res;
  }
  
@@ -61144,7 +61195,7 @@ index 463510caa..dcc097417 100644
      // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
      if (other) {
          return true;
-@@ -842,16 +846,16 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
+@@ -842,16 +870,16 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
  
      auto * sched = lctx->get_sched();
  
@@ -61165,7 +61216,7 @@ index 463510caa..dcc097417 100644
  
              assert(ssrc < n_stream);
              assert(sdst < n_stream);
-@@ -971,12 +975,12 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+@@ -971,12 +999,12 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
                  LLAMA_LOG_DEBUG("\n%s\n", ss.c_str());
              }
  
@@ -61181,7 +61232,7 @@ index 463510caa..dcc097417 100644
              }
          }
      }
-@@ -1171,8 +1175,8 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+@@ -1171,8 +1199,8 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
                  cells.ext_set(idx, ext);
              }
  
@@ -61192,7 +61243,7 @@ index 463510caa..dcc097417 100644
              }
          }
      }
-@@ -1277,17 +1281,41 @@ uint32_t llama_kv_cache::get_stream(llama_seq_id seq_id) const {
+@@ -1277,17 +1305,33 @@ uint32_t llama_kv_cache::get_stream(llama_seq_id seq_id) const {
      return seq_to_stream[seq_id];
  }
  
@@ -61212,16 +61263,8 @@ index 463510caa..dcc097417 100644
 +    // a pad several ubatches wide lets consecutive ubatches reuse one graph.  Below the threshold the decode pad stays, so
 +    // a model's small-context shortcuts keyed on n_kv (qwen4exp's dense attention for the first ~2051 tokens) still apply.
 +    // Decode and verify batches keep the decode pad (a coarse pad there slows every step and changes its numerics).
-+    // Rounded up to a power of two (GGML_PAD is a bit mask).  0: off.  Not for training (its graphs assert n_kv == n_tokens).
-+    static const uint32_t n_pad_prefill = [] {
-+        const int      e = getenv("LLAMA_KV_N_PAD_PREFILL") ? atoi(getenv("LLAMA_KV_N_PAD_PREFILL")) : 0;
-+        const uint32_t v = e > 0 && e <= (1 << 24) ? (uint32_t) e : 0u;   // ignore negative / absurd values
-+        uint32_t p2 = 1;
-+        while (p2 < v) {
-+            p2 <<= 1;
-+        }
-+        return v > 0 ? p2 : 0u;
-+    }();
++    // Default: 8192 on a multi-device split, 0 (off) on a single device; the value is rounded up to a power of two.
++    // Not for training (its graphs assert n_kv == n_tokens).
 +    static const uint32_t n_pad_prefill_from = getenv("LLAMA_KV_N_PAD_PREFILL_FROM") ? (uint32_t) atoi(getenv("LLAMA_KV_N_PAD_PREFILL_FROM")) : 4096u;
 +    const uint32_t n_pad_cur = std::max(n_pad, n_pad_min);
 +    const bool     prefill   = n_tokens > 64 && n_pad_prefill > n_pad_cur;
@@ -61237,7 +61280,7 @@ index 463510caa..dcc097417 100644
      }
  
      return result;
-@@ -1364,16 +1392,16 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
+@@ -1364,16 +1408,16 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
  
      k_cur = ggml_view_2d(ctx, k_cur, n_embd_gqa, n_tokens, k_cur->nb[2], 0);
  
@@ -61257,7 +61300,7 @@ index 463510caa..dcc097417 100644
      }
  
      // store the current K values into the cache
-@@ -1396,20 +1424,20 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
+@@ -1396,20 +1440,20 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
      // we can merge dims 0 and 1
      GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);
  
@@ -61281,7 +61324,7 @@ index 463510caa..dcc097417 100644
          }
  
          return ggml_set_rows(ctx, v, v_cur, v_idxs);
-@@ -1762,12 +1790,12 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+@@ -1762,12 +1806,12 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
      GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
  
      const int64_t n_kv     = dst->ne[0];
@@ -61297,7 +61340,7 @@ index 463510caa..dcc097417 100644
  
      // see llama_non_causal_type
      // only the SWA cache (or the SWA layers of a single cache) become non-causal
-@@ -1785,7 +1813,7 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+@@ -1785,7 +1829,7 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
          /*.n_swa            =*/ n_swa,
          /*.swa_type         =*/ swa_type,
          /*.n_kv             =*/ n_kv,
@@ -61306,7 +61349,7 @@ index 463510caa..dcc097417 100644
          /*.n_tps            =*/ n_tps,
      };
  
-@@ -1800,6 +1828,178 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+@@ -1800,6 +1844,178 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
      //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
  }
  
@@ -61485,7 +61528,7 @@ index 463510caa..dcc097417 100644
  void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
      const int64_t n_tokens = ubatch->n_tokens;
  
-@@ -2240,8 +2440,8 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
+@@ -2240,8 +2456,8 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
                  io.write(&ext, sizeof(ext));
              }
  
@@ -61496,7 +61539,7 @@ index 463510caa..dcc097417 100644
              }
          }
      }
-@@ -2250,10 +2450,10 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
+@@ -2250,10 +2466,10 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
  void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const {
      const auto & cells = v_cells[cr.strm];
  
@@ -61509,7 +61552,7 @@ index 463510caa..dcc097417 100644
      io.write(&n_layer, sizeof(n_layer));
      io.write(&n_rot_k, sizeof(n_rot_k));
      io.write(&n_rot_v, sizeof(n_rot_v));
-@@ -2283,7 +2483,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+@@ -2283,7 +2499,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
          }
      }
  
@@ -61518,7 +61561,7 @@ index 463510caa..dcc097417 100644
          for (const auto & layer : layers) {
              const uint32_t il = layer.il;
  
-@@ -2547,12 +2747,12 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2547,12 +2763,12 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
          }
      }
  
@@ -61533,7 +61576,7 @@ index 463510caa..dcc097417 100644
      io.read(&n_layer, sizeof(n_layer));
      io.read(&n_rot_k_ref, sizeof(n_rot_k_ref));
      io.read(&n_rot_v_ref, sizeof(n_rot_v_ref));
-@@ -2567,7 +2767,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2567,7 +2783,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
          return false;
      }
  
@@ -61542,7 +61585,7 @@ index 463510caa..dcc097417 100644
          LLAMA_LOG_ERROR("%s: incompatible V transposition\n", __func__);
          return false;
      }
-@@ -2864,7 +3064,7 @@ bool llama_kv_cache_context::apply() {
+@@ -2864,7 +3080,7 @@ bool llama_kv_cache_context::apply() {
      }
  
      kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
@@ -61551,7 +61594,7 @@ index 463510caa..dcc097417 100644
  
      return true;
  }
-@@ -2939,6 +3139,16 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
+@@ -2939,6 +3155,16 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
      kv->set_input_kq_mask(dst, ubatch, causal_attn);
  }
  
@@ -61569,7 +61612,7 @@ index 463510caa..dcc097417 100644
      kv->set_input_pos_bucket(dst, ubatch);
  }
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 9bfb8f231..0456a518a 100644
+index 9bfb8f231..4667c447c 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -114,7 +114,10 @@ public:
@@ -61608,7 +61651,17 @@ index 9bfb8f231..0456a518a 100644
      void set_input_k_rot(ggml_tensor * dst) const;
      void set_input_v_rot(ggml_tensor * dst) const;
  
-@@ -432,6 +443,12 @@ public:
+@@ -274,6 +285,9 @@ private:
+     // required padding
+     const uint32_t n_pad = 1;
+ 
++    // env: LLAMA_KV_N_PAD_PREFILL (0 when inactive)
++    const uint32_t n_pad_prefill = 0;
++
+     // SWA
+     const uint32_t n_swa = 0;
+ 
+@@ -432,6 +446,12 @@ public:
      void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
      void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
  

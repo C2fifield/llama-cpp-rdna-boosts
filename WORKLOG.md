@@ -1,5 +1,68 @@
 # WORKLOG - dated delivery records
 
+## 261017.002 (r79) -- Q4_K VDR-4 for the MoE expert kernel (PR #167, blocks 07/10; RDNA3_0 default-on, RDNA4 opt-in) and `LLAMA_KV_N_PAD_PREFILL` default-on for a multi-device split (block 10)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r79` (base `097cf33d9`; canonical tip
+`8408293e2`, net tree `c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`; 12 blocks; `validate-set.sh` green --
+checksums OK, strict 12/12 `git am` on a fresh tarball, applied tree equals the recorded tree; blocks 07
+and 10 amended, no new block).  **PR #167 (`@briansp2020`, `rdna3-mmvq-moe-q4k-vdr4`) accepted**, and
+the PR #168 follow-up is folded into the same release.
+
+**PR #167 block 07 (`vecdotq.cuh`) + block 10 (`mmvq-vecdot.cuh`).**  The MoE expert kernel
+(`mul_mat_vec_q_moe`) took `vec_dot_q4_K_q8_1_vdr4`, which scales and converts each 8-element chunk
+separately.  `vec_dot_q4_K_q8_1_vdr4_dense` has the same 32-element layout and VDR 4, but sums each
+sub-block's 16 products in one integer `dp4a` chain before the single scale / convert / fma.  It is now
+**default on RDNA3_0** (patch 0001) and an **RDNA4 build-time opt-in**
+(`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`, default off; patch 0002, separate from #162's dense flag).  The MoE
+VDR is 4 either way, the selector is width-uniform, and the pinned fusion ops keep plain `calc_nwarps`;
+only the intra-sub-block summation order changes.  Patch 0002 also defines a host-visible
+`ggml_cuda_rdna4_q4k_moe_vdr4` constant, so ccache keys the HIP object on a device-only flag (without
+it the unchanged object was returned for the flag toggle).
+
+**PR #168 follow-up, block 10.**  `LLAMA_KV_N_PAD_PREFILL` now defaults to **8192** when more than one
+device is in use (`model.n_devices() > 1` or the meta split state has more than one device) and stays
+inactive on a single device.  The env value still overrides and `0` disables.  The r77 reason for
+keeping it opt-in was the single-GPU **-0.35 %** prefill loss; that shape is now inactive, so the
+multi-GPU win ships by default.  Decode/verify keep the decode pad and the extra cells stay masked, so
+the decode numerics are unchanged.
+
+**RDNA4 (gfx1201, 3x R9700, ROCm 7.14.1).**  Patch 0001 is RDNA3_0 only, so the default release is
+**byte-identical to r78** on MoE 35B-A3B and dense 27B (only the build banner differs); the prefill-logit
+gate against an r78-recorded base is **0.000000 / 100.000 %**, `MUL_MAT_ID` q4_K is 84/84, and
+`none == draft-mtp n3` is byte-identical.  The 0002 flag build measured **2-GPU tensor**
+(`HIP_VISIBLE_DEVICES=0,2`): `llama-bench` tg256 **+0.06 %** (113.79 -> 113.86 t/s, flat), batched
+B=1/B=4/B=8 **+0.9 / +0.5 / +1.5 %**, 4-axis MTP at `-n 3000` R **+3.4 %**, K **+0.8 %**, P **-1.65 %**,
+C **-0.5 %**; KLD at `-ub 4` **0.003977 / 97.386 %** (PPL ratio 1.0002) and `none == draft-mtp n3`
+byte-identical.  On **3-GPU tensor** the 4-axis at `-n 2000` was R -0.2 %, P -1.4 %, C +0.5 %, K +0.4 %.
+It is not a clear default-on win, so 0002 stays an opt-in; the default RDNA4 path is unchanged.
+
+**RDNA3_0 (gfx1100, RX 7900 XTX, independent rerun).**  Base r78 vs r79, single GPU, Qwen3.6-35B-A3B
+UD-Q4_K_M, q8_0 KV: tg256 **125.85 -> 126.89 t/s (+0.83 %)** (all r79 rounds above all r78 rounds),
+pp512 flat; `llama-batched-bench` B=1/B=4/B=8 **+1.4 / +1.9 / +2.7 %**; 4-axis MTP at `-n 3000` R
+**+1.8 %**, P **-2.7 %**, C **+1.2 %**, K **+1.4 %**, phase-switching **+3.0 %**.  KLD at `-ub 4`
+**0.004544 / 97.124 %** (PPL ratio 1.0016), prefill-logit **0.000000 / 99.990 %**, `MUL_MAT_ID` 84/84,
+`none == draft-mtp n3` byte-identical.  The P loss is reproducible at `-n 2000`/`-n 3000` and with fixed
+`n_max 3`; it is acceptance-driven (0.772 -> 0.718, mean accepted length 3.32 -> 3.15) because the greedy
+continuation changes, while **plain** decode on the same prompt is **+0.7 %** (121.2 -> 122.1 t/s).  It
+is content-dependent rounding drift, not a kernel slowdown, and it is **not** 3-GPU-specific; the
+cross-reference for the three-GPU campaign is `wip/three-gpu-performance/` §0.1.
+
+**PR #168 default-on (gfx1201, r79 release build).**  31 k-token prompt, `-ub 2048`, q8_0 KV, default vs
+`LLAMA_KV_N_PAD_PREFILL=0`: MoE 35B-A3B 3-GPU tensor **+2.5 %**, dense 27B 3-GPU tensor **+0.7-0.8 %**,
+MoE 3-GPU **layer** **+42 %**, dense 3-GPU **layer** **+49 %**; the 1-GPU default is inactive (prefill
+4194 t/s base vs 4181 t/s new, explicit `=0` 4173 t/s) and the 31 k-prompt greedy text is identical
+on/off.  The layer-split win is the same graph-reuse effect on a split that rebuilds per ubatch.
+
+**Gates.**  `validate-set.sh` green (12/12 strict, tree match); prefill-logit **0.000000 / 100.000 %**
+(gfx1201) and **0.000000 / 99.990 %** (gfx1100); `MUL_MAT_ID` q4_K 84/84 on both families and both RDNA4
+arms; `none == draft-mtp n3` byte-identical on the RDNA3 default and the RDNA4 flag build; GPU fault
+check clean; `ggml-hip` compiles for `gfx1100`, `gfx1151` and `gfx1201`.  Full tables and commands:
+`benchmarks/2026-10-17-pr167-r79-acceptance.md`.
+
+**Records.**  PR #167 record moved to `archive/work/rdna3-mmvq-moe-q4k-vdr4/` (contributor README +
+both format-patches + `RESOLUTION.md`).  `ENVIRONMENT.md` records the new default and the
+`GGML_HIP_RDNA4_Q4K_MOE_VDR4` flag; `patches/README.md` records the current-release notes.
+
 ## 261017.001 (r78) -- KV-rotation FWHT fused into the rope kernel and into the projection Q8_1 (PR #172, block 10), ADD + `rms_norm_q8_1` for one token (PR #174, block 10); PR #173 rejected
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r78` (base `097cf33d9`; canonical tip

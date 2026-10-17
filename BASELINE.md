@@ -2,12 +2,23 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r77`** (canonical tip `6d8edf445`, net tree
-`e726101ddc3ee855adc903cc07c3b7009d0a27fc`).  r77 folds two contributor PRs into **blocks 08/10**: the
-q8_0 `SET_ROWS` K/V-write kernel and the register-quantizing `rms_norm_q8_1` (PR #171; bit-identical,
-no `try_fuse`/band change, MTP decode +0.6-0.7 %, no regression at the verify widths), plus an
-**opt-in** coarse prefill KV pad (`LLAMA_KV_N_PAD_PREFILL`, default off: +2.0 % prefill on 35B-A3B at 2
-GPUs, +1.0 % on the dense 27B at 3 GPUs, -0.35 % at 1 GPU -- which is why it is not default-on).  Before
+**`v12-097cf33d9-r79`** (canonical tip `8408293e2`, net tree
+`c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`).  r79 folds PR #167 into **blocks 07/10**: the MoE
+expert kernel takes the 32-element dense Q4_K dot product (same layout and VDR 4, one integer chain per
+sub-block), **default on RDNA3_0** and a **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`,
+off by default; the ccache host-visibility constant ships with it).  **Block 10** also makes the PR #168
+KV prefill pad **default-on (8192) on a multi-device split**, inactive on a single GPU (the r77
+single-GPU -0.35 % shape is now off).  Independent gfx1100 rerun: tg256 +0.83 %, batched B=1/B=4/B=8
++1.4/+1.9/+2.7 %, KLD 0.004544 / 97.124 %, prefill-logit 0.000000 / 99.990 %; the P-axis MTP -2.7 % is
+acceptance-driven content drift (plain decode on the same prompt +0.7 %, not 3-GPU-specific).  The
+RDNA4 default is byte-identical to r78; 0002 on 2-GPU is flat on tg and +0.5-1.5 % at the verify widths,
+so it stays opt-in.  Before it, r78 folds the KV-rotation FWHT fusion and the one-token ADD +
+`rms_norm_q8_1` fusion into **block 10** (PRs #172/#174; same-seed text byte-identical to r77,
+prefill-logit 0.000000 / 100.000 % on Gemma4 12B).  Before it, r77 folds two contributor PRs into
+**blocks 08/10**: the q8_0 `SET_ROWS` K/V-write kernel and the register-quantizing `rms_norm_q8_1` (PR
+#171; bit-identical, no `try_fuse`/band change, MTP decode +0.6-0.7 %, no regression at the verify
+widths), plus the **then-opt-in** coarse prefill KV pad (`LLAMA_KV_N_PAD_PREFILL`; r79 flips its
+default for a multi-device split).  Before
 it, r76 folds the RDNA2 (gfx1030) tuned tile-FA + k-quant
 work (PR #165) into **blocks 05/07**, gated to RDNA2 (`#if defined(RDNA2)` /
 `GGML_CUDA_CC_IS_RDNA2`): gfx1201 / gfx1100 / gfx1151 keep their previous numerics (same-seed greedy

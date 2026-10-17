@@ -35,6 +35,18 @@ is the signature of a stub, not of a campaign.
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
 
+**Promoted (r79, 2026-10-17).**  PR #167 (`rdna3-mmvq-moe-q4k-vdr4`) was promoted into **blocks
+07/10**: the MoE expert kernel takes `vec_dot_q4_K_q8_1_vdr4_dense`, **default on RDNA3_0**
+(+0.83 % tg256, +1.4/+1.9/+2.7 % batched B=1/4/8, 4-axis MTP R/C/K/phase-switching
++1.2-3.0 %; the P axis is -2.7 % acceptance-driven content drift, plain decode on the same prompt
++0.7 %) and an **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`, default off: 2-GPU
+tg flat, +0.5-1.5 % at the verify widths, mixed MTP).  The same release flips the PR #168 KV prefill
+pad to **default-on (8192) on a multi-device split** and inactive on one GPU (3-GPU tensor +2.5 % MoE
+/ +0.8 % dense, 3-GPU layer +42 % / +49 %, 1-GPU unchanged).  The PR was never a `wip/` entry on
+`main` (it arrived as a PR branch), so the open set was not touched; the record is
+`archive/work/rdna3-mmvq-moe-q4k-vdr4/` with a `RESOLUTION.md`.  The P-axis finding is cross-referenced
+in `three-gpu-performance/README.md` §0.1 (it is not 3-GPU-specific).  See `WORKLOG.md` 261017.002.
+
 **Promoted and rejected (r78, 2026-10-17).**  Three contributor PRs were reviewed; **none of them was
 ever a `wip/` entry on `main`** (they arrived as PR branches under their own `wip/<name>/`, so the open
 set here was not touched and no stub was created or removed).  **#172 `kv-rot-fwht-fusion`** promoted
