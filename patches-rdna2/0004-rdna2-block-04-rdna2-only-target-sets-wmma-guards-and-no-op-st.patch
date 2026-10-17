@@ -1,0 +1,112 @@
+From 01625de4e62925f52a90bfb1223f42fa8669ecfc Mon Sep 17 00:00:00 2001
+From: SixVolts <rigel@sixvolts.org>
+Date: Fri, 16 Oct 2026 12:00:00 +0000
+Subject: [PATCH 04/04] rdna-boosts: rdna2 block 04: build for RDNA2-only target sets (WMMA guards, no-op stubs)
+
+The 12-block base set compiles the gfx11/gfx12 WMMA (wave matrix) kernels
+unconditionally in two files, so a build for a target set without the wmma
+builtins fails:
+
+  fattn-qsa3.cu: error: '__builtin_amdgcn_wmma_f32_16x16x16_f16_w32' needs
+  target feature gfx11-insts,wavefrontsize32
+
+(-DGPU_TARGETS=gfx1030, the RDNA2-only set; mmb.cu fails next with the same
+error class).
+
+Wrap the WMMA-only code in #if defined(AMD_WMMA_AVAILABLE) (common.cuh:
+RDNA3 or RDNA4) with no-op stubs in the #else arm -- the issue #1 pattern
+the base set already uses in gated_delta_net_chunked_bf16.cu,
+gated_delta_net_chunked_bf16_gfx11.cu and mma.cuh:
+
+- fattn-qsa3.cu: the qsa3_wmma_f16 dispatch and qsa3_attn_kernel (the stub
+  has the identical signature and an empty body).
+- mmb.cu: the mmb_wmma_bf16 / mmb_wmma_f16 dispatches (the stubs return
+  the accumulator).
+
+Safe on every device: both paths are runtime-gated above RDNA2 (qsa3 to
+RDNA3_0/RDNA3_5/RDNA4 via ggml_cuda_flash_attn_qsa3_supported, mmb to
+RDNA3_0/RDNA3_5/RDNA4 via mmb_enabled), so the stubs are never launched, and
+on RDNA3/RDNA4 the original code compiles unchanged.
+---
+
+ 0 files changed
+
+diff --git a/ggml/src/ggml-cuda/fattn-qsa3.cu b/ggml/src/ggml-cuda/fattn-qsa3.cu
+index 3335bd3..1146448 100644
+--- a/ggml/src/ggml-cuda/fattn-qsa3.cu
++++ b/ggml/src/ggml-cuda/fattn-qsa3.cu
+@@ -60,7 +60,10 @@ static __device__ __forceinline__ float qsa3_h2f(const uint16_t h) { return (flo
+ // Portable WMMA dispatch: gfx12 renamed the builtin and uses the 8-half fragment above; gfx11 keeps
+ // the first-gen builtin and its 16-half fragment.  The kernels are runtime-gated to
+ // RDNA3_0/RDNA3_5/RDNA4 (ggml_cuda_flash_attn_qsa3_supported), so only the matching arm is ever
+-// launched.
++// launched.  The builtins only exist for the gfx11/gfx12 targets: on a target set without them
++// (e.g. the RDNA2-only gfx1030 build) this dispatch and qsa3_attn_kernel compile to no-op stubs
++// (the issue #1 pattern of gated_delta_net_chunked_bf16.cu).
++#if defined(AMD_WMMA_AVAILABLE)
+ static __device__ __forceinline__ v8f qsa3_wmma_f16(const qsa3_frag_t a, const qsa3_frag_t b, const v8f c) {
+ #if defined(RDNA4)
+     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+@@ -68,6 +71,7 @@ static __device__ __forceinline__ v8f qsa3_wmma_f16(const qsa3_frag_t a, const q
+     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+ #endif
+ }
++#endif // defined(AMD_WMMA_AVAILABLE)
+ 
+ // ------------------------------------------------------------------------------------------------------------
+ // union builder, kernel A: per query row, check that the (validity-transformed) row is non-decreasing; if not,
+@@ -334,6 +338,7 @@ struct qsa3_layout {
+     float scale;
+ };
+ 
++#if defined(AMD_WMMA_AVAILABLE)
+ __global__ __launch_bounds__(256) void qsa3_attn_kernel(
+         const float * __restrict__ q, const uint16_t * __restrict__ pk, const uint16_t * __restrict__ pv,
+         const uint16_t * __restrict__ mask,
+@@ -575,6 +580,15 @@ __global__ __launch_bounds__(256) void qsa3_attn_kernel(
+         __syncthreads();
+     }
+ }
++#else
++// No-op stub for target sets without the gfx11/gfx12 WMMA builtins (the RDNA2-only gfx1030 build):
++// the support check above never launches qsa3 there; the stub exists only so the launcher links.
++__global__ __launch_bounds__(256) void qsa3_attn_kernel(
++        const float * __restrict__ q, const uint16_t * __restrict__ pk, const uint16_t * __restrict__ pv,
++        const uint16_t * __restrict__ mask,
++        const uint16_t * __restrict__ ublk, const uint16_t * __restrict__ umask,
++        const int * __restrict__ ucount, float * __restrict__ out, const qsa3_layout s) {}
++#endif // defined(AMD_WMMA_AVAILABLE)
+ 
+ // ------------------------------------------------------------------------------------------------------------
+ // host side
+
+diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
+index 43a4986..511f133 100644
+--- a/ggml/src/ggml-cuda/mmb.cu
++++ b/ggml/src/ggml-cuda/mmb.cu
+@@ -60,8 +60,12 @@ __constant__ int8_t mmb_kv_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10
+ __device__ __forceinline__ float mmb_h2f(uint16_t h) { return (float) __builtin_bit_cast(_Float16, h); }
+ 
+ // Portable WMMA dispatch: gfx12 renamed the builtins and uses the 8-half fragment above; gfx11 keeps
+-// the first-gen builtin and its 16-half fragment.  The kernels are runtime-gated to RDNA3_5/RDNA4
+-// (mmb_enabled), so only the matching arm is ever launched.
++// the first-gen builtin and its 16-half fragment.  The kernels are runtime-gated to RDNA3_0/RDNA3_5/RDNA4
++// (mmb_enabled), so only the matching arm is ever launched.  The builtins only exist for the
++// gfx11/gfx12 targets: on a target set without them (e.g. the RDNA2-only gfx1030 build) the
++// dispatches compile to no-op stubs; the mmb path is runtime-gated to RDNA3+, so they
++// are never launched there.
++#if defined(AMD_WMMA_AVAILABLE)
+ __device__ __forceinline__ v8f mmb_wmma_bf16(mmb_frag_t a, mmb_frag_t b, v8f c) {
+ #if defined(RDNA4)
+     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(__builtin_bit_cast(mmb_bf16_frag_t, a), __builtin_bit_cast(mmb_bf16_frag_t, b), c);
+@@ -76,6 +80,10 @@ __device__ __forceinline__ v8f mmb_wmma_f16(mmb_frag_t a, mmb_frag_t b, v8f c) {
+     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+ #endif
+ }
++#else
++__device__ __forceinline__ v8f mmb_wmma_bf16(mmb_frag_t a, mmb_frag_t b, v8f c) { (void) a; (void) b; return c; }
++__device__ __forceinline__ v8f mmb_wmma_f16(mmb_frag_t a, mmb_frag_t b, v8f c) { (void) a; (void) b; return c; }
++#endif // defined(AMD_WMMA_AVAILABLE)
+ 
+ __global__ void mmb_cvt_f32_bf16(const float * __restrict__ x, uint16_t * __restrict__ y, const size_t n) {
+     size_t i = ((size_t)blockIdx.x * blockDim.x + threadIdx.x) * 8;

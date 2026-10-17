@@ -1,0 +1,147 @@
+From 49b1838f03c2fc0f141e8b8ee8c1a4931ddf213a Mon Sep 17 00:00:00 2001
+From: SixVolts <rigel@sixvolts.org>
+Date: Fri, 16 Oct 2026 12:00:00 +0000
+Subject: [PATCH 03/03] rdna-boosts: rdna2 block 03: mmq k-quant float scale and navi21 mmvq table
+
+Port of the RDNA2 K-quant work from sixvolts/llama-halo-hybrid:
+
+- 1a803b9b: the K-quant MMQ path scales the dot-product accumulation in float
+  (ggml_cuda_mmq_scale_sumi in vecdotq.cuh, used by the three K-quant mmq
+  implementations).
+- 131d89e9: the Navi21 (gfx1030) MMVQ rows_per_block / nwarps table
+  (MMVQ_PARAMETERS_NAVI21).
+
+Not ported: halo 4d90f69f (MMVQ float scale) is a no-op on this base -- the
+12-block delivery already ships the equivalent ggml_cuda_mul_small (24-bit exact
+mul, full rate on AMD) in the MMVQ paths.
+---
+
+ 0 files changed
+
+diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
+index 7a31e36..305f0fd 100644
+--- a/ggml/src/ggml-cuda/vecdotq.cuh
++++ b/ggml/src/ggml-cuda/vecdotq.cuh
+@@ -544,6 +544,17 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
+     return d3*d8 * sumi;
+ }
+ 
++// scale * dot-sum for the K-quant MMQ and MMVQ paths. The integer product is exact in fp32 (a scale
++// of at most 8 bits times a dot sum below 2^17), and on AMD v_mul_lo_u32 is quarter rate while the
++// float multiply is full rate, so do it in float there. Same result on both paths.
++static __device__ __forceinline__ float ggml_cuda_mmq_scale_sumi(const int sc, const int sumi) {
++#ifdef GGML_USE_HIP
++    return (float) sc * (float) sumi;
++#else
++    return (float) (sc * sumi);
++#endif // GGML_USE_HIP
++}
++
+ #define VDR_Q4_K_Q8_1_MMVQ 2
+ #define VDR_Q4_K_Q8_1_MMVQ_MOE 4
+ #define VDR_Q4_K_Q8_1_MMQ  8
+@@ -624,7 +635,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
+ 
+         const float2 ds8f = __half22float2(ds8[i]);
+ 
+-        sumf_d += ds8f.x * (sc[i] * sumi_d);
++        sumf_d += ds8f.x * ggml_cuda_mmq_scale_sumi(sc[i], sumi_d);
+         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
+     }
+ 
+@@ -723,7 +734,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
+ 
+         const float2 ds8f = __half22float2(ds8[i]);
+ 
+-        sumf_d += ds8f.x * (sc[i] * sumi_d);
++        sumf_d += ds8f.x * ggml_cuda_mmq_scale_sumi(sc[i], sumi_d);
+         sumf_m += ds8f.y *   m[i]; // sum of q8_1 block * q4_K min val
+     }
+ 
+@@ -823,7 +834,7 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmq(
+             sumi_d.y = ggml_cuda_dp4a(v[2*i+5], u[2*i+5], sumi_d.y); // SIMD dot product
+         }
+ 
+-        sumf_d += d8[i0/4] * (sc_reg[i0/2+0]*sumi_d.x + sc_reg[i0/2+1]*sumi_d.y);
++        sumf_d += d8[i0/4] * (ggml_cuda_mmq_scale_sumi(sc_reg[i0/2+0], sumi_d.x) + ggml_cuda_mmq_scale_sumi(sc_reg[i0/2+1], sumi_d.y));
+     }
+ 
+     return d6 * sumf_d;
+
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index bbd6f07..eb5299b 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -47,7 +47,10 @@ enum mmvq_parameter_table_id {
+     MMVQ_PARAMETERS_RDNA3_0,
+     MMVQ_PARAMETERS_RDNA3_5,
+     MMVQ_PARAMETERS_RDNA4,
+-    MMVQ_PARAMETERS_GB10
++    MMVQ_PARAMETERS_GB10,
++    // halo-hybrid: real RDNA2 (gfx103x). gfx1151 also uses the RDNA2 table above by default (GGML_CUDA_MMVQ_RDNA35),
++    // so the Navi21 tuning (llama-navi21-furnace 0aa20a02b, b5f65d215, 05512bb1d) gets its own id
++    MMVQ_PARAMETERS_NAVI21
+ };
+ 
+ #include "mmvq-rdna.cuh"
+@@ -60,7 +63,7 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
+ #elif defined(RDNA3_5)
+     return MMVQ_PARAMETERS_RDNA3_5;
+ #elif defined(RDNA2)
+-    return MMVQ_PARAMETERS_RDNA2;
++    return MMVQ_PARAMETERS_NAVI21;
+ #elif defined(GCN) || defined(CDNA)
+     return MMVQ_PARAMETERS_GCN;
+ #elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA && __CUDA_ARCH__ < GGML_CUDA_CC_AMPERE
+@@ -83,7 +86,7 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
+         return MMVQ_PARAMETERS_RDNA3_5;
+     }
+     if (GGML_CUDA_CC_IS_RDNA2(cc)) {
+-        return MMVQ_PARAMETERS_RDNA2;
++        return MMVQ_PARAMETERS_NAVI21;
+     }
+     if (GGML_CUDA_CC_IS_GCN(cc) || GGML_CUDA_CC_IS_CDNA(cc)) {
+         return MMVQ_PARAMETERS_GCN;
+@@ -566,11 +569,42 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
+         }
+         return generic;
+     }
++    // Navi21 (V620, from llama-navi21-furnace): upstream had no RDNA2 entry, so every dispatch ran as one wave32
++    // workgroup. ncols_dst == 1 wants 4 waves to keep enough loads in flight; the verify shapes carry ncols_dst
++    // accumulators per wave, so wider blocks stop paying (V620, Qwen3.8-27B: 2..4 at 2 waves +6.3%, 5..8 at 1 wave
++    // with 4 rows per block +7.6%)
++    if (table_id == MMVQ_PARAMETERS_NAVI21) {
++        if (ncols_dst == 1) {
++            return 4;
++        }
++        if (ncols_dst <= 4) {
++            return 2;
++        }
++        return 1;
++    }
+     return 1;
+ }
+ 
+ 
+ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
++    if (table_id == MMVQ_PARAMETERS_NAVI21) {
++        switch (ncols_dst) {
++            case 1:
++                return small_k ? nwarps : 1;
++            case 2:
++            case 3:
++            case 4:
++                return 2;
++            // 5..8 (block-drafter verify): 4 rows amortise the 8 y-columns each wave holds; 8 rows regress
++            case 5:
++            case 6:
++            case 7:
++            case 8:
++                return 4;
++            default:
++                return 1;
++        }
++    }
+     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
+         switch (ncols_dst) {
+             case 1:
