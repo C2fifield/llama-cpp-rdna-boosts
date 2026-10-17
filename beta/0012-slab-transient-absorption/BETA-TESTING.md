@@ -57,6 +57,12 @@ cmake --build build -j
 Diff the output text against the same command on the 12-block build.  **Identical** (or, for a coarse quant,
 identical argmax per token) is what we want — a difference here means allocation changed numerics.
 
+> **Compare like with like.**  For a host-expert (`-ncmoe`) model, give *both* builds the same expert-cache
+> budget (`MOE_EXPERT_CACHE_MIB=<same value>`), or add `GGML_OP_OFFLOAD_MIN_BATCH=1` to both.  Without that, a
+> table can land cache-managed in one build and CPU-served in the other (the offload threshold is 32 tokens),
+> and the greedy text legitimately differs.  This is the most likely source of a "coherence differs" report
+> that is not a regression — see the patch README's known-risks section.
+
 **3b. The prefill/watch log — this is where the failures show.**  Run your real workload with
 
 ```bash

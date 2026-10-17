@@ -1336,3 +1336,48 @@ and **+2.8 GiB** on a 2-GPU tensor box from this step alone.
 
 **Recovery:** fork WIP `156f3265213b8aec99dc453acff20e6578a73fda`, patch **1 991 lines, sha256
 `478a8e9f395d4467219db3f928c97ddb8c6e613f50fd435b4269e916dc660add`**.
+
+---
+
+## 10.15 2026-10-17 — why the cache budget changes the *numerics* (the mechanism, proven)
+
+§10.13/§10.14 noted that greedy text differs between runs whose expert-cache budget differs.  It is **not** a
+wrong expert and **not** an ordering change, and it is **not** the hit *rate*.  The mechanism, from the code:
+
+1. **A miss is arithmetic-neutral.**  A miss inside a cache-managed table serves the *same bytes* to the *same
+   kernel* — either in place through the pinned host master's device alias (`table_cold_ok` / `g_cold_uva`) or
+   by copying the expert into its slot (`expert_slot` -> `arena + slot * expert_bytes`, no repack).  So
+   hit vs miss cannot change the text by itself.
+2. **What changes is *table residency*.**  `moe_cache_take_over()` requires
+   `identity && t.arena != nullptr && t.slots >= t.n_experts` — a table is cache-managed only if the arena holds
+   a slot for **every** expert in it, and `slots = per_host / t.host_bytes` is a continuous function of the
+   per-device budget.  A budget change therefore *crosses that threshold* for individual tables.
+3. **And a cache-managed table is offloaded to the GPU even at one token** —
+   `ggml_cuda.cu` `ggml_backend_cuda_device_supports_op`/`offload_op`: `moe_cache_enabled() && op == MUL_MAT_ID
+   && op->ne[2] <= MOE_EXPERT_CACHE_MAX_TOK -> true` — whereas a **non**-cache-managed host-expert table is
+   offloaded only when `get_op_batch_size(op) >= op_offload_min_batch_size` (**32** by default, block 09's
+   op-offload).  Below that width (decode, and the MTP verify band) the op runs **on the CPU**.
+
+So the difference is **CPU vs GPU arithmetic for a whole table in the narrow decode band** (or, for a table that
+*is* cache-managed, the cache's compact-arena kernel path instead of the plain one) — a different code path for
+the same mathematics, not a different expert.  A second, *global* switch rides along: the cache-aware fusions
+stand down whenever any table is unserveable (`moe_cache_has_arena()`), so fused vs separate kernels can change
+too.
+
+**Proof.**  The 2-GPU `-sm layer` config that flipped between headroom 1024 and 768 was re-run with
+`GGML_OP_OFFLOAD_MIN_BATCH=1` (force *every* host-expert op onto the GPU, including at 1 token):
+
+| arm | default offload | `GGML_OP_OFFLOAD_MIN_BATCH=1` |
+|---|---|---|
+| headroom 1024 | `c5b7ff695660` | **`c5b7ff695660`** |
+| headroom 768 | `394193591d4d` | **`c5b7ff695660`** |
+
+With the offload decision made independent of cache residency the two arms agree exactly, which pins the cause.
+
+**Consequences (this is a purity rule, not a bug):**
+* greedy text is comparable across runs only when the **cache budget / offload decision** is the same — pin
+  `MOE_EXPERT_CACHE_MIB` (same value on both arms) or neutralise with `GGML_OP_OFFLOAD_MIN_BATCH=1`;
+* a *hit-rate* improvement alone can never change the text; a *budget* change can;
+* the beta's coherence gate therefore compares against a build with the same cache budget, or compares logits
+  (`gate-prefill-logits.sh` is unaffected: it is a prefill-path comparison and measured 0.000000 across this
+  whole campaign).  Worth a `GREEDY-PURITY.md` entry when this is promoted.

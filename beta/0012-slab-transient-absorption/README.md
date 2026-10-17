@@ -75,10 +75,16 @@ Prefill 1 238 t/s on the field config (was 1 165), wide gate 619 t/s (was 610), 
   behaviour) and please report the config + the message.
 * **Unequal `-ts` with `-sm tensor` keeps the full (conservative) reserve** — no speed/VRAM benefit there yet,
   and no regression expected.
-* **The expert-cache hit rate changes the numerics** (pre-existing, isolated while developing this): a cached
-  expert and a streamed one do not round identically, so greedy text can differ between two runs whose *arena
-  size* differs.  Compare greedy text only against a run with the same arena (or accept the logits-level
-  comparison).  This is why some rows above say "identical" and some do not.
+* **The expert-cache *budget* changes the numerics** (pre-existing, isolated while developing this) — via
+  **table residency**, not the hit rate.  A cache-managed table is offloaded to the GPU even at one token
+  (it must, to read the compact arena); a non-cache-managed host-expert table is offloaded only at
+  `>= GGML_OP_OFFLOAD_MIN_BATCH` (**32** by default) and otherwise runs **on the CPU**.  So changing the cache
+  budget can flip a whole table between CPU and GPU arithmetic in decode, which flips greedy text at
+  near-ties.  A hit vs a miss *inside* a cache-managed table is arithmetic-neutral (same bytes, same kernel).
+  **This is proven**, not assumed: with `GGML_OP_OFFLOAD_MIN_BATCH=1` two arms that differ by budget produce
+  *identical* text.  For an A/B comparison, pin `MOE_EXPERT_CACHE_MIB` to the same value on both arms (or set
+  `GGML_OP_OFFLOAD_MIN_BATCH=1`); the prefill-logit KLD gate is unaffected.  See
+  `../../wip/slab-transient-absorption/README.md` §10.15.
 * `GGML_CUDA_SLAB=0` restores the pre-slab allocation path entirely; `GGML_CUDA_SLAB_HEADROOM_MIB=<verbatim MiB>`
   pins the cushion; `MOE_EXPERT_CACHE_AUX_RESERVE_MIB` pins the draft reserve; `GGML_CUDA_POOL_WIDE=0` turns off
   the workspace-pool redirect.  Any of these is a valid A/B arm.
