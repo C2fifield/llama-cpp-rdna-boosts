@@ -35,6 +35,19 @@ is the signature of a stub, not of a campaign.
 | [`moe-cache-coverage/`](moe-cache-coverage/README.md) | **how much of the routing distribution the arena can hold and how well admission uses it** (renamed from `moe-arena-defrag` 2026-10-17).  P0 (heat-map correctness) shipped in r80; next is the offline routing-trace replayer, then a per-layer capacity quota | **OPEN (renamed + retargeted 2026-10-17)** — the defrag premise was refuted by measurement: the arena is ~100 % allocated in slots (0.51 % truncation) and eviction churn is 3.0 % of reaches, so compaction wins ≤ 0.5 % of bytes.  The same review found the **MoE heat map doubling per flush** (fixed in r80) and showed the Strata hit-rate gap is accounting + arena size, not fragmentation (equal basis: 91.9 % vs 90.6 %).  Plan: P1 offline routing-trace replayer, P2 per-layer capacity quota (0.3-0.5 pts on a clean map, the only strictly-in-arena win), P3 metric parity; arena size handed to `slab-transient-absorption/`.  See [`FINDINGS-2026-10-17-coverage-vs-defrag.md`](moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md) |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap, pool high-water) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered | **OPEN, re-verified at r80 (2026-10-17) — the next session's work.**  §1a is the current table (line numbers, measured sizes, three previously missing rows); §1b corrects the r60 findings (`slab_extend` is NOT dead when an MTP draft is present: `reserve = headroom + aux`, field `va_spare = 4.00 GiB`).  The payoff is now measured: ~1 pt of hit rate per GiB moved from headroom to arena, and 2048 headroom is already clean on the field config.  Phase map §3.0, hybrid routing §3.1 (wide→ring, narrow→narrow-2-style pin) |
 
+**`slab-transient-absorption/` re-verified at r80 (2026-10-17).**  Before the next session's pickup the
+campaign was audited against the current tree: its §1 table was three releases stale, so **§1a** is now the
+current one (refreshed line numbers, measured sizes, and three rows it was missing — the cuBLAS workspace,
+the `ggml_cuda_pool_leg` high-water, and the 512 MiB H2D calibration peak) and **§1b** corrects F1
+(`slab_extend` is **not** dead when an MTP draft is present: `reserve = headroom + aux`, field
+`va_spare = 4.00 GiB`).  **F5 was also rewritten**: the H2D ring's `cudaMalloc` fallback is now dead weight
+in host-expert mode (the region is sized `slots × largest staged slice` and the outside pool is only
+~0.3-0.6 GiB free), and it hides two defects — an unarmed request bypasses the "never read a disarmed slot"
+guard, and a slot that migrates to the slab leaks its old block.  **Step 0 of the campaign is therefore:
+make the ring slab-only (refuse instead of `cudaMalloc`) when the slab is active.**  The campaign's payoff
+is now measured rather than estimated (~1 pt of hit rate per GiB moved from headroom to arena); see
+`wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1.
+
 **Promoted (r79, 2026-10-17).**  PR #167 (`rdna3-mmvq-moe-q4k-vdr4`) was promoted into **blocks
 07/10**: the MoE expert kernel takes `vec_dot_q4_K_q8_1_vdr4_dense`, **default on RDNA3_0**
 (+0.83 % tg256, +1.4/+1.9/+2.7 % batched B=1/4/8, 4-axis MTP R/C/K/phase-switching

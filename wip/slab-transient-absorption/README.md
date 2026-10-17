@@ -174,16 +174,52 @@ fragment the region outside the slab.  A single per-device remap arena (bump-all
 remove all of them and is a prerequisite for any phase-3 arena repack (a repack must not have to
 `cudaMalloc` a new remap while the arena is short).
 
-### F5 — the H2D ring still falls back outside the slab on this model
+### F5 — the H2D ring's `cudaMalloc` fallback is dead weight in host-expert mode, and it hides two defects
+**(rewritten 2026-10-17 at r80; the r60 text above it was `H2D staging shortfall` from run1)**
 
-Run1 logged `H2D staging shortfall: a 184549376-byte upload does not fit GGML_SCHED_STAGE_MAX_MB; staging
-what fits, serial for the rest`.  The slab ring hole is sized from the largest host table but capped by
-`GGML_CUDA_SLAB_RING_MIB` (default 6144) and the auto bound; when a staged request exceeds a slot, the
-slot `cudaMalloc`s outside (`common.cuh:2080`).  That is another controlled transient to absorb (grow the
-hole, or serve the oversized slot from the arena's transient region).
+The r60 finding said the ring "still falls back outside the slab".  At r80 it should not, and the fallback
+is worse than useless when it fires.  Sizing first (`h2d_stage_region_bytes`, `common.cuh:2040`; the
+context's `slice_floor` in `llama-context.cpp`):
+
+* `ring_req = min(slots × (largest staged slice + 512), cap)`, with `cap = max(auto, slice_floor)` capped
+  at **a quarter of the card** (`total_b / 4`), or an explicit `GGML_SCHED_STAGE_MAX_MB`;
+* the field configs land exactly on `slots × slice`: GSQ 1-GPU `ring_req = 4.11 GiB` = 8 × 526 MiB;
+  35B-A3B 2-GPU `2.11 GiB` = 8 × 270 MiB — i.e. the region is sized to hold every slot at its real
+  slice size, and `ring_slot_capacity = ring_region / slots` therefore always fits.
+
+So a shortfall needs either **(a)** the carve to decline (`narrow_floor + ring + chunk > mapped`,
+`slab.cu:215`), which needs a slab whose mapped region cannot hold the narrow view plus a quarter of the
+card — a config where the slab barely exists; or **(b)** the cap to undercut `slots × slice` (a small
+card, or an explicit `GGML_SCHED_STAGE_MAX_MB` below it).  Both are "not enough room to justify the slab".
+Meanwhile the pool it falls back to is the **outside** VRAM: headroom 4096 MiB minus the measured ~3.7 GiB
+of post-slab allocations, i.e. **~0.3-0.6 GiB free** at steady state — an order of magnitude smaller than
+the region that just failed.  A `cudaMalloc` there either fails (and the caller correctly takes the
+non-staged path) or eats the reserve FA staging / hipBLASLt / the pool need, which is the abort-or-silently-
+corrupt mode this whole campaign exists to prevent.
+
+**Two defects in the fallback path (`common.cuh:2176-2225`):**
+
+1. **The unarmed case bypasses the refusal guard.**  The "never read a slab slot while disarmed" check
+   (`:2235`) applies only to a slot already slab-backed.  A request that arrives while `ring_armed == false`
+   (or before the hole is carved) takes `cap == 0` -> skips the slab attempt -> `cudaMalloc`s, and the slot
+   then **stays** outside the slab (the slab is only retried on a later *growth*).
+2. **A slot that migrates slab-ward leaks its old block.**  When a previously-`cudaMalloc`ed slot grows
+   while armed, the slab branch returns at `:2201` **before** the `else if (h2d_stage[slot] != nullptr)
+   { cudaFree }` cleanup at `:2210`, so the old allocation is neither freed nor counted
+   (`h2d_stage_total` still subtracts `old_size`).
+
+**Recommended step 0 for this campaign (small, ~10 lines + a kill switch):** when the slab is *active*
+(host-expert mode), a ring shortfall is a **refusal** (return `nullptr` -> the scheduler's non-staged path,
+which is correct, only slower), never a `cudaMalloc`.  Keep the `cudaMalloc` path only for slab-inactive
+devices (dense model / no VMM / `GGML_CUDA_SLAB_RING_MIB=0`), which is exactly the pre-slab behaviour.
+That closes the unarmed path and the leak, and removes the last *unbounded* outside-slab transient from
+the headroom budget — a prerequisite for lowering the default headroom.
 
 ## 3. Design sketch
 
+0. **Step 0 — make the H2D ring slab-only in host-expert mode** (see F5): a ring shortfall becomes a
+   refusal, never a `cudaMalloc`.  Removes the unarmed bypass and the migration leak, and takes the ring
+   out of the headroom budget.  Independent of the rest and small enough to land first.
 1. **A slab "optional" allocator** — `ggml_cuda_slab_optional_alloc(device, size)` that serves from the
    ring/wide transient region first and falls back to the arena's free list; every caller is already
    fail-soft (returns null → caller degrades), so a refusal is never fatal.  Reuse
