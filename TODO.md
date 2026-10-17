@@ -141,19 +141,33 @@ residuals were deliberately left out of the promotion:
 
 Record: `archive/work/moe-heatmap-persistence/` (its `RESOLUTION.md` lists these).
 
-### 61. Hotness-aware MoE arena placement and a phase-3 idle repack — PERFORMANCE
+### 61. MoE expert-cache coverage: heat-map correctness, capacity allocation, offline replay — PERFORMANCE
 
-**Phase 1 (heat-ordered layer placement, frozen at sizing) SHIPPED in r60** inside the heat-map
-promotion (block 09); phases 2-4 remain parked.  The body below is the original scoping.
+**Renamed/retargeted 2026-10-17 (was "hotness-aware arena placement + idle repack").**  Three results
+of the 2026-10-17 review closed the old premise and opened this one
+([`wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md`](wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md)):
 
-**Opened 2026-10-14; scoping + findings.**  `ggml_cuda_slab_arena_alloc` fills the arena top-down and
-the boundary moves bottom-up, so the *last-allocated* table is evicted first — allocation order
-(ascending layer) is the eviction policy and there is no hotness term.  Expert blobs also differ in size
-per table (verified: UD-Q4_K_M promotes 3 of 41 `ffn_down_exps` layers to Q6_K, +46 %), though not
-within a table, so intra-table slot compaction is a no-op.  **Working home: `wip/moe-arena-defrag/`**
-(placement phase 1, repack/relocate phases 3-4, and the live-arena-address hazards).  **Decision
-(maintainer, 2026-10-14): phase 1 (hotness-ordered placement) only for now**; the relocate/repack
-phases are parked (multi-session, purity/state hazards).
+1. **The heat map doubled per flush** — `heat_merge_into_loaded_locked()` re-added the whole running
+   `t.heat` (which had been seeded from the prior) at every debounced save, so any server session
+   saturated it at `0xffffffff` within ~6 flushes and every heat-driven ranking (seed + placement)
+   silently degenerated to expert-id order.  **Fixed in r80** (block 09: delta merge + a
+   degenerate-map guard that ignores a map which cannot rank; read-only maps are left as-is, writable
+   ones are re-recorded).  The poisoned sidecars were deleted.
+2. **Defrag/repack is not the lever**: the arena is ~100 % allocated in slots (0.51 % truncation), and
+   eviction churn is 3.0 % of reaches over a field turn, so an idle repack recovers ≤ 0.5 % of bytes
+   while invalidating captured graphs and the arena address in kernel launch params (old phases 3-4 are
+   closed).
+3. **The Strata hit-rate gap is accounting + arena size**, not fragmentation: on equal accounting it is
+   91.9 % vs our 90.6 % on the same model, and the whole residual is 25.46 GiB vs 15.30 GiB of arena.
+
+**Open work** (working home `wip/moe-cache-coverage/`): (a) an **offline routing-trace replayer**
+(`MOE_EXPERT_TRACE` + a policy scorer — we have only an aggregate heat vector, which cannot answer
+thrash/prefetch/window questions); (b) a **per-layer capacity quota** from heat (uniform slots per table
+give up only 0.3-0.5 pts on a uniformly-tallied map — measured on the clean Flash-Next map; the
+1.5-1.9 pts seen on the 35B-A3B sidecars was a decode-identity tally-gap artifact, #64.2) — the only
+strictly-inside-the-arena win, and a small one; (c) metric parity (report covered mass + expert MiB/token beside `h`).
+The **arena size** lever (the slab's 8 GiB compute reserve + 4 GiB VA spare, worth +3-6 pts of coverage)
+belongs to `wip/slab-transient-absorption/`, not here.  Residual heat-map items stay tracked as #64.
 
 ### 63. Stagger the host/device MoE expert-layer split by ratio — PERFORMANCE
 

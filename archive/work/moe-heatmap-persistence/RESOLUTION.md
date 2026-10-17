@@ -32,7 +32,7 @@ Everything in `heatmap-persistence.patch` (R2 + persistence), default-on:
   merge-on-save (a long EWMA across runs).
 * **Seed at sizing** — `apply_heat_seed_locked` bulk-admits the top-`slots` experts as provisional
   slots, before the (still inert) prefill seed.
-* **Heat-ordered layer placement (campaign `moe-arena-defrag` phase 1)** — `alloc_all_locked`
+* **Heat-ordered layer placement (campaign `moe-cache-coverage` (then `moe-arena-defrag`) phase 1)** — `alloc_all_locked`
   allocates layers in descending heat so the hottest sit highest in VA and are reclaimed last; frozen
   at sizing.
 
@@ -77,9 +77,11 @@ The arena no longer starts cold.  Prefill unchanged; the seed cost lands in warm
 3. **`moe_cache_observe` is still dead code** (superseded by `moe_cache_heat_observe`); remove it or
    wire it to the tally.
 
-Campaign `moe-arena-defrag` phases 2-4 (eviction-order policy, idle repack, partial eviction) remain
-parked in `wip/moe-arena-defrag/`; phase 1 is what shipped here.  Campaign `slab-transient-absorption`
-is untouched.
+Campaign `moe-cache-coverage` (then `moe-arena-defrag`) phases 2-4 (eviction-order policy, idle repack,
+partial eviction) were **closed 2026-10-17** — measured as a tax the arena does not pay (0.51 %
+truncation, 3.0 % eviction churn); the same review found and fixed a doubling bug in this heat map's
+save path (r80, block 09).  Phase 1 is what shipped here.  Campaign `slab-transient-absorption` is
+untouched.  See `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md`.
 
 ## Record
 

@@ -1,5 +1,58 @@
 # WORKLOG - dated delivery records
 
+## 261017.005 (r80) -- the MoE heat map doubled itself into saturation; the campaign retargets to "coverage" and the heat map is re-recorded (block 09)
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r80` (base `097cf33d9`; canonical tip
+`00f4b1ef8a1895c539a589ff18d8428a6dc20abb`, net tree `873d033563e3a33eb680be65695eaf63aa90db16`; 12 blocks;
+`validate-set.sh` green -- checksums OK, strict 12/12 `git am`, applied tree equals the recorded tree).
+**Block 09 amended, no new block.**  **Default on.**
+
+**The bug.**  `heat_apply_loaded_locked()` loads the persisted prior *into* `t.heat` at table
+registration, the session then adds to the same vector, and every debounced save did
+`g_heat_loaded[key] += t.heat` -- the whole running total.  So `loaded_k = 2*loaded_{k-1} + new`: the map
+**doubled per flush** and saturated at `0xffffffff` in ~6 flushes (~6 min at the 60 s debounce).  Because
+`apply_heat_seed_locked` and `alloc_all_locked` both read that prior back, **both r60 features silently
+degenerated to expert-id order** (ties break `a < b`) while still logging `heat-seeded 196/196 slots`.
+Measured (gpt-oss-20B MXFP4, `-ncmoe 99`, 4 GiB arena, 3 server turns, `MOE_EXPERT_HEATMAP_DEBOUNCE_S=0`,
+each turn 8 016 tallies, session total 41 172): delivered **25 140 -> 58 296 -> 99 468**, fixed
+**25 140 -> 33 156 -> 41 172 = the session total**.  On disk, 3 of 7 sidecars were already poisoned
+(97.6 %, 99.05 %, 24.06 % saturated; a saturated map's coverage curve collapses to `H(f) = f`), including
+the maintainer's Flash-Next GSQ map -- every pre-r80 measurement of a heat-seeded or heat-ordered layout
+measured noise.
+
+**The fix.**  `table_t::heat_merged` records the part of `t.heat` already folded into `g_heat_loaded`
+(seeded to the prior at registration); `heat_merge_into_loaded_locked()` adds the **delta**.  **Guard at
+load:** a degenerate prior (any `0xffffffff` entry -- 4.29e9 hits on one expert is unreachable -- or an
+all-tied map) is ignored with one `WARN` and the run starts neutral; a **writable** file is re-recorded
+from the session, a **read-only** file is left byte-identically untouched (both arms verified).  `MHT1`
+stays version 1.  No kernel, arithmetic or allocation change.
+
+**Validation.**  Heat growth linear + equal to the session total; both degenerate arms log the intended
+`WARN` and emit no `heat-seeded`; the read-only file's sha256 is unchanged after the run; same-seed
+gpt-oss-20B text **identical** (`sha d8588b2c8009`, 175 chars) across cold / seeded / `MOE_EXPERT_HEATMAP=0`;
+prefill-logit **0.000000 / 100.000 %**; field GSQ command unchanged (arena 15 666.6 MiB, 38.3 %
+residency, hit **0.9056** / 724 928 of 800 520, vs r74/r79's 0.9057).
+
+**Toolchain gotcha for the KLD gate.**  The recorded base is **toolchain-specific**: a ROCm **10.1** build
+run against the base recorded on **7.14.1** reports KLD **0.057 / 93.4 %** -- the toolchain delta, not a
+regression (the 7.14.1 build of the same tree is 0.000000 / 100.000 %).  Compare like with like, or
+record a base per toolchain.
+
+**Campaign retarget (same session).**  `wip/moe-arena-defrag/` -> **`wip/moe-cache-coverage/`** (README,
+`TODO.md` #61 and `wip/CAMPAIGNS.md` rewritten): the defrag premise is refuted (arena ~100 % allocated in
+slots, 0.51 % truncation, 3.0 % eviction churn over a field turn, so a repack wins <= 0.5 % of bytes and
+invalidates captured graphs).  The hit-rate gap against Strata is **accounting + arena size**: equal-basis
+91.9 % vs our 90.6 %, and their 63.7 % residency is 25.46 GiB of arena against our 15.30 GiB.  The clean
+Flash-Next map re-recorded on this build (5 669-token prompt, 0 saturated, `H(0.5) = 0.952`) gives
+`H(38.3 %) = 88.7 %` -- **our 90.56 % is +1.8 pts above the static top-f bound**, and Strata's 98.4 % at
+63.7 % is 98.7 % on the same curve.  Also corrected: per-layer capacity allocation is worth **0.3-0.5
+pts**, not 1.5-1.9 (the 35B-A3B spread was a decode-identity tally-gap artifact).  Next phases: an offline
+routing-trace replayer, then metric parity; the arena-size lever is `wip/slab-transient-absorption/`.
+
+**Records.**  `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` (the full review,
+including the Strata metric forensics), `tools/heatmap-audit.py`, `tools/heat-growth-test.sh`,
+`tools/record-gsq-heatmap.sh`.
+
 ## 261017.004 -- PR #169 (`spec-batch-budget`) re-assessed on r79: still rejected, but the r77 rejection's test scope was too narrow and it exposed a verify-width cliff
 
 **No release change** (`release.json` untouched, no block amended; nothing shipped).  PR #169 was

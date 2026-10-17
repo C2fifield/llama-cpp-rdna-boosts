@@ -11,7 +11,38 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r79` (2026-10-17) -- Q4_K VDR-4 for the MoE expert kernel (PR #167, blocks 07/10) and the multi-GPU KV prefill pad default (PR #168 follow-up, block 10):**
+> **Current release `v12-097cf33d9-r80` (2026-10-17) -- the MoE heat map no longer doubles itself into saturation (block 09):**
+> canonical tip `00f4b1ef8`, net tree `873d033563e3a33eb680be65695eaf63aa90db16`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended, no new block.
+> `heat_apply_loaded_locked()` loads the persisted prior **into** `t.heat`, and every debounced save then
+> did `g_heat_loaded[key] += t.heat` -- the whole running total -- so the map **doubled per flush**:
+> `loaded_k = 2*loaded_{k-1} + new`.  Any server session saturated it at `0xffffffff` within ~6 flushes
+> (~6 min at the default 60 s debounce), and because the seed (`apply_heat_seed_locked`) and the placement
+> order (`alloc_all_locked`) both read that prior back, **both r60 heat features silently degenerated to
+> expert-id order while logging "heat-seeded N/N"**.  Measured on a 3-turn server A/B (each turn adds
+> 8 016 tallies): delivered **25 140 -> 58 296 -> 99 468** (2.4x the session total), fixed
+> **25 140 -> 33 156 -> 41 172 = the session total**.  Three of seven sidecars on the box were already
+> poisoned (97.6 %, 99.05 %, 24 % saturated; a saturated map's coverage curve collapses to `H(f) = f`),
+> including the maintainer's Flash-Next GSQ map; they were deleted.
+> **Fix:** `t.heat_merged` records the part of `t.heat` already folded into `g_heat_loaded` (seeded to the
+> prior at registration) and the merge adds the **delta**.  **Guard:** a degenerate prior -- any saturated
+> entry (4.29e9 hits on one expert is not reachable) or an all-tied map -- is ignored with one `WARN` and
+> the run starts neutral; if the file is **writable** it is re-recorded from the session, if it is
+> **read-only** it is left exactly as-is (byte-identical, verified) and the run still starts neutral.
+> `MHT1` stays version 1.  No kernel, no arithmetic, no allocation changes.
+> **Verified:** three server turns linear and equal to the session total; the writable-degenerate and
+> read-only-degenerate arms both log the intended `WARN` (no `heat-seeded`); same-seed gpt-oss-20B text
+> **identical** (`sha d8588b2c8009`) across cold / seeded / `MOE_EXPERT_HEATMAP=0`; prefill-logit
+> **0.000000 / 100.000 %** against the recorded base; the field GSQ command is unchanged (arena
+> 15 666.6 MiB, 38.3 % residency, hit **0.9056** vs r79's 0.9057) and its re-recorded map is healthy
+> (0 saturated, `H(0.5) = 0.952`, `H(0.383) = 88.7 %` -- our 90.56 % is **+1.8 pts above** the static
+> bound, and Strata's 98.4 % at 63.7 % residency is 98.7 % on the same curve).
+> Note for future gates: the recorded prefill-logit **base is toolchain-specific** -- a ROCm **10.1**
+> build against the base recorded on **7.14.1** reports KLD 0.057 / 93.4 %, which is the toolchain
+> delta, not a regression (the 7.14.1 build of this same tree is 0.000000 / 100.000 %).
+> Records: `../WORKLOG.md` 261017.003, `../wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md`.
+>
+> **Previous release `v12-097cf33d9-r79` (2026-10-17) -- Q4_K VDR-4 for the MoE expert kernel (PR #167, blocks 07/10) and the multi-GPU KV prefill pad default (PR #168 follow-up, block 10):**
 > canonical tip `8408293e2`, net tree `c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 07 and 10** amended, no new block.
 > **block 07** (`vecdotq.cuh`) and **block 10** (`mmvq-vecdot.cuh`) give the MoE expert kernel

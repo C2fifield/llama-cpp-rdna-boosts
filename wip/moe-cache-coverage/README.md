@@ -1,9 +1,23 @@
-# `moe-arena-defrag` — hotness-aware table placement, heterogeneous expert sizes, and (later) a repack at idle
+# `moe-cache-coverage` — how much of the routing distribution the expert-cache arena can hold, and how well the admission policy uses it
 
-**Status: OPEN (seeded 2026-10-14); phase 1 selected for the next session, phases 3-4 PARKED.**  Not part
-of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead (see
-`AGENTS.md`).  Seeded from a code review of the movable-boundary slab and the expert-cache arena
-(`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/moe-expert-cache.cu`).
+*(Formerly `moe-arena-defrag`.  Renamed 2026-10-17: the "defrag" premise was refuted by measurement —
+see [`FINDINGS-2026-10-17-coverage-vs-defrag.md`](FINDINGS-2026-10-17-coverage-vs-defrag.md).  The old
+title and body below are kept as the campaign's own history; read §2.5 and the findings first.)*
+
+**Status: OPEN, RETARGETED and RENAMED 2026-10-17 (maintainer-approved).  Phase 1 (heat-ordered
+placement) shipped in r60; the P0 heat-map correctness fix shipped in r80; the "defrag" phases are
+closed.**  Not part of the delivery; nothing here may be applied to the fork without the
+maintainer's go-ahead (see `AGENTS.md`).  Seeded from a code review of the movable-boundary slab and the
+expert-cache arena (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/moe-expert-cache.cu`).
+
+> **Read the 2026-10-17 findings before using anything below.**  Three results change the plan: (1) the
+> MoE **heat map was broken** — a doubling per flush saturated it, so every heat-driven feature was
+> ranking by expert id; **fixed in r80** (block 09), and the poisoned sidecars were deleted, so
+> measurements taken before r80 against a heat-seeded or heat-ordered layout measured nothing;
+> (2) the hit-rate gap against Strata is **accounting + arena size**, not fragmentation — equal-basis
+> numbers are 91.9 % vs 90.6 % on the same model; (3) a repack at idle can recover at most ~0.5 % of
+> arena *bytes*, because the arena is already ~100 % allocated in slots (the free VRAM is the slab's
+> 8 GiB compute reserve, which is `../slab-transient-absorption/`).
 
 **Maintainer decision (2026-10-14): phase 1 only for now.**  The relocate/repack (3/4) "sounds like it
 may take multiple sessions to get right"; it is kept below as a scoping note, not as this session's work.
@@ -174,6 +188,23 @@ resident slot out of the tail, then return those units to `arena_free`.  This he
 is *above* the boundary and the work region needs to grow into its **low** end — which is not what a
 bottom-up boundary move does.  So partial eviction helps the *arena's own* free-run fragmentation, not
 the boundary.  Keep it on the list but expect phase 1/3 to dominate.
+
+## 2.5 Retarget (2026-10-17) — phases 2-4 superseded
+
+`FINDINGS-2026-10-17-coverage-vs-defrag.md` §6-§8 replaces §2.2-§2.4 with a value-ordered plan:
+
+| phase | what | status |
+|---|---|---|
+| P0 | heat-map correctness (stop the per-flush doubling; ignore a degenerate map; re-record) | **SHIPPED in r80** (block 09) |
+| P1 | offline routing-trace replayer (the instrument phases 2-4 needed and never had) | **next** |
+| P2 | per-*layer* capacity quota from heat (our uniform slots/table give up 0.3-0.5 pts on a uniformly-tallied map; the 35B-A3B 1.5-1.9 was a tally-gap artifact) | proposed |
+| P3 | metric parity: report covered mass and expert MiB/token beside `h` | proposed |
+| P4 | arena size (8 GiB reserve + 4 GiB VA spare) | hand-off to `../slab-transient-absorption/` |
+
+The old phase 2 (heat-aware eviction order), phase 3 (relocate/resize at idle) and phase 4 (selective
+eviction) are kept below as history only: they defend against a fragmentation tax the arena does not
+pay (0.51 % truncation, 3.0 % eviction churn over a field turn), and each carries live-arena-address
+hazards.  Do not start them without a measurement from P1 that shows the churn they would fix.
 
 ## 3. Hypotheses / work to do
 

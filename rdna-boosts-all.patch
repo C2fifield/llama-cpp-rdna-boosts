@@ -43844,10 +43844,10 @@ index 5605bf7a4..10b689844 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..23e97d162
+index 000000000..f07573571
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,4766 @@
+@@ -0,0 +1,4817 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -43971,6 +43971,11 @@ index 000000000..23e97d162
 +    // band by the device tally (`moe_cache_heat_observe`, so the staged path and the identity path
 +    // are covered).  NOT decayed (unlike `count`/`ghost`) - it is a workload prior, not eviction state.
 +    std::vector<uint32_t> heat;             // [n_experts], saturating
++    // The part of `heat` already folded into `g_heat_loaded`.  The persisted prior is loaded *into*
++    // `heat` at registration, so without this the save's merge re-added the whole running total at every
++    // flush: the map doubled per flush, saturated at 0xffffffff within ~6 flushes of a server session,
++    // and every heat-driven ranking silently degenerated to expert-id order (measured 2026-10-17).
++    std::vector<uint32_t> heat_merged;      // [n_experts], saturating
 +    uint32_t *  heat_dev  = nullptr;        // device mirror for the prefill tally (lazy, fail-soft)
 +    int64_t     heat_dev_cap = 0;           // capacity in elements
 +};
@@ -45564,10 +45569,22 @@ index 000000000..23e97d162
 +};
 +#endif
 +
-+// Fold every table's CURRENT heat (host) into `g_heat_loaded` so a save writes the merged prior.
++// The part of a table's `heat` NOT yet folded into `g_heat_loaded`.  `heat_merged` starts as the loaded
++// prior (empty for a cold table), so the delta is exactly this session's routing since the last merge.
++// Clamped: a vector re-assigned behind our back (a geometry change, a device-heat fold) must not
++// underflow into a huge add.
++static uint32_t heat_delta(const table_t & t, size_t e) {
++    const uint32_t s = t.heat[e];
++    const uint32_t m = e < t.heat_merged.size() ? t.heat_merged[e] : 0u;
++    return s > m ? (uint32_t) (s - m) : 0u;
++}
++
++// Fold every table's NEW heat (host) into `g_heat_loaded` so a save writes the merged prior.  The
++// DELTA, not the running total: `heat` already contains the prior it was seeded from, so adding it
++// whole would double the prior at every flush (see `heat_merged`).
 +// Caller holds `g_mutex`.
 +static void heat_merge_into_loaded_locked() {
-+    for (const table_t & t : g_tables) {
++    for (table_t & t : g_tables) {
 +        if ((int) t.heat.size() != t.n_experts || t.n_experts <= 0) {
 +            continue;
 +        }
@@ -45577,9 +45594,10 @@ index 000000000..23e97d162
 +            dst.assign((size_t) t.n_experts, 0);
 +        }
 +        for (int e = 0; e < t.n_experts; e++) {
-+            const uint64_t s = (uint64_t) dst[(size_t) e] + (uint64_t) t.heat[(size_t) e];
++            const uint64_t s = (uint64_t) dst[(size_t) e] + (uint64_t) heat_delta(t, (size_t) e);
 +            dst[(size_t) e] = s > 0xffffffffull ? 0xffffffffu : (uint32_t) s;
 +        }
++        t.heat_merged = t.heat;
 +    }
 +}
 +
@@ -45693,6 +45711,38 @@ index 000000000..23e97d162
 +        n++;
 +    }
 +    fclose(f);
++    // Reject a degenerate prior.  A map that cannot rank is worse than no map: the seed's ties break by
++    // expert id, so every table would pre-fill experts 0..slots-1 and the layer placement would fall back
++    // to layer-id order - while the log still says "heat-seeded".  A saturated entry (0xffffffff) cannot
++    // come from real routing (it needs 4.29e9 hits on one expert), and an all-tied map ranks nothing.
++    // Seen in the wild: a doubling bug in this save path left 97-99% of entries saturated in the sidecar
++    // of any long server session (2026-10-17, fixed above).  Policy: start neutral either way; re-record
++    // when the file is writable, leave it alone when it is read-only.
++    {
++        size_t total = 0, sat = 0, nonzero = 0;
++        uint32_t lo = 0xffffffffu, hi = 0;
++        for (const auto & kv : g_heat_loaded) {
++            for (uint32_t v : kv.second) {
++                total++;
++                if (v == 0xffffffffu) { sat++; }
++                if (v > 0) {
++                    nonzero++;
++                    lo = v < lo ? v : lo;
++                    hi = v > hi ? v : hi;
++                }
++            }
++        }
++        if (total > 0 && (sat > 0 || (nonzero > 0 && lo == hi))) {
++            const bool frozen = g_heat_frozen || !g_heat_write_ok;
++            GGML_LOG_WARN("%s: ignoring the heat map at %s: it is degenerate (%zu of %zu entries "
++                          "saturated, %zu nonzero).  A prior that cannot rank would seed by expert id.  %s\n",
++                          __func__, path.c_str(), sat, total, nonzero,
++                          frozen ? "The file is read-only, so it is left as-is and this run starts neutral."
++                                 : "This run starts neutral and re-records the map.");
++            g_heat_loaded.clear();
++            n = 0;
++        }
++    }
 +    GGML_LOG_INFO("%s: loaded %zu heat entries from %s\n", __func__, n, path.c_str());
 +#else
 +    GGML_UNUSED(path);
@@ -45855,6 +45905,7 @@ index 000000000..23e97d162
 +        return;
 +    }
 +    t.heat = it->second;
++    t.heat_merged = t.heat;   // the prior is already IN g_heat_loaded: only this session's routing is new
 +}
 +
 +// Coalesced copy of `n` bytes with `nt` threads.  dst/src are assumed 8-byte aligned for the bulk

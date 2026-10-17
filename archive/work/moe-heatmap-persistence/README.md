@@ -148,7 +148,7 @@ new thread to the server.
 
 ### F5 — the arena's *table placement* is also hotness-blind (folded out to campaign 2)
 
-Nothing here ranks **tables**; campaign [`../../wip/moe-arena-defrag/`](../../wip/moe-arena-defrag/README.md) covers
+Nothing here ranks **tables**; campaign [`../../wip/moe-cache-coverage/`](../../wip/moe-cache-coverage/README.md) covers
 the slab placement / boundary-move side.  The two share the heat accumulator, so they should be designed
 together even though they can ship separately.
 
@@ -475,6 +475,6 @@ deliverable.
 * `tools/server/server-context.cpp:737` — the per-turn stats seam.
 * `ENVIRONMENT.md` §1.2.1 — `MOE_EXPERT_CACHE_*`, `MOE_HOST_POOL_*`.
 * `archive/work/moe-expert-cache/` — the feature's own history (session 14 = the seed measurement).
-* Campaigns: [`../../wip/moe-arena-defrag/`](../../wip/moe-arena-defrag/README.md) (table placement, shares the heat
+* Campaigns: [`../../wip/moe-cache-coverage/`](../../wip/moe-cache-coverage/README.md) (table placement, shares the heat
   accumulator), [`../../wip/host-expert-master-drop/`](../../wip/host-expert-master-drop/README.md) (the pool tier the
   heat map could pre-warm too).
