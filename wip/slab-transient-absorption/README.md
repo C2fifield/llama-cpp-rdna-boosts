@@ -693,3 +693,138 @@ Caveat: the layer-mode headroom floor (r36, 6144) was for a 255k `-ts 59,41` con
 the 2048 run.**  Note the pool figure is not repeatable (671 vs 335 MiB for the same config), so 1024 on
 the wide config must be *measured*, not extrapolated (−43 MiB was the arithmetic from the 671 run; the 335
 run would leave ~+120).  The next-session plan is `HANDOVER-2026-10-17-pool-redirect.md`.
+
+---
+
+## 10.6 2026-10-17 — step 2b: the generic workspace-pool redirect (landed, WIP)
+
+The deferred half of step 2 (`HANDOVER-2026-10-17-pool-redirect.md`).  The workspace pool
+(`ggml_cuda_pool_leg`) was the binding outside-slab consumer: its high-water is permanent for the run
+(the pool caches every freed block), so ~335 MiB of it sat outside the slab on every prefill.
+
+**What landed (fork WIP commit `3f4497d14`, still not in `patches/`):**
+
+1. **Escape hatch first** — `ggml_cuda_pool::set_wide_routing(bool)` (base no-op, `pool_leg` overrides,
+   returns the previous state) plus a tiny RAII guard `ggml_cuda_pool_wide_pin`.
+2. **`pool_leg::alloc` serves a LARGE allocation from the wide band** when *all* of: the pool is not
+   pinned, `size >= GGML_CUDA_POOL_WIDE_MIN_MIB` (default 1), `GGML_CUDA_POOL_WIDE` is on (default),
+   no graph capture is active, and the band is available (slab live **and** the wide view armed).
+   It is tried **before** the cached-block scan (reusing a cached block during a wide phase would keep
+   the outside high-water alive for no gain).  The band block returns the *requested* size as
+   `actual_size`, so `free` pops exactly what `alloc` pushed.
+3. **`pool_leg::free` recognises its own band blocks** (a 64-entry side table, no slab call on the hot
+   path): given back to the band (LIFO), never cached, never counted in `pool_size`/`cached_size`, never
+   `cudaFree`d.  `clear_pool` deliberately leaves that table alone — it is called from the OOM retry
+   *mid-graph*, where those entries describe LIVE blocks.
+4. **Pinned sites** (the handover's list + one it missed):
+   `mmb.cu` activation cache (`mmb_cache_insert`) and persistent slots (`ggml_cuda_mmb_slot_reserve`);
+   `allreduce.cu` / `allreduce-hip.cu` `bf16_tmp[]`; the NCCL `bf16_tmp[]` in `ggml-cuda.cu`;
+   and **`ggml_backend_cuda_context::bf16_src1_cache`** (`common.cuh`), a per-context BF16 copy kept
+   across graphs — the leak the tripwire caught on the first run (`POOL_WIDE_LEAK blocks=2 bytes=2.4 MiB`).
+   `mmf.cu:51-53` checked: function-local RAII around one kernel launch, **not** retained — left
+   unpinned (it is exactly the kind of large prefill temporary the redirect is for).
+5. **Tripwires + diagnostics.** `POOL_WIDE_LEAK` (unconditional warning) when a pool band block is still
+   live at the prefill -> decode drop — that is the moment the bytes go back to the arena, so a non-zero
+   count is a silent use-after-free waiting to happen; a one-shot warning when such a block is later freed
+   from a dead band generation; `SLAB_STATS` now reports `pool_wide=<MiB>/<blocks>` and
+   `refused=<MiB>` (bytes a large pool allocation asked for that the armed band refused — those stay
+   outside as high-water).  `GGML_CUDA_POOL_WIDE_DEBUG=1` logs every band alloc/free and every
+   `OUTSIDE` allocation with the reason.
+
+**Two bugs this exposed, both fixed (the second was pre-existing and blocked the step):**
+
+* **The pinned list was incomplete** (item 4): without the tripwire the `bf16_src1_cache` block would
+  have been reused by the arena after the drop.  That is the whole reason the hatch exists.
+* **`ggml_cuda_slab_wide_aux_alloc` refused every growth once the base retained a chunk gap.**
+  Its post-eviction sanity check compared the *live boundary* against the aux **end**
+  (`s.boundary > off`).  The base is set to the boundary *before* a move and the move then rounds the
+  boundary up to `chunk`, so a retained base normally sits a whole chunk below it and every later growth
+  was refused.  The aux then silently fell back to raw `cudaMalloc` outside the slab (measured: outside
+  free VRAM at the 80K arm 577.5 -> 349.5 MiB, and the wide config OOMed at headroom 1536 on a 118 MiB
+  pool allocation).  The check now compares against the **boundary snapshot** (`s.boundary != lo`).
+  (A first attempt at "re-base when the boundary moved past the base" was wrong the other way — it
+  ratcheted the boundary a chunk per allocation and ate the whole arena (measured: `arena=0.0 MiB`,
+  boundary == mapped).  The retained base below the boundary is legitimate; the invariant is that it must
+  stay above every *live view's* top, which `work_alloc` already enforces.)
+
+### Measured (same box, 1x R9700 gfx1201; `GGML_CUDA_SLAB_STATS=1`)
+
+**Field GSQ seesaw, headroom 1024 / aux 3584** (4 genuine arm/drop pairs: distinct `[variant N]` prefix
+per request, 251 / 80 107 / 249 / 80 105 tokens, one server):
+
+| transition | before (§10.2) | with 2b |
+|---|---:|---:|
+| short-1 arm / drop | 934 / 700 | 934 / 709.5 |
+| long-1 arm / drop | 577 / 333 | 587.5 / **415.5** |
+| short-2 arm / drop | 208 / 208 | 290.5 / 290.5 |
+| long-2 arm / drop | **204** / 308 | **286.5** / 390.5 |
+| pool at the long drop | 337.4 | **262.9** |
+| prefill | 1 165 t/s | **1 247 t/s** |
+| greedy shas (short-1/long-1/short-2/long-2) | 130d51af8d12 / 7194bf85ff0f / 8db6010f8533 / 7194bf85ff0f | **identical** |
+
+So the outside floor at headroom 1024 moves **204.5 -> 286.5 MiB** (+82) and the drop **333.5 -> 390.5**
+(+57).  No `POOL_WIDE_LEAK`, no stale-free warning, `refused=0`.
+
+**Wide gate (IQ4_NL PROJFIX + shared Q8_0 MTP draft, `-ub 6144 -c 204800`, 6 657-token prefill, aux 3584):**
+
+| headroom | before | with 2b | pool | sha |
+|---:|---|---|---:|---|
+| 1536 | free 459.0 | **477.0** | 335.2 -> **315.6** | `746954a1038b` (same) |
+| 1536, `GGML_CUDA_POOL_WIDE=0` | 459.0 | 459.0 / 335.2 | (kill switch reproduces the baseline exactly) | same |
+| 1024 | (predicted ~-43) | **OOM** | — | — |
+
+Headroom **1024 fails on the wide config**: a pinned ~80 MiB cache allocation could not be placed
+outside the slab (free VRAM was ~80 MiB by then) and the arena, being inside the slab, cannot yield
+physical back.  `ggml_cuda_device_malloc` reported `83.92 MiB allocation failed`.  So **1536 remains the
+floor for `-ub 6144`**, exactly as §10.5's arithmetic warned — the redirect softens it, it does not fix it.
+
+**Two GPUs (GSQ + MTP, 5 262-token prefill, headroom 2048 / aux 3584):**
+
+| | before (free/device, pool) | with 2b | greedy |
+|---|---|---|---|
+| `-sm tensor` | 2 118.5, 294 | **2 238.5**, 176.2 | `394193591d4d` (same) |
+| `-sm layer` | 1 097.5, 279 / 393 | **1 349.5**, 249.9 / 146.5 | `394193591d4d` (same) |
+
+Both clean, arena unchanged (40 725.1 / 40 199.1 MiB), prefill 829 / 769 t/s.
+
+**Prefill-logit KLD gate (issue #113): PASS.**  Base recorded by the **pre-change** build on a
+*slab-active* config (35B-A3B Q4_K_M, `-sm tensor -ncmoe 40`, so the redirect actually fires; the
+script's dense auto-model has no slab and would be a vacuous run): **mean KLD 0.000000**, same-top-p
+**100.0 %**.  `test-backend-ops` not re-run: no op math, dispatch or instance set is touched.
+
+**35B-A3B coherence** (`-ncmoe 40`, `code-reasoning-mixed.txt`, seed 42, `-n 64`): greedy text
+**identical** to the pre-change build (the printed `Generation:` differs by ~1 % in both directions across
+repeats — the redirect is inert whenever the band is disarmed, i.e. all of decode).
+
+### The finding: the pool high-water is now the MMB / BF16 caches, not prefill temporaries
+
+Everything above is what the *pinned* design buys, and it is not the definition of done (§5 of the
+handover: pool <= ~80 MiB, seesaw floor >= ~500 MiB at 1024).  The remainder is retained **caches**:
+
+| arm | pool at drop | free at drop | floor (seesaw) |
+|---|---:|---:|---:|
+| GSQ seesaw @1024, 2b | 262.9 | 390.5 | 286.5 |
+| GSQ seesaw @1024, 2b + `GGML_CUDA_MMB=0` | **95.2** | **589.5** | **452.5** |
+| IQ4_NL wide @1536, 2b | 315.6 | 477.0 | — |
+| IQ4_NL wide @1536, 2b + `GGML_CUDA_MMB=0` | **145.2** | **655.0** | — |
+
+(`GGML_CUDA_MMB=0` is a **diagnostic A/B**, not the proposal: it changes the GEMM path and the greedy
+sha, and it costs prefill.  It measures `MMB's retained activation cache` = **~168-170 MiB** live at the
+drop; the rest of the residual is the `bf16_src1_cache` (~80 MiB) plus the sub-1 MiB pool tail.)
+
+Both of those are **pure caches** — the MMB activation cache is rebuilt on demand and the bf16 src1 cache
+is already dropped at every graph start.  So the safe extension is a **yield on reclaim**: let both use
+the band normally and flush them in the same device callback that disarms the ring
+(`ggml_backend_cuda_device_slab_ring_set(dev, false)` -> `ggml_cuda_mmb_cache_yield(device)` /
+`bf16_src1_cache_clear()`), *before* `ggml_cuda_slab_ring_set(device, false)` releases the bytes.  That
+is worth **~+200 MiB at the drop / ~+170 MiB of floor**, i.e. it is the only route to the DoD — and it is
+**deferred for the maintainer's decision** (it changes cache lifetime across a delivery block, and it
+needs its own prefill-cost measurement: every prefill re-converts the evicted activations).
+
+**Recommendation unchanged:** keep **2048 / 3584** as the default and 1024 / 3584 as the documented
+opt-in for `-ub <= 4096` field use (now with a 286 MiB floor instead of 205, still the measured floor).
+`-ub 6144` needs 1536 and nothing here changes that.  **No delivery default was changed and nothing was
+promoted** — this is still a WIP campaign.
+
+**Kill switches / knobs:** `GGML_CUDA_POOL_WIDE=0` (whole redirect off), `GGML_CUDA_POOL_WIDE_MIN_MIB`
+(size floor, default 1), `GGML_CUDA_POOL_WIDE_DEBUG=1` (per-allocation trace).
