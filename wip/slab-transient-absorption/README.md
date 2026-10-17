@@ -515,6 +515,19 @@ remaining floor is not the headroom any more; it is the ~270 MiB pool remainder 
 r80 tree, it is not part of `patches/`, and `apply-all.sh` does not read it.  Re-cut it against a fresh
 `release.json.base` checkout before evaluating it as a promotion candidate, and re-run the §6 gates.
 
+Recovery coordinates (2026-10-17 session, all reproduced before this line was written):
+
+* fork working tree: `~/llama.cpp`, branch `rdna-boosts`, commit **`256f589df`**
+  (`256f589df454e3dd699eac04094c1b5d0316a3b7`), parent `00f4b1ef8` = `release.json.tip`.
+  The branch tree deliberately no longer equals `release.json.tree` (it carries this WIP commit).
+  This commit is **local only** (the fork is never pushed except the release-time `rdna-boosts` refresh).
+* patch: `slab-transient-absorption-wip.patch`, **852 lines, sha256 `513da9e0…36feb1`**
+  (`513da9e053a0a22740e1456fa92f19f58583735703ace3e24002f6530336feb1`), byte-identical to
+  `git diff 00f4b1ef8..256f589df` in the fork.
+* to restore: `git clone` llama.cpp, `git checkout 097cf33d9` (or `00f4b1ef8` if the block chain is already
+  applied), `git apply` the patch, then `~/bin/build-llama-rocm` (`build-rocm`, ROCm 10.1.0).
+
+
 ---
 
 ## 9. 2026-10-17 (later) — step 2 (partial) + step 4: aux and the load-time probe
