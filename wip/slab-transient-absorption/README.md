@@ -1,10 +1,21 @@
 # `slab-transient-absorption` — move the optional device transients inside the slab so the headroom (and the arena) can grow
 
-**Status: OPEN (seeded 2026-10-14), scoping + findings.**  Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).  Seeded from a code review of
-the movable-boundary slab and the CUDA backend's raw device allocations
+**Status: OPEN, re-verified at r80 (2026-10-17) — this is the next session's work.**  Not part of the
+delivery; nothing here may be applied to the fork without the maintainer's go-ahead (see `AGENTS.md`).
+Seeded from a code review of the movable-boundary slab and the CUDA backend's raw device allocations
 (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/common.cuh`,
 `ggml/src/ggml-cuda/ggml-cuda.cu`, `ggml/src/ggml-cuda/allreduce.cu`, `ggml/src/ggml-cuda/mmb.cu`).
+
+> **Re-verified 2026-10-17 against r80 (the r60-era table was stale).**  What changed: the line numbers
+> all moved; the FA staging arena gained the `GGML_CUDA_FA_STAGE_PREALLOC` hint path (r53); the H2D ring
+> fallback now refuses when the carved hole is unarmed (issue #164/r67); **three rows were missing** (the
+> cuBLAS workspace, the `ggml_cuda_pool_leg` workspace high-water, and the 512 MiB H2D calibration peak);
+> the MTP draft row has measured numbers; and **F1 is now wrong for the field config** -- with the MTP
+> draft present `reserve = headroom + aux`, so `mapped < size` and `ggml_cuda_slab_extend` IS live (the
+> field log shows `va_spare=4.00 GiB`; F1's "extend is dead" only holds when `aux == 0`).  See §1a for
+> the r80 table and §1b for the corrections.  The payoff this campaign targets is now measured: **~1 pt
+> of expert-cache hit rate per GiB moved from the headroom into the arena** on the field config
+> (`wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1).
 
 This is the campaign for the maintainer's Q3: *"what opportunities exist to either minimise the use of
 VRAM outside of the slab when operating in host-expert mode? Are there any transient items that could be
@@ -36,6 +47,9 @@ the region decisions.
 
 ## 1. What lives outside the slab today
 
+*(The r60-era seed table, kept as the record.  **Superseded by §1a** — line numbers, sizes and three
+missing rows are corrected there; read §1a/§1b as the current state.)*
+
 Measured/derived from the code (all are raw `cudaMalloc` unless noted; "transient" = not the model
 weights or the KV cache, which are allocated before the slab by design):
 
@@ -56,6 +70,53 @@ The G4 guard already bounds #1 and #3 when the slab is active
 so they cannot eat the headroom without a warning and a fallback — but a *refusal* degrades prefill
 (the native K/V read) or staging, so their worst case is still a performance cliff, and their normal
 size still comes out of the same 4 GiB.
+
+## 1a. The table at r80 (re-verified 2026-10-17, `ggml_cuda_device_malloc` never consults the slab)
+
+Everything that allocates through `ggml_cuda_device_malloc` / a raw `cudaMalloc` is outside the slab by
+construction; the slab serves only the scheduler's compute buffers and the expert arena.  Line numbers
+are r80.
+
+| # | allocation | where (r80) | lifetime | size (measured) | controller |
+|---|---|---|---|---|---|
+| 1 | FA prefill staging arena (`fattn_stage[stream]`) | `common.cuh:1953` (`fattn_stage_try_get`) | per-stream, **retained across prefills**, freed only when it grows | hint = the K/V view roots capped by `GGML_CUDA_FA_STAGE_MAX_MB`; **762 MiB** on the GSQ config (`ENVIRONMENT.md`) | **ours** |
+| 2 | Q8_1 cache arena (`q8_1_arena`) | `common.cuh:1793` decl, `:1848` (`q8_1_cache_get`) | multi-token graph, retired-not-freed (r25; captured graphs point into it) | "tens of MiB", grows 1.25x | **ours** |
+| 3 | op-offload H2D ring fallback (`h2d_stage[slot]`) | `common.cuh:2168` | per-slot, slab-hole-first; `cudaMalloc` only when there is no hole / the hole is exhausted / the hole is unarmed | up to a slot of `GGML_SCHED_STAGE_MAX_MB` | **ours** |
+| 4 | MMB shadow weights (`g_mmb_shadow`) | `mmb.cu:2495`, `:2510` | process-lifetime (freed only at cleanup) | size of the shadowed BF16 weights | **ours** |
+| 5 | all-reduce scratch (`p->dev_tmp[i]`) | `allreduce.cu:527` | process-lifetime, per device, `-sm tensor` only | `copy_bytes` (small) | **ours** |
+| 6 | expert-cache per-table `remap_dev` | `moe-expert-cache.cu:2357`, `:4263` | table lifetime | `n_experts*8*4` B per table (~1 MB / 144 tables) | **ours** |
+| 7 | expert-cache `heat_dev` tally mirror | `moe-expert-cache.cu:3848` | table lifetime | **2 KiB/table** (deliberately raw: it must not be able to yield the arena) | ours, out of scope |
+| 8 | MTP draft compute | slab **narrow-2** when it fits (`slab.cu:782`), else fallback | context lifetime | **512 MiB** (field log), draft weights 2 647 MiB + 288 KV | ours (already slabbed) |
+| 9 | **cuBLAS/hipBLAS workspace** (new row) | `common.cuh:2364` | per device × per stream, process-lifetime | 4 MiB (32 MiB on Hopper+), so 4 × streams per device | **ours**, tiny |
+| 10 | **workspace-pool high-water** (`ggml_cuda_pool_leg`, new row) | `ggml-cuda.cu` (`ggml_cuda_device_malloc` → raw) | cached blocks, grows with prefill width | part of the measured ~3.7 GiB; the operator's `GGML_CUDA_POOL_CACHE_MB` caps the cache | **ours** |
+| 11 | **H2D bandwidth calibration probe** (new row) | `ggml-cuda-moe-cache-hooks.cu:139` | once per device, **freed** immediately | **512 MiB peak** (runs during ring auto-sizing, i.e. at load) | ours, peak only |
+| 12 | hipBLASLt Tensile code objects + internal workspace | external driver | process-lifetime | **unknown; this is the real floor** | not ours |
+
+`ENVIRONMENT.md` measured the post-slab consumption of rows 1/8/9/10/12 together at **~3.7 GiB** on a
+GSQ-era config (MTP draft buffer 762 MiB, FA-QSA workspace 762 MiB, hipBLASLt Tensile + workspace, pool
+high-water) — that is what the 4096 MiB headroom is really paying for, and the ceiling on what absorbing
+rows 1-7 can buy back.
+
+## 1b. Corrections to the r60-era findings
+
+* **F1 ("`extend` is dead at the default") — only true with no draft.**  `reserve = max(headroom + aux,
+  1024 MiB)` (`slab.cu:321`), and `aux` is the MTP/DFlash draft VRAM the preflight measures
+  (`ggml_cuda_slab_set_aux_reserve`).  With a draft, `mapped = free - reserve < size = free - headroom`,
+  so `ggml_cuda_slab_extend` (`:559`) is live: the field GSQ log shows `reserve=8.00 GiB` (4096 headroom
+  + 4096 aux), `size(VA)=21.38 GiB`, `mapped=17.38 GiB`, **`va_spare=4.00 GiB`**.  Without a draft they
+  are equal and extend cannot fire, as F1 said.
+* **#1's controller note is now "hint + optional cap"** — `GGML_CUDA_FA_STAGE_PREALLOC` (default on, r53)
+  allocates once at the hinted size instead of climbing the 1.25x ladder, and the hint is only honoured
+  inside `optional_alloc_within_free_cap` (`common.cuh:2121`, default 50 % of free VRAM).
+* **#3 is stronger than the table said**: the slot is served from the slab's transient hole first and only
+  falls back to `cudaMalloc` when there is no hole, the request exceeds a slot, or **the hole is unarmed**
+  (`common.cuh:2235`, the r67 carved-but-unarmed fix).
+* **The headroom is a per-config tuning value, not only a floor to reduce** — measured 2026-10-17 on the
+  field GSQ config: 4096 → arena 15 666.6 MiB / hit 0.9056, 3072 → 16 705.7 / 0.9147, 2048 → 17 744.8 /
+  0.9223, and a 16 384-token prompt 0.9165 → 0.9380 at 2048 with identical text.  So the campaign's
+  premise is confirmed *and* the first ~2 GiB can be taken today by an operator who accepts a wide-ubatch
+  that is not the rejected `-ub 6144 -c 204800` case.  Absorbing rows 1-7 is what makes lowering the
+  *default* safe.
 
 ## 2. Findings (evidence)
 
@@ -303,15 +364,20 @@ A/B is therefore not a global either/or: each consumer takes the mechanism its p
 
 ## 7. Pointers
 
-* `ggml/src/ggml-cuda/ggml-cuda-slab.cu` — `ggml_cuda_slab_reserve_bytes` (:258),
-  `GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT` (:332), `ggml_cuda_slab_init_locked` (~:588),
-  `ggml_cuda_slab_extend` (:531), `ggml_cuda_slab_arena_alloc_transient` (:1068),
-  `ggml_cuda_slab_ring_slot_capacity`.
-* `ggml/src/ggml-cuda/common.cuh` — `fattn_stage_try_get` (:1869), `q8_1_cache_get` (:1780),
-  `h2d_stage_buffer` (:2080), `optional_alloc_within_free_cap` (:2033),
-  `h2d_stage_region_bytes`/`h2d_stage_bound`.
-* `ggml/src/ggml-cuda/moe-expert-cache.cu` — `remap_dev` allocations (:1765, :3430).
-* `ggml/src/ggml-cuda/mmb.cu:2480`/`:2495`; `ggml/src/ggml-cuda/allreduce.cu:527`.
+* `ggml/src/ggml-cuda/ggml-cuda-slab.cu` — `ggml_cuda_slab_reserve_bytes` (:321),
+  `GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT` (:395), `ggml_cuda_slab_init_locked` (:638),
+  `ggml_cuda_slab_extend` (:559), `ggml_cuda_slab_arena_total` (:534),
+  `ggml_cuda_slab_arena_alloc_transient` (:1144), `ggml_cuda_slab_ring_slot_capacity` (:1123),
+  `ggml_cuda_slab_narrow2_floor_locked` (:782), `ggml_cuda_slab_wide_offset` (:234),
+  `ggml_cuda_slab_seed_floor` (:292).
+* `ggml/src/ggml-cuda/common.cuh` — `fattn_stage_try_get` (:1953), `q8_1_cache_get` (:1848),
+  `q8_1_arena` (:1793), `h2d_stage_buffer` (:2168), `optional_alloc_within_free_cap` (:2121),
+  `h2d_stage_region_bytes` (:2040), the cuBLAS workspace (:2364).
+* `ggml/src/ggml-cuda/moe-expert-cache.cu` — `remap_dev` (:2357, :4263), `heat_dev` (:3848).
+* `ggml/src/ggml-cuda/mmb.cu:2495`/`:2510`; `ggml/src/ggml-cuda/allreduce.cu:527`;
+  `ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu:139` (the 512 MiB calibration peak).
+* `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1 — the measured
+  headroom -> arena -> hit-rate conversion on the field config.
 * Campaigns: `archive/work/fit-slab-accounting/`, `archive/work/fa-stage-prealloc/`,
   `archive/work/slab-ring-region/`, `archive/work/moe-cache-autosize/ARENA-UB-TENSION.md`.
 * `ENVIRONMENT.md` — `GGML_CUDA_SLAB_*`, `GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT`,

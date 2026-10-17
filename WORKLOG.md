@@ -34,8 +34,14 @@ their *decode-time* buffers are tiny.
 window streaming (Strata's `--kv-resident 32768`) returns ~1.3 GiB more and is an engine campaign of its
 own (llama.cpp has no equivalent; `--cache-ram` is idle-slot offload, not residency).
 
+**Housekeeping for the next session.**  `wip/slab-transient-absorption/` (r60-era) was re-verified
+against r80: new §1a table (current line numbers, measured sizes, and three rows it was missing -- the
+cuBLAS workspace, the `ggml_cuda_pool_leg` high-water, and the 512 MiB H2D calibration peak), and §1b
+corrects F1 -- `ggml_cuda_slab_extend` is **not** dead when an MTP draft is present (`reserve = headroom +
+aux`, so the field log shows `va_spare = 4.00 GiB`); it is dead only with `aux == 0`.
+
 **Records.** `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1, `ENVIRONMENT.md`
-(`GGML_CUDA_SLAB_HEADROOM_MIB`).
+(`GGML_CUDA_SLAB_HEADROOM_MIB`), `wip/slab-transient-absorption/README.md` §1a/§1b.
 
 ## 261017.005 (r80) -- the MoE heat map doubled itself into saturation; the campaign retargets to "coverage" and the heat map is re-recorded (block 09)
 
