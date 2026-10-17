@@ -1,5 +1,46 @@
 # WORKLOG - dated delivery records
 
+## 261017.007 -- beta 12: `slab-transient-absorption` staged for a beta test, and `apply-all.sh --include-beta`
+
+**No release change** (`release.json` untouched, no block amended, no tag).  New: `beta/0012-slab-transient-
+absorption/` (candidate patch + `README.md` + `BETA-TESTING.md`) and an **opt-in** `--include-beta` flag on
+`scripts/apply-all.sh`.
+
+**Why a beta and not a block.**  The candidate (the WIP campaign summarised in
+`wip/slab-transient-absorption/README.md` §8-§10.14) moves *where the ROCm transients live*: the H2D ring,
+the FA prefill staging arena, the QSA3 and chunked-GDN prefill scratch and the workspace pool's large prefill
+temporaries now come out of the slab's wide band, the per-graph caches (MMB activation + producer slots, BF16
+src1) are released at the end of a compute, the MTP draft reserve is derived from the draft's own GGUF instead
+of a flat constant, `--fit` reserves it, and `GGML_CUDA_SLAB_HEADROOM_MIB` becomes `512 + 128 x n_gpu`
+(640/768/896 MiB) with the draft reserve charged per device under an equal `-sm tensor` split.  It is measured
+(+4.0 GiB of arena on the field config, every measured topology at or above a 300 MiB outside cushion) but the
+failure mode of getting a memory lifetime wrong is a hard VRAM abort on a configuration nobody has tried, so it
+waits for independent validation on other RDNA families / ROCm lines / models.  This is the same holding area
+that carried `beta/mmb-general` and `beta/tensor-fit-fix`.
+
+**`--include-beta`** applies every `beta/*/*.patch` (sorted) *after* the release blocks and *after* the
+`release.json` tree assertion, one commit each with the same strict-`git am`-then-one-`-3`-retry discipline, and
+then reports the resulting tree (which is deliberately not the release tree).  Without the flag the script is
+byte-identical in behaviour: 12 blocks, tree checked against `release.json`.
+
+**Verified on a fresh checkout at `release.json.base` (`097cf33d9`), canonical toolchain
+(`~/bin/build-llama-rocm`, ROCm 10.1.0, clang-24, ccache):**
+
+* `apply-all.sh .` -> 12/12 strict, tree `873d033563e3a33eb680be65695eaf63aa90db16` = `release.json` (no
+  regression from the flag).
+* `apply-all.sh --include-beta .` -> **13 commits**, strict (no `-3`), tree
+  **`18bb050f3ff2d47c54352c8ac04a986d4a4c4349`** (recorded in the beta `README.md`); builds clean; the 35B-A3B
+  same-seed greedy text is **identical** to the r80 baseline and `gate-prefill-logits.sh` reports **mean KLD
+  0.000000 / 100 % same-top-p**.
+
+Patch: `beta/0012-slab-transient-absorption/0012-rdna-boosts-beta-12-slab-transient-absorption.patch`, cut
+against `release.json.tip` (`00f4b1ef8`), sha256
+`5f5110659ed2274e1d48942188331da187507c8e6143d75169ef3d6eed882640`.
+
+**Not yet tested (the beta's purpose):** gfx1100/gfx1151, ROCm 7.14, dense-only and non-Qwen model families,
+an unequal `-ts` split under `-sm tensor` (it takes the conservative path today), and third-party configs.
+A confirmed or refuted result moves the candidate to `archive/work/` with a `RESOLUTION.md`.
+
 ## 261017.006 -- where the ~10 GiB of arena gap against Strata actually is, and the two levers that close part of it
 
 **No release change** (`release.json` untouched, no block amended, no tag; `ENVIRONMENT.md` and the

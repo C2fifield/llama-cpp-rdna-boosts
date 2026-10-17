@@ -14,14 +14,17 @@ that carried `beta/mmb-general` and `beta/tensor-fit-fix` (both promoted; see `a
 
 ## Conventions
 
-* One sub-directory per candidate: `beta/<name>/`.
+* One sub-directory per candidate: `beta/<name>/`.  A numeric prefix orders it relative to the block
+  set (`0012-...` applies after block 11).
 * `README.md` — what the candidate is, why, the patch, and the status (dated entries, newest first).
 * `BETA-TESTING.md` — the apply + build + gate checklist handed to the tester.
 * `<name>.patch` — the patch itself, cut against the current `release.json` tree.  It must `git apply`
   and `git am` cleanly on a fresh `apply-all.sh` checkout; record its **sha256** and the applied tree
   in `README.md`.
-* Nothing here is applied by `apply-all.sh`; the tester applies it explicitly on top of a clean
-  delivery tree.
+* **Nothing here is applied by default.**  `scripts/apply-all.sh` ignores `beta/` unless the tester asks
+  for it explicitly with `--include-beta`, which applies every `beta/*/*.patch` (sorted) on top of the
+  verified release tree, one commit each, and then reports the resulting tree (which is *not*
+  `release.json`'s tree -- that is the point).  Without the flag the script behaves exactly as before.
 
 ## Promotion
 

@@ -2,7 +2,10 @@
 # Apply the full rdna-boosts patch set (block 00 + blocks 01-N; N from release.json.n_blocks)
 # to a clean llama.cpp checkout at the recorded baseline.
 #
-# Usage: ./apply-all.sh [llama.cpp-checkout] [rdna-boosts-repo]
+# Usage: ./apply-all.sh [--include-beta] [llama.cpp-checkout] [rdna-boosts-repo]
+#   --include-beta       also apply the promotion candidates in beta/<name>/*.patch, after the
+#                        release blocks (BETA: tracked as extra commits, and the checkout is then
+#                        NOT the release tree -- see beta/README.md)
 #   llama.cpp-checkout   where to apply (default: current directory)
 #   rdna-boosts-repo     path to THIS repo (default: parent of scripts/)
 #
@@ -20,8 +23,19 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LLAMA="${1:-$(pwd)}"
-RDNA="${2:-$REPO_DIR}"
+
+INCLUDE_BETA=0
+POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        --include-beta) INCLUDE_BETA=1 ;;
+        -h|--help)      sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)             echo "ERROR: unknown option: $arg (try --help)" >&2; exit 1 ;;
+        *)              POSITIONAL+=("$arg") ;;
+    esac
+done
+LLAMA="${POSITIONAL[0]:-$(pwd)}"
+RDNA="${POSITIONAL[1]:-$REPO_DIR}"
 PATCHES="$RDNA/patches"
 
 # release.json is the delivery's single source of truth (fork point, canonical
@@ -90,7 +104,50 @@ if [ -n "$RELEASE_TREE" ] && [ "$APPLIED_WITH_3WAY" -eq 0 ]; then
     echo "Applied tree matches release.json ($RELEASE_TREE)."
 fi
 
-git log --oneline -$N_BLOCKS
+# ---------------------------------------------------------------------------
+# BETA candidates (explicit opt-in, applied AFTER the release tree was verified)
+#
+# beta/ holds promotion candidates that are deliberately NOT part of the delivery: a candidate that
+# changes a file a block owns cannot be committed straight into the blocks before it has been validated
+# on the reporter's platform.  `--include-beta` applies them on top of the verified release tree, one
+# commit each, so a tester can build and run them; the checkout is then NOT `release.json`'s tree, which
+# is reported below and in the log.
+# ---------------------------------------------------------------------------
+BETA_COUNT=0
+if [ "$INCLUDE_BETA" -eq 1 ]; then
+    shopt -s nullglob
+    BETA_PATCHES=( "$RDNA"/beta/*/*.patch )
+    shopt -u nullglob
+    echo
+    if [ "${#BETA_PATCHES[@]}" -eq 0 ]; then
+        echo "No beta candidates found under $RDNA/beta/*/*.patch -- nothing to add."
+    else
+        echo "Applying ${#BETA_PATCHES[@]} BETA candidate patch(es) on top of the release tree:"
+        for p in "${BETA_PATCHES[@]}"; do
+            echo "  ${p#"$RDNA"/}"
+        done
+        # Same discipline as the release blocks: strict first, one 3-way retry of the whole beta group.
+        if ! git am "${BETA_PATCHES[@]}"; then
+            echo "strict 'git am' of the beta candidates failed; aborting them and retrying with 'git am -3'" >&2
+            git am --abort >/dev/null 2>&1 || true
+            BETA_BASE_TREE="$(git rev-parse HEAD^{tree})"
+            if [ -n "$RELEASE_TREE" ] && [ "$BETA_BASE_TREE" != "$RELEASE_TREE" ]; then
+                echo "ERROR: not on the release tree before the beta group; refusing a 3-way merge" >&2
+                exit 1
+            fi
+            git am -3 "${BETA_PATCHES[@]}"
+        fi
+        BETA_COUNT="${#BETA_PATCHES[@]}"
+        echo
+        echo "NOTE: this checkout includes $BETA_COUNT BETA candidate(s) and is NOT the release tree."
+        echo "      release.json tree: $RELEASE_TREE"
+        echo "      applied tree:      $(git rev-parse HEAD^{tree})"
+        echo "      A beta tree is expected to differ; report it (and any failure) to the maintainer."
+    fi
+fi
+
+git log --oneline -$((N_BLOCKS + BETA_COUNT))
+
 echo
 echo "Build (uses your system ROCm install; see patches/README.md for the full env-knob list):"
 echo "  cmake -B build -DGGML_HIP=ON -DGGML_HIP_RCCL=1 -DGPU_TARGETS=\"${GPU_TARGETS:-gfx1100;gfx1151;gfx1201}\" -DCMAKE_BUILD_TYPE=Release"

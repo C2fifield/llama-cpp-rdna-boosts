@@ -25,6 +25,9 @@ hashes).
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
 git checkout 097cf33d9
 bash <path-to-this-repo>/scripts/apply-all.sh .   # creates branch rdna-boosts (12 commits)
+
+# OPTIONAL: a beta candidate on top (NOT the release tree -- for beta testing only)
+bash <path-to-this-repo>/scripts/apply-all.sh --include-beta .   # 12 blocks + beta/*/*.patch
 ```
 
 - One-line summary of each block: [The 12 blocks](#the-12-blocks-v20)
@@ -118,14 +121,15 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ├── patches/               # the delivery set: 0000-0015
 │   └── README.md          # apply instructions + block-12 env knobs + server config
 ├── scripts/
-│   ├── apply-all.sh       # the verified apply flow (git am; automatic -3 fallback on drift)
+│   ├── apply-all.sh       # the verified apply flow (git am; automatic -3 fallback on drift; --include-beta)
 │   ├── gate-prefill-logits.sh  # prefill-logit KLD release gate (issue #113)
 │   └── make-patches.sh    # regenerates the set from the fork (~/llama.cpp)
 ├── benchmarks/            # benchy methodology + v1/v2 results + graphs (dated records)
 ├── prompts/               # versioned, hash-stable test prompts (sha256-recorded; never edited in place)
 ├── wiki/                  # source for the GitHub wiki (Home, MTP & Adaptive MTP, Quick Reference); see wiki/README.md
 ├── wip/                   # ACTIVE exploration docs / handoffs (currently only: nwarps/)
-├── beta/                  # promotion-candidate patches pending a beta test (NOT part of the delivery)
+├── beta/                  # promotion-candidate patches pending a beta test (NOT part of the delivery;
+│                          #   apply with `apply-all.sh --include-beta`; see beta/0012-slab-transient-absorption/)
 ├── upstream/              # upstream-PR candidates (UPSTREAM-PR-*.md + .patch) + their index
 └── archive/               # the rest: archive/work/ (closed experiments + the archived wip/ trees) + archive/docs/ (history)
 ```

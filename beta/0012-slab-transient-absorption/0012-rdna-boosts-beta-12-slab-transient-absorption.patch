@@ -1,0 +1,2062 @@
+From 0000c905bd9abda9f1ccf52d58fdf68063de9843 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Sat, 17 Oct 2026 17:42:12 -0500
+Subject: [PATCH] rdna-boosts: beta 12: slab-transient-absorption (slab
+ transients + derived draft reserve)
+
+BETA candidate, not part of the delivery block set.  Apply on top of the
+release tree (patches/0000-0011) with:
+
+    scripts/apply-all.sh --include-beta .
+
+The movable-boundary slab keeps the MoE expert-cache arena and a wide prefill
+alive together, but everything that could not live inside it was paid for out of
+GGML_CUDA_SLAB_HEADROOM_MIB -- permanently, because the slab cannot unmap
+sub-ranges.  This block moves those transients into the slab and sizes the
+outside cushion from measurements instead of a guess.
+
+- H2D staging ring is slab-only in host-expert mode (+ migration-leak fix).
+- A wide-phase auxiliary region above the live work boundary, released with the
+  ring at the prefill -> decode drop: it hosts the FA prefill staging arena, the
+  QSA3 prefill workspace, and the chunked-GDN prefill scratch.
+- The workspace pool (ggml_cuda_pool_leg) serves its LARGE prefill temporaries
+  from that band (pool_leg::set_wide_routing + ggml_cuda_pool_wide_pin for the
+  retained sites), with a POOL_WIDE_LEAK tripwire at the drop.
+- The per-graph caches (MMB activation cache + producer slots, BF16 src1) are
+  released at the END of a compute, so nothing retained crosses a graph boundary.
+- The wide-aux region tracks its live blocks (a bump stack alone ratchets: 7.4 GiB
+  of holes in one 6.6k prefill).
+- The load-time H2D calibration probe comes from the slab arena.
+- The MTP draft reserve is DERIVED from the draft's own GGUF (weights + KV(n_ctx
+  at the real -ctk/-ctv size) + a measured compute tier + slack) instead of the
+  flat LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT, and --fit reserves it (an MTP
+  draft cannot be measured during fitting: it needs ctx_other).
+- GGML_CUDA_SLAB_HEADROOM_MIB default 4096 -> 512 + 128 x n_gpu (640/768/896),
+  and under an equal -sm tensor split the draft reserve is charged per device.
+
+Measured (1x R9700 gfx1201 + 2/3-GPU pairs): field GSQ seesaw excess 204.5 ->
+346.5 MiB with the arena at 15666.6 -> 19776 MiB (+4.0 GiB); wide IQ4_NL
+-ub 6144 599.0 MiB at the drop; 2-GPU layer 401.5 / tensor 300.0 MiB per device;
+3-GPU layer 519.5 / tensor 408.0; 35B-A3B greedy identical; prefill-logit KLD
+0.000000 / 100 % same-top-p.
+
+Opt-outs: GGML_CUDA_SLAB_HEADROOM_MIB (verbatim total),
+MOE_EXPERT_CACHE_AUX_RESERVE_MIB (verbatim draft reserve),
+GGML_CUDA_POOL_WIDE=0, GGML_CUDA_SLAB_RING_FALLBACK=1, GGML_CUDA_SLAB=0.
+---
+ common/CMakeLists.txt                         |   2 +
+ common/common.cpp                             | 107 ++++-
+ common/draft-reserve.cpp                      | 212 +++++++++
+ common/draft-reserve.h                        |  44 ++
+ common/fit.cpp                                |  78 +++-
+ common/fit.h                                  |   7 +
+ ggml/src/ggml-cuda/allreduce-hip.cu           |   3 +
+ ggml/src/ggml-cuda/allreduce.cu               |   3 +
+ ggml/src/ggml-cuda/common.cuh                 | 192 ++++++++-
+ ggml/src/ggml-cuda/fattn-qsa3.cu              |  57 ++-
+ ggml/src/ggml-cuda/gated_delta_net_chunked.cu |   5 +-
+ .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  28 +-
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 405 +++++++++++++++++-
+ ggml/src/ggml-cuda/ggml-cuda-vmm.h            |  28 ++
+ ggml/src/ggml-cuda/ggml-cuda.cu               | 246 ++++++++++-
+ ggml/src/ggml-cuda/mmb.cu                     |  34 ++
+ ggml/src/ggml-cuda/mmb.cuh                    |   6 +
+ include/llama.h                               |  12 +-
+ 18 files changed, 1421 insertions(+), 48 deletions(-)
+ create mode 100644 common/draft-reserve.cpp
+ create mode 100644 common/draft-reserve.h
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 2b307c59d..395cb43fd 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -76,6 +76,8 @@ add_library(${TARGET}
+     debug.h
+     download.cpp
+     download.h
++    draft-reserve.cpp
++    draft-reserve.h
+     fit.cpp
+     fit.h
+     hf-cache.cpp
+diff --git a/common/common.cpp b/common/common.cpp
+index a5b31c8a0..1f590cf5c 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "../src/llama-ext.h"
+ 
++#include "draft-reserve.h"
+ #include "fit.h"
+ #include "log.h"
+ #include "llama.h"
+@@ -1240,6 +1241,30 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     auto mparams = common_model_params_to_llama(params);
+     auto cparams = common_context_params_to_llama(params);
+ 
++    // wip/slab-transient-absorption (step 2): derive the draft's post-slab footprint ONCE, before `--fit` and
++    // the MoE preflight, so both use the same number.  `--fit` normally MEASURES the draft per device, but
++    // that measurement cannot work for an MTP draft (its context requires `ctx_other`, which does not exist
++    // while fitting) and silently fell back to zero -- i.e. fit sized the target as if the draft were free.
++    common_draft_reserve draft_reserve;
++    {
++        const bool has_aux = params.speculative.has_dft() || params.speculative.has_mtp();
++        const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
++        if (has_aux) {
++            if (e != nullptr) {
++                draft_reserve.total = (size_t) atoll(e) * 1024 * 1024;
++                draft_reserve.ok    = true;
++            } else {
++                // `n_ctx == 0` ("from the model") is resolved inside the estimator from the draft GGUF's own
++                // `context_length`: estimating with 0 would UNDER-estimate the reserve, the dangerous direction.
++                draft_reserve = common_draft_reserve_estimate(
++                        params.speculative.draft.mparams.path,
++                        params.n_ctx,
++                        params.n_ubatch,
++                        params.cache_type_k, params.cache_type_v);
++            }
++        }
++    }
++
+     if (params.fit_params) {
+         COM_TRC("%s", "fitting params to device memory ...\n");
+         COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");
+@@ -1262,6 +1287,7 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+             /*.mparams      =*/ &mparams_dft,
+             /*.cparams      =*/ &cparams_dft,
+             /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
++            /*.reserve_bytes =*/ draft_reserve.ok ? draft_reserve.total : 0,   // used when measuring fails
+         };
+ 
+         common_fit_params(params.model.path.c_str(), &mparams, &cparams,
+@@ -1371,14 +1397,89 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     // makes the MTP draft and the target plan different kernels -- and (b) the projected arena reflects
+     // the VRAM the WEIGHTS left free.  Called after the context instead, it would see only the headroom
+     // left after the KV cache, the compute buffers and the slab, and would decline the cache on every
+-    // default run.  Subtract an estimate of the auxiliary (MTP draft) context's own memory (measured
+-    // ~3.7 GiB) so the projection is realistic; MOE_EXPERT_CACHE_AUX_RESERVE_MIB overrides it.
++    // default run.  Subtract an estimate of the auxiliary (MTP draft) context's own memory so the
++    // projection is realistic; MOE_EXPERT_CACHE_AUX_RESERVE_MIB overrides it.
++    //
++    // wip/slab-transient-absorption (step 1): that estimate is now DERIVED from the draft's own GGUF
++    // (weights + KV(n_ctx) + a measured compute tier + slack; see `draft-reserve.h`) instead of being the
++    // flat `LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT`.  The constant is exactly the FIELD draft's footprint
++    // (2 647 weights + ~430 KV + 512 compute), so it was ~400 MiB short for the same draft at a longer
++    // context, which is the config that then ran with a thinner outside cushion than the headroom says.
++    // A draft we cannot estimate from its metadata (or a shared/embedded MTP head, whose weights are the
++    // target's) keeps the constant.
+     {
+         const bool has_aux = params.speculative.has_dft() || params.speculative.has_mtp();
+         size_t aux_bytes = 0;
+         if (has_aux) {
++            // wip/slab-transient-absorption (step 1/2): the reserve derived above (the same value `--fit`
++            // uses as its fallback), or the flat default when it could not be derived.
+             const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
+-            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
++            if (draft_reserve.ok) {
++                aux_bytes = draft_reserve.total;
++                // wip/slab-transient-absorption (step 3c): the slab's reserve is PER DEVICE, so under
++                // `-sm tensor` -- where the draft's weights and KV are SPLIT across the devices -- charging the
++                // whole draft footprint to every device over-reserves each one by (n-1)/n of it.  Measured on
++                // 2 GPUs: a constant +895 MiB/device of unused outside VRAM at EVERY headroom (768 -> 1296.5,
++                // 1024 -> 1552.5, 2048 -> 2576.5 excess vs 401.5/657.5/1681.5 for `-sm layer`), i.e. ~1.4 GiB
++                // of arena per device left on the table.  Charge each device its SHARE plus the tier that
++                // really is per device (compute + transients): 2 GPUs -> 2371 MiB instead of 3782, measured
++                // excess 300.0 MiB (on target) with the same greedy sha and arena 17 344 -> 18 752 MiB.
++                //
++                // Only for an EQUAL split: with an explicit `-ts a,b` the small-share device would be
++                // under-reserved (the shares are not known per device at this point), and `-sm layer` must keep
++                // the FULL value -- the MTP head's layer lands on ONE device, and the halved value was measured
++                // to fail at draft load (`512.00 MiB allocation failed on device 1`).  Both fall back to the
++                // full reserve, i.e. today's behaviour.
++                bool equal_split = true;
++                for (size_t i = 1; i < sizeof(params.tensor_split)/sizeof(params.tensor_split[0]); ++i) {
++                    if (params.tensor_split[i] != 0.0f) {
++                        equal_split = false;
++                        break;
++                    }
++                }
++                size_t n_gpu = 0;
++                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++                    ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++                    if (dev != nullptr && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
++                        n_gpu++;
++                    }
++                }
++                if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && equal_split && n_gpu > 1) {
++                    // per device: the share of (weights + KV) + the compute/transient tier + a small margin.
++                    // The margin is needed: the estimator's total is a whole-box figure, and the measured
++                    // per-device draw is a little above (weights+kv)/n + tier -- 2 GPUs, tier 704, formula
++                    // 2243 MiB -> 113 MiB SHORT of a 113.87 MiB capture allocation (abort); 2371 MiB (= +128)
++                    // measured exactly the 300 MiB target excess.  The failure mode is a loud OOM, never a
++                    // silent one, so a small margin plus the gates is the right trade.
++                    const size_t tier   = draft_reserve.compute + draft_reserve.slack;
++                    const size_t margin = (size_t) 128 << 20;
++                    const size_t split  = aux_bytes > tier ? aux_bytes - tier : aux_bytes / n_gpu;
++                    aux_bytes = split / n_gpu + tier + margin;
++                    LOG_WRN("%s: -sm tensor with %zu GPUs: charging each device its share of the draft reserve "
++                            "(%.0f MiB = %.0f / %zu + %.0f tier + %.0f margin) instead of the whole %.0f MiB.\n",
++                            __func__, n_gpu, (double) aux_bytes / 1048576.0, (double) split / 1048576.0, n_gpu,
++                            (double) tier / 1048576.0, (double) margin / 1048576.0,
++                            (double) draft_reserve.total / 1048576.0);
++                }
++                if (e != nullptr) {
++                    LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft reserve\n",
++                            __func__, (double) aux_bytes / 1048576.0);
++                } else {
++                    LOG_WRN("%s: slab draft reserve derived from '%s': %.0f MiB (weights %.0f + kv %.0f + "
++                            "compute %.0f + slack %.0f); the flat default is %d MiB.  The reserve is "
++                            "headroom + this, and the draft is created after the slab, so this is the "
++                            "outside VRAM it needs -- MOE_EXPERT_CACHE_AUX_RESERVE_MIB overrides it.\n",
++                            __func__, params.speculative.draft.mparams.path.c_str(),
++                            (double) draft_reserve.total / 1048576.0, (double) draft_reserve.weights / 1048576.0,
++                            (double) draft_reserve.kv / 1048576.0, (double) draft_reserve.compute / 1048576.0,
++                            (double) draft_reserve.slack / 1048576.0, LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT);
++                }
++            } else {
++                aux_bytes = (size_t) LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT * 1024 * 1024;
++                LOG_INF("%s: keeping the flat %d MiB draft reserve (%s)\n", __func__,
++                        LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT,
++                        draft_reserve.note.empty() ? "not derivable" : draft_reserve.note.c_str());
++            }
+         }
+         llama_model_moe_cache_preflight(model, aux_bytes);
+     }
+diff --git a/common/draft-reserve.cpp b/common/draft-reserve.cpp
+new file mode 100644
+index 000000000..c86f4b984
+--- /dev/null
++++ b/common/draft-reserve.cpp
+@@ -0,0 +1,212 @@
++#include "draft-reserve.h"
++
++#include "log.h"
++
++#include "gguf.h"
++
++#include <algorithm>
++#include <cstring>
++#include <vector>
++
++// ---------------------------------------------------------------------------------------------
++// wip/slab-transient-absorption (step 1): the draft reserve, derived instead of assumed.
++//
++// The slab holds back `headroom + aux` at creation; the speculative draft context is created afterwards,
++// so its VRAM comes out of that reserve (measured: 3 584 MiB on the field config, 4 000 MiB for the same
++// draft at `-c 204800`).  The flat constant is exactly the first and short for the second, and the reserve
++// cannot be revised once the slab is mapped -- so an UNDER-estimate is what must be avoided (an outside
++// `cudaMalloc` aborting is the failure mode; a surplus is reclaimed by `slab_extend`).
++//
++// Terms, and how each is obtained:
++//   weights : the draft GGUF's total tensor bytes, EXACT (mmap mode, all layers on the device).  This is
++//             the dominant term (2 647 MiB of the 3 584 measured) and the part that differs between draft
++//             models, so it is the piece worth deriving per model.  A draft with some layers on the CPU
++//             only over-estimates, which is the safe direction.
++//   kv      : `n_ctx` tokens x (k + v) per KV layer, at the REAL element size of the KV types in use, plus
++//             any declared indexer key cache at f32 (the QSA/indexer caches are not covered by `-ctk`).
++//             KV layers = `nextn_predict_layers` when the GGUF declares an MTP head (the head only ever
++//             holds its own layer's KV), else `block_count` for a standalone draft model.
++//   compute : the draft context's compute buffer.  NOT derivable without building a graph; measured at
++//             512 MiB (`-ub 4096`) and 768 MiB (`-ub 6144`), so the estimate uses a 1 024 MiB tier.
++//   slack   : the draft's own load/steady transients, measured at ~135 MiB -> 192 MiB.
++//
++// Calibration (2026-10-17, gfx1201, `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`, qwen4exp MTP head,
++// q8_0 KV): weights 2 647 (GGUF) + kv 300/459 (this function, `-c 131072`/`-c 204800`) + compute 1 024 +
++// slack 192 = 4 163 / 4 322 MiB against a MEASURED 3 584 / 4 000.  It over-estimates by ~550 / ~320 MiB:
++// the 1 024 MiB compute tier is the biggest single reason (the real buffer is 512-768), and over-estimating
++// is the intended bias -- `slab_extend` reclaims a surplus once the draft is resident.
++// ---------------------------------------------------------------------------------------------
++
++namespace {
++
++// A conservative f32 element size for a cache whose dtype the GGUF does not pin (the indexer K cache is
++// not covered by `-ctk`; treating it as f32 keeps the term an upper bound).
++constexpr size_t F32_BYTES = 4;
++
++// Bytes per element of a block-quantised row: keep the fraction (q8_0 is 34/32 = 1.0625, not 2 -- rounding
++// the block ratio up to a whole byte doubles the KV term for every quantised cache type).
++double type_bytes_per_elem(ggml_type t) {
++    const size_t bs = ggml_blck_size(t);
++    if (bs == 0) {
++        return (double) F32_BYTES;
++    }
++    return (double) ggml_type_size(t) / (double) bs;
++}
++
++// uint-ish scalar or the max of an array (per-layer `head_count_kv` is an array in some models).
++bool read_u32_max(const gguf_context * g, const std::string & key, uint32_t & out) {
++    const int64_t id = gguf_find_key(g, key.c_str());
++    if (id < 0) {
++        return false;
++    }
++    switch (gguf_get_kv_type(g, id)) {
++        case GGUF_TYPE_UINT8:  out = gguf_get_val_u8 (g, id); return true;
++        case GGUF_TYPE_UINT16: out = gguf_get_val_u16(g, id); return true;
++        case GGUF_TYPE_UINT32: out = gguf_get_val_u32(g, id); return true;
++        case GGUF_TYPE_UINT64: out = (uint32_t) gguf_get_val_u64(g, id); return true;
++        case GGUF_TYPE_INT32:  out = (uint32_t) gguf_get_val_i32(g, id); return true;
++        case GGUF_TYPE_INT64:  out = (uint32_t) gguf_get_val_i64(g, id); return true;
++        case GGUF_TYPE_ARRAY: {
++            const uint32_t n = (uint32_t) gguf_get_arr_n(g, id);
++            if (n == 0) {
++                return false;
++            }
++            uint32_t mx = 0;
++            switch (gguf_get_arr_type(g, id)) {
++                case GGUF_TYPE_UINT32: {
++                    const uint32_t * d = (const uint32_t *) gguf_get_arr_data(g, id);
++                    for (uint32_t i = 0; i < n; ++i) mx = std::max(mx, d[i]);
++                    break;
++                }
++                case GGUF_TYPE_INT32: {
++                    const int32_t * d = (const int32_t *) gguf_get_arr_data(g, id);
++                    for (uint32_t i = 0; i < n; ++i) mx = std::max(mx, (uint32_t) d[i]);
++                    break;
++                }
++                default:
++                    return false;
++            }
++            out = mx;
++            return true;
++        }
++        default:
++            return false;
++    }
++}
++
++} // namespace
++
++common_draft_reserve common_draft_reserve_estimate(const std::string & path,
++                                                   uint32_t n_ctx,
++                                                   uint32_t n_ubatch,
++                                                   ggml_type type_k,
++                                                   ggml_type type_v) {
++    common_draft_reserve r;
++
++    if (path.empty()) {
++        r.note = "no draft GGUF (shared / embedded MTP head): the weights are the target's, so this estimate"
++                 " does not apply";
++        return r;
++    }
++
++    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
++    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
++    if (g == nullptr) {
++        r.note = "could not read the draft GGUF metadata";
++        return r;
++    }
++
++    const int64_t ka = gguf_find_key(g, "general.architecture");
++    if (ka < 0) {
++        r.note = "draft GGUF has no general.architecture";
++        gguf_free(g);
++        return r;
++    }
++    const std::string arch = gguf_get_val_str(g, ka);
++
++    // --- weights: exact, the dominant term -----------------------------------------------------
++    size_t weights = 0;
++    const int64_t n_tensors = gguf_get_n_tensors(g);
++    for (int64_t i = 0; i < n_tensors; ++i) {
++        weights += gguf_get_tensor_size(g, i);
++    }
++    r.weights = weights;
++
++    // `n_ctx == 0` means "from the model": estimating the KV with 0 would UNDER-estimate the reserve (the
++    // dangerous direction), so fall back to the context the draft itself declares as its trained maximum.
++    if (n_ctx == 0) {
++        uint32_t ctx_train = 0;
++        if (read_u32_max(g, arch + ".context_length", ctx_train) && ctx_train > 0) {
++            n_ctx = ctx_train;
++        }
++    }
++
++    // --- KV: needs the layer geometry ----------------------------------------------------------
++    uint32_t block_count = 0;
++    uint32_t n_nextn      = 0;
++    (void) read_u32_max(g, arch + ".nextn_predict_layers", n_nextn);   // absent for a standalone draft
++    if (!read_u32_max(g, arch + ".block_count", block_count) || block_count == 0) {
++        r.note = "draft GGUF has no usable block_count";
++        gguf_free(g);
++        return r;
++    }
++    const uint32_t kv_layers = n_nextn > 0 ? n_nextn : block_count;
++
++    uint32_t k_len = 0;
++    uint32_t v_len = 0;
++    bool have_lens = read_u32_max(g, arch + ".attention.key_length", k_len) &&
++                     read_u32_max(g, arch + ".attention.value_length", v_len);
++    uint32_t n_head_kv = 1;
++    if (!read_u32_max(g, arch + ".attention.head_count_kv", n_head_kv) || n_head_kv == 0) {
++        n_head_kv = 1;
++    }
++    if (!have_lens) {
++        // fall back to n_embd / n_head (the per-head width) when the GGUF does not pin them
++        uint32_t n_embd = 0, n_head = 0;
++        if (!read_u32_max(g, arch + ".embedding_length", n_embd) ||
++            !read_u32_max(g, arch + ".attention.head_count", n_head) || n_head == 0) {
++            r.note = "draft GGUF does not declare attention key/value lengths";
++            gguf_free(g);
++            return r;
++        }
++        k_len = n_embd / n_head;
++        v_len = k_len;
++    }
++
++    // declared indexer key cache (QSA / DFlash-style sparse attention): one more k row per layer
++    uint32_t idx_len = 0, idx_heads = 0;
++    const bool have_indexer = read_u32_max(g, arch + ".attention.indexer.key_length", idx_len) &&
++                             read_u32_max(g, arch + ".attention.indexer.head_count", idx_heads);
++
++    gguf_free(g);
++
++    const double attn_per_tok = (double) kv_layers * (double) n_head_kv *
++                                ((double) k_len * type_bytes_per_elem(type_k) +
++                                 (double) v_len * type_bytes_per_elem(type_v));
++    const double idx_per_tok  = have_indexer
++                              ? (double) kv_layers * (double) idx_heads * (double) idx_len * (double) F32_BYTES
++                              : 0.0;
++    // +10 % for per-row block padding and the KQ-mask padding llama.cpp adds to the cell count.
++    r.kv = (size_t) ((double) n_ctx * (attn_per_tok + idx_per_tok) * 1.10);
++
++    // --- compute + slack: measured tiers -------------------------------------------------------
++    // The draft context's compute buffer (pinned into the slab's narrow-2 region, and its mapping still comes
++    // out of the OUTSIDE pool) measured 512 MiB at the target's `-ub 4096` and 768 MiB at `-ub 6144`.  That
++    // is the one term that genuinely scales with the target's ubatch, so it is keyed on it (the wide tier is
++    // used above 4096); it is a measured tier, not a derivation.
++    r.compute = (n_ubatch > 4096 ? (size_t) 768 : (size_t) 512) << 20;
++    r.slack   = (size_t) 192 << 20;   // measured ~135
++
++    r.total = r.weights + r.kv + r.compute + r.slack;
++    r.ok    = r.total > 0;
++
++    LOG_INF("%s: draft reserve estimate for '%s': weights %.0f + kv %.0f (%u x %u layers, %u kv heads,"
++            " %u/%u head dims, indexer %s) + compute %.0f + slack %.0f = %.0f MiB (n_ctx %u)\n",
++            __func__, path.c_str(),
++            (double) r.weights / 1048576.0, (double) r.kv / 1048576.0, kv_layers, kv_layers, n_head_kv,
++            k_len, v_len, have_indexer ? "yes" : "no",
++            (double) r.compute / 1048576.0, (double) r.slack / 1048576.0, (double) r.total / 1048576.0,
++            n_ctx);
++
++    return r;
++}
+diff --git a/common/draft-reserve.h b/common/draft-reserve.h
+new file mode 100644
+index 000000000..8e65564b6
+--- /dev/null
++++ b/common/draft-reserve.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++// wip/slab-transient-absorption (step 1): DERIVE the slab's auxiliary ("draft") reserve from the draft
++// model's own GGUF instead of the flat `LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT`.
++//
++// Background: the movable-boundary slab holds back `headroom + aux` at creation, and the MTP / speculative
++// draft context is created AFTER the slab, so its VRAM comes out of that reserve.  The reserve is a one-shot
++// decision (the slab's mapping cannot be reduced later), and getting it wrong is asymmetric:
++//   - too SMALL: the draft eats the headroom, the outside cushion collapses and an outside `cudaMalloc`
++//     aborts the run (the slab cannot unmap sub-ranges to help);
++//   - too LARGE: the surplus is reclaimed into the arena by `ggml_cuda_slab_extend` when the draft left more
++//     than `headroom` outside, so it mostly costs nothing.
++// Measured on the field config (2026-10-17): the draft's real footprint is 3 584 MiB at
++// `-ub 4096 -c 131072` and 4 000 MiB at `-ub 6144 -c 204800` -- the flat 3 584 constant is exactly the
++// first and ~416 MiB short for the second, which is why a long-context run needs a bigger reserve than the
++// constant implies.  The weights are 2 647 MiB of it (the draft GGUF's tensor bytes, exact); the rest is KV
++// + compute + load transients.
++//
++// This estimate is deliberately CONSERVATIVE where the metadata is ambiguous (it returns `ok = false`
++// rather than guessing when a key it needs is missing, and the caller then keeps the constant).
++
++#include "ggml.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++
++struct common_draft_reserve {
++    size_t weights = 0;   // draft weights that must be resident on the device (sum of GGUF tensor bytes)
++    size_t kv      = 0;   // KV cache for `n_ctx`: attention k+v per layer + any declared indexer cache
++    size_t compute = 0;   // the draft context's compute buffer (a measured tier keyed on the ubatch)
++    size_t slack   = 0;   // the draft's own load / steady-state transients
++    size_t total   = 0;   // weights + kv + compute + slack  ->  MOE_EXPERT_CACHE_AUX_RESERVE_MIB
++
++    bool        ok   = false;   // false: the GGUF did not declare what we need -> keep the constant
++    std::string note;           // why it failed, for the log
++};
++
++// Estimate the post-slab VRAM `path` (a draft GGUF) will need for `n_ctx` with the given KV types.
++common_draft_reserve common_draft_reserve_estimate(const std::string & path,
++                                                   uint32_t n_ctx,
++                                                   uint32_t n_ubatch,
++                                                   ggml_type type_k,
++                                                   ggml_type type_v);
+diff --git a/common/fit.cpp b/common/fit.cpp
+index e27677e16..110080524 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -256,6 +256,27 @@ common_device_memory_data_vec common_get_device_memory_data(
+     return ret;
+ }
+ 
++// wip/slab-transient-absorption (step 2): the DERIVED reserve to use when the extra (draft) model cannot be
++// MEASURED.  That is the normal MTP case: its context cannot be created while fitting (`qwen4exp requires
++// ctx_other to be set`, and fitting runs before the target context exists), so the measurement throws and
++// fit used to size the main model as if the draft did not exist -- the draft then came out of the slab's
++// reserve, the outside cushion collapsed by ~D, and a lowered headroom aborted on an outside `cudaMalloc`.
++//
++// Layout: the weights + KV are ONE pool (they are tensor-split over the devices the draft shares with the
++// main model) while the compute buffer (the draft's narrow-2 region) and its transients exist on EVERY
++// device.  `n_dev` devices therefore need the compute tier each, plus the split of the rest.  Returns the
++// TOTAL over `n_dev` devices.
++static int64_t fit_extra_reserve_total(const common_fit_extra_model * extra, size_t n_dev) {
++    if (extra == nullptr || extra->reserve_bytes == 0) {
++        return 0;
++    }
++    if (n_dev == 0) {
++        n_dev = 1;
++    }
++    const int64_t per_dev = (int64_t) 1024 << 20;   // the estimator's compute + slack tier, rounded up
++    return (int64_t) extra->reserve_bytes + (int64_t) (n_dev - 1) * per_dev;
++}
++
+ static void common_params_fit_impl(
+         const char * path_model, struct llama_model_params * mparams, struct llama_context_params * cparams,
+         float * tensor_split, struct llama_model_tensor_buft_override * tensor_buft_overrides,
+@@ -300,10 +321,48 @@ static void common_params_fit_impl(
+                 measured = common_get_device_memory_data_impl(
+                     extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+             } catch (const std::runtime_error & e) {
+-                // the extra model is optional, fit the main model alone rather than giving up
+-                LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
++                // wip/slab-transient-absorption (step 2): the extra model could not be MEASURED.  That is the
++                // normal MTP case (`qwen4exp requires ctx_other to be set` -- during fitting there is no target
++                // context yet to point it at), and fitting the main model alone used to silently ignore the
++                // draft's whole footprint: the draft then had to come out of the slab's reserve, the outside
++                // cushion collapsed by ~D, and a lowered headroom aborted on an outside `cudaMalloc`.
++                // Reserve the DERIVED estimate instead (`draft-reserve.h`) and split it over the devices the
++                // draft shares with the main model.
+                 dmds_extra = dmds_t(devs.size() + 1);
+                 n_ctx_extra = cparams->n_ctx;
++                if (extra->reserve_bytes == 0) {
++                    LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n",
++                            __func__, e.what());
++                    return;
++                }
++                // Per device: the weights + KV follow the tensor split (the draft context uses the main model's
++                // split), while the compute buffer (the draft's narrow-2 region) and its transients exist on
++                // EVERY device it runs on.  So the portion of the estimate that is per-device is added to each
++                // device, and the rest is distributed by the split.  For one device this is exactly the
++                // estimate; for N > 1 it over-reserves by (N-1) x that portion, which is the safe direction.
++                const size_t per_dev = (size_t) 1024 << 20;   // the estimator's compute + slack tier, rounded up
++                const size_t split   = extra->reserve_bytes > per_dev ? extra->reserve_bytes - per_dev : 0;
++                double share_sum = 0.0;
++                std::vector<double> share(devs.size(), 0.0);
++                for (size_t id = 0; id < devs.size(); id++) {
++                    share[id] = tensor_split != nullptr && tensor_split[id] > 0.0f ? (double) tensor_split[id] : 0.0;
++                    share_sum += share[id];
++                }
++                if (share_sum <= 0.0) {
++                    for (size_t id = 0; id < devs.size(); id++) {
++                        share[id] = 1.0 / (double) devs.size();
++                    }
++                    share_sum = 1.0;
++                }
++                for (size_t id = 0; id < devs.size(); id++) {
++                    dmds_extra[id].mb.model   = (size_t) ((double) split * share[id] / share_sum);
++                    dmds_extra[id].mb.compute = per_dev;
++                }
++                LOG_WRN("%s: the extra model cannot be measured during fitting (%s); reserving the DERIVED %.0f MiB "
++                        "as a per-device-split reserve instead -- this is the MTP case, which needs ctx_other "
++                        "while fitting has no target context yet\n", __func__, e.what(),
++                        (double) extra->reserve_bytes / (double) (1024*1024));
++                // `measured` is empty: the code below dereferences it, so the fallback must not fall through.
+                 return;
+             }
+ 
+@@ -544,8 +603,19 @@ static void common_params_fit_impl(
+                 measured = common_get_device_memory_data_impl(
+                     extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+             } catch (const std::runtime_error & e) {
+-                LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
+-                return 0;
++                // wip/slab-transient-absorption (step 2): the derived reserve, not zero -- see
++                // `fit_extra_reserve_total` (this is the MTP / Meta-device path, where the measurement always
++                // fails because the draft context needs ctx_other).
++                const int64_t fb = fit_extra_reserve_total(extra, devs.size());
++                if (fb == 0) {
++                    LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n",
++                            __func__, e.what());
++                    return 0;
++                }
++                LOG_WRN("%s: the extra model cannot be measured during fitting (%s); reserving the DERIVED "
++                        "%.0f MiB instead (MTP needs ctx_other, which fitting does not have yet)\n", __func__,
++                        e.what(), (double) fb / (double) (1024*1024));
++                return fb;
+             }
+             int64_t model = 0;
+             int64_t ctx   = 0;
+diff --git a/common/fit.h b/common/fit.h
+index 824d386b0..9b171b54b 100644
+--- a/common/fit.h
++++ b/common/fit.h
+@@ -19,6 +19,13 @@ struct common_fit_extra_model {
+     llama_model_params * mparams;
+     llama_context_params * cparams;
+     bool shares_model;
++    // wip/slab-transient-absorption (step 2): per-device VRAM reserve to use when the extra model cannot be
++    // MEASURED.  That is the MTP case: its context cannot be created during fitting (`qwen4exp requires
++    // ctx_other to be set`, and during fitting there is no target context to point it at), so the
++    // measurement fails and fit used to silently size the main model as if the draft did not exist -- the
++    // draft's whole footprint then came out of the slab reserve and the outside cushion collapsed.
++    // `draft-reserve.h` derives this value from the draft's own GGUF; 0 keeps the old behaviour.
++    size_t reserve_bytes;
+ };
+ 
+ // fits mparams and cparams to free device memory (assumes system memory is unlimited)
+diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
+index 648014967..2e39b27ab 100644
+--- a/ggml/src/ggml-cuda/allreduce-hip.cu
++++ b/ggml/src/ggml-cuda/allreduce-hip.cu
+@@ -1609,6 +1609,9 @@ bool ggml_cuda_ar_allreduce(
+         for (int i = 0; i < n; ++i) {
+             auto * cuda_ctx = static_cast<ggml_backend_cuda_context *>(backends[i]->context);
+             GGML_ASSERT(cuda_ctx->device == p->devices[i]);
++            // wip/slab-transient-absorption (step 2b): this scratch is held across the copy-engine
++            // sub-launches of the whole all-reduce, so it must not come from the prefill-only wide band.
++            ggml_cuda_pool_wide_pin wide_pin(cuda_ctx->pool());
+             bf16_tmp[i].pool = &cuda_ctx->pool();
+             bf16_tmp[i].alloc(ne);
+             ggml_cuda_set_device(p->devices[i]);
+diff --git a/ggml/src/ggml-cuda/allreduce.cu b/ggml/src/ggml-cuda/allreduce.cu
+index fbbe48432..a5e3a3a44 100644
+--- a/ggml/src/ggml-cuda/allreduce.cu
++++ b/ggml/src/ggml-cuda/allreduce.cu
+@@ -814,6 +814,9 @@ bool ggml_cuda_ar_allreduce(
+         for (int i = 0; i < n; ++i) {
+             auto * cuda_ctx = static_cast<ggml_backend_cuda_context *>(backends[i]->context);
+             GGML_ASSERT(cuda_ctx->device == p->devices[i]);
++            // wip/slab-transient-absorption (step 2b): this scratch is held across the copy-engine
++            // sub-launches of the whole all-reduce, so it must not come from the prefill-only wide band.
++            ggml_cuda_pool_wide_pin wide_pin(cuda_ctx->pool());
+             bf16_tmp[i].pool = &cuda_ctx->pool();
+             bf16_tmp[i].alloc(ne);
+             ggml_cuda_set_device(p->devices[i]);
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 39c9d71cf..14ec77bf6 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1347,6 +1347,13 @@ struct ggml_cuda_pool {
+ 
+     virtual void * alloc(size_t size, size_t * actual_size) = 0;
+     virtual void free(void * ptr, size_t size) = 0;
++
++    // wip/slab-transient-absorption (step 2b): the "pinned / never wide" escape hatch.  While the slab's
++    // wide (prefill) band is armed, a large pool allocation is served from it instead of the pool; the band
++    // is RELEASED at the prefill -> decode transition (its bytes go back to the arena), so anything that
++    // must outlive one graph -- the MMB activation cache/slots, the allreduce BF16 scratch -- must opt out
++    // or it would be a use-after-free.  Returns the PREVIOUS state so a guard can restore it.
++    virtual bool set_wide_routing(bool /*on*/) { return true; }
+ };
+ 
+ template<typename T>
+@@ -1393,6 +1400,25 @@ struct ggml_cuda_pool_alloc {
+     ggml_cuda_pool_alloc& operator=(ggml_cuda_pool_alloc &&) = delete;
+ };
+ 
++// wip/slab-transient-absorption (step 2b): pin a pool against the wide-phase redirect for the lifetime of
++// the guard.  Hold one across an allocation whose block outlives the graph that made it (a retained cache,
++// a scratch held across sub-launches); the pin only has to cover the alloc, so a per-call guard is enough.
++struct ggml_cuda_pool_wide_pin {
++    ggml_cuda_pool * pool = nullptr;
++    bool             prev = true;
++
++    explicit ggml_cuda_pool_wide_pin(ggml_cuda_pool & p) : pool(&p), prev(p.set_wide_routing(false)) {
++    }
++    ~ggml_cuda_pool_wide_pin() {
++        if (pool != nullptr) {
++            pool->set_wide_routing(prev);
++        }
++    }
++    ggml_cuda_pool_wide_pin(const ggml_cuda_pool_wide_pin &) = delete;
++    ggml_cuda_pool_wide_pin & operator=(const ggml_cuda_pool_wide_pin &) = delete;
++};
++
++
+ 
+ // backend interface
+ 
+@@ -1625,6 +1651,17 @@ bool ggml_cuda_slab_active(int device);
+ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size);
+ size_t ggml_cuda_slab_ring_slot_capacity(int device);
+ void   ggml_cuda_slab_ring_set(int device, bool arm);
++// wip/slab-transient-absorption: the wide-phase auxiliary region (the FA prefill staging arena's home),
++// bump-allocated above the live work boundary and released at the prefill -> decode transition.
++void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out);
++void   ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size);
++bool   ggml_cuda_slab_wide_available(int device);
++size_t ggml_cuda_slab_wide_aux_gen(int device);
++void   ggml_cuda_slab_log_stats(int device, const char * tag);
++// wip/slab-transient-absorption (F5, step 0): the ring hole was REQUESTED for this model (an operator can
++// still disable it with GGML_CUDA_SLAB_RING_MIB=0, which keeps the pre-slab cudaMalloc ring).  When it was
++// requested but could not be carved, a ring shortfall must not silently fall back outside the slab.
++bool   ggml_cuda_slab_ring_requested();
+ 
+ // wip/slab-ring-region (issue #164): the H2D staging-ring cap (bytes).  `GGML_CUDA_SLAB_RING_MIB` is a
+ // verbatim per-GPU override; otherwise `llama_context` auto-sizes it from the ubatch and the host-expert
+@@ -1917,14 +1954,23 @@ struct ggml_backend_cuda_context {
+     // The growth policy is not a performance lever (exact-fit realloc measured the same).
+     char * fattn_stage[GGML_CUDA_MAX_STREAMS]      = {};
+     size_t fattn_stage_size[GGML_CUDA_MAX_STREAMS] = {};
++    // wip/slab-transient-absorption: the arena is served from the slab's wide-phase auxiliary region when
++    // the slab is live, so it must not be cudaFree'd and its pointer is only valid for `_gen`.
++    bool   fattn_stage_slab[GGML_CUDA_MAX_STREAMS]     = {};
++    size_t fattn_stage_slab_gen[GGML_CUDA_MAX_STREAMS] = {};
+     bool   fattn_stage_oom_warned                  = false;
+ 
+-    // Total bytes currently held by the per-stream FA prefill staging arenas.  The arenas are a
+-    // raw device allocation, deliberately outside the compute-graph reserve, so llama_get_memory_breakdown
+-    // (and therefore --fit) cannot see them; this accessor is what the accounting hook reports.
++    // Total bytes currently held by the per-stream FA prefill staging arenas that live OUTSIDE the slab.
++    // Those are a raw device allocation outside the compute-graph reserve, so llama_get_memory_breakdown
++    // (and therefore --fit) cannot see them; this accessor is what the accounting hook reports.  A
++    // slab-backed arena (wip/slab-transient-absorption) is part of the work region the scheduler already
++    // reports, so counting it here would double-count it.
+     size_t fattn_stage_bytes() const {
+         size_t total = 0;
+         for (int i = 0; i < GGML_CUDA_MAX_STREAMS; ++i) {
++            if (fattn_stage_slab[i]) {
++                continue;
++            }
+             total += fattn_stage_size[i];
+         }
+         return total;
+@@ -1952,15 +1998,55 @@ struct ggml_backend_cuda_context {
+     // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
+     void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
+         GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
++        // wip/slab-transient-absorption: a slab-backed arena is only valid for the wide-phase generation
++        // it was allocated in.  The region is released (and the generation bumped) at the prefill ->
++        // decode transition, after which the arena may own those bytes.
++        if (fattn_stage_slab[stream_no] &&
++            fattn_stage_slab_gen[stream_no] != ggml_cuda_slab_wide_aux_gen(device)) {
++            fattn_stage[stream_no]          = nullptr;
++            fattn_stage_size[stream_no]     = 0;
++            fattn_stage_slab[stream_no]     = false;
++            fattn_stage_slab_gen[stream_no] = 0;
++        }
+         if (size > fattn_stage_size[stream_no]) {
+             static const bool prealloc = []() {
+                 const char * e = getenv("GGML_CUDA_FA_STAGE_PREALLOC");
+                 return e == nullptr || atoi(e) != 0;
+             }();
+             const size_t new_size  = std::max<size_t>(size_t(1) << 24, size + size/4); // 16 MiB floor, 25% growth
+-            const size_t cur_total = fattn_stage_bytes() - fattn_stage_size[stream_no];
++            // Outside bytes only: a slab-backed stream already reports through the work region.
++            const size_t cur_total = fattn_stage_bytes() -
++                (fattn_stage_slab[stream_no] ? 0 : fattn_stage_size[stream_no]);
+             size_t alloc_size = new_size;
+             char * new_arena = nullptr;
++            if (getenv("GGML_CUDA_SLAB_STATS") != nullptr) {
++                GGML_LOG_WARN("FA_STAGE dev=%d stream=%d size=%.1f MiB cached=%.1f MiB slab=%d\n",
++                    device, stream_no, (double) size/1048576.0, (double) fattn_stage_size[stream_no]/1048576.0,
++                    (int) fattn_stage_slab[stream_no]);
++            }
++            // wip/slab-transient-absorption: the FA staging arena is a WIDE-PHASE transient, so give it a
++            // home in the slab's wide auxiliary region first.  That keeps it out of the headroom budget
++            // (~762 MiB on the field GSQ config, more on a wide-ubatch config) and returns its bytes to
++            // the arena on the prefill -> decode transition, exactly like the ring and the wide view.
++            if (ggml_cuda_slab_active(device)) {
++                const size_t want = (prealloc && size_hint >= size)
++                                  ? std::max<size_t>(size_t(1) << 24, size_hint) : new_size;
++                size_t gen = 0;
++                void * p = ggml_cuda_slab_wide_aux_alloc(device, want, &gen);
++                if (p != nullptr) {
++                    if (fattn_stage[stream_no] != nullptr && !fattn_stage_slab[stream_no]) {
++                        ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
++                        CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
++                    }
++                    fattn_stage[stream_no]          = (char *) p;
++                    fattn_stage_size[stream_no]     = want;
++                    fattn_stage_slab[stream_no]     = true;
++                    fattn_stage_slab_gen[stream_no] = gen;
++                    return p;
++                }
++                // Fall through: a wide verify below the ring's arming gate (9..16 rows) or a prefill that
++                // ran before the narrow floor existed.  The raw allocation stays bounded by the G4 cap.
++            }
+             if (prealloc && size_hint >= size) {
+                 const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
+                 if (optional_alloc_within_free_cap(cur_total + hint_size)) {
+@@ -1997,8 +2083,12 @@ struct ggml_backend_cuda_context {
+                 }
+             }
+             if (fattn_stage[stream_no] != nullptr) {
+-                ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
+-                CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
++                if (!fattn_stage_slab[stream_no]) {
++                    ggml_cuda_graph_mem_freed(device);   // captured graphs may read the old arena
++                    CUDA_CHECK(cudaFree(fattn_stage[stream_no]));
++                }
++                fattn_stage_slab[stream_no]     = false;
++                fattn_stage_slab_gen[stream_no] = 0;
+             }
+             fattn_stage[stream_no]      = new_arena;
+             fattn_stage_size[stream_no] = alloc_size;
+@@ -2165,6 +2255,22 @@ struct ggml_backend_cuda_context {
+         return (size_t) h2d_stage_slots() * (max_slot + 512);
+     }
+ 
++    // wip/slab-transient-absorption (F5, step 0): once the movable-boundary slab is live for a host-expert
++    // model, a ring shortfall is a REFUSAL, not a raw cudaMalloc.  The outside pool is the slab headroom
++    // (measured ~0.3-0.6 GiB free at steady state), an order of magnitude smaller than the region that just
++    // failed; a growth there either fails (and the caller takes the serial path anyway) or eats the reserve
++    // FA staging / hipBLASLt / the pool need -- the abort-or-silently-corrupt mode the slab exists to
++    // prevent.  It also left a block OUTSIDE the slab that the ring could never give back (a slot only
++    // migrates on a later growth).  `GGML_CUDA_SLAB_RING_FALLBACK=1` restores the pre-step-0 cudaMalloc
++    // fallback for A/B and bisection; `GGML_CUDA_SLAB_RING_MIB=0` disables the hole entirely (pre-slab).
++    static bool h2d_stage_slab_fallback() {
++        static const bool on = [] {
++            const char * e = getenv("GGML_CUDA_SLAB_RING_FALLBACK");
++            return e != nullptr && atoi(e) != 0;
++        }();
++        return on;
++    }
++
+     void * h2d_stage_buffer(int slot, size_t size) {
+         GGML_ASSERT(slot >= 0 && slot < H2D_STAGE_SLOTS);
+         if (size > h2d_stage_size[slot]) {
+@@ -2191,6 +2297,13 @@ struct ggml_backend_cuda_context {
+                     const size_t want = cap >= new_size ? cap : new_size;
+                     void * p = ggml_cuda_slab_arena_alloc_transient(device, want);
+                     if (p != nullptr) {
++                        // F5 defect 2: a slot that MIGRATES into the slab must release the raw block it
++                        // held.  The slab branch used to return before the cudaFree below, so the old block
++                        // was neither freed nor counted (h2d_stage_total still subtracted `old_size`).
++                        if (h2d_stage[slot] != nullptr) {
++                            ggml_cuda_graph_mem_freed(device);
++                            CUDA_CHECK(cudaFree(h2d_stage[slot]));
++                        }
+                         h2d_stage[slot]      = p;
+                         h2d_stage_size[slot] = want;
+                         h2d_stage_total     += want - old_size;
+@@ -2199,7 +2312,24 @@ struct ggml_backend_cuda_context {
+                     }
+                 }
+             }
+-            // cudaMalloc fallback: no slab / no ring hole / the hole is exhausted for this capacity.
++            // wip/slab-transient-absorption (F5, step 0): slab-only.  A shortfall -- the hole was never
++            // carved, is unarmed, or is exhausted for this capacity -- is a refusal here, so the scheduler
++            // takes its non-staged path.  See `h2d_stage_slab_fallback`.
++            if (ggml_cuda_slab_active(device) && ggml_cuda_slab_ring_requested() && !h2d_stage_slab_fallback()) {
++                static bool warned = false;
++                if (!warned) {
++                    warned = true;
++                    GGML_LOG_WARN("%s: device %d: the H2D staging ring is slab-only here and a %zu MiB slot "
++                                  "does not fit the reserved hole (even per-slot capacity %zu MiB); staging is "
++                                  "refused for this pass and the scheduler falls back.  Raise "
++                                  "GGML_CUDA_SLAB_RING_MIB or set GGML_CUDA_SLAB_RING_FALLBACK=1 to restore "
++                                  "the cudaMalloc fallback.\n",
++                                  __func__, device, new_size >> 20,
++                                  ggml_cuda_slab_ring_slot_capacity(device) >> 20);
++                }
++                return nullptr;
++            }
++            // cudaMalloc fallback (slab-inactive devices / the ring deliberately left outside the slab).
+             // fit-slab-accounting revival (G4, issue #117): bound the ring by the free VRAM it would still
+             // leave.  See `optional_alloc_within_free_cap` above.
+             if (!optional_alloc_within_free_cap(h2d_stage_total - old_size + new_size)) {
+@@ -2395,6 +2525,8 @@ struct ggml_backend_cuda_context {
+     nv_bfloat16 * bf16_src1_cache_put(const ggml_tensor * root, int64_t n) {
+         auto & c = bf16_src1_cache;
+         c.buf.reset();
++        // wip/slab-transient-absorption (step 2b-2): not pinned any more -- `graph_compute` clears this cache
++        // on scope exit, so the block never outlives the graph and the slab's wide band may serve it.
+         c.buf       = std::make_unique<ggml_cuda_pool_alloc<nv_bfloat16>>(pool(), n);
+         c.src1      = root;
+         c.data      = root->data;
+@@ -2620,3 +2752,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+     kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
+     CUDA_CHECK(cudaGetLastError());
+ }
++
++// wip/slab-transient-absorption: a WIDE-PHASE scratch allocation.  Prefill-only kernels (chunked GDN, QSA3,
++// ...) allocate their workspace through the pool, which retains the high-water mark outside the slab for the
++// whole run.  When the wide band is armed, serve the block from it instead (LIFO; released at the
++// prefill -> decode transition), so the bytes come out of the headroom budget and go back to the arena.
++// Falls back to the pool while the band is not armed (decode/verify, so a width-pure graph is unchanged).
++template<typename T>
++struct ggml_cuda_wide_scratch {
++    ggml_cuda_pool_alloc<T> pool;
++    T *    ptr    = nullptr;
++    size_t n      = 0;
++    int    device = -1;
++    bool   slab   = false;
++
++    ggml_cuda_wide_scratch() = default;
++    ggml_cuda_wide_scratch(ggml_backend_cuda_context & c, size_t n_) : pool(c.pool()), n(n_), device(c.device) {
++        alloc(n_);
++    }
++
++    T * alloc(size_t n_) {
++        n = n_;
++        if (n > 0 && ggml_cuda_slab_wide_available(device)) {
++            size_t gen = 0;
++            void * p = ggml_cuda_slab_wide_aux_alloc(device, n * sizeof(T), &gen);
++            if (p != nullptr) {
++                ptr  = (T *) p;
++                slab = true;
++                return ptr;
++            }
++        }
++        if (n > 0) {
++            pool.alloc(n);
++            ptr = pool.get();
++        }
++        return ptr;
++    }
++    ~ggml_cuda_wide_scratch() {
++        if (slab) {
++            ggml_cuda_slab_wide_aux_free(device, ptr, n * sizeof(T));
++        }
++    }
++    ggml_cuda_wide_scratch(const ggml_cuda_wide_scratch &) = delete;
++    ggml_cuda_wide_scratch & operator=(const ggml_cuda_wide_scratch &) = delete;
++
++    T * get() const { return ptr; }
++};
+diff --git a/ggml/src/ggml-cuda/fattn-qsa3.cu b/ggml/src/ggml-cuda/fattn-qsa3.cu
+index a2037d6e2..e17d4bf60 100644
+--- a/ggml/src/ggml-cuda/fattn-qsa3.cu
++++ b/ggml/src/ggml-cuda/fattn-qsa3.cu
+@@ -658,6 +658,48 @@ bool ggml_cuda_flash_attn_qsa3_supported(int device, const ggml_tensor * dst) {
+     return true;
+ }
+ 
++// wip/slab-transient-absorption: the QSA3 prefill workspace (a few hundred MiB on a deep prefill, and a
++// fixed high-water mark in the workspace pool for the rest of the run) is a WIDE-PHASE transient: the
++// launcher's support check requires q->ne[1] >= 128, so this never runs in a captured decode or verify
++// graph.  Serve it from the slab's wide band so its bytes leave the headroom budget and return to the
++// arena on the prefill -> decode transition; the LIFO stack mirrors the workspace pool's discipline (the
++// seven blocks below are destroyed in reverse declaration order).  Falls back to the pool -- the
++// pre-change behaviour -- when the slab is inactive, the region is full, or a block is larger than the
++// band.
++template <typename T>
++struct qsa3_scratch {
++    ggml_cuda_pool_alloc<T> pool;
++    T *    ptr    = nullptr;
++    size_t n      = 0;
++    int    device = -1;
++    bool   slab   = false;
++
++    qsa3_scratch(ggml_backend_cuda_context & c, size_t n_) : pool(c.pool()), n(n_), device(c.device) {
++        if (n > 0 && ggml_cuda_slab_active(device)) {
++            size_t gen = 0;
++            void * p = ggml_cuda_slab_wide_aux_alloc(device, n * sizeof(T), &gen);
++            if (p != nullptr) {
++                ptr  = (T *) p;
++                slab = true;
++                return;
++            }
++        }
++        if (n > 0) {
++            pool.alloc(n);
++            ptr = pool.get();
++        }
++    }
++    ~qsa3_scratch() {
++        if (slab) {
++            ggml_cuda_slab_wide_aux_free(device, ptr, n * sizeof(T));
++        }
++    }
++    qsa3_scratch(const qsa3_scratch &) = delete;
++    qsa3_scratch & operator=(const qsa3_scratch &) = delete;
++
++    T * get() const { return ptr; }
++};
++
+ void ggml_cuda_flash_attn_qsa3(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * q    = dst->src[0];
+     const ggml_tensor * k    = dst->src[1];
+@@ -678,11 +720,10 @@ void ggml_cuda_flash_attn_qsa3(ggml_backend_cuda_context & ctx, ggml_tensor * ds
+     const int ngroups = (n_q + QSA3_G - 1) / QSA3_G;
+     const int cap     = (QSA3_G * ns + 3) & ~3;
+ 
+-
+     // Fused pack (session 7): one pass per tensor from the natural [D, n_head_kv, n_kv] F16 view into the
+     // block layouts the attention kernel reads.  Replaces cast+permute+cont+reshape+permute+cont.
+-    ggml_cuda_pool_alloc<uint16_t> pk16(ctx.pool(), (size_t) 256 * nk * nh_kv);
+-    ggml_cuda_pool_alloc<uint16_t> pv16(ctx.pool(), (size_t) 256 * nk * nh_kv);
++    qsa3_scratch<uint16_t> pk16(ctx, (size_t) 256 * nk * nh_kv);
++    qsa3_scratch<uint16_t> pv16(ctx, (size_t) 256 * nk * nh_kv);
+     {
+         const int q4 = nk >> 2;
+         const int tk = nh_kv * q4 * 64;
+@@ -692,11 +733,11 @@ void ggml_cuda_flash_attn_qsa3(ggml_backend_cuda_context & ctx, ggml_tensor * ds
+         CUDA_CHECK(cudaGetLastError());
+     }
+ 
+-    ggml_cuda_pool_alloc<uint16_t> ublk(ctx.pool(), (size_t) ngroups * cap);
+-    ggml_cuda_pool_alloc<uint16_t> umask(ctx.pool(), (size_t) ngroups * cap);
+-    ggml_cuda_pool_alloc<int>      ucount(ctx.pool(), (size_t) ngroups);
+-    ggml_cuda_pool_alloc<int>      srow(ctx.pool(), (size_t) n_q * ns);
+-    ggml_cuda_pool_alloc<int>      sflag(ctx.pool(), (size_t) n_q);
++    qsa3_scratch<uint16_t> ublk(ctx, (size_t) ngroups * cap);
++    qsa3_scratch<uint16_t> umask(ctx, (size_t) ngroups * cap);
++    qsa3_scratch<int>      ucount(ctx, (size_t) ngroups);
++    qsa3_scratch<int>      srow(ctx, (size_t) n_q * ns);
++    qsa3_scratch<int>      sflag(ctx, (size_t) n_q);
+     {
+         // rows-kernel dynamic smem: [ns] keys + the nk-bit presence bitmap + 256 scan offsets.
+         // When that does not fit the 48 KiB budget (a very long cache) the kernel falls back to the
+diff --git a/ggml/src/ggml-cuda/gated_delta_net_chunked.cu b/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
+index 37024f8e8..56d7be2a5 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
+@@ -685,8 +685,9 @@ bool ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_
+     cudaStream_t stream = ctx.stream();
+ 
+     const int64_t n_chunks = (n_tokens + GDN_CHUNKED_CS - 1) / GDN_CHUNKED_CS;
+-    ggml_cuda_pool_alloc<float> A_sc (ctx.pool(), (size_t) n_chunks * H     * n_seqs * PACKED_CS);
+-    ggml_cuda_pool_alloc<float> KQ_sc(ctx.pool(), (size_t) n_chunks * neqk1 * n_seqs * PACKED_CS);
++    // wip/slab-transient-absorption: prefill-only workspace -> the slab's wide band when it is armed.
++    ggml_cuda_wide_scratch<float> A_sc (ctx, (size_t) n_chunks * H     * n_seqs * PACKED_CS);
++    ggml_cuda_wide_scratch<float> KQ_sc(ctx, (size_t) n_chunks * neqk1 * n_seqs * PACKED_CS);
+ 
+     switch (S_v) {
+         case 16:  return launch_gdn_chunked<16 >(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, A_sc.get(), KQ_sc.get(),
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+index a443887e4..d33123708 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+@@ -136,9 +136,25 @@ float ggml_backend_cuda_stage_h2d_gbps(ggml_backend_t backend) {
+     const size_t sz = 512u << 20;
+     void * h = malloc(sz);
+     void * d = nullptr;
+-    if (h == nullptr || cudaMalloc(&d, sz) != cudaSuccess) {
++    // wip/slab-transient-absorption: a ONE-OFF 512 MiB probe run at load, AFTER the slab exists.  Serving
++    // it from the slab's arena (allocated before the cache sizes itself, then freed) removes a 512 MiB
++    // spike from the outside reserve -- the single largest reason a low GGML_CUDA_SLAB_HEADROOM_MIB is
++    // unsafe today.  The arena is the right home here (the ring/wide band is not armed at load); the block
++    // is released immediately, so it cannot be evicted mid-flight.
++    bool d_slab = false;
++    if (ggml_cuda_slab_active(dev)) {
++        d = ggml_cuda_slab_arena_alloc(dev, sz);
++        d_slab = d != nullptr;
++    }
++    if (h == nullptr || (d == nullptr && cudaMalloc(&d, sz) != cudaSuccess)) {
+         (void) cudaGetLastError(); // clear the sticky error
+-        if (d != nullptr) CUDA_CHECK(cudaFree(d));
++        if (d != nullptr) {
++            if (d_slab) {
++                ggml_cuda_slab_arena_free(dev, d, sz);
++            } else {
++                CUDA_CHECK(cudaFree(d));
++            }
++        }
+         free(h);
+         return bw[dev];
+     }
+@@ -155,8 +171,12 @@ float ggml_backend_cuda_stage_h2d_gbps(ggml_backend_t backend) {
+ 
+     const double sec = double(t1 - t0) / 1e6;
+     bw[dev] = sec > 0.0 ? float(3.0*double(sz)/1e9 / sec) : 0.0f;
+-    GGML_LOG_INFO("%s: H2D bandwidth calibration: %.1f GB/s (%zu MiB x3 in %.2f ms)\n", __func__, double(bw[dev]), sz >> 20, 1000.0*sec);
+-    CUDA_CHECK(cudaFree(d));
++    GGML_LOG_INFO("%s: H2D bandwidth calibration: %.1f GB/s (%zu MiB x3 in %.2f ms, from %s)\n", __func__, double(bw[dev]), sz >> 20, 1000.0*sec, d_slab ? "the slab arena" : "cudaMalloc");
++    if (d_slab) {
++        ggml_cuda_slab_arena_free(dev, d, sz);
++    } else {
++        CUDA_CHECK(cudaFree(d));
++    }
+     free(h);
+     return bw[dev];
+ }
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index f6eeec2c8..8e6596779 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -7,6 +7,7 @@
+ #include "ggml-impl.h"
+ #include "moe-expert-cache.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cstdint>
+ #include <cstdio>
+@@ -146,6 +147,32 @@ struct ggml_cuda_slab {
+     int                      narrow2_live  = 0; // live narrow-2 views (diagnostic/guard)
+     size_t                   ring_region  = 0;  // ring bytes above the narrow floor (0 = no ring)
+     bool                     ring_armed   = false; // the wide view (hence the ring region) is reserved
++    // wip/slab-transient-absorption: the WIDE-PHASE auxiliary region (the FA prefill staging arena), bump
++    // allocated just above the boundary so it is reclaimed with the ring/wide band on the prefill -> decode
++    // transition.  `wide_aux_off` is the base offset, `wide_aux_size` the bytes reserved (0 = none), and
++    // `wide_aux_gen` changes whenever the region is released or moves, so a cached pointer can be validated
++    // (the FA staging arena keeps one per stream and must not read a stale region).
++    size_t                   wide_aux_off  = 0;
++    size_t                   wide_aux_size = 0;
++    size_t                   wide_aux_gen  = 0;
++    // wip/slab-transient-absorption (step 2b-2): a batch of wide-aux frees collected from the PER-GRAPH
++    // caches (MMB activation cache/slots, BF16 src1) and replayed highest-address first.  The region is a
++    // bump stack that only pops its top, so freeing a group of blocks in its owners' order leaves holes and
++    // the region then ratchets upward (measured: wide_aux grew to 13 GiB and the arena to 0 in one 80K
++    // prefill).  Address order makes the whole group pop cleanly.
++    // wip/slab-transient-absorption (step 2b-2): the LIVE blocks of the wide-aux region, `off -> size`
++    // (slab-relative, unit-rounded).  A bump stack that only pops its exact top cannot survive a group of
++    // blocks released in another order: every non-top free leaves a hole that is never reclaimed before the
++    // wide drop, so the region ratchets upward (measured with the per-graph caches in it: 7.4 GiB of holes in
++    // ONE 6.6k prefill, wide_aux 7392 MiB and 149 of 2135 frees unable to pop).  With the live set,
++    // `wide_aux_size` is the extent of the HIGHEST live block: holes below it are bounded and cost nothing,
++    // and a group of frees in any order still returns the region to the live high-water.
++    std::map<size_t, size_t> wide_live;
++    // wip/slab-transient-absorption (step 2b-2) DIAGNOSTIC: why the wide-aux region grows.
++    size_t                   wide_n_pop    = 0;   // frees that shrank the region
++    size_t                   wide_n_hole   = 0;   // frees of a block that was not live (stale/hole)
++    size_t                   wide_n_inval  = 0;   // `work_alloc` released the region (gen bump)
++    size_t                   wide_n_rebase = 0;   // the base was re-established after the stack emptied
+     bool                     ring_requested = false; // the context classified the live ubatch as wide (prefill)
+                                                 //  (`ring_set`, n_tokens >= 64).  `work_alloc` places
+                                                 //  such a view above the ring even when its buffer is no
+@@ -375,24 +402,53 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
+ // the allocations that can still appear later.  `0` disables the extension (the slab then keeps exactly
+ // the reserve it took at creation).
+ //
+-// DEFAULT 4096 MiB.  This is NOT slack: it must cover the largest TRANSIENT workspace any graph
+-// allocates, and those are allocated by `ggml_cuda_pool_leg` / `ggml_backend_cuda_buffer_type_alloc_buffer`
+-// with CUDA_CHECK -- i.e. a failure ABORTS, and a thin headroom can even be SILENTLY CORRUPT rather than
+-// loud (see the 2048 table in `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s,
+-// and the older `hipModuleLoad failed` abort at `-ub 4096 -c 163860`).  The requirement grows with prefill
+-// width/context.
++// DEFAULT: **512 MiB per GPU, plus 128 MiB for every additional GPU** (wip/slab-transient-absorption,
++// 2026-10-17): 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.  See `ggml_cuda_slab_headroom_bytes`.
+ //
+-// Set it in MiB with `GGML_CUDA_SLAB_HEADROOM_MIB` (there is no boolean switch): the value is the
+-// steady-state free VRAM kept outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
++// The headroom is the STEADY-STATE FREE VRAM kept outside the slab: the cushion every allocation that cannot
++// live in the slab draws on.  Since the transient work it is (measured) only `T` = the hipBLASLt/Tensile
++// workspace (104 MiB, library-owned), the Q8_1 arena, and the transients that are not slab-served -- every
++// other prefill transient now lives in the slab (H2D ring, FA staging, QSA3/GDN scratch, the calibration
++// probe, the workspace pool's large temporaries) and the two per-graph caches are released at the graph end
++// (wip/slab-transient-absorption §10.6-§10.8).  It is NOT slack to be maximised: it is permanently withheld
++// from the arena, and the arena is where the expert cache lives (~1 pt of hit rate per GiB moved).
+ //
+-// TRIALLED 3072 (2026-10-10, `wip/slab-ring-region/`): the op-offload H2D staging ring moved INSIDE the
+-// slab, so it no longer spends ~1 GiB of this headroom (r38 refused a 990 MiB ring growth here), and on
+-// the field config 3072 measured +8.5 % decode step rate (arena residency 61.7 -> 64.9 %).  REJECTED:
+-// it is not safe once the context is force-fitted.  On the §2.2 wide-prefill config (`--fit off`, IQ4_XS,
+-// `-ngl 99 -sm tensor -ncmoe 48 -ub 6144 -c 204800`, 5697-token prefill) 4096 is clean (312 t/s, 0
+-// corruption) while 3072 dies with `Hip error: 'out of memory' at hipblaslt.cpp:164`.  So the default
+-// stays 4096 and lowering it remains a per-user choice via the env var, not a shipped default.
+-#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 4096
++// T IS PER DEVICE (each card runs its own pools, Q8_1 arena and rocBLAS workspace), which is why the default
++// scales with the device count instead of being flat.  Measured 2026-10-17 (derived draft reserve,
++// `GGML_CUDA_SLAB_STATS=1`; "excess" = free VRAM outside the slab at the worst arm/drop of the run):
++//
++//   headroom | field GSQ seesaw (-ub 4096, 1 GPU) | wide IQ4_NL (-ub 6144) | 2-GPU tensor | 2-GPU layer
++//   ---------+-------------------------------------+-----------------------+---------------+-------------
++//       512  | floor 214.5 MiB                     | drop 471 MiB          | -             | -
++//       600  | floor 346.5 MiB                     | -                     | -             | 209.5 MiB/dev
++//       640  | floor 346.5 MiB  <- 1-GPU default   | ~559 (T=41)           | -             | -
++//       768  | -                                   | -                     | -             | 401.5 MiB/dev <- 2-GPU default
++//      1024  | floor 714.5 MiB                     | drop 983 MiB          | 1552.5 /dev   | 657.5 MiB/dev
++//      2048  | -                                   | -                     | 2576.5 /dev   | 1681.5 MiB/dev
++//
++// So T ~= 300 MiB per device plus ~90 per extra device, and the shipped default leaves ~350-400 MiB of excess
++// on every measured config (the target was ~300).  A FLAT 600 was measured and REJECTED: the 2-GPU
++// `-sm layer` case drops to 209.5 MiB there, because T there is ~390, not ~300 -- that is the whole reason the
++// default scales with the device count.  (512 flat is 214.5 on the 1-GPU field seesaw: also under target.)
++//
++// The effective quantum is the slab CHUNK (64 MiB): the reserve is `headroom + aux` mapped in chunk units, so
++// values inside one chunk of each other measure identically (600 and 640 are the same on 1 GPU).
++//
++// A thin headroom can fail SILENTLY rather than loudly (see the 2048 table in
++// `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s, and the older `hipModuleLoad failed`
++// abort at `-ub 4096 -c 163860`), which is why the cushion is kept at ~1.2x T per device rather than at the
++// measured value.
++//
++// `-sm layer` with a partially host-resident MoE on more than one device raises this further
++// (`ggml_cuda_slab_headroom_at_least_mib(6144)` from `alloc_all_locked`, the r36 255k needle floor) -- that
++// floor only ever RAISES the value and only when the env is unset, so a lower default cannot weaken it.  A
++// FULLY RESIDENT model (no `-ncmoe`) has no slab and no arena at all, so nothing is sized there.
++//
++// `GGML_CUDA_SLAB_HEADROOM_MIB` sets the value VERBATIM (no per-GPU addition), like every other explicit
++// override; the per-GPU scaling applies only to the default.  The value is the steady-state free VRAM kept
++// outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
++#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 512   // base; the default is 512 + 128 x n_gpu
++#define GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU 128   // per device, so 1->640, 2->768, 3->896 MiB
+ 
+ static size_t g_slab_headroom_min_mib = 0;
+ void ggml_cuda_slab_headroom_at_least_mib(size_t mib) {
+@@ -406,7 +462,18 @@ size_t ggml_cuda_slab_headroom_bytes() {
+         env_set = env != NULL;
+         mib = env_set ? (size_t) atoll(env) : GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT;
+     }
+-    const size_t eff = (!env_set && g_slab_headroom_min_mib > mib) ? g_slab_headroom_min_mib : mib;
++    // The outside transients are PER DEVICE, so the default grows with the number of cards (`512 + 128 x n`,
++    // i.e. 640 / 768 / 896 MiB for 1 / 2 / 3 GPUs); an explicit `GGML_CUDA_SLAB_HEADROOM_MIB` is taken
++    // verbatim (an operator asks for a total, not a per-card value).
++    size_t eff = mib;
++    if (!env_set) {
++        // `512 + 128 x n_devices`: 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.
++        const int n_phys = std::max(1, ggml_cuda_info().physical_device_count);
++        eff += (size_t) n_phys * GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU;
++    }
++    if (!env_set && g_slab_headroom_min_mib > eff) {
++        eff = g_slab_headroom_min_mib;
++    }
+     return eff * 1024 * 1024;
+ }
+ 
+@@ -734,6 +801,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
+     s.ring_region  = 0;
+     s.ring_armed   = false;
+     s.ring_used    = 0;
++    s.wide_aux_off  = 0;
++    s.wide_aux_size = 0;
++    s.wide_aux_gen  = 0;
+     s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
+     s.arena_free.clear();
+     s.arena_free[w] = s.mapped - w;
+@@ -960,8 +1030,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+                 device, (double) need/1048576.0, (int) narrow, (double) ret_off/1048576.0,
+                 (double) s.narrow_floor/1048576.0, (double) s.ring_region/1048576.0, (double) s.boundary/1048576.0);
+         }
++        // wip/slab-transient-absorption: the wide-phase auxiliary region sits just above the boundary,
++        // i.e. above the wide view this request is about to place.  If the view now reaches into it,
++        // release the region so the view cannot overwrite it.  The previous graph has already been
++        // enqueued (the FA staging arena re-acquires the region on its next staging pass), and the
++        // generation bump invalidates any pointer it cached.
++        if (s.wide_aux_off != 0 && ret_off + ggml_cuda_slab_up(need, s.chunk) > s.wide_aux_off) {
++            s.wide_aux_off  = 0;
++            s.wide_aux_size = 0;
++            s.wide_live.clear();
++            s.wide_aux_gen++;
++            s.wide_n_inval++;
++        }
+         const size_t contrib = ret_off + ggml_cuda_slab_up(need, s.chunk);
+         size_t floor = s.narrow_floor;
++        if (s.wide_aux_size > 0) {
++            const size_t aux_end = s.wide_aux_off + s.wide_aux_size;
++            if (aux_end > floor) {
++                floor = aux_end;
++            }
++        }
+         if (!s.work_needs.empty()) {
+             const size_t mx = *s.work_needs.rbegin();
+             if (mx > floor) {
+@@ -972,6 +1060,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+             floor = contrib;
+         }
+         const size_t target = ggml_cuda_slab_up(floor, s.chunk);
++        if (s.wide_aux_off != 0 && target < s.wide_aux_off) {
++            // The boundary is about to shrink below the (empty but retained) wide-aux base, so those
++            // bytes go back to the arena: drop the base so the next wide aux allocation re-bases.
++            s.wide_aux_off  = 0;
++            s.wide_aux_size = 0;
++            s.wide_live.clear();
++            s.wide_aux_gen++;
++        }
+         base    = s.base;
+         // wip/moe-verify-fusions: never grow the work pool into a pinned narrow-2 region (the draft's
+         // compute VA).  A request that does not fit falls back to cudaMalloc rather than corrupt it.
+@@ -1141,6 +1237,61 @@ size_t ggml_cuda_slab_ring_region(int device) {
+     return s.ring_region;
+ }
+ 
++// wip/slab-transient-absorption (F5, step 0): was the ring hole requested for this model?  Distinct from
++// `ring_region > 0` (which is the CARVE): a requested-but-not-carved hole must refuse the ring fallback,
++// while `GGML_CUDA_SLAB_RING_MIB=0` (requested == false) keeps the pre-slab cudaMalloc ring.
++bool ggml_cuda_slab_ring_requested() {
++    return g_slab_ring_region_bytes > 0;
++}
++
++// wip/slab-transient-absorption: one-line steady-state accounting for the campaign's headroom budget.
++// Gated on GGML_CUDA_SLAB_STATS (the ring arm/disarm transitions and the destructor call it); it reports
++// the layout and the live transient sizes so "what still lives outside the slab" is measured, not assumed.
++// Caller holds `g_slab_mutex`.
++static void ggml_cuda_slab_log_stats_locked(int device, const char * tag) {
++    static const bool on = [] {
++        const char * e = getenv("GGML_CUDA_SLAB_STATS");
++        return e != nullptr && atoi(e) != 0;
++    }();
++    if (!on) {
++        return;
++    }
++    const ggml_cuda_slab & s = g_slabs[device];
++    const size_t mapped       = s.mapped;
++    const size_t boundary     = s.boundary;
++    const size_t arena        = s.mapped > s.boundary ? s.mapped - s.boundary : 0;
++    const size_t narrow_floor = s.narrow_floor;
++    const size_t ring         = s.ring_region;
++    const size_t narrow2      = s.narrow2_floor;
++    const size_t aux          = s.wide_aux_size;
++    const bool   inited       = s.inited;
++    size_t free_b = 0, total_b = 0;
++    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
++        (void) cudaGetLastError();
++    }
++    GGML_LOG_WARN("SLAB_STATS %s dev=%d slab=%d free=%.1f MiB total=%.1f MiB mapped=%.1f MiB "
++                  "work=%.1f MiB (narrow=%.1f ring=%.1f wide_aux=%.1f narrow2=%.1f) arena=%.1f MiB "
++                  "pool=%.1f MiB pool_wide=%.1f MiB/%zu refused=%.1f MiB headroom_cfg=%.1f MiB "
++                  "aux_cfg=%.1f MiB wide[n_pop=%zu hole=%zu inval=%zu rebase=%zu]\n",
++                  tag, device, (int) inited,
++                  (double) free_b / 1048576.0, (double) total_b / 1048576.0, (double) mapped / 1048576.0,
++                  (double) boundary / 1048576.0, (double) narrow_floor / 1048576.0,
++                  (double) ring / 1048576.0, (double) aux / 1048576.0, (double) narrow2 / 1048576.0,
++                  (double) arena / 1048576.0,
++                  (double) ggml_cuda_pool_mapped_bytes(device) / 1048576.0,
++                  (double) ggml_cuda_pool_wide_bytes(device) / 1048576.0,
++                  ggml_cuda_pool_wide_blocks(device),
++                  (double) ggml_cuda_pool_wide_refused(device) / 1048576.0,
++                  (double) ggml_cuda_slab_headroom_bytes() / 1048576.0,
++                  (double) g_slab_aux_reserve_bytes / 1048576.0,
++                  s.wide_n_pop, s.wide_n_hole, s.wide_n_inval, s.wide_n_rebase);
++}
++
++void ggml_cuda_slab_log_stats(int device, const char * tag) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    ggml_cuda_slab_log_stats_locked(device, tag);
++}
++
+ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+     if (size == 0) {
+         return nullptr;
+@@ -1159,6 +1310,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+     return p;
+ }
+ 
++// wip/slab-transient-absorption: the WIDE-PHASE auxiliary region (currently the FA prefill staging arena).
++//
++// It is a bump allocation placed immediately ABOVE the live work boundary -- which already holds the wide
++// (prefill) compute view -- and sized on demand.  Because it sits in the wide band, it is reserved only
++// while a wide prefill is, and `ring_set(false)` releases it so a decode-only stretch returns the bytes to
++// the arena exactly like the ring and the wide view.  The FA staging arena is only ever touched by a
++// multi-token graph, which is never CUDA-graph captured, so its VA does not have to survive the release;
++// the caller caches the pointer and validates it with `ggml_cuda_slab_wide_aux_gen`.
++//
++// Growing the region is an ordinary work-boundary move: the arena tables in the taken band are evicted
++// (the same cold band a wide prefill already reclaims).  A refusal (no slab, ring disarmed, or the region
++// would reach the pinned narrow-2 view) is fail-soft: the caller falls back to its capped raw allocation.
++void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out) {
++    if (gen_out != nullptr) {
++        *gen_out = 0;
++    }
++    if (size == 0) {
++        return nullptr;
++    }
++    size_t lo = 0, hi = 0, off = 0;
++    CUdeviceptr base = 0;
++    bool move = false;
++    {
++        std::lock_guard<std::mutex> lock(g_slab_mutex);
++        ggml_cuda_slab & s = g_slabs[device];
++        if (!s.inited || !s.ring_armed) {
++            if (getenv("GGML_CUDA_SLAB_STATS") != nullptr) {
++                GGML_LOG_WARN("SLAB_WIDE_AUX dev=%d req=%.1f MiB refused: slab=%d ring_armed=%d\n",
++                              device, (double) size/1048576.0, (int) s.inited, (int) s.ring_armed);
++            }
++            return nullptr;   // narrow-only stretch: the region belongs to the arena
++        }
++        const size_t want = ggml_cuda_slab_up(size, s.unit);
++        if (s.wide_aux_size == 0 && s.wide_aux_off == 0) {
++            s.wide_aux_off = s.boundary;   // just above the wide compute view
++            s.wide_n_rebase++;
++        }
++        const size_t aux_end = s.wide_aux_off + s.wide_aux_size;
++        const size_t target  = ggml_cuda_slab_up(aux_end + want, s.chunk);
++        // Never grow past the MAPPED region (the arena's top): the slab's VA may carry spare unmapped
++        // space above `mapped`, and a kernel writing there would fault.
++        const size_t aux_limit = std::min(ggml_cuda_slab_arena_limit(s), s.mapped);
++        if (getenv("GGML_CUDA_SLAB_STATS") != nullptr) {
++            GGML_LOG_WARN("SLAB_WIDE_AUX dev=%d req=%.1f MiB want=%.1f MiB off=%.1f MiB aux=%.1f MiB "
++                          "target=%.1f MiB boundary=%.1f MiB limit=%.1f MiB armed=%d\n",
++                          device, (double) size/1048576.0, (double) want/1048576.0,
++                          (double) aux_end/1048576.0, (double) s.wide_aux_size/1048576.0,
++                          (double) target/1048576.0, (double) s.boundary/1048576.0,
++                          (double) aux_limit/1048576.0, (int) s.ring_armed);
++        }
++        // Never grow into the pinned narrow-2 region (the draft's compute VA) or past the mapping.
++        if (target > aux_limit) {
++            if (s.wide_aux_size == 0) {
++                s.wide_aux_off = 0;
++                s.wide_live.clear();
++            }
++            return nullptr;
++        }
++        off  = aux_end;
++        base = s.base;
++        if (target > s.boundary) {
++            lo   = s.boundary;
++            hi   = target;
++            move = true;
++        } else {
++            s.wide_live[off] = want;
++            s.wide_aux_size += want;
++            if (gen_out != nullptr) {
++                *gen_out = s.wide_aux_gen;
++            }
++            return (void *) (uintptr_t) ((char *) s.base + off);
++        }
++    }
++    if (move) {
++        // The arena may hold tables in [lo, hi): evict them (this syncs the devices).  MUST run without
++        // `g_slab_mutex` (the eviction callback re-enters via `ggml_cuda_slab_arena_free`).
++        moe_cache_evict_slab_range(device, (void *) (uintptr_t) ((char *) base + lo),
++                                   (void *) (uintptr_t) ((char *) base + hi));
++        std::lock_guard<std::mutex> lock(g_slab_mutex);
++        ggml_cuda_slab & s = g_slabs[device];
++        // Another thread (the MTP draft context's reserve) may have moved the boundary or released the
++        // region while the lock was dropped.  Only the exact snapshot we sized against is usable: `target`
++        // was computed from `lo`, so ANY boundary change invalidates it.  (Comparing `s.boundary > off`
++        // instead looks equivalent but is not: the base is set to the boundary BEFORE the move, and the
++        // move then rounds the boundary up to `chunk`, so the retained base normally sits a whole chunk
++        // below the boundary -- every later growth would be refused and fall back outside the slab.)
++        if (!s.inited || !s.ring_armed || s.boundary != lo || s.wide_aux_off + s.wide_aux_size != off) {
++            return nullptr;
++        }
++        if (hi > s.boundary) {
++            s.boundary = hi;
++            for (auto it = s.arena_free.begin(); it != s.arena_free.end(); ) {
++                const size_t f_off = it->first;
++                const size_t f_end = f_off + it->second;
++                if (f_end <= s.boundary) {
++                    it = s.arena_free.erase(it);
++                } else if (f_off < s.boundary) {
++                    const size_t keep_off = s.boundary;
++                    const size_t keep_sz  = f_end - keep_off;
++                    s.arena_free.erase(it);
++                    s.arena_free[keep_off] = keep_sz;
++                    break;
++                } else {
++                    ++it;
++                }
++            }
++        }
++        const size_t want2 = ggml_cuda_slab_up(size, s.unit);
++        s.wide_live[off] = want2;
++        s.wide_aux_size += want2;
++        if (gen_out != nullptr) {
++            *gen_out = s.wide_aux_gen;
++        }
++        return (void *) (uintptr_t) ((char *) s.base + off);
++    }
++    return nullptr;
++}
++
++// wip/slab-transient-absorption: is the wide band available (slab live AND the wide view armed)?  The
++// prefill-only scratch users gate on this so a decode/verify graph (ring disarmed) keeps the workspace pool.
++bool ggml_cuda_slab_wide_available(int device) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    const ggml_cuda_slab & s = g_slabs[device];
++    return s.inited && s.ring_armed;
++}
++
++// The current generation of the wide-phase auxiliary region.  A caller that caches a pointer from
++// `ggml_cuda_slab_wide_aux_alloc` must re-acquire when this changes.
++size_t ggml_cuda_slab_wide_aux_gen(int device) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    return g_slabs[device].wide_aux_gen;
++}
++
++// LIFO release of a wide-phase auxiliary block (the QSA3 prefill workspace, allocated and freed around one
++// op launch).  Only the block at the top of the stack is popped; anything else leaves a hole that the wide
++// drop reclaims, so a non-LIFO caller is safe, just less efficient.  When the stack empties, the region is
++// re-based on the next allocation and the generation is bumped (no live pointer can exist at that point).
++// Release one wide-aux block.  `g_slab_mutex` must be held; no ROCm call.
++//
++// The block's OWN size comes from the live map, not from the caller, so a free can never corrupt the stack
++// and the region shrinks to the extent of the highest block that is still live.  (A bump stack that only
++// pops its exact top turns every out-of-order free into a permanent hole; see `wide_live`.)
++static void ggml_cuda_slab_wide_aux_free_locked(ggml_cuda_slab & s, void * ptr, size_t size) {
++    GGML_UNUSED(size);
++    if (ptr == nullptr) {
++        return;
++    }
++    if (!s.inited || s.wide_aux_size == 0) {
++        return;
++    }
++    const size_t rel = (size_t) ((uintptr_t) ptr - (uintptr_t) s.base);
++    const auto it = s.wide_live.find(rel);
++    if (it == s.wide_live.end()) {
++        s.wide_n_hole++;
++        return;   // not a live block of this region (a stale pointer, or already released at the drop)
++    }
++    s.wide_live.erase(it);
++    const size_t top = s.wide_live.empty()
++                     ? 0
++                     : s.wide_live.rbegin()->first + s.wide_live.rbegin()->second - s.wide_aux_off;
++    if (top < s.wide_aux_size) {
++        s.wide_aux_size = top;
++        s.wide_n_pop++;
++    }
++    // The base is RETAINED when the block set empties: the next layer's blocks are the same sizes and land in
++    // the same place, so the boundary does not walk a fresh chunk per layer (measured: 8064 -> 11136 MiB
++    // over one 15.7k prefill before this, i.e. ~3 GiB of the arena churned per prefill).  `work_alloc`
++    // invalidates the base if a wider view would overlap it or if the boundary shrinks below it.
++}
++
++void ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size) {
++    if (ptr == nullptr || size == 0) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    ggml_cuda_slab_wide_aux_free_locked(g_slabs[device], ptr, size);
++}
++
+ // The context classifies each ubatch (prefill: `n_tokens >= 64`; decode/verify: below) and tells the slab
+ // here.  The ring itself is still carved with a wip view -- arming is just `boundary >= narrow_floor +
+ // ring_region` -- but the classification must NOT be inferred from the work request size: for the
+@@ -1167,13 +1496,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+ // `boundary == narrow_floor` and `ring_armed == false`.  `work_alloc` reads this flag and places the
+ // prefill view above the ring.  A no-op for the generic arm/disarm plumbing stays valid for a future
+ // non-slab allocator.
++// The ring hole is released on the prefill -> decode transition (see `ggml_cuda_slab_ring_set`), and so is
++// the wide-phase auxiliary region: it only ever serves a wide pass, so a decode-only stretch returns its
++// bytes to the arena.  A cached FA staging pointer is validated against `wide_aux_gen` before use.
+ void ggml_cuda_slab_ring_set(int device, bool arm) {
+     std::lock_guard<std::mutex> lock(g_slab_mutex);
+     if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
+         return;
+     }
+     ggml_cuda_slab & s = g_slabs[device];
++    const bool was = s.ring_requested;
+     s.ring_requested = arm;
++    if (arm && !was) {
++        ggml_cuda_pool_wide_refused_reset(device);   // per-pass diagnostic (reported at the drop)
++    }
++    const bool transition = was != arm;
++    if (transition && s.inited) {
++        // wip/slab-transient-absorption: the prefill -> decode transition is the point where the wide
++        // band (ring + wide compute + FA staging) is about to be handed back to the arena, so it is the
++        // right place to report what the prefill actually claimed and what is free outside the slab.  It
++        // is logged BEFORE the auxiliary region is cleared so the wide_aux figure is the prefill's.
++        // `ggml_cuda_slab_log_stats_locked` gates itself on GGML_CUDA_SLAB_STATS.
++        ggml_cuda_slab_log_stats_locked(device, arm ? "wide-arm" : "wide-drop");
++    }
++    if (!arm) {
++        // The live set must not outlive the region it describes.
++        s.wide_live.clear();
++    }
++    if (!arm && s.wide_aux_size > 0) {
++        // The next `work_alloc` shrinks the boundary back to the narrow floor, returning the region to
++        // the arena.  Bump the generation so a stream's cached FA staging pointer is re-acquired rather
++        // than read after the arena has taken the bytes.
++        s.wide_aux_off  = 0;
++        s.wide_aux_size = 0;
++        s.wide_aux_gen++;
++    }
++    if (!arm) {
++        // wip/slab-transient-absorption (step 2b) TRIPWIRE: the workspace pool serves large prefill
++        // allocations from this band and returns them on free, so NOTHING may still hold a band block
++        // here -- the bytes are about to go back to arena tables that a later prefill overwrites.  A
++        // non-zero count means a retained site (an activation cache, a comm scratch, ...) was not pinned
++        // with `ggml_cuda_pool_wide_pin`: the delivery would be a silent use-after-free, so say so loudly
++        // (not gated on GGML_CUDA_SLAB_STATS).
++        const size_t live = ggml_cuda_pool_wide_blocks(device);
++        if (live > 0) {
++            GGML_LOG_WARN("POOL_WIDE_LEAK dev=%d blocks=%zu bytes=%.1f MiB still live at the wide drop: a "
++                          "pool allocation outlived the prefill band (pin the retained site)\n",
++                          device, live, (double) ggml_cuda_pool_wide_bytes(device) / 1048576.0);
++        }
++    }
+ }
+ 
+ // --- Phase-2 (item 6b): state accessors for the device wrappers kept in ggml-cuda.cu ---
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+index 312476e89..c392f0c43 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
++++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+@@ -80,6 +80,34 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
+ // The ring hole's reserved size (0 when the slab carved none): `llama_context` uses it to skip the
+ // narrow -> wide compute-buffer drop when there is no ring to arm.  wip/slab-ring-region (issue #164).
+ size_t ggml_cuda_slab_ring_region(int device);
++// wip/slab-transient-absorption (F5, step 0): was the ring hole REQUESTED for this model?  The ring
++// fallback is refused only when it was (an operator can still leave the ring outside the slab with
++// GGML_CUDA_SLAB_RING_MIB=0, which is the pre-slab behaviour).
++bool   ggml_cuda_slab_ring_requested();
++// wip/slab-transient-absorption: the WIDE-PHASE auxiliary region (the FA prefill staging arena's home).
++// Bump-allocates above the live work boundary while the wide view is armed; released with the ring on the
++// prefill -> decode transition.  Returns nullptr when there is no wide view or no room (the caller falls
++// back).  `gen_out` receives the region generation, which the caller must compare against
++// `ggml_cuda_slab_wide_aux_gen` before reusing a cached pointer.
++void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out);
++void   ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size);
++
++bool   ggml_cuda_slab_wide_available(int device);
++size_t ggml_cuda_slab_wide_aux_gen(int device);
++// One-line steady-state layout + transient accounting, gated on GGML_CUDA_SLAB_STATS (diagnostic only).
++void   ggml_cuda_slab_log_stats(int device, const char * tag);
++// wip/slab-transient-absorption: physical retained by the VMM workspace pool on this device (diagnostic).
++size_t ggml_cuda_pool_mapped_bytes(int device);
++// wip/slab-transient-absorption (step 2b): bytes and block count the workspace pools have currently handed
++// out from the slab's wide band on this device.  The block count is the LEAK TRIPWIRE: it must be 0 at the
++// prefill -> decode drop (a non-zero value means a pool allocation outlived the band, i.e. a retained site
++// that was not pinned; `ggml_cuda_slab_ring_set` warns `POOL_WIDE_LEAK`).
++size_t ggml_cuda_pool_wide_bytes (int device);
++size_t ggml_cuda_pool_wide_blocks(int device);
++// Diagnostic: bytes a large pool allocation asked for while the band was armed and the band REFUSED (it
++// then stays outside the slab as pool high-water).  Reset at the wide arm, reported at the wide drop.
++size_t ggml_cuda_pool_wide_refused(int device);
++void   ggml_cuda_pool_wide_refused_reset(int device);
+ // Arm/disarm the ring hole: armed during prefill (excluded from the arena), disarmed at the
+ // prefill -> decode transition (returned to the arena, so a decode-only stretch gets the VRAM back).
+ // Arming evicts the arena tables the hole had picked up; called with NO lock held.
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index ad7f556da..ae9f452d3 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -553,8 +553,60 @@ static bool ggml_cuda_pool_floor_refuses(size_t size) {
+ 
+ static bool ggml_cuda_graph_capture_active();
+ 
++// wip/slab-transient-absorption: physical retained by the workspace pools, per device.  `pool_leg` keeps
++// every freed block cached (up to 256) and the VMM pool never unmaps, so this is the pool high-water --
++// one of the outside-slab consumers the slab headroom pays for.  Diagnostic only (GGML_CUDA_SLAB_STATS).
++static std::atomic<size_t> g_pool_mapped[GGML_CUDA_MAX_DEVICES];
++
++size_t ggml_cuda_pool_mapped_bytes(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_pool_mapped[device].load(std::memory_order_relaxed);
++}
++
++// wip/slab-transient-absorption (step 2b): pool blocks currently served from the slab's wide band, per
++// device.  `blocks` is the leak tripwire (see `ggml_cuda_slab_ring_set`); `bytes` is reported by SLAB_STATS.
++// Neither is counted in `g_pool_mapped`: band bytes are the slab's, not the pool's.
++static std::atomic<size_t> g_pool_wide_bytes[GGML_CUDA_MAX_DEVICES];
++static std::atomic<size_t> g_pool_wide_blocks[GGML_CUDA_MAX_DEVICES];
++// bytes the armed band REFUSED (diagnostic: those stay outside the slab as pool high-water).
++static std::atomic<size_t> g_pool_wide_refused[GGML_CUDA_MAX_DEVICES];
++
++size_t ggml_cuda_pool_wide_bytes(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_pool_wide_bytes[device].load(std::memory_order_relaxed);
++}
++
++size_t ggml_cuda_pool_wide_blocks(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_pool_wide_blocks[device].load(std::memory_order_relaxed);
++}
++
++size_t ggml_cuda_pool_wide_refused(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_pool_wide_refused[device].load(std::memory_order_relaxed);
++}
++
++void ggml_cuda_pool_wide_refused_reset(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return;
++    }
++    g_pool_wide_refused[device].store(0, std::memory_order_relaxed);
++}
++
+ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+     static const int MAX_BUFFERS = 256;
++    // wip/slab-transient-absorption (step 2b): concurrent wide-band blocks one pool can hold.  The band
++    // serves the LARGE prefill temporaries (>= GGML_CUDA_POOL_WIDE_MIN_MIB), a handful at a time; when the
++    // table is full the block is handed straight back to the band instead of being handed out untracked.
++    static const int MAX_WIDE = 64;
+ 
+     int device;
+     struct ggml_cuda_buffer {
+@@ -570,6 +622,19 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+     size_t cached_size = 0;
+     size_t cache_cap   = 0;
+ 
++    // wip/slab-transient-absorption (step 2b): the WIDE-PHASE redirect.  While the slab is live and its wide
++    // band is armed (a prefill), a large allocation is bump-allocated from the band instead of `cudaMalloc`-ed
++    // outside the slab, and returned to the band on free (never cached -- see `free`).  `set_wide_routing`
++    // pins it off for a retained allocation (the MMB cache/slots, the allreduce scratch).
++    bool wide_routing = true;
++    struct ggml_cuda_wide_block {
++        void * ptr  = nullptr;
++        size_t size = 0;   // the REQUESTED size, i.e. what `free` is handed back
++        size_t gen  = 0;   // the band generation the block was served in (stale detection)
++    };
++    ggml_cuda_wide_block wide_blocks[MAX_WIDE];
++    int n_wide = 0;
++
+     explicit ggml_cuda_pool_leg(int device) :
+         device(device) {
+         const char * cap = getenv("GGML_CUDA_POOL_CACHE_MB");
+@@ -577,8 +642,63 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         cache_cap = mb > 0 ? (size_t) mb << 20 : 0;
+     }
+ 
++    bool set_wide_routing(bool on) override {
++        const bool prev = wide_routing;
++        wide_routing = on;
++        return prev;
++    }
++
++    static bool wide_enabled() {
++        // Kill switch / A-B knob (default ON; set to 0 to keep every pool allocation outside the slab).
++        static const bool on = [] {
++            const char * e = getenv("GGML_CUDA_POOL_WIDE");
++            return e == nullptr || atoi(e) != 0;
++        }();
++        return on;
++    }
++
++    static bool wide_debug() {
++        static const bool on = getenv("GGML_CUDA_POOL_WIDE_DEBUG") != nullptr;
++        return on;
++    }
++
++    static size_t wide_min_bytes() {
++        // The band rounds a block up to the slab unit (the VMM granularity, 2 MiB here), so a tiny
++        // allocation would cost a whole unit of the band.  Only sizes at or above one unit are worth
++        // redirecting; the many small prefill scratch blocks stay in the pool.
++        static const size_t v = [] {
++            const char * e = getenv("GGML_CUDA_POOL_WIDE_MIN_MIB");
++            const long long mb = e ? atoll(e) : 1;
++            return (size_t) (mb > 0 ? mb : 1) << 20;
++        }();
++        return v;
++    }
++
++    void wide_account(int delta_blocks, long long delta_bytes) {
++        if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++            return;
++        }
++        if (delta_blocks > 0) {
++            g_pool_wide_blocks[device].fetch_add((size_t) delta_blocks, std::memory_order_relaxed);
++        } else if (delta_blocks < 0) {
++            g_pool_wide_blocks[device].fetch_sub((size_t) -delta_blocks, std::memory_order_relaxed);
++        }
++        if (delta_bytes != 0) {
++            g_pool_wide_bytes[device].fetch_add((size_t) delta_bytes, std::memory_order_relaxed);
++        }
++    }
++
+     ~ggml_cuda_pool_leg() {
+         clear_pool();
++        // A live wide-band block here is a pool allocation outliving its pool: nothing to free (the band
++        // owns the bytes), but it must be visible -- the `POOL_WIDE_LEAK` tripwire at the wide drop is the
++        // primary diagnostic and this is its late counterpart.
++        if (n_wide != 0) {
++            GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: %d wide-band block(s) (%.2f MiB) outlived the pool\n",
++                          device, n_wide, (double) ggml_cuda_pool_wide_bytes(device) / 1048576.0);
++            wide_account(-n_wide, 0);
++            n_wide = 0;
++        }
+         GGML_ASSERT(pool_size == 0);
+     }
+ 
+@@ -590,11 +710,18 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+             if (b.ptr != nullptr) {
+                 CUDA_CHECK(cudaFree(b.ptr));
+                 pool_size -= b.size;
++                if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++                    g_pool_mapped[device].fetch_sub(b.size, std::memory_order_relaxed);
++                }
+                 b.ptr  = nullptr;
+                 b.size = 0;
+             }
+         }
+         cached_size = 0;
++        // wip/slab-transient-absorption (step 2b): `clear_pool` drops CACHED (freed) buffers, and the OOM
++        // retry calls it mid-graph -- `wide_blocks` therefore stays as it is.  Those entries describe LIVE
++        // blocks (never cached: `free` returns a band block to the band); forgetting one would send its
++        // later free down the cudaMalloc path.  A leftover at destruction is reported there.
+     }
+ 
+     void * alloc(size_t size, size_t * actual_size) override {
+@@ -602,6 +729,55 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         int nnz = 0;
+         size_t max_size = 0;
+ #endif
++        // wip/slab-transient-absorption (step 2b): serve a LARGE allocation from the slab's wide band while
++        // it is armed (a prefill).  The band sits in the work region the prefill already claims, so these
++        // bytes leave the headroom budget and go back to the arena at the prefill -> decode drop instead of
++        // becoming a permanent pool high-water mark.  Deliberately BEFORE the cached-block scan: reusing a
++        // cached block during a wide phase would keep the pool's outside high-water alive for no gain.
++        //
++        // Guards, in order: the pin (`set_wide_routing`), the size floor (the band rounds up to the slab
++        // unit), the kill switch, an active graph capture (a captured graph's pointers must stay valid
++        // forever, which a reclaimed band cannot promise) and the band's own availability (slab live AND
++        // wide view armed).
++        const bool wide_large = size >= wide_min_bytes();
++        const bool wide_ok    = wide_routing && wide_large && wide_enabled() &&
++                                !ggml_cuda_graph_capture_active();
++        if (wide_ok && ggml_cuda_slab_wide_available(device)) {
++            size_t gen = 0;
++            void * p = ggml_cuda_slab_wide_aux_alloc(device, size, &gen);
++            // Diagnostic: a LARGE allocation the armed band refused stays outside the slab and becomes
++            // pool high-water, which is what this redirect exists to prevent -- count it (SLAB_STATS).
++            if (p == nullptr && device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++                g_pool_wide_refused[device].fetch_add(size, std::memory_order_relaxed);
++            }
++            if (p != nullptr) {
++                if (n_wide < MAX_WIDE) {
++                    wide_blocks[n_wide].ptr  = p;
++                    wide_blocks[n_wide].size = size;
++                    wide_blocks[n_wide].gen  = gen;
++                    n_wide++;
++                    wide_account(+1, (long long) size);
++                    if (wide_debug()) {
++                        GGML_LOG_WARN("%s pool[%d]: wide-band alloc %.3f MiB -> %p (live %d)\n",
++                                      __func__, device, (double) size / 1048576.0, p, n_wide);
++                    }
++                    // The REQUESTED size, not the 5 % + 256 B look-ahead: `free` pops exactly this many
++                    // band bytes (`ggml_cuda_slab_wide_aux_free` rounds it up the same way the alloc did).
++                    *actual_size = size;
++                    return p;
++                }
++                // No bookkeeping slot: hand the block straight back rather than return a pointer this pool
++                // could later `cudaFree`.
++                ggml_cuda_slab_wide_aux_free(device, p, size);
++            }
++        }
++        if (wide_debug() && size >= ((size_t) 1 << 20)) {
++            GGML_LOG_WARN("%s pool[%d]: OUTSIDE %.3f MiB (routing=%d enabled=%d capture=%d armed=%d "
++                          "pinned=%d small=%d)\n", __func__, device, (double) size / 1048576.0,
++                          (int) wide_routing, (int) wide_enabled(), (int) ggml_cuda_graph_capture_active(),
++                          (int) ggml_cuda_slab_wide_available(device), (int) !wide_routing,
++                          (int) !wide_large);
++        }
+         size_t best_diff = 1ull << 36;
+         int ibest = -1;
+         for (int i = 0; i < MAX_BUFFERS; ++i) {
+@@ -676,6 +852,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         CUDA_CHECK(err);
+         *actual_size = look_ahead_size;
+         pool_size += look_ahead_size;
++        if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++            g_pool_mapped[device].fetch_add(look_ahead_size, std::memory_order_relaxed);
++        }
+ #ifdef DEBUG_CUDA_MALLOC
+         GGML_LOG_INFO("%s[%d]: %d buffers, max_size = %u MB, pool_size = %u MB, requested %u MB\n", __func__, device, nnz,
+                            (uint32_t)(max_size / 1024 / 1024), (uint32_t)(pool_size / 1024 / 1024), (uint32_t)(size / 1024 / 1024));
+@@ -684,6 +863,42 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+     }
+ 
+     void free(void * ptr, size_t size) override {
++        // wip/slab-transient-absorption (step 2b): a wide-band block is not pool memory.  It must never
++        // enter the free list (a cached band pointer would be reused after the drop) and must not touch
++        // `pool_size`.  The table is tiny (one entry per concurrent large prefill temporary).
++        for (int i = 0; i < n_wide; ++i) {
++            if (wide_blocks[i].ptr != ptr) {
++                continue;
++            }
++            // The BOOKKEPT size is authoritative: it is what `alloc` handed the band, so the pop is exact
++            // even if a caller passes something other than the `actual_size` the pool returned.
++            const size_t size_b = wide_blocks[i].size;
++            const size_t gen    = wide_blocks[i].gen;
++            n_wide--;
++            wide_blocks[i] = wide_blocks[n_wide];
++            wide_blocks[n_wide] = {};
++            wide_account(-1, -(int64_t) size_b);
++            if (wide_debug()) {
++                GGML_LOG_WARN("%s pool[%d]: wide-band free  %.3f MiB <- %p (live %d, gen %zu/%zu)\n",
++                              __func__, device, (double) size_b / 1048576.0, ptr, n_wide, gen,
++                              ggml_cuda_slab_wide_aux_gen(device));
++            }
++            if (gen != ggml_cuda_slab_wide_aux_gen(device)) {
++                // The band was released (prefill -> decode drop) or moved under a live block: a retained
++                // allocation was served from it.  Give nothing back (the region is gone) and say so once;
++                // the `POOL_WIDE_LEAK` tripwire at the drop is the primary diagnostic.
++                static bool warned = false;
++                if (!warned) {
++                    warned = true;
++                    GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: freeing a wide-band block (%.2f MiB) from a dead "
++                                  "generation: a pool allocation outlived the prefill band\n",
++                                  device, (double) size / 1048576.0);
++                }
++                return;
++            }
++            ggml_cuda_slab_wide_aux_free(device, ptr, size_b);
++            return;
++        }
+         for (int i = 0; i < MAX_BUFFERS; ++i) {
+             ggml_cuda_buffer& b = buffer_pool[i];
+             if (b.ptr == nullptr) {
+@@ -701,6 +916,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         CUDA_CHECK(cudaFree(ptr));
+         if (t_pf) { g_pool_free_us += ggml_time_us() - t_pf; g_pool_free_n++; }
+         pool_size -= size;
++        if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++            g_pool_mapped[device].fetch_sub(size, std::memory_order_relaxed);
++        }
+     }
+ };
+ 
+@@ -727,6 +945,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+ 
+     ~ggml_cuda_pool_vmm() {
+         if (pool_addr != 0) {
++            if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++                g_pool_mapped[device].fetch_sub(pool_size, std::memory_order_relaxed);
++            }
+ #if defined(GGML_USE_HIP)
+             // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
+             for (std::pair<CUdeviceptr, size_t> & mapping : mappings) {
+@@ -823,6 +1044,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+ 
+             // add to the pool
+             pool_size += reserve_size;
++            if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) {
++                g_pool_mapped[device].fetch_add(reserve_size, std::memory_order_relaxed);
++            }
+ 
+             //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
+             //       device, (unsigned long long) (pool_size/1024/1024),
+@@ -881,6 +1105,10 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+     std::unique_lock<std::mutex> lock(ggml_cuda_lock);
+     ggml_cuda_lock_cv.wait(lock, []{ return ggml_cuda_lock_counter.load(std::memory_order_relaxed) == 0; });
+ 
++    // wip/slab-transient-absorption: steady-state accounting for the headroom campaign (gated on
++    // GGML_CUDA_SLAB_STATS).  Printed before the transients are released, so it reports the live layout.
++    ggml_cuda_slab_log_stats(device, "context-exit");
++
+     if (q8_1_arena != nullptr) {
+         CUDA_CHECK(cudaFree(q8_1_arena));
+     }
+@@ -893,7 +1121,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+     h2d_stage_free();
+ 
+     for (int i = 0; i < GGML_CUDA_MAX_STREAMS; ++i) {
+-        if (fattn_stage[i] != nullptr) {
++        if (fattn_stage[i] != nullptr && !fattn_stage_slab[i]) {
+             CUDA_CHECK(cudaFree(fattn_stage[i]));
+         }
+     }
+@@ -1700,6 +1928,8 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
+     ggml_cuda_pool_alloc<nv_bfloat16> tmp[GGML_CUDA_MAX_DEVICES];
+     for (size_t i = 0; i < n_backends; ++i) {
+         ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
++        // wip/slab-transient-absorption (step 2b): held across the grouped NCCL calls -- never in the band.
++        ggml_cuda_pool_wide_pin wide_pin(cuda_ctx->pool());
+         tmp[i].pool = &cuda_ctx->pool();
+         tmp[i].alloc(ne);
+ 
+@@ -4514,6 +4744,20 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+     ggml_cuda_mmb_set_active_ctx(cuda_ctx);
+     ggml_cuda_mmb_begin_graph();
+ 
++    // wip/slab-transient-absorption (step 2b-2): the two per-graph activation caches must not OUTLIVE the
++    // graph.  They are cleared at the start of the next compute anyway, so releasing them at scope exit (on
++    // every return path) loses no hit the next graph would have made -- and it means no MMB/BF16 pool block
++    // is live ACROSS a graph boundary, which is what makes them safe to serve from the slab's wide band: the
++    // band is released at the prefill -> decode drop, i.e. between graphs, and a block still live there would
++    // be a silent use-after-free (the `POOL_WIDE_LEAK` tripwire in `ggml_cuda_slab_ring_set`).
++    struct per_graph_cache_yield {
++        ggml_backend_cuda_context * c;
++        ~per_graph_cache_yield() {
++            ggml_cuda_mmb_yield_caches(c);
++            c->bf16_src1_cache_clear();
++        }
++    } per_graph_cache_yield_inst{cuda_ctx};
++
+     bool use_cuda_graph             = false;
+     bool cuda_graph_update_required = false;
+     ggml_cuda_graph_key graph_key = {};
+diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
+index 0fe5eb163..d788cbb71 100644
+--- a/ggml/src/ggml-cuda/mmb.cu
++++ b/ggml/src/ggml-cuda/mmb.cu
+@@ -1607,6 +1607,9 @@ static const ggml_tensor * mmb_root(const ggml_tensor * t) { return t->view_src
+ static uint16_t * mmb_cache_insert(ggml_backend_cuda_context & ctx, const ggml_tensor * t, const size_t n) {
+     std::vector<mmb_cache_entry> & cache = mmb_state().cache;
+     if (cache.size() >= mmb_cache_max()) { delete cache.front().buf; cache.erase(cache.begin()); }
++    // wip/slab-transient-absorption (step 2b-2): NOT pinned any more -- this buffer is released at the end
++    // of the compute (`ggml_cuda_mmb_yield_caches`), so it never outlives the graph and the slab's wide band
++    // may serve it (or, when the band is not armed, the pool, exactly as before).
+     auto * buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n);
+     cache.push_back({mmb_root(t), t->data, n, buf});
+     return buf->get();
+@@ -1939,6 +1942,9 @@ const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t) {
+ uint16_t * ggml_cuda_mmb_slot_reserve(ggml_backend_cuda_context & ctx, int slot, const ggml_tensor * t, size_t n) {
+     mmb_cache_entry & e = mmb_state().slots[slot];
+     size_t & cap = mmb_state().slot_cap[slot];
++    // wip/slab-transient-absorption (step 2b-2): the slot buffer used to be kept for the life of the
++    // context (only its key was reset per graph).  It is now released by `ggml_cuda_mmb_yield_caches` at the
++    // end of every compute, i.e. it is a per-graph buffer like the cache -- so it may come from the wide band.
+     if (e.buf && cap < n) { delete e.buf; e.buf = nullptr; }
+     if (!e.buf) { e.buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n); cap = n; }
+     e.root = mmb_root(t); e.data = t->data; e.n = n;
+@@ -1987,6 +1993,34 @@ void ggml_cuda_mmb_begin_graph() {
+     s.cache.clear();
+     for (auto & e : s.slots) { e.root = nullptr; e.data = nullptr; e.n = 0; }
+ }
++// wip/slab-transient-absorption (step 2b-2): end-of-compute yield for ONE context.  Frees the per-graph
++// activation cache and the producer-slot buffers, keeping every key/mark map intact (the marks describe the
++// graph being optimised and the drop is between graphs).  Scoped to `ctx` on purpose: under `-sm tensor` /
++// `-sm layer` several backend contexts compute at once, and another context's live slots must not be freed
++// from this one's thread -- so this does NOT go through `g_mmb_active_ctx`.
++void ggml_cuda_mmb_yield_caches(const ggml_backend_cuda_context * ctx) {
++    if (ctx == nullptr) {
++        return;
++    }
++    const auto it = g_mmb_state.find(ctx);
++    if (it == g_mmb_state.end()) {
++        return;
++    }
++    mmb_ctx_state & s = it->second;
++    for (auto & e : s.cache) {
++        delete e.buf;
++    }
++    s.cache.clear();
++    for (int i = 0; i < MMB_SLOT_COUNT; ++i) {
++        delete s.slots[i].buf;
++        s.slots[i].buf = nullptr;
++        s.slots[i].root = nullptr;
++        s.slots[i].data = nullptr;
++        s.slots[i].n = 0;
++        s.slot_cap[i] = 0;
++    }
++}
++
+ void ggml_cuda_mmb_release_all() {
+     ggml_cuda_mmb_begin_graph();
+     // free every context's cache/slots, including any that is not the active one
+diff --git a/ggml/src/ggml-cuda/mmb.cuh b/ggml/src/ggml-cuda/mmb.cuh
+index d4dd67707..c02087781 100644
+--- a/ggml/src/ggml-cuda/mmb.cuh
++++ b/ggml/src/ggml-cuda/mmb.cuh
+@@ -9,6 +9,12 @@ bool ggml_cuda_mmb_reads_bf16_act(const ggml_tensor * src0, const ggml_tensor *
+ void ggml_cuda_mul_mat_mmb   (ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
+ void ggml_cuda_mul_mat_id_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst);
+ void ggml_cuda_mmb_begin_graph();
++// wip/slab-transient-absorption (step 2b-2): release THIS context's activation cache and producer-slot
++// buffers at the END of a compute.  They are per-graph anyway (`ggml_cuda_mmb_begin_graph` frees the cache
++// at the start of the next one); freeing them at the end instead means no MMB pool block is ever live
++// ACROSS a graph boundary, which is what lets the slab's wide band serve them (the band is released at the
++// prefill -> decode drop, i.e. between graphs).  The shadow weights (raw cudaMalloc) are NOT touched.
++void ggml_cuda_mmb_yield_caches(const ggml_backend_cuda_context * ctx);
+ // producers that can emit a BF16 copy of an F32 output register it here; returns the BF16 buffer to fill (n elements)
+ uint16_t * ggml_cuda_mmb_cache_reserve(ggml_backend_cuda_context & ctx, const ggml_tensor * t, size_t n);
+ // BF16 copy of tensor t if one is cached for the current graph (consumers may read it instead of the F32 data)
+diff --git a/include/llama.h b/include/llama.h
+index 2519ee713..0c99fa0d5 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -643,8 +643,16 @@ extern "C" {
+     LLAMA_API size_t llama_model_moe_host_expert_bytes(const struct llama_model * model, uint32_t dev_index);
+ 
+     // wip/moe-cache-autosize: default auxiliary-context memory reserve subtracted from the cache's
+-    // arena projection (MiB).  Measured ~3.7 GiB for the MTP draft on gfx1201.
+-    #define LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT 4096
++    // arena projection and added to the movable-boundary slab's creation reserve (MiB).
++    //
++    // wip/slab-transient-absorption (2026-10-17): LOWERED 4096 -> 3584.  The old value was the
++    // pre-narrow-2 measurement.  Since the MTP draft's COMPUTE buffer is pinned into the slab's narrow-2
++    // region, the draft's post-slab cost is measured at ~3447 MiB (weights 2647 + KV 288 + narrow-2 512),
++    // so 4096 left ~650 MiB of the reserve permanently unmapped and outside the arena.  3584 keeps a
++    // ~137 MiB margin; a larger draft (or a DFlash one) spills into the slab headroom, which is the
++    // budget that exists for exactly that.  Measured on the field GSQ config: +512 MiB of arena at the
++    // same headroom.
++    #define LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT 3584
+     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
+ 
+     LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
+-- 
+2.56.0
+
