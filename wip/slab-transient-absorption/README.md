@@ -614,3 +614,30 @@ that arm at **−307 MiB** and fail.  The remaining outside consumers are, in or
 337 MiB** (the dominant one, and it is *live+cached* — see the `GGML_CUDA_POOL_CACHE_MB` negative result),
 hipBLASLt ~104, MMB ~40.  So **the deferred generic pool redirect (with the pinned escape hatch) is worth
 ~300 MiB and is the only thing that makes 512 possible.**
+
+### 10.3 The wide-prefill gate, run on IQ4_NL in place of IQ4_XS (2026-10-17)
+
+The 2026-10-07 record rejected 3072 and corrupted at 2048 on `--fit off -sm tensor -ncmoe 48 -ub 6144
+-c 204800` (IQ4_XS).  IQ4_XS is not on this box, so the gate was re-run on the same-architecture 4-bit
+**IQ4_NL** (the 9-shard PROJFIX build) with the shared Q8_0 MTP draft, 6 657-token prefill.
+
+| | headroom 2048 / aux 3584 |
+|---|---:|
+| SLAB_INIT | free 25.23 GiB, reserve 5.50 GiB, mapped 19.69 GiB, boundary 2.00, `va_spare` 3.50 GiB |
+| arena slots | 17 718.8 MiB of 64 800 MiB host experts (**27.3 %**) |
+| narrow-2 (ub 6144) | 768 MiB |
+| free outside at wide-arm | 1 562 MiB |
+| free outside at wide-drop | **629 MiB** |
+| pool at wide-drop | **671 MiB** (grows with the ubatch; twice the GSQ figure) |
+| prefill | 614 t/s (6 657 tokens), coherent output |
+| errors / OOM / `hipblaslt.cpp:164` / corruption | **none** |
+
+**So the gate passes at 2048 / 3584 on IQ4_NL**, which is the first time this wide config runs below 4096
+without the failure mode the 2026-10-07 record described.  But it is also the ceiling for the wide config:
+with 629 MiB left at 2048 and the pool alone at 671 MiB, **headroom 1024 would put the drop at ~-42 MiB**
+— the generic pool redirect (the deferred piece) is a prerequisite for 512/1024 on wide ubatches, not just
+a nicety.
+
+**Recommendation from the data:** ship **2048 / 3584** as the default (safe on both the field `-ub 4096`
+config and the wide `-ub 6144` config, +2.5 GiB arena vs the r80 default) and keep 1024 / 3584 as a
+documented opt-in for `-ub <= 4096` field use, where the seesaw bottoms out at ~205 MiB outside.
