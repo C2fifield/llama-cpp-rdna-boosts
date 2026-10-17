@@ -834,3 +834,41 @@ promoted** — this is still a WIP campaign.
 local only (never pushed).  `slab-transient-absorption-wip.patch` is `git diff 00f4b1ef8..3f4497d14`,
 **1 225 lines, sha256 `e1a6b843b3e43cb51d04d516e6a6a344ec7bcca41a7d6f373d49fa57071c13a9`**.  Restore as
 in §8.5 (`git checkout 00f4b1ef8`, apply the patch, `~/bin/build-llama-rocm`).
+
+---
+
+## 10.7 2026-10-17 — what `aux = 1536` actually costs (measured), and the MMB/BF16 yield scope
+
+Scoped the follow-up ("absorb the MMB activation cache + `bf16_src1_cache` so a lower reserve default
+becomes safe") — plan + design + gates in
+[`SCOPE-2026-10-17-mmb-yield-aux1536.md`](SCOPE-2026-10-17-mmb-yield-aux1536.md).  Measuring the *target*
+first changed the plan, so the numbers are here.
+
+Same field GSQ seesaw (distinct prefixes, one server, 251/80 107/249/80 105 tokens), `GGML_CUDA_SLAB_STATS=1`:
+
+| reserve (`headroom`/`aux`) | sum | draft load | arena (2nd arm) | free arm-1 / drop-1 / arm-2 | outcome |
+|---|---:|---|---:|---|---|
+| 1024 / 3584 | 4608 | ok | 19 328 MiB | 934 / 709.5 / 286.5 | **clean** (§10.6) |
+| 2048 / 2048 | 4096 | ok (barely) | **20 096 MiB** | 422 / 203.5 / **93.5** | OOM `84.00 MiB` |
+| 2560 / 1536 | 4096 | ok (barely) | **20 096 MiB** | 422 / 203.5 / **93.5** | OOM `84.00 MiB` |
+| 2048 / 1536 | 3584 | **FAIL `512.00 MiB`** | (20 302.6 MiB) | — | draft-load abort |
+
+1. **Only the SUM matters, not the split.**  `2048/2048` and `2560/1536` are identical to the byte
+   (422.0 / 203.5 / 93.5, arena 20 096, same eviction pattern): `reserve = headroom + aux` is the only
+   place either number enters (`ggml_cuda_slab_reserve_bytes`), and `slab_extend` cannot fire while the
+   draft is consuming the reserve.  So **`aux = 1536` means `headroom ~= 2560`** (sum 4096); sum 3584
+   does not even load the draft.
+2. **At sum 4096, the blocker IS the MMB activation cache** — the abort is `84.00 MiB`, i.e. a pool
+   request of `80 MiB + 5 %` (one MMB cache entry, the same 80 MiB the §10.6 `GGML_CUDA_MMB=0` A/B
+   isolated) with 93.5 MiB free at the wide arm.  Absorbing ~250 MiB is exactly what makes 4096 viable.
+3. **But `aux 1536 / headroom 2560` is not the arena-maximising direction**: the headroom is permanently
+   outside the slab, so the campaign's original shape (`aux` ~= draft, `headroom` ~= the transient floor,
+   i.e. `3584/512` at the same sum 4096) is strictly better *if* 512 is safe.  `aux 1536` is the
+   "keep a 2.5 GiB transient cushion" variant — +1.5 GiB arena vs the r80 default, same arena as
+   `3584/512`.  Decision D1 in the scope note.
+4. Also recorded there: the outside free **degrades across the seesaw** (934 -> 587 -> 290 -> 286) and
+   then stabilises, i.e. the minimum is a steady state ~650 MiB below the first arm, not a prefill peak;
+   the steady-state outside demand at reserve 4608 is ~875 MiB, of which the two caches are ~250-315.
+   The unattributed ~300-500 MiB is the next decomposition if the yield alone is not enough (decision D2).
+
+No code landed for this step: it is a scoping note plus the measurements that shape it.
