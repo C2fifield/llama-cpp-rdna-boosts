@@ -12,7 +12,19 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r77`**.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r78`**.
+
+r78 folds two contributor PRs into block 10, both bit-identical and both **decoder-side only**: the KV
+rotation's FWHT now runs inside the fused rope kernel (only the rotated row is written), and the
+attention-output FWHT also fills the output projection's Q8_1 cache so that projection skips its quantize
+launch (PR #172); and the residual ADD + `rms_norm_q8_1` fusion now covers a single token too, which
+removes a per-layer add launch after the MoE/FFN output (PR #174).  Same-seed text is byte-identical to
+r77 on every model tested, the W=1..8 logits probe is unchanged and the prefill-logit gate is unchanged;
+measured +1.5 % Gemma4 12B decode and +1.7 % dense 27B decode, flat elsewhere (`WORKLOG.md` 261017.001).
+The rope fusion needs NORMAL/NEOX rope, so on the Qwen3.x models (which use mrope) it is inert -- it is
+active on Gemma4/gpt-oss-20b.  PR #173 (folding the q8_0 K/V cache writes into that kernel) is **not**
+included: its matcher cannot fire on the current graph shape, so it would have shipped unmeasurable
+(`archive/work/kv-cache-q8-write/RESOLUTION.md`).
 
 r77 folds two contributor PRs into the blocks that own them (blocks 08/10, no new block) and adds no
 default behaviour change: the q8_0 `SET_ROWS` K/V-cache write now runs one 32-lane group per block

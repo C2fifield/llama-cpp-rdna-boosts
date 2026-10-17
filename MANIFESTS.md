@@ -5,9 +5,21 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r77`** (canonical tip `6d8edf445`, net tree
-`e726101ddc3ee855adc903cc07c3b7009d0a27fc`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r77 folds two contributor PRs into **blocks 08/10**: the
+**`097cf33d9`**, released as **`v12-097cf33d9-r78`** (canonical tip `a0c4db04c`, net tree
+`b324d53566eb6f064c708047e4e0331c7ac5cc25`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r78 folds two contributor PRs into **block 10**: the
+KV-rotation FWHT fused into the rope kernel (and the projection's Q8_1 written by the attention-output
+FWHT), plus the residual ADD + `rms_norm_q8_1` fusion extended to one token (PR #172 exact, PR #174
+bit-identical; decoder-side, no band or reduction-order move).  Gates on gfx1201: same-seed text
+byte-identical to r77 on dense 27B / MoE 35B-A3B (`none == draft-mtp n3`) / Gemma4 12B (also with
+`GGML_CUDA_GRAPH_OPT=1`) / gpt-oss-20b, width purity `PASS` maxdiff 0 with the r77 hashes at P=512 and
+P=3584, prefill-logit **0.000000 / 100.000 %** on Gemma4 12B (r77-recorded base) and 0.000707 / 98.755 %
+(r77's own figure) on the standard dense base, `SET_ROWS`/`ROPE`/`RMS_NORM`/`ADD` pass, `MUL_MAT`
+2444/2444, GPU fault check clean.  Perf: Gemma4 12B tg256 +1.5 %, dense 27B (3 GPU tensor) tg +1.7 %,
+MoE 35B-A3B flat, pp flat, batched `-npl 1,4,8` within noise.  The fusion is reachable on Gemma4 /
+gpt-oss-20b (the Qwen3.x models here are `rope_multi`, which the rope matcher rejects); PR #173 was
+rejected as unreachable on this tree (`archive/work/kv-cache-q8-write/RESOLUTION.md`).  Before it, r77
+folds two contributor PRs into **blocks 08/10**: the
 q8_0 `SET_ROWS` K/V-write kernel (one 32-lane group per block) and the register-quantizing
 `rms_norm_q8_1` (PR #171, bit-identical, MTP decode +0.6-0.7 %, no regression at the verify widths), and
 an **opt-in** coarse prefill KV pad (`LLAMA_KV_N_PAD_PREFILL`, off by default; +2.0 % prefill on 35B-A3B

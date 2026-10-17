@@ -11,7 +11,40 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r77` (2026-10-16) -- q8_0 KV-write + `rms_norm_q8_1` decode kernels (PR #171), opt-in coarse prefill KV pad (PR #168):**
+> **Current release `v12-097cf33d9-r78` (2026-10-17) -- KV-rotation FWHT fused into the rope kernel and into the projection Q8_1 (PR #172), ADD + `rms_norm_q8_1` for one token (PR #174):**
+> canonical tip `a0c4db04c`, net tree `b324d53566eb6f064c708047e4e0331c7ac5cc25`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.
+> PR #172 (both parts, bit-identical): a new `fwht_n` instantiation of the fused `rms_norm_mul_rope_f32`
+> runs the KV rotation's FWHT in-warp from a shared-memory staging row (the transform moved into
+> `ggml_cuda_fwht_warp()` in `fwht.cuh` and shared with `fwht_cuda`, so both compile it under the same
+> FP-contraction mode) and only the rotated row is written; the allocator's usual exact `dst == x` alias
+> is allowed (each block reads its row before a barrier, then writes it).  Part 2 has `fwht_cuda<N, T,
+> true>` also write the following mmvq matmul's Q8_1 activation into the quantize cache (the mmvq
+> launcher's own key/shape/stride/stream; no padded rows; an existing entry stands the fusion down), so
+> the attention-output projection skips its `quantize_q8_1`.  PR #174: `ggml_cuda_add_rms_q8_1_try_fuse`
+> no longer excludes `ne[1] == 1`, so the FFN residual ADD after `moe_weighted_reduction` folds into
+> `rms_norm_q8_1_f32<..., true>` at one token too (the attention residual is already epilogue-folded).
+> Kill switches `GGML_CUDA_DISABLE_ROPE_FWHT`, `GGML_CUDA_DISABLE_FWHT_Q8_1` (presence-only) and the
+> existing `GGML_CUDA_FUSE_ADD_RMS_Q8=0`; no mmvq band or reduction-order anchor moves.
+> **Reachability is model-dependent:** #172 needs NORMAL/NEOX rope with the norm+mul+rope chain, so it is
+> active on Gemma4 (and part 2 on gpt-oss-20b) and **inert on the Qwen3.x models here** (all
+> `rope_multi`); #174 is active on dense models and inert where the shared-expert epilogue already eats
+> the residual add.  Verified on gfx1201 (3x R9700): same-seed text **byte-identical to r77** on dense 27B
+> (`sha 7ef45a05dcfe`, `none == draft-mtp n3`), MoE 35B-A3B (`sha e726a23ca0cc`), Gemma4 12B (`sha
+> 970325058470`, also with `GGML_CUDA_GRAPH_OPT=1`) and gpt-oss-20b (`sha a296beac7818`); width probe
+> PASS maxdiff **0** with the r77 hashes at P=512/3584; prefill-logit **0.000000 / 100.000 %** on Gemma4
+> 12B against an r77-recorded base and **0.000707 / 98.755 %** (r77's own figure) on the standard dense
+> base; `SET_ROWS`/`ROPE`/`RMS_NORM`/`ADD` pass, `MUL_MAT` 2444/2444.  Perf: Gemma4 12B tg256 60.15 ->
+> 61.05 (+1.5 %), dense 27B 3-GPU tensor tg 53.98 -> 54.88 (+1.7 %), MoE 35B-A3B 2-GPU flat (114.63 ->
+> 114.45), pp flat, `llama-batched-bench -npl 1,4,8` within noise (B=1 28.52 -> 28.88, B=4 105.7 ->
+> 105.0, B=8 184.5 -> 185.4; the B=4 switch-off control is at or below the same level).  **PR #173
+> (`kv-cache-q8-write`) rejected:** its matcher cannot fire on this tree (the ISWA graph builder puts the
+> V block between the K rotation and the K cache write, and every other model here is `rope_multi`), so
+> it would ship as unmeasurable dead code; re-entry conditions in
+> `../archive/work/kv-cache-q8-write/RESOLUTION.md`.  Records: `../WORKLOG.md` 261017.001,
+> `../archive/work/kv-rot-fwht-fusion/`, `../archive/work/add-rms-norm-q8-decode/`.
+>
+> **Previous release `v12-097cf33d9-r77` (2026-10-16) -- q8_0 KV-write + `rms_norm_q8_1` decode kernels (PR #171), opt-in coarse prefill KV pad (PR #168):**
 > canonical tip `6d8edf445`, net tree `e726101ddc3ee855adc903cc07c3b7009d0a27fc`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Blocks 08 and 10** amended, no new block.
 > **block 08** gains PR #171 (both parts, bit-identical): the q8_0 `SET_ROWS` (the K/V cache write) runs

@@ -624,3 +624,23 @@ owning blocks (08/13/14).  The finer split needs the **block-14-era** matcher bo
 references block-15 struct members such as `out_xn_bf16` / `store_xn_f32`), and the
 `ggml-backend-meta.cpp` move is blocked on the block-15 `ggml_backend_device_i` / `ggml_backend_i`
 fields.  Spec: `archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
+
+## Rejected PR #173 (`kv-cache-q8-write`) re-entry, and the MROPE gap in PR #172
+
+**#173 is not shipped (r78):** its matcher folds the q8_0 K/V cache `SET_ROWS` launches into the #172
+fused rope kernel, but it cannot fire on the current tree.  It needs the K cache `VIEW, SET_ROWS` to
+immediately follow the K rotation's `RESHAPE`, and the **ISWA** graph builder
+(`build_attn(llm_graph_input_attn_kv_iswa*)` in `src/llama-graph.cpp`) expands `q_cur, k_cur, v_cur` and
+only then the two cache writes, so the V projection/norm/rotation sit in between; the non-iSWA builders
+already expand `q_cur, v_cur, k_cur` for exactly this reason.  Re-entry needs either a bounded-window
+match that tolerates the interposed V block, or the ISWA expand reorder measured on its own (graph
+splits), plus a trace showing the two `set_rows` launches are gone.  Detail:
+`archive/work/kv-cache-q8-write/RESOLUTION.md`.
+
+**The larger reachable win is the MROPE gap:** #172's fused rope kernel requires `GGML_ROPE_TYPE_NORMAL`
+or `NEOX`, and every Qwen3.x model on this box (3.5/3.6/3.8) runs `rope_multi`.  So the whole
+rope+FWHT fusion class -- #172 and, with it, #173's K/V cache write -- is inert on the maintainer's
+primary models, and only fires on Gemma4 / gpt-oss-20b.  Extending the fused kernel to `GGML_ROPE_TYPE_MROPE`
+(same in-warp FWHT, `mrope_sections` from `rope_multi`) would put both fusions on the 27B and 35B-A3B
+paths.  Needs the same gate set as #172 (greedy hash identity, `W=1..8` probe, prefill-logit against a
+recorded base, decode t/s at 2 and 3 GPUs).

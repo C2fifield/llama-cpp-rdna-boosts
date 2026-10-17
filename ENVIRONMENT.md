@@ -335,6 +335,14 @@ These use `getenv(...) == nullptr || atoi(...) != 0`, so unset = **on** and `0` 
 The same idiom — and therefore also default-on despite the name — covers
 `GGML_CUDA_DISABLE_IDX_RELU_SUM`, `GGML_CUDA_CONCAT_VERIFY` and (r46, block 15) `GGML_CUDA_FUSE_GDN_STATE_GATHER`.
 
+`GGML_CUDA_FUSE_ADD_RMS_Q8=0` (r78) is the A/B switch for the **single-token** ADD + `rms_norm_q8_1`
+fusion as well as the verify band: the r78 change dropped the old `ne[1] > 1` gate, so the FFN residual
+ADD after an MoE/`ffn_out` producer now folds into the norm at one token too.  Measured on gfx1201:
+dense 27B UD-Q4_K_XL, 3-GPU tensor, q8_0 KV, tg256 54.88 t/s default vs 53.91 with `=0` (the pre-r78
+behaviour); the fused kernel's values are those of the unfused `k_bin_bcast` + `rms_norm_q8_1` pair, and
+the same-seed text is byte-identical either way.  Not reached on Qwen3.6-35B-A3B, whose residual add is
+already consumed by the fused shared-expert output epilogue.
+
 ### 7.2 `GGML_CUDA_DISABLE_*` — value-gated (`=1` disables, `0` keeps it on)
 
 `GGML_CUDA_DISABLE_FUSED_ADDMUL`, `GGML_CUDA_DISABLE_FUSION`, `GGML_CUDA_DISABLE_GDN_CPY`,
@@ -352,7 +360,17 @@ The same idiom — and therefore also default-on despite the name — covers
 `GGML_CUDA_DISABLE_CONV_FUSION`, `GGML_CUDA_DISABLE_MMID_512`, `GGML_CUDA_DISABLE_MMQ_ROUTED`,
 `GGML_CUDA_DISABLE_MMVQ_DENSE_BAND`, `GGML_CUDA_DISABLE_MMVQ_MOE_BAND`,
 `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE`, `GGML_CUDA_DISABLE_ROPE_SET_ROWS`,
-`GGML_CUDA_DISABLE_TOPK_MOE_FUSION`.
+`GGML_CUDA_DISABLE_TOPK_MOE_FUSION`,
+and (r78, block 10) `GGML_CUDA_DISABLE_ROPE_FWHT` and `GGML_CUDA_DISABLE_FWHT_Q8_1`.
+
+The two r78 switches split PR #172's two fusions: `GGML_CUDA_DISABLE_ROPE_FWHT` keeps the KV rotation's
+FWHT as its own `fwht_cuda` launch (rope only, no shared-memory staging row) and
+`GGML_CUDA_DISABLE_FWHT_Q8_1` stops the attention-output FWHT from also writing the output projection's
+Q8_1 activation (the projection then runs its own `quantize_q8_1`).  Both fusions are bit-identical to
+the unfused path; measured together on gfx1201 Gemma4 12B QAT UD-Q4_K_XL (1 GPU, layer, q8_0 KV):
+tg256 61.05 t/s default, 60.41 with `DISABLE_ROPE_FWHT=1`, 60.80 with `DISABLE_FWHT_Q8_1=1`, 60.15 on
+the r77 build.  They only fire for NORMAL/NEOX rope with the `RMS_NORM, MUL, ROPE` chain, so they are
+inert on `rope_multi` models (all Qwen3.x here) -- a trace shows `rope_multi` + `fwht_cuda` there.
 
 ### 7.4 Other kernel tuning
 

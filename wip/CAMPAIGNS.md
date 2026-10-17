@@ -35,6 +35,21 @@ is the signature of a stub, not of a campaign.
 | [`moe-arena-defrag/`](moe-arena-defrag/README.md) | hotness-aware slab **table placement** (the boundary move currently evicts the last-allocated tables regardless of heat) + heterogeneous per-table expert sizes + a phase-3 idle repack/relocate | **OPEN (seeded 2026-10-14); phase 1 (placement) SHIPPED in r60 as part of the heat map, phases 3-4 parked** |
 | [`slab-transient-absorption/`](slab-transient-absorption/README.md) | move the controlled raw-`cudaMalloc` transients (FA staging, Q8_1, MMB shadows, AR scratch, per-table remap) inside the slab so `GGML_CUDA_SLAB_HEADROOM_MIB` can be safely lowered (today the headroom is permanently outside the slab and `slab_extend` is dead at the default) | **OPEN (seeded 2026-10-14); phase map in §3.0 + hybrid routing in §3.1 (wide→ring, narrow→narrow-2-style pin), measurement first** |
 
+**Promoted and rejected (r78, 2026-10-17).**  Three contributor PRs were reviewed; **none of them was
+ever a `wip/` entry on `main`** (they arrived as PR branches under their own `wip/<name>/`, so the open
+set here was not touched and no stub was created or removed).  **#172 `kv-rot-fwht-fusion`** promoted
+into **block 10** (the KV rotation's FWHT runs in the fused rope kernel, and the attention-output FWHT
+also fills the projection's Q8_1 cache -- both bit-identical; +1.5 % Gemma4 12B decode).  **#174
+`add-rms-norm-q8-decode`** promoted into **block 10** (the residual ADD + `rms_norm_q8_1` fusion now
+covers one token, +1.7 % dense 27B decode; bit-identical).  Both are reachable only where the graph
+matches: #172 needs NORMAL/NEOX rope, so it is **inert on every Qwen3.x model here** (`rope_multi`), and
+#174 is inert where the shared-expert epilogue already eats the residual add.  **#173
+`kv-cache-q8-write` rejected**: it folds the q8_0 K/V cache `SET_ROWS` into the #172 kernel, but its
+matcher cannot fire on this tree (the ISWA builder interposes the V block between the K rotation and the
+K write, and every other model here is `rope_multi`), so it would ship unmeasurable -- re-entry
+conditions in `archive/work/kv-cache-q8-write/RESOLUTION.md`.  All three records are under
+`archive/work/` with a `RESOLUTION.md`; see `WORKLOG.md` 261017.001 (r78).
+
 **Promoted and rejected (r77, 2026-10-16).**  Three contributor PRs were reviewed; **none of them was ever
 a `wip/` entry on `main`** (they arrived as PR branches under their own `wip/<name>/`, so the open set
 here was not touched and no stub was created or removed).  **#171 `q8-decode-small-kernels`** promoted

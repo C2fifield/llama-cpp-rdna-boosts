@@ -1,5 +1,82 @@
 # WORKLOG - dated delivery records
 
+## 261017.001 (r78) -- KV-rotation FWHT fused into the rope kernel and into the projection Q8_1 (PR #172, block 10), ADD + `rms_norm_q8_1` for one token (PR #174, block 10); PR #173 rejected
+
+**Delivery change.**  `release.json` is now `v12-097cf33d9-r78` (base `097cf33d9`; canonical tip
+`a0c4db04c`, net tree `b324d53566eb6f064c708047e4e0331c7ac5cc25`; 12 blocks; `validate-set.sh` green --
+checksums OK, strict 12/12 `git am` on a fresh tarball, applied tree equals the recorded tree; one block
+amended, no new block).  Three `@briansp2020` PRs reviewed against r77 on gfx1201 (3x R9700, ROCm
+7.14.1); **two accepted, one rejected**.
+
+**Accepted: PR #172 (`kv-rot-fwht-fusion`, both patches), folded into block 10.**  With a quantized KV
+cache Q and K each ran `RMS_NORM, MUL, ROPE, RESHAPE, MUL_MAT(Hadamard)`, i.e. the fused rope launch plus
+a `fwht_cuda` launch.  (1) A new `fwht_n` instantiation of the fused `rms_norm_mul_rope_f32` stages the
+roped row in shared memory and runs `fwht_cuda`'s own transform, moved into `ggml_cuda_fwht_warp()` in
+`fwht.cuh` and shared by both kernels (one helper in a header included before `rope.cu`'s
+`#pragma clang fp contract(off)`, so both compile the transform under the same contraction mode).  The
+matcher (`ggml_cuda_should_fuse_rms_norm_mul_rope_fwht`) requires one rotation block per head
+(`n` = 64/128/256) and allows the allocator's usual exact `dst == x` alias (each block reads its whole
+row of `x` before a barrier, then writes the same row; any other overlap rejects).  (2) `fwht_cuda<N, T,
+has_q8_1>` also writes the following mmvq matmul's Q8_1 activation into the quantize cache with
+`quantize_q8_1`'s reduction and rounding, so the attention-output projection skips its quantize launch;
+the key is the mmvq launcher's (view root of `src1` = the Hadamard node, its shape/strides, stream), the
+row must be a multiple of `MATRIX_ROW_PADDING`, and an already-cached entry stands the fusion down.
+Kill switches `GGML_CUDA_DISABLE_ROPE_FWHT` and `GGML_CUDA_DISABLE_FWHT_Q8_1` (both presence-only).
+Neither matcher participates in the mmvq band (`nwarps`/VDR) and no reduction-order anchor moves.
+**Reachability:** the fusion needs NORMAL/NEOX rope with the norm+mul+rope chain, so on this box it is
+**active on Gemma4** (and part 2 on gpt-oss-20b) and **inert on every Qwen3.x model here**, which all run
+`rope_multi` (`GGML_ROPE_TYPE_MROPE`).  That is why the reporter's Qwen3-30B-A3B numbers do not
+reproduce on the maintainer's models.
+
+**Correctness (PR #172).**  Same-seed greedy text **byte-identical to r77** on Gemma4 12B QAT
+UD-Q4_K_XL (1 GPU layer, q8_0 KV, 256 tokens: `sha 970325058470`, 965 chars; also with
+`GGML_CUDA_GRAPH_OPT=1`) and on gpt-oss-20b MXFP4 (`sha a296beac7818`, 1160 chars).
+`test-logits-width-probe` (layer, q8_0 KV) **PASS, worst maxdiff 0**, row-0 hashes identical to r77 at
+P=512 (`ffc573dcc0c3878f`) and P=3584 (`72fb964721e643fb`).  Prefill-logit gate on the same Gemma4 12B
+against a base **recorded from the r77 build**: **0.000000 / 100.000 %** (the fused rope also runs at
+prefill, so this is the instrument that would see a shift).  `test-backend-ops -o ROPE` 450/450, `-o
+MUL_MAT` 2444/2444, `-o SET_ROWS` / `RMS_NORM` / `ADD` pass.
+
+**Accepted: PR #174 (`add-rms-norm-q8-decode`), folded into block 10.**  One line: drop
+`node->ne[1] <= 1` from `ggml_cuda_add_rms_q8_1_try_fuse`, so the residual ADD in front of a narrow-band
+norm is folded into `rms_norm_q8_1_f32<..., true>` for a single token too.  The exclusion assumed the
+attention residual ADD is always epilogue-folded at one token; that is true, but the **FFN** residual
+after `moe_weighted_reduction` is not (non-matmul producer), so it ran as its own `k_bin_bcast` launch in
+every layer.  Values are those of the unfused pair (`GREEDY-PURITY.md` §39/§42).  Kill switch (existing)
+`GGML_CUDA_FUSE_ADD_RMS_Q8=0`.  **Reachability:** active on dense models (40-token trace: standalone adds
+**19,152 -> 4,158**, `rms_norm_q8_1_f32<1024, true>` **756 -> 15,750**); inert on Qwen3.6-35B-A3B, whose
+residual add is already consumed by the fused shared-expert epilogue (identical kernel histograms,
+150,854 kernels each).  **Correctness:** dense 27B `sha 7ef45a05dcfe` (7405 chars) and MoE 35B-A3B
+`sha e726a23ca0cc` (5500 chars), `-n 3000`, q8_0 KV, **identical to r77 and `none == draft-mtp n3`**;
+width probe PASS with the r77 row-0 hash; prefill-logit **0.000707 / 98.755 %**, exactly r77's own
+figure against the same base.
+
+**Rejected: PR #173 (`kv-cache-q8-write`).**  It folds the two q8_0 K/V cache `SET_ROWS` launches into
+the #172 fused rope kernel.  The matcher requires the K cache `VIEW, SET_ROWS` to immediately follow the
+K rotation's `RESHAPE`, and on the only model here where #172 fires (Gemma4) it does not: the **ISWA
+graph builder** expands `q_cur, k_cur, v_cur` and only then the two cache writes, so the V
+projection/norm/rotation nodes sit in between (node dump in the record).  Every other model here is
+`rope_multi`, where #172 itself is inert.  It would therefore ship as unmeasurable dead code, so it is
+not taken; the shell-identical `set_rows` launches still run.  Record with the re-entry conditions (the
+ISWA ordering, a trace proving the launches are gone, and a note that extending #172 to MROPE is the
+larger reachable win here): `archive/work/kv-cache-q8-write/RESOLUTION.md`.
+
+**No perf regression in the defaults** (`llama-bench -p 512 -n 256 -r 5`, two alternating rounds,
+always r77 vs r78).  Gemma4 12B 1 GPU layer q8_0 KV: tg256 **60.15 -> 61.05 (+1.5 %)**
+(`GGML_CUDA_DISABLE_ROPE_FWHT=1` 60.41, `GGML_CUDA_DISABLE_FWHT_Q8_1=1` 60.80), pp512 2975.8 -> 2970.3.
+Dense 27B UD-Q4_K_XL 3 GPU tensor: tg **53.98 -> 54.88 (+1.7 %)** (`GGML_CUDA_FUSE_ADD_RMS_Q8=0` 53.91),
+pp512 2063.6 -> 2063.1.  MoE 35B-A3B UD-Q4_K_M 2 GPU tensor: tg 114.63 -> 114.45, pp 5502.5 -> 5495.9
+(both flat).  `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (dense 27B, q8_0 KV, 3 rounds): B=1
+28.52 -> 28.88, B=4 105.7 -> 105.0, B=8 184.5 -> 185.4 -- within noise, and the B=4 arm's switch-off
+control comes out at or below the same level, so it is not a regression (rule 5).  `MTP` decode
+(dense 27B, 3 GPU, `-n 3000`): 105.0 -> 104.8 t/s; MoE 217.4 -> 218.1 t/s (noise).  GPU fault check
+clean over the whole session.
+
+**Records.**  `archive/work/kv-rot-fwht-fusion/` and `archive/work/add-rms-norm-q8-decode/` (contributor
+README + patches + `RESOLUTION.md`), and the rejected `archive/work/kv-cache-q8-write/` (README + patch +
+`RESOLUTION.md`).  `wip/` never carried these campaigns on `main` (they arrived as PR branches), so
+nothing had to be removed from the open set.
+
 ## 261016.012 (r77) -- q8_0 K/V-write + `rms_norm_q8_1` decode kernels (PR #171, block 08), opt-in coarse prefill KV pad (PR #168, block 10)
 
 **Delivery change.**  `release.json` is now `v12-097cf33d9-r77` (base `097cf33d9`; canonical tip

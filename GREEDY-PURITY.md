@@ -1630,3 +1630,32 @@ reserved a 1-sequence graph against an `n`-stream cache and `llama-batched-bench
 `ggml_reshape_3d` (from `build_qkvz`).  The reserve now uses `max(1, ubatch.n_seqs)`, matching the
 context.  Single-sequence (MTP) reserves are unaffected, and the multi-stream throughput is unchanged
 (16-token MoE batch 705.7 t/s vs r31's 702.5).  See `WORKLOG.md` 2026-10-08 (r32).
+
+## 42. A width gate is not a purity rule: extending a fused chain *down* to one token (2026-10-17, r78)
+
+Two of the r78 block-10 fusions extend an existing fused chain or move a launch, and both keep §39's rule
+("a decode-only fusion must match the standalone launch it replaces"):
+
+* **ADD + `rms_norm_q8_1` at one token (PR #174).**  The matcher excluded `ne[1] <= 1` because the
+  *attention* residual ADD is folded into the output projection's mmvq epilogue at one token.  The *FFN*
+  residual ADD is not (its producer is `moe_weighted_reduction` / a non-matmul), so it ran as a standalone
+  `k_bin_bcast` and then the norm.  The fused kernel's values are the unfused pair's (same per-warp
+  reduction, same Q8_1 rounding), and the claim is measured, not assumed: same-seed text is
+  **byte-identical** to r77 with and without the fusion (dense 27B `sha 7ef45a05dcfe`, MoE 35B-A3B
+  `sha e726a23ca0cc`, `-n 3000`, q8_0 KV, `none == draft-mtp n3`), the `W=1..8` probe is unchanged
+  (row-0 hash identical), and the prefill-logit gate is unchanged.  The lesson is the converse of §19:
+  a band gate (`ne[1] > 1`) can be a *superset* of the shapes a fusion is safe for, and widening it
+  needs its own measurement rather than reusing the band's.
+* **The KV-rotation FWHT in the rope kernel, and the projection Q8_1 in the attention-output FWHT
+  (PR #172).**  Both are bit-identical by construction (the transform is the same helper compiled under
+  the same contraction mode; the Q8_1 write is `quantize_q8_1`'s own reduction and rounding under the
+  mmvq launcher's own cache key) and both are measured: the `W=1..8` probe at P=512/3584 returns the r77
+  hashes with maxdiff 0, the Gemma4 prefill-logit gate against an r77-recorded base is
+  **0.000000 / 100.000 %** (the fused rope runs at prefill too), and the greedy text is identical with
+  and without `GGML_CUDA_GRAPH_OPT=1`.
+
+Reachability is part of the claim.  #172 fires only for NORMAL/NEOX rope with the norm+mul+rope chain
+(Gemma4 and, for the Q8_1 half, gpt-oss-20b on this box); on `rope_multi` models it does nothing, so a
+"purity + speed" claim taken from one model does not transfer to another.  PR #173 (folding the q8_0 K/V
+cache `SET_ROWS` into the same kernel) was rejected for r78 for exactly this reason -- its matcher
+cannot fire on any model here, so no correctness result about it could be produced at all.
