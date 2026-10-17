@@ -503,3 +503,10 @@ remaining floor is not the headroom any more; it is the ~270 MiB pool remainder 
    here says 1024 still has ~1.8 GiB at the peak on the 15.7k field prefill.
 4. Consider the aux reserve: it is a flat 4096 MiB per draft, and the draft's *compute* is now narrow-2
    (inside the slab), so the estimate is ~512 MiB larger than the measured post-slab draft cost.
+
+### 8.5 The WIP diff
+
+`slab-transient-absorption-wip.patch` in this directory is `git diff <release.json.tip>..<wip commit>` from
+`~/llama.cpp` (the tree that produced §8's numbers).  It is **exploration only**: it is cut against the
+r80 tree, it is not part of `patches/`, and `apply-all.sh` does not read it.  Re-cut it against a fresh
+`release.json.base` checkout before evaluating it as a promotion candidate, and re-run the §6 gates.
