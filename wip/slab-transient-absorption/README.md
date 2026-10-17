@@ -592,3 +592,25 @@ needs distinct text per request or `--cache-ram 0`.
 split is **aux ~= the draft footprint (3584) and the headroom ~= the transient floor**, i.e. the next step
 is headroom 512 / aux 3584 (sum 4 096), not aux 1536 / headroom 2048 (sum 3 584, which is *below* the
 measured draft + transient need).
+
+### 10.2 The real seesaw (distinct prompt per request), headroom 1024 / aux 3584
+
+Each request now carries a unique `[variant N]` prefix, so the prompt cache cannot serve it — 4 genuine
+arm/drop pairs.  Requests: short 251 tok, long 80 107 tok, short 249 tok, long 80 105 tok.
+
+| transition | free outside | pool | note |
+|---|---:|---:|---|
+| short-1 arm / drop | 934 / 700 MiB | 6 → 21 | first prefill |
+| long-1 arm / drop | 577 / **333** MiB | 38 → 337 | 1 165 t/s; pool high-water established |
+| short-2 arm / drop | **208** / 208 MiB | 337 | short prefill reuses the pool |
+| long-2 arm / drop | **204** / 308 MiB | 337 | 80K again, clean |
+
+`long-1` and `long-2` produced the **same greedy continuation** (`sha=7194bf85ff0f`), i.e. the seesaw is
+bit-stable.  No errors, no aborts, no corruption.  The minimum outside headroom across the seesaw is
+**~205 MiB** (at the long-2 arm).
+
+**Consequence for the headroom:** 1024 is the floor with today's transient set — a 512 headroom would put
+that arm at **−307 MiB** and fail.  The remaining outside consumers are, in order: the **pool high-water
+337 MiB** (the dominant one, and it is *live+cached* — see the `GGML_CUDA_POOL_CACHE_MB` negative result),
+hipBLASLt ~104, MMB ~40.  So **the deferred generic pool redirect (with the pinned escape hatch) is worth
+~300 MiB and is the only thing that makes 512 possible.**
