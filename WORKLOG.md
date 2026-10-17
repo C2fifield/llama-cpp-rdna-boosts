@@ -30,8 +30,11 @@ concurrent-batching nondeterminism, GPU-fault check clean.
 8-round +3.47 % [+2.03, +4.92] on Flash-Next GSQ **IQ3_S** with the same `-ncmoe 47` 2-GPU shape, agrees
 it is not shippable as-is and offers the controller work.  Same shape, different magnitude from ours.
 
-**Record.** `archive/work/spec-batch-budget/RESOLUTION.md` (the re-assessment section, the width sweep,
-the commits table above) plus the harness used, `multislot-mtp-probe.py`.  Not promoted to a `wip/`
+**Record / retest kit.** `archive/work/spec-batch-budget/RESOLUTION.md` (the re-assessment section, the
+width sweep, the commits table above) plus `retest/` -- `README.md` (build, per-arm commands, pass
+criteria, pitfalls, and where a revised patch gets re-measured), `run-arms.sh` (every arm as one
+command, in sets) and `results/` (all 33 runs: per-run jsonl, per-slot text with sha256, and
+`SUMMARY.md`).  The probe itself stays at `multislot-mtp-probe.py` because the PR comment links it.  Not promoted to a `wip/`
 campaign on the maintainer's call: the PR author is taking the refinement, and the >8-row verify cliff is
 recorded here as the finding to pick up.  No `TODO.md` item opened.
 

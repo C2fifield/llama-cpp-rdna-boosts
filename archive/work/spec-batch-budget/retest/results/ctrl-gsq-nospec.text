@@ -1,0 +1,114 @@
+===== slot 0 sha=64e50bdd411f chars=1373 tokens=300
+ You are writing a
+
+<think>
+The user wants me to write a detailed technical manual for a fictional software project about a job queue system. They want me to explain:
+1. How a job queue processes work
+2. How retries and backoff are chosen
+3. How backpressure is signalled to producers
+
+They want step-by-step explanations with concrete examples. The repetition in the prompt seems to be emphasis or a formatting artifact. Let me write a comprehensive, well-structured technical manual.
+
+I'll create a fictional project called something like "ForgeQueue" or "IronPulse" - let me go with "ForgeQueue" as it sounds like a robust job processing system.
+
+Let me structure this as a proper technical manual with sections, code examples, diagrams (text-based), and concrete scenarios.
+</think>
+
+# ForgeQueue — Technical Manual v4.2
+
+## Job Queue Processing, Retry Strategy, and Backpressure Signalling
+
+---
+
+## 1. System Overview
+
+ForgeQueue is a distributed job-processing platform built around a **persistent, priority-aware work queue** backed by a PostgreSQL table (`forge_jobs`) and a Redis Streams layer for hot-path dispatch. Producers enqueue jobs; workers dequeue, execute, and report outcomes. The system guarantees at-least-once delivery, bounded retry semantics, and producer-facing backpressure.
+
+```
+┌──────────┐       ┌──────────────────┐       ┌────────────────┐
+│
+===== slot 1 sha=f0d909e40193 chars=1223 tokens=300
+slot 1] slot 2] slot 3] slot 4] slot 5] slot 6] slot 7] slot 7]
+
+<think>
+The user is asking me to write a detailed technical manual for a fictional software project about a job queue system. The prompt is repeated multiple times (likely a test or formatting artifact), but the core request is clear: explain step by step with concrete examples how a job queue processes work, how retries and backoff are chosen, and how backpressure is signalled to producers.
+
+Let me write a comprehensive, well-structured technical manual covering:
+1. Job queue architecture and processing flow
+2. Retry mechanisms and backoff strategies
+3. Backpressure signalling to producers
+
+I'll create a fictional project name and make it feel like a real technical document with code examples, diagrams (text-based), and concrete scenarios.
+</think>
+
+# Helix Queue — Technical Manual v3.2
+
+**Project:** Helix Queue (internal codename `hxq`)
+**Maintained by:** Platform Infrastructure Team
+**Last updated:** 2025-06-14
+
+---
+
+## 1. Overview
+
+Helix Queue is a distributed, durable job-processing system. Producers enqueue *jobs*; workers dequeue, execute, and acknowledge them. The system guarantees at-least-once delivery, bounded latency under load,
+===== slot 2 sha=8d8f9e120fa9 chars=1341 tokens=300
+ You are writing a
+
+<think>
+The user wants me to write a detailed technical manual for a fictional software project about a job queue system. They want me to explain:
+1. How a job queue processes work
+2. How retries and backoff are chosen
+3. How backpressure is signalled to producers
+
+They want step-by-step explanations with concrete examples. The repetition in the prompt seems to be emphasizing the request. Let me write a comprehensive, well-structured technical manual for a fictional job queue system. I'll create a fictional project name and build out the documentation thoroughly.
+
+Let me create a fictional system called "ForgeQueue" and write a detailed technical manual covering all three topics with concrete code examples, diagrams (text-based), and step-by-step explanations.
+</think>
+
+# ForgeQueue — Technical Manual
+
+**Version 4.2.1 | Internal Engineering Reference | Confidential**
+
+---
+
+## Table of Contents
+
+1. [Architecture Overview](#1-architecture-overview)
+2. [Job Lifecycle: How Work Is Processed](#2-job-lifecycle-how-work-is-processed)
+3. [Retry Policy & Backoff Selection](#3-retry-policy--backoff-selection)
+4. [Backpressure Signalling to Producers](#4-backpressure-signalling-to-producers)
+5. [Appendix: Configuration Reference](#5-appendix-configuration-reference)
+
+---
+
+## 1. Architecture Overview
+
+ForgeQueue
+===== slot 3 sha=847ec0665f8e chars=1304 tokens=300
+ You are writing a
+
+<think>
+The user wants me to write a detailed technical manual for a fictional software project about a job queue system. They want me to explain:
+1. How a job queue processes work
+2. How retries and backoff are chosen
+3. How backpressure is signalled to producers
+
+They want step-by-step explanations with concrete examples. The repetition in the prompt seems to be emphasis or a formatting artifact. Let me write a comprehensive, well-structured technical manual.
+
+I'll create a fictional project called something like "ForgeQueue" or "IronBridge" - let me go with "IronBridge Job Queue" as the fictional project name. I'll structure it as a proper technical manual with sections, code examples, diagrams (text-based), and concrete scenarios.
+</think>
+
+# IronBridge Job Queue — Technical Manual
+
+**Version 4.2.1 | Internal Reference Document IRB-2024-0091**
+
+---
+
+## 1. Overview
+
+IronBridge is a distributed job queue system designed for high-throughput, fault-tolerant background processing. It decouples *producers* (services that submit work) from *consumers* (workers that execute work) through a durable, partitioned queue backed by a write-ahead log (WAL) and a Redis-compatible in-memory index.
+
+This manual covers the three core mechanics:
+
+- **§2** — How a job is enqueued,

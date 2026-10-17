@@ -153,7 +153,10 @@ win is not.
    report per-step accepted tokens and step time next to aggregate t/s, so the width effect is visible.
 3. Say what happens at 2 and 3 slots (ours: -8.4 % at 2 slots even on this shape).
 
-**Probe.**  `multislot-mtp-probe.py` in this directory is the harness used for every number above: it
+**Probe / retest kit.**  `retest/README.md` is the reproduction and re-test guide (build, every arm's
+exact command line via `retest/run-arms.sh`, the pass criteria, the pitfalls, and where a revised patch
+should be re-measured).  `multislot-mtp-probe.py` in this directory is the harness used for every number
+above: it
 starts one `llama-server` per arm, primes it, runs N concurrent `/completion` calls, and reports
 aggregate t/s, per-slot t/s, per-step ms, accepted/step, mean accepted length and per-slot text sha256
 (parsed from the server's own `draft acceptance` and `eval time` lines).  It is a record, not a delivery
