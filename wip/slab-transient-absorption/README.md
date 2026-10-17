@@ -549,3 +549,46 @@ rate once the decode hit rate is measured.  The prefill's own consumption is ~52
 default below 2048 until the `-ub 6144 -c 204800` wide matrix passes**; this box has no IQ4_XS model to
 run it.  Remaining step 2b: route the MMB activation cache (~40) and the live prefill pool blocks (~270)
 into the wide band, which would take the prefill demand to ~150-200 MiB and make 512 a candidate.
+
+---
+
+## 10. 2026-10-17 (later still) — 2b (targeted) + an 80K seesaw at headroom 1024
+
+**2b, targeted rather than generic.**  The generic pool redirect was investigated and *deferred*: the pool is
+not only RAII scratch -- `mmb.cu:1610`/`:1943` (activation cache + slots) and `allreduce*.cu` hold pool
+allocations **across** graphs, so a generic redirect would serve them from a band that is reclaimed at the
+prefill -> decode drop (a silent use-after-free).  It needs a "pinned / never-wide" escape hatch and those
+sites converted first.  Instead the **chunked-GDN prefill scratch** (`gated_delta_net_chunked.cu`,
+`A_sc`/`KQ_sc`) now uses the shared `ggml_cuda_wide_scratch<T>` helper (same guard as QSA3: slab live AND
+the wide band armed, else the pool).  Measured: a **78.2 MiB** request per 4096-token ubatch now lands in
+the band (it was pool high-water before).
+
+**An 80K-token prefill at `GGML_CUDA_SLAB_HEADROOM_MIB=1024` + aux 3584** (the aggressive candidate):
+
+| | value |
+|---|---:|
+| arena | 19 263.5 MiB (47.1 % residency) |
+| prefill | 80 094 tokens in 68.7 s = **1 165 t/s** |
+| free outside at wide-arm | 575.5 MiB |
+| free outside at wide-drop | **331.5 MiB** |
+| pool at wide-drop | 337.4 MiB (other prefill temps; GDN's 78 MiB is now in the band) |
+| errors / aborts / corruption | 0 |
+| greedy output | `sha=df10d0b5f19e` (identical to the earlier reference) |
+
+So an 80K prefill at a 1 GiB headroom still leaves ~330 MiB outside.  **Caveat on the seesaw harness:**
+short/long/short/long against one server did *not* re-run the second prefill -- the prompt cache served the
+repeated prompts (only 4 arm/drop transitions, and 4 tokens of "prefill" on the repeats).  A real seesaw
+needs distinct text per request or `--cache-ram 0`.
+
+### 10.1 aux vs headroom: only their SUM is a resource
+
+`reserve = headroom + aux`, and the draft allocates **after** the slab: weights 2 647 + KV 288 + narrow-2
+512 = **3 447 MiB**, plus the post-slab transient peak (~350-500 MiB).  So:
+
+  headroom + aux  >=  ~3 900-4 000 MiB     (the draft cannot be evicted)
+
+`aux` alone can be 1536 (or anything) only if the headroom is raised to keep that sum -- the split changes
+*which* part `slab_extend` can later map into the arena (it reclaims down to `headroom` only), so the best
+split is **aux ~= the draft footprint (3584) and the headroom ~= the transient floor**, i.e. the next step
+is headroom 512 / aux 3584 (sum 4 096), not aux 1536 / headroom 2048 (sum 3 584, which is *below* the
+measured draft + transient need).

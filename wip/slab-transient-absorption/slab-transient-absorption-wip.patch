@@ -1,8 +1,16 @@
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 39c9d71cf..b2eb94a68 100644
+index 39c9d71cf..7304c6ad9 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
-@@ -1625,6 +1625,16 @@ bool ggml_cuda_slab_active(int device);
+@@ -1394,6 +1394,7 @@ struct ggml_cuda_pool_alloc {
+ };
+ 
+ 
++
+ // backend interface
+ 
+ struct ggml_tensor_extra_gpu {
+@@ -1625,6 +1626,17 @@ bool ggml_cuda_slab_active(int device);
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size);
  size_t ggml_cuda_slab_ring_slot_capacity(int device);
  void   ggml_cuda_slab_ring_set(int device, bool arm);
@@ -10,6 +18,7 @@ index 39c9d71cf..b2eb94a68 100644
 +// bump-allocated above the live work boundary and released at the prefill -> decode transition.
 +void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out);
 +void   ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size);
++bool   ggml_cuda_slab_wide_available(int device);
 +size_t ggml_cuda_slab_wide_aux_gen(int device);
 +void   ggml_cuda_slab_log_stats(int device, const char * tag);
 +// wip/slab-transient-absorption (F5, step 0): the ring hole was REQUESTED for this model (an operator can
@@ -19,7 +28,7 @@ index 39c9d71cf..b2eb94a68 100644
  
  // wip/slab-ring-region (issue #164): the H2D staging-ring cap (bytes).  `GGML_CUDA_SLAB_RING_MIB` is a
  // verbatim per-GPU override; otherwise `llama_context` auto-sizes it from the ubatch and the host-expert
-@@ -1917,14 +1927,23 @@ struct ggml_backend_cuda_context {
+@@ -1917,14 +1929,23 @@ struct ggml_backend_cuda_context {
      // The growth policy is not a performance lever (exact-fit realloc measured the same).
      char * fattn_stage[GGML_CUDA_MAX_STREAMS]      = {};
      size_t fattn_stage_size[GGML_CUDA_MAX_STREAMS] = {};
@@ -46,7 +55,7 @@ index 39c9d71cf..b2eb94a68 100644
              total += fattn_stage_size[i];
          }
          return total;
-@@ -1952,15 +1971,55 @@ struct ggml_backend_cuda_context {
+@@ -1952,15 +1973,55 @@ struct ggml_backend_cuda_context {
      // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
      void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
          GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
@@ -103,7 +112,7 @@ index 39c9d71cf..b2eb94a68 100644
              if (prealloc && size_hint >= size) {
                  const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
                  if (optional_alloc_within_free_cap(cur_total + hint_size)) {
-@@ -1997,8 +2056,12 @@ struct ggml_backend_cuda_context {
+@@ -1997,8 +2058,12 @@ struct ggml_backend_cuda_context {
                  }
              }
              if (fattn_stage[stream_no] != nullptr) {
@@ -118,7 +127,7 @@ index 39c9d71cf..b2eb94a68 100644
              }
              fattn_stage[stream_no]      = new_arena;
              fattn_stage_size[stream_no] = alloc_size;
-@@ -2165,6 +2228,22 @@ struct ggml_backend_cuda_context {
+@@ -2165,6 +2230,22 @@ struct ggml_backend_cuda_context {
          return (size_t) h2d_stage_slots() * (max_slot + 512);
      }
  
@@ -141,7 +150,7 @@ index 39c9d71cf..b2eb94a68 100644
      void * h2d_stage_buffer(int slot, size_t size) {
          GGML_ASSERT(slot >= 0 && slot < H2D_STAGE_SLOTS);
          if (size > h2d_stage_size[slot]) {
-@@ -2191,6 +2270,13 @@ struct ggml_backend_cuda_context {
+@@ -2191,6 +2272,13 @@ struct ggml_backend_cuda_context {
                      const size_t want = cap >= new_size ? cap : new_size;
                      void * p = ggml_cuda_slab_arena_alloc_transient(device, want);
                      if (p != nullptr) {
@@ -155,7 +164,7 @@ index 39c9d71cf..b2eb94a68 100644
                          h2d_stage[slot]      = p;
                          h2d_stage_size[slot] = want;
                          h2d_stage_total     += want - old_size;
-@@ -2199,7 +2285,24 @@ struct ggml_backend_cuda_context {
+@@ -2199,7 +2287,24 @@ struct ggml_backend_cuda_context {
                      }
                  }
              }
@@ -181,6 +190,56 @@ index 39c9d71cf..b2eb94a68 100644
              // fit-slab-accounting revival (G4, issue #117): bound the ring by the free VRAM it would still
              // leave.  See `optional_alloc_within_free_cap` above.
              if (!optional_alloc_within_free_cap(h2d_stage_total - old_size + new_size)) {
+@@ -2620,3 +2725,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+     kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
+     CUDA_CHECK(cudaGetLastError());
+ }
++
++// wip/slab-transient-absorption: a WIDE-PHASE scratch allocation.  Prefill-only kernels (chunked GDN, QSA3,
++// ...) allocate their workspace through the pool, which retains the high-water mark outside the slab for the
++// whole run.  When the wide band is armed, serve the block from it instead (LIFO; released at the
++// prefill -> decode transition), so the bytes come out of the headroom budget and go back to the arena.
++// Falls back to the pool while the band is not armed (decode/verify, so a width-pure graph is unchanged).
++template<typename T>
++struct ggml_cuda_wide_scratch {
++    ggml_cuda_pool_alloc<T> pool;
++    T *    ptr    = nullptr;
++    size_t n      = 0;
++    int    device = -1;
++    bool   slab   = false;
++
++    ggml_cuda_wide_scratch() = default;
++    ggml_cuda_wide_scratch(ggml_backend_cuda_context & c, size_t n_) : pool(c.pool()), n(n_), device(c.device) {
++        alloc(n_);
++    }
++
++    T * alloc(size_t n_) {
++        n = n_;
++        if (n > 0 && ggml_cuda_slab_wide_available(device)) {
++            size_t gen = 0;
++            void * p = ggml_cuda_slab_wide_aux_alloc(device, n * sizeof(T), &gen);
++            if (p != nullptr) {
++                ptr  = (T *) p;
++                slab = true;
++                return ptr;
++            }
++        }
++        if (n > 0) {
++            pool.alloc(n);
++            ptr = pool.get();
++        }
++        return ptr;
++    }
++    ~ggml_cuda_wide_scratch() {
++        if (slab) {
++            ggml_cuda_slab_wide_aux_free(device, ptr, n * sizeof(T));
++        }
++    }
++    ggml_cuda_wide_scratch(const ggml_cuda_wide_scratch &) = delete;
++    ggml_cuda_wide_scratch & operator=(const ggml_cuda_wide_scratch &) = delete;
++
++    T * get() const { return ptr; }
++};
 diff --git a/ggml/src/ggml-cuda/fattn-qsa3.cu b/ggml/src/ggml-cuda/fattn-qsa3.cu
 index a2037d6e2..e17d4bf60 100644
 --- a/ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -265,6 +324,22 @@ index a2037d6e2..e17d4bf60 100644
      {
          // rows-kernel dynamic smem: [ns] keys + the nk-bit presence bitmap + 256 scan offsets.
          // When that does not fit the 48 KiB budget (a very long cache) the kernel falls back to the
+diff --git a/ggml/src/ggml-cuda/gated_delta_net_chunked.cu b/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
+index 37024f8e8..56d7be2a5 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net_chunked.cu
+@@ -685,8 +685,9 @@ bool ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_
+     cudaStream_t stream = ctx.stream();
+ 
+     const int64_t n_chunks = (n_tokens + GDN_CHUNKED_CS - 1) / GDN_CHUNKED_CS;
+-    ggml_cuda_pool_alloc<float> A_sc (ctx.pool(), (size_t) n_chunks * H     * n_seqs * PACKED_CS);
+-    ggml_cuda_pool_alloc<float> KQ_sc(ctx.pool(), (size_t) n_chunks * neqk1 * n_seqs * PACKED_CS);
++    // wip/slab-transient-absorption: prefill-only workspace -> the slab's wide band when it is armed.
++    ggml_cuda_wide_scratch<float> A_sc (ctx, (size_t) n_chunks * H     * n_seqs * PACKED_CS);
++    ggml_cuda_wide_scratch<float> KQ_sc(ctx, (size_t) n_chunks * neqk1 * n_seqs * PACKED_CS);
+ 
+     switch (S_v) {
+         case 16:  return launch_gdn_chunked<16 >(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, A_sc.get(), KQ_sc.get(),
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
 index a443887e4..d33123708 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
@@ -313,7 +388,7 @@ index a443887e4..d33123708 100644
      return bw[dev];
  }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-index f6eeec2c8..fc810342d 100644
+index f6eeec2c8..b6ecc792e 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 @@ -146,6 +146,14 @@ struct ggml_cuda_slab {
@@ -437,7 +512,7 @@ index f6eeec2c8..fc810342d 100644
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      if (size == 0) {
          return nullptr;
-@@ -1159,6 +1243,150 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1159,6 +1243,158 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      return p;
  }
  
@@ -550,6 +625,14 @@ index f6eeec2c8..fc810342d 100644
 +    return nullptr;
 +}
 +
++// wip/slab-transient-absorption: is the wide band available (slab live AND the wide view armed)?  The
++// prefill-only scratch users gate on this so a decode/verify graph (ring disarmed) keeps the workspace pool.
++bool ggml_cuda_slab_wide_available(int device) {
++    std::lock_guard<std::mutex> lock(g_slab_mutex);
++    const ggml_cuda_slab & s = g_slabs[device];
++    return s.inited && s.ring_armed;
++}
++
 +// The current generation of the wide-phase auxiliary region.  A caller that caches a pointer from
 +// `ggml_cuda_slab_wide_aux_alloc` must re-acquire when this changes.
 +size_t ggml_cuda_slab_wide_aux_gen(int device) {
@@ -588,7 +671,7 @@ index f6eeec2c8..fc810342d 100644
  // The context classifies each ubatch (prefill: `n_tokens >= 64`; decode/verify: below) and tells the slab
  // here.  The ring itself is still carved with a wip view -- arming is just `boundary >= narrow_floor +
  // ring_region` -- but the classification must NOT be inferred from the work request size: for the
-@@ -1167,13 +1395,34 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1167,13 +1403,34 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
  // `boundary == narrow_floor` and `ring_armed == false`.  `work_alloc` reads this flag and places the
  // prefill view above the ring.  A no-op for the generic arm/disarm plumbing stays valid for a future
  // non-slab allocator.
@@ -624,10 +707,10 @@ index f6eeec2c8..fc810342d 100644
  
  // --- Phase-2 (item 6b): state accessors for the device wrappers kept in ggml-cuda.cu ---
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-index 312476e89..f22fd14e2 100644
+index 312476e89..bf0a6beb2 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-@@ -80,6 +80,22 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
+@@ -80,6 +80,23 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
  // The ring hole's reserved size (0 when the slab carved none): `llama_context` uses it to skip the
  // narrow -> wide compute-buffer drop when there is no ring to arm.  wip/slab-ring-region (issue #164).
  size_t ggml_cuda_slab_ring_region(int device);
@@ -642,6 +725,7 @@ index 312476e89..f22fd14e2 100644
 +// `ggml_cuda_slab_wide_aux_gen` before reusing a cached pointer.
 +void * ggml_cuda_slab_wide_aux_alloc(int device, size_t size, size_t * gen_out);
 +void   ggml_cuda_slab_wide_aux_free(int device, void * ptr, size_t size);
++bool   ggml_cuda_slab_wide_available(int device);
 +size_t ggml_cuda_slab_wide_aux_gen(int device);
 +// One-line steady-state layout + transient accounting, gated on GGML_CUDA_SLAB_STATS (diagnostic only).
 +void   ggml_cuda_slab_log_stats(int device, const char * tag);
