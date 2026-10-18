@@ -41,7 +41,7 @@ index a443887e4..4a73a7cba 100644
  
  void ggml_backend_cuda_stage_upload(ggml_backend_t backend, void * dst, const void * data, size_t size, ggml_backend_event_t ev) {
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
-index f07573571..860b91d0c 100644
+index f07573571..00bb40f3d 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
 @@ -104,6 +104,18 @@ struct table_t {
@@ -63,7 +63,7 @@ index f07573571..860b91d0c 100644
      // Provisional slots (MOE_EXPERT_CACHE_PROVISIONAL=1): a pre-filled/loaded expert is "provisional"
      // until it is hit.  While it is, the touch doorkeeper is bypassed for it, so the entry is evictable
      // like an empty slot while still serving hits - the model-both-ways behaviour arbitrary pre-fill
-@@ -307,6 +319,16 @@ static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device
+@@ -307,6 +319,17 @@ static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device
  // last staging on that device: during a prefill nothing writes, so the staging keeps overlapping the compute.
  std::atomic<uint64_t>               g_write_seq{1};
  bool                                g_cold_uva        = false;  // MOE_EXPERT_CACHE_COLD=uva: serve rejected misses from the host alias
@@ -77,10 +77,11 @@ index f07573571..860b91d0c 100644
 +int64_t                             g_stage_decline_geom = 0;
 +int64_t                             g_stage_decline_usable = 0;
 +int64_t                             g_stage_decline_nomatch = 0;
++int64_t                             g_prs_rebuilds     = 0;   // immutable snapshot refreshes (churn indicator)
  int64_t                             g_cold_reaches    = 0;
  // Phase 1b fill-vs-cold admission policy (only consulted when a cold read is available):
  //   0 = always : fill every miss (LFRU eviction is the whole admission control)
-@@ -559,6 +581,7 @@ void parse_env() {
+@@ -559,6 +582,7 @@ void parse_env() {
      // reads the pinned host slice in place (the same bytes the H2D fill would have placed in the
      // slot), and it also lets a small arena represent an overflow (`id = slots + e`).
      g_cold_uva = env_int("MOE_EXPERT_CACHE_COLD_UVA", 1) != 0;
@@ -88,7 +89,7 @@ index f07573571..860b91d0c 100644
      // Admission: `touch` (measured best at every arena size): a first-touch expert is served cold and
      // only a re-touch is admitted, so one-shot experts stop churning the arena - which raises `h` as
      // well as cutting transferred bytes.
-@@ -2083,6 +2106,39 @@ static __device__ __forceinline__ void moe_cache_policy_copy(char * __restrict__
+@@ -2083,6 +2107,39 @@ static __device__ __forceinline__ void moe_cache_policy_copy(char * __restrict__
  
  
  
@@ -128,7 +129,7 @@ index f07573571..860b91d0c 100644
  // Host-weight expert gather (B2, session 15): for an offloaded `MUL_MAT_ID` expert upload, copy only the
  // experts the routing selects, straight from the host master into the scheduler's device `input_cpy`,
  // ON DEVICE.  This replaces the non-staging path's host ids readback (`ggml_backend_tensor_get_async` +
-@@ -2216,6 +2272,8 @@ static void free_table_buffers_locked(table_t & t) {
+@@ -2216,6 +2273,8 @@ static void free_table_buffers_locked(table_t & t) {
          t.arena = nullptr;
      }
      if (t.remap_dev != nullptr){ (void) cudaFree(t.remap_dev); t.remap_dev = nullptr; }
@@ -137,7 +138,7 @@ index f07573571..860b91d0c 100644
      free_heat_dev_locked(t);   // folds the prefill tally into `heat` before the mirror goes away
      (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
  
-@@ -4066,6 +4124,127 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -4066,6 +4125,128 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
      return true;
  }
  
@@ -232,6 +233,7 @@ index f07573571..860b91d0c 100644
 +            t.prs_gen   = seq;
 +            t.prs_arena = (void *) t.arena;
 +            t.prs_slots = t.slots;
++            g_prs_rebuilds++;
 +        }
 +
 +        // Order the copy stream after the compute stream ONLY when the arena may have been written since
@@ -265,7 +267,7 @@ index f07573571..860b91d0c 100644
  bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weight_cpy,
                             const int32_t * ids, int64_t n_used, int64_t n_tok,
                             size_t ids_nb0, size_t ids_nb1, void * stream,
-@@ -4184,6 +4363,8 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -4184,6 +4365,8 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
              // Slab-backed arenas go back to the slab's free list; `cudaFree` can unmap the slab.
              if (old_arena != nullptr) { free_arena_backing(old_device, old_arena, old_reserved, old_slots, t); }
              if (old_remap != nullptr) { (void) cudaFree(old_remap); }
@@ -274,18 +276,19 @@ index f07573571..860b91d0c 100644
              (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
          }
          t.device = device;
-@@ -4718,6 +4899,15 @@ void moe_cache_report() {
+@@ -4718,6 +4901,16 @@ void moe_cache_report() {
          }
      }
  
 +    if (g_stage_ok + g_stage_decline_geom + g_stage_decline_usable + g_stage_decline_nomatch > 0) {
 +        const double total = (double) g_stage_arena_bytes + (double) g_stage_host_bytes;
 +        GGML_LOG_INFO("%s: prefill cache staging (R2): ok=%lld geom_decline=%lld unusable=%lld nomatch=%lld; "
-+                      "arena=%.1f MiB host=%.1f MiB (H2D %.1f%% of staged)\n",
++                      "arena=%.1f MiB host=%.1f MiB (H2D %.1f%% of staged); PRS rebuilds=%lld\n",
 +                      __func__, (long long) g_stage_ok, (long long) g_stage_decline_geom,
 +                      (long long) g_stage_decline_usable, (long long) g_stage_decline_nomatch,
 +                      (double) g_stage_arena_bytes / (1024 * 1024), (double) g_stage_host_bytes / (1024 * 1024),
-+                      total > 0 ? 100.0 * (double) g_stage_host_bytes / total : 0.0);
++                      total > 0 ? 100.0 * (double) g_stage_host_bytes / total : 0.0,
++                      (long long) g_prs_rebuilds);
 +    }
      GGML_LOG_INFO("%s: VRAM budget: requested=%s MiB/device, free-clamped=%lld, arena alloc failures=%lld (fail-soft)\n",
                    __func__, budget_desc(), (long long) g_alloc_clamped, (long long) g_alloc_failed);    if (g_acc_hits + g_acc_fills + g_acc_colds > 0) {

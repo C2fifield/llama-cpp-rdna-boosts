@@ -240,7 +240,7 @@ not a device-side authority.
 ## 4.1 R2 prototype — measured (2026-10-18)
 
 **Status: implemented, env-gated OFF, measured, byte-identical output.  Not promoted.**  Diff:
-[`r2-prototype.patch`](r2-prototype.patch) (224 insertions, 3 files; sha256 `8a209261…`).  The
+[`r2-prototype.patch`](r2-prototype.patch) (227 insertions, 3 files; sha256 `2bfdb826…`).  The
 `~/llama.cpp` working tree currently has it applied (uncommitted; **not** in `patches/`).
 
 What it does: the `stage_from_cache` stub is live again, but with the **PRS** instead of the removed
@@ -281,6 +281,29 @@ seed 42 temp 0.  `stage=0` = whole-table staging; `stage=1` = R2.
 snapshots the whole arena, which is correct for the single-session measurement.  The next step is the
 freeze (top 75 % frozen, bottom 25 % decode-mutable, whole arena when no decode is active), then the
 R1 in-place read if the ring copy is still material.
+
+## 4.2 Two-slot concurrency stress (2026-10-18)
+
+Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
+[`tools/concurrency_check.py`](tools/concurrency_check.py).  `-np 2`, `-c 131072` (64k/slot),
+`-b/-ub 4096`, field loader, `GGML_MOE_CACHE_STAGE=0/1`.
+
+* **Scenario A** (15.7k prefill on slot 0 + a 5.3k prefill/32-decode on slot 1): long prefill
+  **754.9 → 889.4 t/s (+17.8 %)**, short prompt **293.3 → 339.2 t/s (+15.7 %)**, short decode ~flat.
+* **Scenario B** (fixed 60 s window of a long decode alone, then with a back-to-back stream of 3.9k
+  prefills): short prefill **1 162.8 → 1 479.1 t/s (+27.2 %)**.  The long decode collapses from
+  **49.0-49.3 t/s alone to 3.8-4.2 t/s under the prefill stream**, with R2 **off and on** (3.76 vs
+  4.17) — **the starvation is the two-slot continuous-batching policy, not the cache**.  The field
+  uses `--parallel 1`; this is a `-np > 1` finding worth tracking separately.
+* **The current prototype churns:** `PRS rebuilds == staged calls` (1 180 in A, 4 956 in B) because a
+  decode admission bumps `g_write_seq`, and H2D is **33.2-33.4 %** (arena 43.4 GiB / 66.9 % at
+  64k/slot).  The 75/25 freeze is precisely the fix: while the top 75 % is frozen, decode writes only
+  the bottom 25 %, so the snapshot stays valid and the rebuild count should collapse to once per phase.
+* **Separately, the slab is the other churn source:** every 4k-token short prefill grows the compute
+  buffer, the slab takes chunks (`evicted 3950 + 4014 MiB`/device), and the prefill→decode drop
+  re-arms **54 tables** (~2.7 s cycle per short request in B).  That is the movable-boundary slab
+  (`../slab-transient-absorption/`, `../moe-cache-coverage/`), not the residency policy; the freeze
+  can choose which tables are lost but cannot stop the work region taking the chunks.
 
 ## 5. Risks / invariants
 
@@ -348,3 +371,10 @@ R1 in-place read if the ring copy is still material.
   **1 091.8 → 1 433.1** (`-ub 4096`, +31.3 %), 31.6k **1 183.6 → 1 561.3** (`-ub 4096`, +31.9 %);
   H2D staged **27.1 %** (arena 272.6 GiB vs host 101.6 GiB), `geom_decline=0`; greedy sha identical in
   every pair.  Freeze and R1 are the remaining steps.
+* **2026-10-18 (concurrency)** — two-slot stress (`-np 2`, 64k/slot, `-b/-ub 4096`, field loader):
+  Scenario A (15.7k prefill + 5.3k prefill/decode) R2 **754.9 → 889.4 t/s** (+17.8 %); Scenario B
+  (60 s long-decode window + 3.9k prefill stream) short prefill **1 162.8 → 1 479.1 t/s** (+27.2 %),
+  while the long decode collapses identically with R2 off (3.76 vs 4.17 t/s) — scheduler, not cache.
+  `PRS rebuilds == staged calls` (1 180 / 4 956) and H2D 33.2-33.4 %: the freeze is needed.  The slab
+  re-arms 54 tables per prefill→decode transition independently.  Full record:
+  [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).
