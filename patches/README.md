@@ -11,6 +11,24 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r82` (2026-10-18) -- issue #170: no abort when layers have to stay on the host (blocks 00, 09):**
+> canonical tip `7d238ae80`, net tree `dc48b4a983cba245f71e60ce8825abedac8e2a45`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** amended (`ggml-backend-meta`):
+> `[TAG_META_UNALLOC_ALIAS]` resolves an alias that the graph allocator never initialises (the
+> `ggml_view_4d` -> `ggml_permute` pair of `build_attn_mha`) through its view chain to the buffer it
+> inherits, so the split-state walk no longer dereferences a NULL buffer; `[TAG_META_ALLOC_FAIL]` makes
+> a failed per-device allocation in `alloc_buffer_n` free what was built and return NULL.  **Block 09**
+> amended: the same NULL handling in its `alloc_buffer_usage`, the per-tensor policy branch reading the
+> resolved buffer, and `[TAG_META_OFFLOAD_MOE_ONLY]`, which limits the meta `offload_op` hook to
+> `GGML_OP_MUL_MAT_ID` (a dense CPU-offloaded layer's *state* is host-resident and the meta split state
+> cannot represent a host input of a split op; upstream only op-offloads onto a single device).  Both
+> upstream-code hunks are also in `upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.{md,patch}`.
+> Trigger: `--fit` reduces `n_gpu_layers` on a 24 GiB-class split, so a CPU layer's ops were claimed by
+> the Meta backend.  Reproduced on 2x R9700 by holding 8192 MiB/device (24 GiB-card parity); validated
+> with the reporter's minimal and full command lines (5246-token prompt, HTTP 200), the KV / weight /
+> compute OOM and a partial sub-buffer failure (exit 1, clean), byte-identical same-seed text, and a
+> Flash-Next `-ncmoe 48` 2-GPU tensor A/B inside noise.  Record: `../archive/work/issue-170-meta-alloc/`.
+
 > **Current release `v12-097cf33d9-r81` (2026-10-17) -- the rope + FWHT fusion reaches M-RoPE, the q8_0 K/V cache write folds into it, and the GDN q/k norms pair up (PRs #175, #173, #179, block 10):**
 > canonical tip `d86db8c92`, net tree `0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.

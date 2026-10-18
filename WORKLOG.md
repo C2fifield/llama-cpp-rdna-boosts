@@ -1,5 +1,85 @@
 # WORKLOG - dated delivery records
 
+## 261018.001 (r82) -- issue #170: `-sm tensor` no longer aborts when the model has to leave layers on the host (block 00 + block 09)
+
+**Release `v12-097cf33d9-r82`**: base `097cf33d9`, canonical tip `7d238ae80`, net tree
+`dc48b4a983cba245f71e60ce8825abedac8e2a45`, **12 blocks** (block 00 + 01-11).  **Block 00 amended**
+(the two upstream-code hunks) and **block 09 amended** (the fork-local hook gate); no new block.
+`release.json` regenerated; `validate-set.sh` green (fresh tarball, strict 12/12, tree matches).
+
+**Issue #170** (`void-li`, 2x 7900 XTX gfx1100, **ROCm 10.1.0**, dense Qwen3.8 27B Q8_0, ctx 196608,
+`-sm tensor`): abort at the warmup decode, `GGML_ASSERT(ggml_backend_buffer_is_meta(meta_buf))` in
+`ggml_backend_meta_buffer_n_bufs`.  r11 worked, r12+ asserted, and `--no-op-offload`,
+`GGML_OP_OFFLOAD_MIN_BATCH=1000000`, `--fit off` and ctx 147456 all avoided it.  We could not reproduce
+on 3x R9700 until the free-memory figure was matched (see below).
+
+**Root cause, and it is not an allocation failure.**  `--fit` sees the 27B Q8_0 at 196608 ctx does not
+fit on 2x24 GiB and reduces `n_gpu_layers` (his r12 log: 66 -> 32/49/57/53/55/54, "offloading 54
+layers").  That mixed assignment gives the CPU-offloaded layers host-resident weights, so the block-09
+meta `offload_op` hook (upstream's meta device has none, which is why r11 and unpatched llama.cpp work)
+moves those layers' ops onto the Meta backend -- his log says so: `resolve_fused_ops: layer 3 is
+assigned to device CPU but derived kq mask flash attention is assigned to device Meta()`.  The
+split-state walk then recurses into `build_attn_mha`'s `ggml_view_4d(Qcur, ...)` -> `ggml_permute(...)`
+pair; the permuted view is a plain alias (`GGML_OP_NONE`, no node) whose `src[0]` (the intermediate
+view) is never initialised by the gallocr (a view is initialised from `view_src`, not from `src[0]`), so
+`buffer_n_bufs(NULL)` asserted.  Two more defects were behind it: a failed constituent allocation
+**aborted** (`GGML_ASSERT(meta_buf_ctx->bufs[i])`) instead of returning NULL, and once that was fixed,
+the hook still claimed *dense* host-weight ops, whose layer *state* (KV cache, GDN conv/ssm state) is
+also host-resident -- a case the meta split-state model cannot represent (`handle_gated_delta_net`
+`src_ss[5]` assert at the first wide prefill; a 5-token completion never reaches it).
+
+**What landed.**  *Block 00 (upstream code)*: `[TAG_META_UNALLOC_ALIAS]`, an alias with no buffer is
+resolved through its view chain to the buffer it will inherit and then classified normally (allocated
+tensors take the byte-identical old path); and `[TAG_META_ALLOC_FAIL]` in `alloc_buffer_n`, which frees
+what was built, clears the tensors' `buffer`/`data` and returns NULL.  *Block 09 (our code)*: the same
+NULL handling in `alloc_buffer_usage`, the per-tensor policy branch reading the resolved buffer, and
+`[TAG_META_OFFLOAD_MOE_ONLY]`: the hook claims only `GGML_OP_MUL_MAT_ID`.  No new env var.  The two
+upstream-code hunks are also staged for upstream as
+`upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.{md,patch}` (applies clean to
+`097cf33d9` and builds there).
+
+**Reproduction on a 32 GiB card** (`archive/work/issue-170-meta-alloc/`): hold 8192 MiB per device with
+a small HIP allocator so the card reports 24210 of 32624 MiB free (a 7900 XTX), and the reporter's
+command reproduces the assert.  Before the fix, the minimal command, his full command line and
+`-ctk/-ctv f32` all aborted at the warmup decode, and a genuine KV OOM (`--fit off -ngl 99 -ctk f32
+-ctv f32`), compute OOM (`GGML_COMPUTE_BUFFER_MARGIN_PCT=3000`) or weight OOM (20000 MiB fill) aborted
+at the alloc asserts.
+
+**Verification (gfx1201, 2x/3x R9700, ROCm 10.1.0, `~/bin/build-llama-rocm`, r82 tree
+`dc48b4a9`).**
+
+* Issue #170 end to end at 24 GiB parity: the minimal command and the reporter's **full** command line
+  (adaptive MTP + `ngram-mod`, `--kv-unified`, `--parallel 2`, `--no-host`, `--load-mode none`) load,
+  listen, and answer a **5246-token** prompt in 64 generated tokens with `HTTP 200` and coherent text
+  (`prompts/prose-rdna-boosts.txt`), no assert; `-ctk/-ctv f32` likewise.  `-sm layer` and 1 GPU
+  unaffected.
+* Genuine OOM paths now fail cleanly, exit 1, no core, **no VRAM leak**: KV
+  (`failed to allocate ROCm0 buffer of size 12884901888 (0 of 2 sub-buffers allocated)` ->
+  `failed to initialize the context: failed to allocate buffer for kv cache`), compute
+  (`failed to allocate compute pp buffers`), weights (`unable to allocate Meta() buffer`), and a
+  **partial** failure (`1 of 2 sub-buffers allocated`).
+* Coherence: same-seed greedy text **byte-identical** to the pre-change build, `1033 chars
+  sha=383655591392` (dense 27B UD-Q4_K_XL, 3-GPU tensor, `prompts/reasoning.txt`, `-n 128 --seed 42
+  --temp 0`).  The prefill-logit gate and the width probe are not applicable: no kernel, band or
+  approximate path is touched, and the placement change only affects graphs where a dense host-weight op
+  would have been claimed on the Meta device (none exist for a fully resident model on 3 GPUs).
+* **`-ncmoe` regression check (the maintainer's concern)**:
+  `Qwen3.8-Flash-Next-IQ4_NL` (100 GB, 176.9B A3B), 2 GPUs, `-sm tensor -ngl 99 -ncmoe 48`, ctx 32768,
+  4096-token prefill, `--load-mode none --lazy-mode off`: pre-gate **246.99 / 248.14** pp and
+  **39.92 / 40.88** tg t/s, gated **244.46 / 246.40** pp and **39.83 / 40.68** tg t/s (inside the
+  0.8 % / 2.1 % run-to-run spread), and the hook is still active (gated `--no-op-offload`: 66.25 /
+  18.32).  Structural reason: under `-ncmoe` the only host-resident weights are the expert tensors,
+  whose op is `MUL_MAT_ID`.
+* Dense op-offload trade-off (why the gate exists rather than "never offload"): under `-sm layer`
+  (upstream's mechanism, op and state on one backend) a dense CPU layer is a **7.2x prefill win**
+  (797.17 vs 110.99 t/s, decode unchanged 6.43/6.45) on the same 24 GiB-parity config, so a future
+  "host input of a split op" design has real upside; under `-sm tensor` it cannot run today.  Full
+  residency is 1779.69 / 32.32 t/s versus ~114 / 7.3 for the 54/66 split, which is the number a 24 GiB
+  user needs (quant or context, not offload policy).
+
+**Issue reply**: posted 2026-10-18 (`#issuecomment-6248869022`), draft kept in
+`archive/work/issue-170-meta-alloc/COMMENT-2026-10-18.md`.
+
 ## 261017.008 (r81) -- rope + FWHT fusion on M-RoPE, the q8_0 K/V cache write folded into it, paired GDN q/k norms (PRs #175, #173, #179); #177 rejected
 
 **Release `v12-097cf33d9-r81`**: base `097cf33d9`, canonical tip `d86db8c92`, net tree

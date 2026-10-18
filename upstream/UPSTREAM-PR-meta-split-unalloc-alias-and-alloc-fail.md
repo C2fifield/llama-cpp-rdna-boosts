@@ -5,9 +5,9 @@
 
 **Where it lives in the delivery:** **block 00** (upstream structural/correctness fixes). Both hunks
 fix code that is upstream's, and neither depends on any fork-local feature. The campaign record,
-reproduction and the full validation log are `wip/issue-170-meta-alloc/` (in flight; the *fork-local*
-half of that campaign — gating the meta `offload_op` hook to host-resident MoE experts — is **not** in
-this patch, because the hook itself is fork-local).
+reproduction and the full validation log are `archive/work/issue-170-meta-alloc/` (closed; the
+*fork-local* half of that campaign, gating the meta `offload_op` hook to host-resident MoE experts, is
+**not** in this patch, because the hook itself is fork-local).
 
 ## The two bugs
 
@@ -81,7 +81,7 @@ yielding its arena.
 ## Validation (gfx1201, 2 x R9700, ROCm 10.1.0, delivery tree)
 
 The reporter's configuration is reproducible on a 32 GiB card by holding 8192 MiB per device so the
-card presents a 7900 XTX's free-memory figure (`../wip/issue-170-meta-alloc/vram_fill.cpp`).
+card presents a 7900 XTX's free-memory figure (`../archive/work/issue-170-meta-alloc/vram_fill.cpp`).
 
 * **Before:** abort at `ggml-backend-meta.cpp:711` during the warmup decode with the reporter's minimal
   command; abort at `:2287` for the KV/weight/compute OOM cases.

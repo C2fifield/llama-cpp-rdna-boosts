@@ -5,9 +5,20 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r81`** (canonical tip `d86db8c92`, net tree
-`0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r81 folds four patches from three contributor PRs into
+**`097cf33d9`**, released as **`v12-097cf33d9-r82`** (canonical tip `7d238ae80`, net tree
+`dc48b4a983cba245f71e60ce8825abedac8e2a45`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r82 fixes **issue #170** (a `-sm tensor` abort when a
+`--fit`-reduced layer assignment leaves layers on the host): **block 00** resolves an unallocated alias
+through its view chain in the meta split state and makes a failed constituent allocation return NULL
+instead of aborting (both upstream-code fixes, staged for upstream), and **block 09** gets the same
+NULL handling in its `alloc_buffer_usage`, reads the resolved buffer in the per-tensor policy branch,
+and gates the meta `offload_op` hook to `GGML_OP_MUL_MAT_ID` so a dense CPU-offloaded layer runs on the
+CPU as in upstream.  Verified on gfx1201: the reporter's config (24 GiB-card free-memory parity) loads,
+listens and answers a 5246-token prompt; the KV / weight / compute OOM and a partial sub-buffer failure
+now exit 1 with a message and no VRAM leak; same-seed text byte-identical (`sha=383655591392`); the
+`-ncmoe` 2-GPU tensor shape (`Flash-Next IQ4_NL -ncmoe 48`) is inside noise (246.99/248.14 ->
+244.46/246.40 pp t/s, 39.92/40.88 -> 39.83/40.68 tg t/s) with the hook still worth 3.7x prefill and
+2.2x decode over `--no-op-offload`.  r81 folds four patches from three contributor PRs into
 **block 10**: the rope + FWHT fusion extended to `GGML_ROPE_TYPE_MROPE` / `IMROPE` (PR #175 0001), a
 BF16 `SET_ROWS` declined by the 5-op norm+rope+set_rows fusion so the fused op cannot abort (PR #175
 0002, a latent abort on r80), the q8_0 K/V cache writes folded into that kernel (PR #173) and the GDN
