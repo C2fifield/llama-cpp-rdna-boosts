@@ -1,12 +1,11 @@
 # `prefill-arena-residency` — serve prefill from the expert-cache arena, upload only the misses
 
-**Status: OPEN / ACTIVE (seeded 2026-10-18).  Maintainer decision received 2026-10-18: the old
-mutating device-remap implementation is NOT to return; a greatly reduced, focused, immutable-after-
-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging + PRS) is implemented and
-measured; the phase-aware 75/25 freeze was implemented, measured as a net prefill loss with no decode
-gain, and dropped.  R1 remains.**  Not part of
-the delivery; nothing here may be applied to the fork or to `patches/` without the maintainer's go-ahead
-(WIP and promotion rules in `AGENTS.md`).
+**Status: OPEN / ACTIVE (seeded 2026-10-18; checkpointed for the next session 2026-10-18).**
+Maintainer decision: the old mutating device-remap implementation is NOT to return; a greatly reduced,
+focused, immutable-after-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging +
+PRS) is implemented and measured; the phase-aware 75/25 freeze was measured as a net prefill loss with
+no decode gain and **dropped**.  R1 remains.  Not part of the delivery; nothing here may be applied to
+the fork or to `patches/` without the maintainer's go-ahead (WIP and promotion rules in `AGENTS.md`).
 
 > **Decision (2026-10-18).**
 > * **Not revived:** `DEVMAP` / `DEVPOLICY` / `KSLOT` / `DEV_EAGER`, the mutating `slot_dev` device
@@ -14,13 +13,15 @@ the delivery; nothing here may be applied to the fork or to `patches/` without t
 > * **Approved:** a **prefill-only** residency map, **immutable after a snapshot**, rebuilt from the
 >   authoritative host `expert_slot`, never mutated by decode, and not the decode remap.  Call it the
 >   **prefill residency snapshot (PRS)**, not a device map.
+> * **Concurrency (updated 2026-10-18):** the 75/25 freeze was implemented and measured; it is a net
+>   prefill loss with no decode gain and is **dropped**.  The maintainer's per-layer/per-ring-slot pin
+>   is a no-op in the serialized scheduler (prefill and decode are separate graphs; a ubatch runs all
+>   layers).  The limitation is upstream graph serialization; the pin becomes right once a decode graph
+>   can overlap a prefill graph (`../moe-cpu-overlap/`).  See `CONCURRENCY-2026-10-18.md`.
+
 > **Resume here:** [`HANDOVER.md`](HANDOVER.md) (checkpoint, beta-12 integration, gate list, delivery
 > checklist, exact commands) and [`PROMPT-next-session.md`](PROMPT-next-session.md) (cold-start prompt).
 > The R2 patch is checkpointed as `r2-prototype.patch`; the 75/25 freeze is dropped.
->
-> * **Concurrency ruling (superseded by the 2026-10-18 freeze measurement):** if a decode session is active, snapshot/freeze the **top ~75 % (hottest)** of
->   the arena for prefill and leave the bottom ~25 % to decode admission; with no decode active, the
->   prefill may snapshot the whole arena.
 
 ## 0. Headline: this was already built, measured, shipped — and then removed as collateral
 
