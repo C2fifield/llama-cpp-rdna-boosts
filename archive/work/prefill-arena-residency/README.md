@@ -6,8 +6,8 @@ is folded into **block 09** (the engine) and **block 10** (the `stage_from_cache
 `GGML_MOE_CACHE_STAGE=0` as the kill switch; see `WORKLOG.md` 261018.003.  The measured result on the
 delivered tree: prefill **+32-54 %** on a host-expert MoE, greedy text byte-identical, prefill-logit
 KLD 0 / 100 %.  Not promoted: the 75/25 freeze (measured net loss, dropped) and R1 (the in-place MMQ
-read, still the follow-on if the remaining ring copy is material); the coexistence limit is the
-serialized scheduler — see `../moe-cpu-overlap/`.
+read — **parked, not pending**: the ring and its arena→ring copy stay, see §9 for the design
+reasoning); the coexistence limit is the serialized scheduler — see `../moe-cpu-overlap/`.
 
 Original campaign header follows.
 
@@ -15,7 +15,8 @@ Original campaign header follows.
 Maintainer decision: the old mutating device-remap implementation is NOT to return; a greatly reduced,
 focused, immutable-after-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging +
 PRS) is implemented and measured; the phase-aware 75/25 freeze was measured as a net prefill loss with
-no decode gain and **dropped**.  R1 remains.
+no decode gain and **dropped**.  R1 remains.  *(Both settled after r83: R1 is parked, not pending — the
+ring and its copy stay; see §9.)*
 
 > **Decision (2026-10-18).**
 > * **Not revived:** `DEVMAP` / `DEVPOLICY` / `KSLOT` / `DEV_EAGER`, the mutating `slot_dev` device
@@ -221,7 +222,7 @@ None of the removed `slot_dev`/`res_gen`/`dev_gen`/promotion machinery is revive
 
 | option | what | PRS consumer | size / risk | expected |
 |---|---|---|---|---|
-| **R1 — revive PR #121's in-place read** | cache-aware staging + in-place MMQ reads, re-cut to r82 | in-place MMQ (`mmq.cuh`) | 816-line-era change: `moe-expert-cache.cu/.h`, `mmq.cuh`, `ggml-cuda.cu`, scheduler, hooks | the proven ~2×; largest blast radius |
+| **R1 — revive PR #121's in-place read** | cache-aware staging + in-place MMQ reads, re-cut to r82 | in-place MMQ (`mmq.cuh`) | 816-line-era change: `moe-expert-cache.cu/.h`, `mmq.cuh`, `ggml-cuda.cu`, scheduler, hooks | **parked (§9)**: each half's in-place read loses either the cold-half masking or the resident-half liveness decoupling; the "~2×" was staging + in-place on an unmasked r33 baseline |
 | **R2 — cache-aware staging only** | `stage_from_cache` fills the ring slot from arena + host (one kernel); consumer unchanged | one staging copy kernel | ~150 lines; the staging hook is already wired (stub) | H2D falls to `1 - residence`; keeps the staging overlap; no MMQ change |
 | **R3 — arena-aware device gather** | extend `moe_cache_gather_kernel` to source resident routed experts from the arena | `moe_cache_gather_kernel` | ~100 lines, reuses `moe_cache_gather_host`, needs `GGML_SCHED_DEVGATHER=1` | same H2D cut; no overlap (compute stream) unless re-issued on the copy stream |
 | **R4 — eager-host-remap in-place** | materialize the prefill remap on the host (resident → slot, cold → `n_res + e`) and teach MMQ the source selection | no device array (kept eager path + `remap_dev`) | MMQ change + ids readback + a full sync per MoE op | no PRS at all, but pays ~144 readback/syncs per ubatch; win unproven |
@@ -229,9 +230,11 @@ None of the removed `slot_dev`/`res_gen`/`dev_gen`/promotion machinery is revive
 
 **Recommendation: R2 first.**  It captures the PCIe win (only the non-resident experts cross H2D)
 with the consumer untouched, so the PRS and the freeze stay isolated in one copy kernel.  The resident
-75 % is a D2D copy into the ring slot (~24 GiB/ubatch/device at VRAM speed, tens of ms), which should
-be close to R1's in-place read for this purpose.  R1 is the follow-on if R2 validates and the remaining
-ring-copy cost matters.
+75 % is a D2D copy into the ring slot (~24 GiB read + ~24 GiB written per ubatch/device at VRAM speed,
+tens of ms).  That copy is **not free**, but it is the shape that keeps the pin short and off the
+contended resource (§9): the ring is the H2D-masking mechanism, the copy is what lets the arena churn
+or stand down immediately afterwards, and R1's in-place read would trade one of those away for each
+half of the table.
 
 The r40 naming ban still applies: no `*DEVMAP*`/`*KSLOT*`/`*DEVPOLICY*` variable, no mutating device
 policy, no `res_gen`/`dev_gen` generation dance.  The PRS is a one-way snapshot re-read from the host,
@@ -246,7 +249,7 @@ not a device-side authority.
    `archive/work/moe-verify-fusions/wip-since-block15.diff`, but with the PRS instead of `slot_dev` and
    without any of the removed promotion/generation machinery.  Default-off
    (`GGML_MOE_CACHE_STAGE` / a new focused kill-switch).  R1 (in-place MMQ) is the follow-on if R2
-   validates and the remaining ring-copy cost matters.
+   validates and the remaining ring-copy cost matters.  *(Settled: §9 — R1 parked.)*
    **→ R2 prototype DONE and measured (§4.1): +31-45 % prefill, byte-identical greedy.  Freeze is next.**
 3. Measure on IQ4_NL 2-GPU `-sm tensor -ncmoe 48` at 32k and the field 131k config; sweep
    `MOE_EXPERT_CACHE_MIB` to get the prefill-vs-residence curve (this also answers whether prefill is
@@ -289,9 +292,11 @@ seed 42 temp 0.  `stage=0` = whole-table staging; `stage=1` = R2.
 * **Why the gain is +31-45 % and not 3.7×:** the baseline's H2D is partly overlapped with compute, so
   removing 73 % of it does not remove 73 % of the wall time.  `-ub 4096` amortises the per-ubatch
   overhead better (1 092 vs 582 t/s baseline) and therefore has a smaller *relative* gain, but a larger
-  absolute one.  The remaining serial cost is the ring→`input_cpy` D2D (redirect mode did not change
-  it materially) and the compute itself; the removed PR #121 **in-place read** (R1) is what removes
-  the ring copy and gets closer to the compute floor.
+  absolute one.  The remaining serial cost is the compute itself plus the part of the staged H2D and of
+  the arena→ring D2D that is not hidden.  Note what the redirect A/B does and does not price: dropping
+  the `ring→input_cpy` hop is worth **nothing** (1547 vs 1549-1559 t/s), but the arena→ring fill of the
+  resident 73 % is a *different* copy and has never been measured in isolation — do not cite redirect as
+  evidence that the resident copy is free (§9).
 * **Residency at depth:** 32k ctx → arena **47 207.8 MiB = 72.9 %**; 64k ctx → **46 195.3 MiB at sizing
   / 45 712.8 MiB after the prefill = ~70.5 %**, decode hit `h=0.7698`.  The residence fraction barely
   moves between 32k and 64k on this config; the field's 50-60 % is its 131k/MTP context.
@@ -304,11 +309,13 @@ from 33 % to 49 %.  The maintainer proposed a per-layer/per-ring-slot pin instea
 that is a no-op: prefill and decode are separate serialized graphs, a ubatch runs all layers, and the
 arena is already stable inside a graph — the erosion happens between graphs, so a pin that survives it
 covers every table (a 100 % freeze; a fraction is the 75/25 policy).  **The true limitation is the
-serialized scheduler**, so the per-layer pin only becomes useful when a decode graph can overlap a
-prefill graph (`../moe-cpu-overlap/`).  The freeze code is removed from the prototype and remains
-recoverable at campaign commit `8134e23`; the A/B is in
-[`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).  R1 (in-place MMQ read) remains the next
-throughput step if the ring copy is still material.
+serialized scheduler**, so a pin only becomes useful when a decode graph can overlap a prefill graph
+(`../moe-cpu-overlap/`).  *(Corrected after r83: when that overlap exists the right primitive is the
+**copy-time pin** — one table's fill, then release — not a per-layer/per-ring-slot phase pin, which pins
+the contended arena for a whole prefill; see §9.)*  The freeze code is removed from the prototype and
+remains recoverable at campaign commit `8134e23`; the A/B is in
+[`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).  *(R1's status, previously "the next
+throughput step": parked — §9.)*
 
 ## 4.2 Two-slot concurrency stress (2026-10-18)
 
@@ -367,17 +374,23 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
 
 1. **Scheduler overlap:** the 75/25 freeze is dropped because the serialized scheduler is the
    limitation.  The next real step for coexistence is a decode graph overlapping a prefill graph (the
-   `../moe-cpu-overlap/` shape); when that exists, the maintainer's per-layer/per-ring-slot pin becomes
-   the right primitive and should be designed then, not now.
+   `../moe-cpu-overlap/` shape); when that exists, the primitive to design is the **copy-time slot pin**
+   (one table's fill, then release) rather than a per-layer/per-ring-slot phase pin, which pins the
+   contended arena for a whole prefill — see §9.
 2. **Beta-12 compatibility:** deferred to a follow-up session at the maintainer's request.  The hunks
    appear disjoint (`stage_h2d_gbps` vs `stage_from_cache`; `moe-expert-cache.*` untouched by beta 12;
    the freeze plumbing is removed), but both apply orders + a build + the 16k A/B still need verifying.
-3. **R2 vs R1:** R2 is implemented and measured (+31-45 % single-session).  R1 (in-place MMQ) is the
-   proven ~2× but the larger change; only worth it if the remaining ring copy is still material.
-4. Is `--host-experts pool` in scope for the cold half, or is declining for pooled tables acceptable?
-5. The stale `ENVIRONMENT.md` rows for `GGML_MOE_CACHE_INPLACE`/`STAGE`: fix now (documentation) or
-   with the revival?  (Add `GGML_MOE_CACHE_STAGE` when this leaves `wip/`.)
-6. Should this be a **new block** or an amendment to block 09 when promoted?  (WIP only until then.)
+3. **R2 vs R1: settled — R1 is parked (§9).**  R2 is implemented and measured (+31-54 %); R1's in-place
+   read saves the resident D2D (~24 GiB/ubatch/device, ~2-3 % of prefill wall) but loses the cold-half
+   masking or the resident-half liveness decoupling, whichever half it is applied to, and re-opens the
+   routed-compact MMQ source selection.  The "proven ~2×" was staging + in-place on an unmasked r33
+   baseline and is not a valid estimate for the in-place half alone.
+4. `--host-experts pool`: **answered** — the master is pinned in pool mode too, the staged bytes are
+   byte-identical and the gain holds (+40 %, 472.7 → 662.9 t/s), so no decline path is needed.
+5. The stale `ENVIRONMENT.md` rows: **fixed in r83** (`GGML_MOE_CACHE_INPLACE` removed at r40 and its row
+   deleted; `GGML_MOE_CACHE_STAGE` documented default-on with `0` as the kill switch).
+6. **Amendment shape: answered by the delivery** — block 09 (the engine) + block 10 (the hook, which is
+   the block that creates `ggml-cuda-moe-cache-hooks.cu`), no new block; see `WORKLOG.md` 261018.003.
 
 ## 8. Record
 
@@ -405,14 +418,16 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
   campaign commit `8134e23`).  The per-layer-pin alternative is a no-op in the serialized scheduler;
   the true limitation is graph serialization, so the next step for coexistence is scheduler overlap.
   R2-only patch restored and re-verified: 16k `-ub 4096` **1 092.1 → 1 431.7 t/s**, hash `a60a39e11133`.
-  R1 remains.
+  R1 remains.  *(R1: parked — §9.)*
 * **2026-10-18 (concurrency)** — two-slot stress (`-np 2`, 64k/slot, `-b/-ub 4096`, field loader):
   Scenario A (15.7k prefill + 5.3k prefill/decode) R2 **754.9 → 889.4 t/s** (+17.8 %); Scenario B
   (60 s long-decode window + 3.9k prefill stream) short prefill **1 162.8 → 1 479.1 t/s** (+27.2 %),
   while the long decode collapses identically with R2 off (3.76 vs 4.17 t/s) — scheduler, not cache.
   `PRS rebuilds == staged calls` (1 180 / 4 956) and H2D 33.2-33.4 %: the freeze is needed.  The slab
   re-arms 54 tables per prefill→decode transition independently.  Full record:
-  [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).
+  [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).  *(Superseded by §9: the copy's short
+  copy-time pin is the answer, not a phase freeze — the freeze was solving snapshot validity with a
+  much coarser, contended pin.)*
 * **The 75/25 freeze (2026-10-18 later): implemented, measured, DROPPED.**  Exact server slot states,
   top 75 % of the occupied slots immutable, decode limited to the mutable ~25 %, PRS keyed on the freeze
   generation.  Scenario A (two prefills → one switches to decode) armed **once**; Scenario B (long decode
@@ -433,3 +448,80 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
   redirect mode, two-slot concurrency (+23.6 % A long, +39.8 % B short; starvation unchanged), no GPU
   fault, no `////`.  `--host-experts pool` is compatible (byte-identical, +40 %) — open question #4
   answered.  Not promoted: awaiting the maintainer's decision on the delivery prep (`HANDOVER.md` §3.3).
+
+## 9. Design note (2026-10-18, after r83): why the ring and the copy
+
+**Verdict: the ring and the arena→ring copy stay.  R1 (the in-place MMQ read) is parked, not pending.**
+The reasoning is *not* "the copy is free" — it is not, and it costs ~24 GiB read + ~24 GiB written per
+ubatch/device plus ~2.1 GiB/device of ring.  It is that the copy is the only shape that keeps a **short
+pin on the uncontended resource**.  Three properties, in increasing order of importance:
+
+1. **Masking — the ring is the prefetch mechanism, not a buffer we tolerate.**  The scheduler issues
+   each table's bulk fill on the copy stream as the split is scheduled; the consumer only waits on the
+   fill's completion event, and the copy stream is ordered after compute only when the arena may have
+   been written (`g_write_seq`).  So the fill for the next table streams over PCIe while the current
+   split computes — ~144 fills per ubatch per device, each overlapped.  Measured: redirect mode
+   (`GGML_SCHED_STAGE_MODE=1`, which removes the `ring→input_cpy` hop) is **neutral** — 1547.0 vs
+   1549-1559 t/s at 16k/`-ub 4096`, 1080.7 vs 1080.5 at the kill switch, identical hash.  Block 09's own
+   2026-10-06 note records the same result ("measured the *same* speed, so the copy this mode avoids is
+   not worth anything").  That evidence prices the scheduler's hop only — **not** the arena→ring fill
+   (see "What the copy costs" below).
+2. **Liveness decoupling — the copy is what lets the arena churn immediately afterwards.**  Once the
+   fill has read the arena, the staged bytes live in a ring slot the arena can no longer touch, so the
+   liveness requirement ends at the fill's event instead of at the end of the consumer's graph.  Three
+   consequences, all load-bearing today: decode admission between ubatches may evict/refill freely; a
+   mid-prefill slab stand-down is safe (already-staged tables keep their bytes, later ones decline to the
+   plain upload — `unusable=287-315` per run, `geom_decline=0`); and the map is only ever consulted at
+   fill time (rebuilt on `g_write_seq`/arena move/slot-count change, never across a graph).  An in-place
+   resident read would instead require the arena's hot slots to stay put for the whole graph — a
+   `moe_cache_sync_devices_locked`-grade fence at minimum — because the kernels carry the arena address
+   in their launch parameters.
+3. **Pin scope — this is why the freeze failed, and why it would be worse under overlap.**  The copy is a
+   "pin → copy → release" discipline: the arena bytes are pinned for one table's fill (~4 ms for the H2D
+   part, sub-ms for the D2D) and are evictable again immediately.  The 75/25 freeze and the
+   per-layer/per-ring-slot pin both attach the pin to the **arena** for a **phase**.  Measured price of
+   that scope: Scenario A long prefill **889.4 → 830.4 t/s** (−6.6 %), Scenario B short prefill
+   **1479.1 → 1150.1** (−22 %), staged H2D **33 → 36.5-49.1 %**, decode hit rate unchanged — i.e. the cost
+   is pin *scope*, not snapshotting.  In a truly concurrent scheduler (a prefill graph and a decode graph
+   in flight together, `../moe-cpu-overlap/`) a graph-lifetime pin would stall decode's eviction policy
+   for a multi-second prefill; a copy-time pin stalls it only for the slots currently being filled, and
+   the slots it protects are the ring's **private staging scratch**, which is not part of the eviction
+   policy at all.  The copy moves the lifetime requirement off the contended resource.
+
+**What the copy costs, and how to price it if that ever matters.**  R2 pays a D2D of the resident 73 %
+into the ring: ~24 GiB read + ~24 GiB written per ubatch/device (~74 ms at HBM speed, ~2-3 % of prefill
+wall, plus HBM bandwidth the GEMMs also want) and ~2.1 GiB/device of ring (~1.5-2 residency points if it
+could be reclaimed).  That cost has never been measured in isolation, and the redirect A/B **must not** be
+cited as evidence about it — an earlier draft of this record ("should be close to R1's in-place read",
+"the copy this mode avoids is not worth anything") conflated the two copies.  If the resident copy's cost
+ever needs pricing, raise residency at a fixed prompt (`MOE_EXPERT_CACHE_MIB` 72 → 85 → 95 %): that trades
+D2D bytes for saved H2D bytes one-for-one, so the slope of prefill t/s versus residency *is* the net
+marginal cost of residency (and of a bigger arena).  That is an arena-sizing probe for
+`../moe-cache-coverage/`, not an R1 prerequisite.
+
+**Why R1 is parked rather than pending.**  PR #121's in-place read removes *both* copies and reads each
+expert from its source at the consumer.  Each half then gives up one of the properties above:
+
+* the **cold** half read in place removes the last H2D, but replaces a prefetched bulk copy with demand
+  PCIe reads inside each MMQ launch (no prefetch, latency exposed, 48 layers per ubatch; ~61 MiB per
+  table, ~4 ms each) — it loses **masking**;
+* the **resident** half read in place saves the D2D, but requires the arena's *hot* slots — exactly the
+  ones decode re-admits and evicts between ubatches — to remain valid for the graph's lifetime: it loses
+  the **liveness decoupling** and re-introduces the contended pin that measured as a loss.
+
+The "proven ~2×" this record used to attribute to R1 was the *combination* (staging + in-place) on an r33
+config whose upload was largely **unmasked** (2.9k prefill 794 t/s, 61k 1384 t/s, IQ3_XXS / 256k ctx).
+R2 has already taken the masking half of that win, so the marginal value of the in-place half is small
+and its risk is the routed-compact MMQ source selection plus the zero-padded tail scratch for MMQ's
+one-tile over-read — a decode-purity surface that would need the stock-relative
+`llama-batched-bench -npl 1,4,8` gate in addition to the prefill-logit gate.
+
+**Forward note for `../moe-cpu-overlap/`.**  R2 is the right primitive for a truly concurrent scheduler,
+but its copy-time pin is *implicit* today: the scheduler serialises, and the order event (`copy_stream`
+waits on `compute_stream` when `g_write_seq` moved) covers writes-before-fill.  Under overlap it must
+become explicit — a per-slot in-flight event so an admission either waits for an outstanding fill or takes
+another slot, plus map-vs-write atomicity (`g_write_seq` check → map build → fill issue) — which is the
+pattern the codebase already uses for the bounded host pool's per-`(slot, device)` in-flight events and
+for the Q8_1 arena's outlive rule.  No new concept; the pin only has to be named.  With that in place the
+copy-time pin is strictly better than any phase pin: the same coherency guarantee, a bounded stall, and
+nothing contended.

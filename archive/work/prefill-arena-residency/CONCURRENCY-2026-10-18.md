@@ -1,5 +1,10 @@
 # Concurrency stress — 2026-10-18
 
+> The freeze finding below stands on its measurements, but its *interpretation* was superseded after r83:
+> the reason a phase freeze loses is pin **scope** (the contended arena, for a whole prefill), and the
+> shape that keeps the coherency guarantee without that stall is the copy's copy-time pin.  See
+> [`README.md`](README.md) §9.
+
 Two-slot server (`-np 2`), R2 prototype (`GGML_MOE_CACHE_STAGE=0/1`), field loader.
 Harness: [`tools/concurrency_check.py`](tools/concurrency_check.py).  Raw JSON:
 `/tmp/conc_full_{a,b}*.json`; server logs `/tmp/conc_{a,b}_stage{0,1}.log`.
@@ -86,6 +91,8 @@ staged call**, arena 43 410.9 MiB, hit `h=0.9779`.
 2. Re-run scenarios A and B (stage 0 vs 1) and compare PRS rebuilds, H2D split, prefill rate, decode
    rate.  The expected effect is F3 only; F2/F4 should not move.
 3. Then decide on R1 (in-place MMQ read) for the remaining ring copy.
+   *(Settled after r83: **not** R1 — the ring and its copy stay, and the coexistence primitive is the
+   copy-time pin (one table's fill, then release), not a phase freeze.  See `README.md` §9.)*
 
 ---
 

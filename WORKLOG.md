@@ -1,5 +1,56 @@
 # WORKLOG - dated delivery records
 
+## 261018.004 (r83) -- the ring and the copy: why R1 is parked, and the pin-scope argument (docs only)
+
+**No code, `patches/`, `release.json` or tag change.**  Records the design decision that closed the
+R1 (in-place MMQ read) question after r83, and fixes a documentation error in the campaign record.
+
+**The decision.**  The ring and its arena -> ring copy stay; **R1 is parked, not pending**.  The copy is
+not free (~24 GiB read + ~24 GiB written per ubatch/device, ~74 ms at HBM speed = ~2-3 % of prefill
+wall, plus ~2.1 GiB/device of ring), but it keeps a **short pin on the uncontended resource**, and three
+properties depend on it:
+1. **Masking** - the ring is the prefetch mechanism: each table's bulk fill is issued on the copy stream
+   per split and consumed after its event, so the next table streams while the current split computes
+   (~144 fills/ubatch/device).  Redirect mode (`GGML_SCHED_STAGE_MODE=1`, which drops the
+   `ring -> input_cpy` hop) measured neutral (1547.0 vs 1549-1559 t/s, same hash), as block 09's own
+   2026-10-06 note already recorded.
+2. **Liveness decoupling** - once copied, the arena is free to evict, refill or be stood down (the
+   movable-boundary slab does all three): the staged bytes are private to the ring slot, a mid-prefill
+   stand-down degrades to the plain upload (`unusable=287-315`/run, `geom_decline=0`), and the map is
+   only consulted at fill time.  An in-place resident read would need the arena's hot slots - the ones
+   decode re-admits - to stay valid for the whole graph.
+3. **Pin scope** - the copy is "pin -> copy -> release" over one table (~4 ms H2D part, sub-ms D2D),
+   with the pinned bytes being private staging scratch rather than part of the eviction policy.  The
+   75/25 freeze and the per-layer/per-ring-slot pin attach the pin to the **arena** for a **phase**, and
+   that scope is what measured as a loss (A long prefill 889.4 -> 830.4 t/s, B short prefill 1479.1 ->
+   1150.1, staged H2D 33 -> 36.5-49.1 %, decode hit rate flat).  Under a truly concurrent scheduler the
+   gap widens: a graph-lifetime pin would stall decode's eviction policy for a multi-second prefill.
+
+**Why R1 loses either way.**  Its cold-half in-place read removes the last H2D but replaces a prefetched
+bulk copy with demand PCIe reads inside each MMQ launch (loses masking); its resident-half read saves the
+D2D but re-introduces the contended pin for the bytes that churn most (loses the liveness decoupling).  The
+"proven ~2x" the campaign record attributed to R1 was the *combination* (staging + in-place) on an r33
+baseline whose upload was largely unmasked (2.9k 794 t/s, 61k 1384 t/s on IQ3_XXS/256k); R2 already took
+the masking half of that win.
+
+**Documentation error fixed.**  The record claimed the remaining serial cost was the `ring -> input_cpy`
+D2D and that R1 "removes the ring copy and gets closer to the compute floor".  The redirect A/B prices
+that hop only; the **arena -> ring fill** of the resident 73 % is a different copy, sits inside R2's
+measurements, and has never been priced in isolation.  If it ever needs pricing, sweep residency at a
+fixed prompt (`MOE_EXPERT_CACHE_MIB` 72 -> 85 -> 95 %): it swaps D2D bytes for saved H2D bytes one-for-one,
+so prefill t/s versus residency *is* the net marginal cost - an arena-sizing probe for
+`archive/work/moe-cache-coverage/`, not an R1 prerequisite.
+
+**Forward note for `archive/work/moe-cpu-overlap/`.**  R2's copy-time pin is implicit today (the scheduler
+serialises; the order event covers writes-before-fill).  Under real prefill/decode overlap it must be
+named: a per-slot in-flight event so an admission waits for an outstanding fill or takes another slot,
+plus map-vs-write atomicity (`g_write_seq` check -> map build -> fill) - the pattern already used by the
+bounded host pool's per-`(slot, device)` events and the Q8_1 arena's outlive rule.
+
+**Record:** `archive/work/prefill-arena-residency/README.md` §9 (new design note) plus corrected R1
+framing in its §3/§4/§7 and the freeze notes, and a superseded-by pointer in
+`CONCURRENCY-2026-10-18.md`.
+
 ## 261018.003 (r83) -- prefill cache staging: upload only the experts the cache arena does not already hold (blocks 09, 10)
 
 **Release `v12-097cf33d9-r83`**: base `097cf33d9`, canonical tip `ca236e6b5`, net tree
