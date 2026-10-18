@@ -80,6 +80,16 @@ at the alloc asserts.
 **Issue reply**: posted 2026-10-18 (`#issuecomment-6248869022`), draft kept in
 `archive/work/issue-170-meta-alloc/COMMENT-2026-10-18.md`.
 
+**Published.**  Tag `v12-097cf33d9-r82` pushed (annotated, on the release commit); CI
+**Validate delivery set** green on both `main` and the tag, **Release patch set** green (assets
+`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).  The personal fork's
+`rdna-boosts` branch was re-cut from `097cf33d9` with the block chain and force-pushed
+(`--force-with-lease`, personal fork only); a fresh `git fetch origin rdna-boosts` reports tree
+`dc48b4a9`, matching `release.json`.  The ROCm container images are built and pushed off-host by the
+worker watcher (`scripts/container-watch.sh` on `radiance`), which polls for the new tag.  The staging
+branch `fix-170` in `~/llama.cpp` is superseded by the canonical `rel82` chain (the delivery now
+carries the same code in blocks 00/09).
+
 ## 261017.008 (r81) -- rope + FWHT fusion on M-RoPE, the q8_0 K/V cache write folded into it, paired GDN q/k norms (PRs #175, #173, #179); #177 rejected
 
 **Release `v12-097cf33d9-r81`**: base `097cf33d9`, canonical tip `d86db8c92`, net tree

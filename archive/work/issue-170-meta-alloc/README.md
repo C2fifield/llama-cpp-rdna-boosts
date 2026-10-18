@@ -1,7 +1,13 @@
 # issue #170 — `-sm tensor` aborts at startup on a 24 GiB-class split (meta split-state / meta buffer alloc)
 
-**Status: FIXED + validated in the fork tree (2026-10-18). Not in `patches/` yet — proposed split (maintainer's rule): the two
-upstream-bug hunks amend **block 00**, the fork-local hook gate amends **block 09**, then cut r82.**
+**Status: SHIPPED in `v12-097cf33d9-r82` (2026-10-18), canonical tip `7d238ae80`, net tree
+`dc48b4a983cba245f71e60ce8825abedac8e2a45`.**  Split per the maintainer's rule: the two upstream-code
+hunks (`[TAG_META_UNALLOC_ALIAS]`, `[TAG_META_ALLOC_FAIL]`) amend **block 00**; the fork-local hunks
+(`alloc_buffer_usage` NULL handling, the per-tensor policy branch, `[TAG_META_OFFLOAD_MOE_ONLY]`) amend
+**block 09**.  `validate-set.sh` green on a fresh tarball (strict 12/12); CI Validate (main and tag) and
+Release (tag) green; `rdna-boosts` force-pushed to the personal fork with tree `dc48b4a9` (verified by a
+fresh fetch); the container watcher picks the tag up off-host.  The reporter's reply is posted
+(`#issuecomment-6248869022`).
 
 Reporter: `void-li`, dual **7900 XTX (gfx1100, 24 GiB/card)**, 2 GPUs, dense
 `Qwen3.8-27B-Q8_0` (qwen35 hybrid, 65 blocks), `-sm tensor`, `--ctx-size 196608`.
