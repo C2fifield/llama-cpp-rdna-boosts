@@ -1,7 +1,7 @@
 # issue #170 — `-sm tensor` aborts at startup on a 24 GiB-class split (meta split-state / meta buffer alloc)
 
-**Status: FIXED + validated in the fork tree (2026-10-17). Not in `patches/` yet — needs the
-maintainer's call on the delivery shape (proposed: amend block 09, cut r82).**
+**Status: FIXED + validated in the fork tree (2026-10-18). Not in `patches/` yet — proposed split (maintainer's rule): the two
+upstream-bug hunks amend **block 00**, the fork-local hook gate amends **block 09**, then cut r82.**
 
 Reporter: `void-li`, dual **7900 XTX (gfx1100, 24 GiB/card)**, 2 GPUs, dense
 `Qwen3.8-27B-Q8_0` (qwen35 hybrid, 65 blocks), `-sm tensor`, `--ctx-size 196608`.
@@ -32,6 +32,12 @@ crash — see §3).
 2. **A failed constituent allocation aborts** in the meta wrapper (`GGML_ASSERT(meta_buf_ctx->bufs[i])`
    in `…_alloc_buffer_n`, and `GGML_ASSERT(bufs.back() != nullptr)` in `…_alloc_buffer_usage`) instead
    of returning `NULL` for the caller (gallocr / KV cache / model loader) to report.
+3. **The block-09 meta `offload_op` hook claimed dense host-weight ops**, and a CPU-offloaded layer's
+   *state* (KV cache, GDN conv/ssm state) is host-resident too.  The meta split-state model has no
+   representation for a host input of a split op, so the context aborted at the first **wide prefill**
+   (`handle_gated_delta_net`, `src_ss[5]`, which a host KV would mirror in `handle_flash_attn_ext`).
+   With only defects 1+2 fixed the server loads, listens, and answers a 5-token completion, but a real
+   prompt still aborts — so this had to be fixed for #170 to be closed in practice.
 
 ## 1. The exact trigger (why 24 GiB aborts and our 32 GiB cards do not)
 
@@ -107,6 +113,11 @@ after freeing the sub-buffers already allocated (and, for `_n`, after clearing t
 `NULL` (`ggml_vbuffer_alloc`, `ggml_backend_alloc_ctx_tensors_from_buft` → KV cache / model loader),
 so an OOM becomes a clean, attributable startup error.
 
+**c. `[TAG_META_OFFLOAD_MOE_ONLY]` (fork-local, block 09)** — the hook claims only `GGML_OP_MUL_MAT_ID`,
+the host-resident MoE expert op it exists for.  A dense host-weight op is not claimable until the meta
+split state can represent a host-resident input (upload + gather, or one-device fallback), which is
+design work, not a patch release.
+
 This keeps the r20 invariant ("a compute buffer that cannot grow must never abort"): the CUDA
 choke point already returns NULL after yielding the arena; the meta wrapper was the one place that
 turned that into an abort.
@@ -125,24 +136,59 @@ turned that into an abort.
   partial failure (`1 of 2 sub-buffers allocated`) also clean, **no VRAM leak** afterwards.
 * Coherence (3-GPU tensor, dense 27B UD-Q4_K_XL, `prompts/reasoning.txt`, `-n 128 --seed 42 --temp 0`):
   `1033 chars sha=383655591392` — identical for the base build, a base re-run and the fixed build.
-* Not validated: gfx1100 itself (no hardware). The fix is validated at 24 GiB *free-memory* parity,
-  which is the reporter's configuration class.
+* **Wide prefill (the case a 5-token completion misses)**: 24 GiB parity, `prompts/prose-rdna-boosts.txt`
+  (5246 tokens, 11 ubatches) → `HTTP 200`, 64 tokens predicted, coherent, no assert, both for the
+  minimal command and the reporter's full command line.
+
+### Op-offload trade-off (item 3 of the maintainer's review, measured 2026-10-18)
+
+`llama-batched-bench`, 2 x R9700, `-t 8`, dense 27B Q8_0, 16384-token prefill, 128-token decode.
+"24 GiB parity" = 8192 MiB/device held; `-ngl 54` (12 of 66 layers on the CPU) is the fit's own
+choice for that box at ctx 196608.
+
+| topology / arm | pp t/s | tg t/s |
+|---|---:|---:|
+| `-sm tensor`, op-offload **as before** (hook claims dense ops) | **abort** (`handle_gated_delta_net` assert) | — |
+| `-sm tensor`, hook gated (new default) | 113.97 | 7.32 |
+| `-sm tensor`, `--no-op-offload` (reference) | 118.20 | 7.46 |
+| `-sm tensor`, **full residency**, 32 GiB, 66/66 layers | **1779.69** | **32.32** |
+| `-sm layer`, op-offload ON (dense CPU-layer ops on ONE device) | **797.17** | 6.43 |
+| `-sm layer`, `--no-op-offload` | 110.99 | 6.45 |
+
+Readings:
+
+* Under `-sm layer` (upstream's mechanism, where the op and its state share one backend) op-offloading
+  a dense CPU-offloaded layer is a **7.2x prefill win** (797 vs 111) with decode unchanged.  So the
+  feature is worth having; it is only the *tensor-split* form that is not implemented.
+* Under `-sm tensor` it cannot run today (defect 3), and the gated result is `--no-op-offload` within
+  noise, which is the correct behaviour.
+* The dominant number for a user choosing a config is full residency: 32.32 t/s decode and 1780 t/s
+  prefill vs ~7.3 / ~114 t/s for any 54/66 split.  On 2 x 24 GiB with a 27B Q8_0 at 196k context a
+  ~7 t/s decode is the *expected* result of the memory shortfall, not a bug.
+* The hook's intended target is unaffected: 35B-A3B UD-Q4_K_M, 2 GPUs, `-sm tensor -ncmoe 40`,
+  4096-token prefill: decode **94.88 t/s vs 35.74** with `--no-op-offload` (+165%), prefill 445.96 vs
+  498.80 (-11%).
+
+* Not validated: gfx1100 itself (no hardware).  The fix is validated at 24 GiB *free-memory* parity,
+  which is the reporter's configuration class.  The reporter has confirmed **ROCm 10.1.0**, the same
+  tree we reproduce on, so the reproduction is not cross-version.
 
 ## 5. Open questions / next steps
 
-1. **Delivery shape**: amend **block 09** (it owns the Meta device iface, the `offload_op` hook that
-   makes this reachable, and the split-state cache) with both hunks, then `make-patches.sh` + r82.
-   Blocks 00/09/10 all touch `ggml-backend-meta.cpp`; 09 is the natural owner.
-2. **Upstream**: both hunks are upstream code (`ggml_backend_meta_get_split_state`, and the meta
-   `alloc_buffer*` asserts from PR #23671/#27586). Defect 2 is plainly upstream-relevant (an OOM aborts
-   instead of erroring). Defect 1 is a latent upstream invariant violation; in unpatched upstream it is
-   hard to reach because the meta device has no `offload_op` (candidate `upstream/` PR).
-3. **Policy question (not fixed here)**: with the hook in place, `-sm tensor` op-offloads a *dense*
-   CPU-offloaded layer's ops to the Meta device (weights streamed per op over the x4 host link).
-   Upstream does the same under `-sm layer`, so this is not a regression of ours, but under `-sm tensor`
-   it partly defeats layer offload and deserves a bandwidth/benefit gate (TODO candidate).
-4. **Reporter reply**: mention the two working workarounds (`--no-op-offload`,
-   `GGML_OP_OFFLOAD_MIN_BATCH=1000000`), that r75+ still asserts, the exact trigger, and ask for the
-   ROCm version (never stated: he builds with `CMAKE_PREFIX_PATH=/opt/rocm/core` and
-   `-DGGML_HIP_RCCL=ON`, `GPU_TARGETS=gfx1100`; his container tags are ours, so the line is not
-   identifiable from the log).
+1. **Delivery shape** (maintainer's rule: block 00 = upstream-bug fixes, block 09 = our code):
+   * **block 00** — hunks (a) and (b), both upstream code (`ggml_backend_meta_get_split_state`, and the
+     `alloc_buffer*` asserts from upstream PRs #23671/#27586).  Both hunks are staged standalone in
+     `upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.{md,patch}`, cut against pristine
+     `097cf33d9` and built there.
+   * **block 09** — hunk (c) only: the hook gate, which is fork-local policy for our own feature.
+   * then `make-patches.sh`, `validate-set.sh`, the standard release gates, r82.
+2. **Upstream**: staged as one patch (both hunks) in `upstream/`.  It applies clean to `097cf33d9` and
+   builds; the maintainer's note is that their submissions are often ignored, so the patch is staged for
+   someone else to file.
+3. **Follow-up design (open, not a patch release)**: make a host input of a *split* op representable in
+   the meta split state.  The `-sm layer` measurement (7.2x prefill) says the dense-layer win is real, so
+   this is a TODO rather than a "never"; it needs upload + gather (or a one-device fallback for such a
+   node) plus its own correctness/perf gates.
+4. **Reporter reply**: drafted 2026-10-18 — the trigger, the two workarounds (`--no-op-offload`,
+   `GGML_OP_OFFLOAD_MIN_BATCH=1000000`), the fix, and a note that an updated delivery patch release is
+   coming.  ROCm 10.1.0 confirmed by the reporter (same as ours).
