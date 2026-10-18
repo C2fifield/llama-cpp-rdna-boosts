@@ -1,0 +1,314 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+index a443887e4..4a73a7cba 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
+@@ -17,14 +17,31 @@ void * ggml_backend_cuda_stage_buffer(ggml_backend_t backend, int slot, size_t s
+     return cuda_ctx->h2d_stage_buffer(slot, size);
+ }
+ 
+-// MoE expert cache: whole-table staging from the cache arena (removed with the device-remap path; this
+-// now always declines so the caller falls back to the plain staging upload).
++// wip/prefill-arena-residency (R2): whole-table staging from the arena + pinned host master.  Fills the
++// ring slot from the immutable prefill residency snapshot (`GGML_MOE_CACHE_STAGE=1`); declines (false)
++// when the table is not cache-managed/usable, so the caller falls back to the plain upload.  The
++// deferred (in-place) path of the removed PR #121 is NOT revived: `defer` is ignored and the
++// destination is always filled.
+ static bool ggml_backend_cuda_stage_from_cache(ggml_backend_cuda_context * cuda_ctx, const void * src, size_t offset,
+         size_t width, size_t stride_src, size_t n_copies, void * dst, ggml_backend_event_t ev, bool defer) {
+-    // The cache no longer participates in whole-table staging (that path required the device slot map).
+-    GGML_UNUSED(cuda_ctx); GGML_UNUSED(src); GGML_UNUSED(offset); GGML_UNUSED(width); GGML_UNUSED(stride_src);
+-    GGML_UNUSED(n_copies); GGML_UNUSED(dst); GGML_UNUSED(ev); GGML_UNUSED(defer);
+-    return false;
++    GGML_UNUSED(defer);
++    if (!moe_cache_enabled()) {
++        return false;
++    }
++    static cudaEvent_t order_ev[GGML_CUDA_MAX_DEVICES] = {};
++    const int dev = cuda_ctx->device;
++    if (order_ev[dev] == nullptr && cudaEventCreateWithFlags(&order_ev[dev], cudaEventDisableTiming) != cudaSuccess) {
++        (void) cudaGetLastError();
++        order_ev[dev] = nullptr;
++        return false;
++    }
++    cudaStream_t s = cuda_ctx->copy_stream();
++    if (!moe_cache_stage_table(dev, src, offset, width, stride_src, n_copies, dst,
++                               cuda_ctx->stream(), s, order_ev[dev])) {
++        return false;
++    }
++    CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s));
++    return true;
+ }
+ 
+ void ggml_backend_cuda_stage_upload(ggml_backend_t backend, void * dst, const void * data, size_t size, ggml_backend_event_t ev) {
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index f07573571..860b91d0c 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -104,6 +104,18 @@ struct table_t {
+     std::vector<int32_t> remap_host;    // persistent staging (the async H2D must not race its source)
+     std::vector<int32_t> hook_experts;  // the routing the hook last consumed (read-check only)
+ 
++    // wip/prefill-arena-residency (R2): the prefill residency snapshot (PRS).  A small device copy of
++    // `expert_slot` (-1 = not resident) consumed ONLY by the prefill staging kernel.  It is rebuilt from
++    // the authoritative host map (immutable while in use), never mutated by the decode path, and is not
++    // the removed device-remap policy.  Rebuilt when the cache write generation moves, the arena moves,
++    // or the slot count changes (a slab stand-down/re-arm invalidates it).
++    int32_t *   prs_dev     = nullptr;
++    int64_t     prs_n       = 0;        // allocated elements
++    uint64_t    prs_gen     = 0;        // `g_write_seq` the current snapshot reflects
++    void *      prs_arena   = nullptr;  // arena base the snapshot was built against
++    int         prs_slots   = 0;        // slot count the snapshot was built against
++    std::vector<int32_t> prs_host;      // persistent staging (the async H2D must not race its source)
++
+     // Provisional slots (MOE_EXPERT_CACHE_PROVISIONAL=1): a pre-filled/loaded expert is "provisional"
+     // until it is hit.  While it is, the touch doorkeeper is bypassed for it, so the entry is evictable
+     // like an empty slot while still serving hits - the model-both-ways behaviour arbitrary pre-fill
+@@ -307,6 +319,16 @@ static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device
+ // last staging on that device: during a prefill nothing writes, so the staging keeps overlapping the compute.
+ std::atomic<uint64_t>               g_write_seq{1};
+ bool                                g_cold_uva        = false;  // MOE_EXPERT_CACHE_COLD=uva: serve rejected misses from the host alias
++// wip/prefill-arena-residency (R2): whole-table staging from the arena (PRS) + pinned host alias.
++// Env-gated OFF for the WIP prototype (`GGML_MOE_CACHE_STAGE=1`); promotion would flip it.
++bool                                g_stage_cache     = false;
++// wip/prefill-arena-residency (R2): prefill staging accounting (per call = per table per ubatch).
++int64_t                             g_stage_ok        = 0;
++int64_t                             g_stage_arena_bytes = 0;
++int64_t                             g_stage_host_bytes  = 0;
++int64_t                             g_stage_decline_geom = 0;
++int64_t                             g_stage_decline_usable = 0;
++int64_t                             g_stage_decline_nomatch = 0;
+ int64_t                             g_cold_reaches    = 0;
+ // Phase 1b fill-vs-cold admission policy (only consulted when a cold read is available):
+ //   0 = always : fill every miss (LFRU eviction is the whole admission control)
+@@ -559,6 +581,7 @@ void parse_env() {
+     // reads the pinned host slice in place (the same bytes the H2D fill would have placed in the
+     // slot), and it also lets a small arena represent an overflow (`id = slots + e`).
+     g_cold_uva = env_int("MOE_EXPERT_CACHE_COLD_UVA", 1) != 0;
++    g_stage_cache = env_int("GGML_MOE_CACHE_STAGE", 0) != 0;
+     // Admission: `touch` (measured best at every arena size): a first-touch expert is served cold and
+     // only a re-touch is admitted, so one-shot experts stop churning the arena - which raises `h` as
+     // well as cutting transferred bytes.
+@@ -2083,6 +2106,39 @@ static __device__ __forceinline__ void moe_cache_policy_copy(char * __restrict__
+ 
+ 
+ 
++
++// wip/prefill-arena-residency (R2): cache-aware whole-table staging.  One block per expert fills the
++// staged destination from two sources: a resident expert (`prs[e]` a valid slot) is copied from its
++// arena slot (the device slice, contiguous `expert_bytes`); any other expert comes from the pinned host
++// alias (a 2-D strided copy for an axis-0 slice).  The destination is the ordinary staged table in
++// expert order, so every consumer is unchanged.  `prs` is the immutable prefill residency snapshot
++// (expert -> slot, -1 = not usable); it is never the decode policy and never mutated by decode.
++static __global__ void moe_cache_stage_kernel(char * __restrict__ dst, const char * __restrict__ arena,
++                                              const char * __restrict__ host_dev, const int32_t * __restrict__ prs,
++                                              int slots, int64_t expert_bytes, int64_t host_bytes,
++                                              int64_t src_off, int64_t rows, int64_t row_bytes, int64_t host_pitch,
++                                              int do2d) {
++    const int e   = blockIdx.x;
++    const int tid = threadIdx.x;
++    const int nt  = blockDim.x;
++    char *    d   = dst + (int64_t) e * expert_bytes;
++    const int s   = prs != nullptr ? prs[e] : -1;
++    if (s >= 0 && s < slots) {
++        moe_cache_policy_copy(d, arena + (int64_t) s * expert_bytes, (size_t) expert_bytes, tid, nt);
++        return;
++    }
++    const char * src = host_dev + (int64_t) e * host_bytes + src_off;
++    if (!do2d) {
++        moe_cache_policy_copy(d, src, (size_t) expert_bytes, tid, nt);
++        return;
++    }
++    for (int64_t r = 0; r < rows; r++) {
++        moe_cache_policy_copy(d + (size_t) r * (size_t) row_bytes, src + (size_t) r * (size_t) host_pitch,
++                              (size_t) row_bytes, tid, nt);
++    }
++}
++
++
+ // Host-weight expert gather (B2, session 15): for an offloaded `MUL_MAT_ID` expert upload, copy only the
+ // experts the routing selects, straight from the host master into the scheduler's device `input_cpy`,
+ // ON DEVICE.  This replaces the non-staging path's host ids readback (`ggml_backend_tensor_get_async` +
+@@ -2216,6 +2272,8 @@ static void free_table_buffers_locked(table_t & t) {
+         t.arena = nullptr;
+     }
+     if (t.remap_dev != nullptr){ (void) cudaFree(t.remap_dev); t.remap_dev = nullptr; }
++    if (t.prs_dev != nullptr) { (void) cudaFree(t.prs_dev); t.prs_dev = nullptr; }
++    t.prs_n = 0; t.prs_gen = 0; t.prs_arena = nullptr; t.prs_slots = 0;
+     free_heat_dev_locked(t);   // folds the prefill tally into `heat` before the mirror goes away
+     (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
+ 
+@@ -4066,6 +4124,127 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
+     return true;
+ }
+ 
++
++// wip/prefill-arena-residency (R2): fill a whole-table staging copy from the arena + the pinned host
++// master.  `host_src`/`offset` identify the registered table (the same key the decode hooks use), and
++// `width`/`stride_src`/`n_copies` describe the exact copy the caller asked for; a geometry mismatch
++// declines and the caller falls back to the plain upload.  Returns true when the destination was
++// filled and the caller's event recorded (the caller records `ev` after this returns).
++bool moe_cache_stage_table(int device, const void * host_src, size_t offset, size_t width, size_t stride_src,
++                           size_t n_copies, void * dst, void * compute_stream, void * copy_stream,
++                           void * order_event) {
++    if (!g_stage_cache || !g_enabled || host_src == nullptr || dst == nullptr || width == 0 || n_copies == 0) {
++        return false;
++    }
++    static uint64_t ordered_seq[GGML_CUDA_MAX_DEVICES] = {};
++    std::lock_guard<std::mutex> lock(g_mutex);
++    if (!g_sized) {
++        return false;
++    }
++    for (table_t & t : g_tables) {
++        if (t.device != device || t.host != host_src || t.src_off != offset) {
++            continue;
++        }
++        // A usable arena and a device-readable pinned host alias for the non-resident half.
++        if (t.arena == nullptr || t.slots <= 0 || t.host_dev == nullptr || !t.cold_safe ||
++            t.n_experts <= 0 || !t.host_pinned) {
++            g_stage_decline_usable++;
++            return false;
++        }
++        const bool do2d = t.split_axis == 0 && t.host_pitch != 0;
++        int64_t rows = 0;
++        int64_t row_bytes = 0;
++        if (do2d) {
++            rows      = (int64_t) (t.host_bytes / t.host_pitch);
++            row_bytes = rows > 0 ? (int64_t) (t.expert_bytes / (size_t) rows) : 0;
++            if (rows <= 0 || (size_t) row_bytes != width || stride_src != t.host_pitch ||
++                    (size_t) (rows * row_bytes) != t.expert_bytes) {
++                g_stage_decline_geom++;
++                return false;
++            }
++        } else if (n_copies == 1) {
++            if (t.host_bytes != t.expert_bytes || offset != 0) {
++                g_stage_decline_geom++;
++                return false;   // a single contiguous copy can only be an unsplit table
++            }
++        } else if (width != t.expert_bytes || stride_src != t.host_bytes || n_copies != (size_t) t.n_experts) {
++            g_stage_decline_geom++;
++            return false;
++        }
++
++        device_guard dg(device);
++
++        // Refresh the immutable snapshot when the cache wrote since we built it, or the arena moved.
++        const uint64_t seq = g_write_seq.load();
++        if (t.prs_dev == nullptr || t.prs_n != t.n_experts) {
++            if (t.prs_dev != nullptr) {
++                (void) cudaFree(t.prs_dev);
++                t.prs_dev = nullptr;
++            }
++            if (cudaMalloc((void **) &t.prs_dev, (size_t) t.n_experts * sizeof(int32_t)) != cudaSuccess) {
++                (void) cudaGetLastError();
++                t.prs_dev = nullptr;
++                return false;
++            }
++            t.prs_n   = t.n_experts;
++            t.prs_gen = 0;
++        }
++        if (t.prs_gen != seq || t.prs_arena != (void *) t.arena || t.prs_slots != t.slots) {
++            if ((int) t.prs_host.size() != t.n_experts) {
++                t.prs_host.assign((size_t) t.n_experts, -1);
++            } else {
++                std::fill(t.prs_host.begin(), t.prs_host.end(), -1);
++            }
++            for (const auto & kv : t.expert_slot) {
++                const int e = kv.first;
++                if (e >= 0 && e < t.n_experts) {
++                    t.prs_host[(size_t) e] = kv.second;
++                }
++            }
++            // TODO(freeze, phase 2): while a concurrent decode is active, mark only the frozen top ~75 %
++            // of the slots here; the mutable 25 % is treated as cold by prefill (campaign README §2.5).
++            // The first prototype snapshots the whole arena (single-session measurement).
++            // Upload on the COPY stream: the staging kernel follows it on the same stream, so the map is
++            // ordered where it is read, and the copy stream is NOT forced to wait for the compute stream
++            // just because a map was (re)built.  Only an arena write orders against compute below.
++            if (cudaMemcpyAsync(t.prs_dev, t.prs_host.data(), (size_t) t.n_experts * sizeof(int32_t),
++                                cudaMemcpyHostToDevice, (cudaStream_t) copy_stream) != cudaSuccess) {
++                (void) cudaGetLastError();
++                return false;
++            }
++            t.prs_gen   = seq;
++            t.prs_arena = (void *) t.arena;
++            t.prs_slots = t.slots;
++        }
++
++        // Order the copy stream after the compute stream ONLY when the arena may have been written since
++        // the last staging on this device (a decode admission between prefill ubatches).  During a pure
++        // prefill nothing writes, so the staging keeps overlapping the previous split's compute.
++        if (ordered_seq[device] != seq) {
++            if (cudaEventRecord((cudaEvent_t) order_event, (cudaStream_t) compute_stream) != cudaSuccess ||
++                cudaStreamWaitEvent((cudaStream_t) copy_stream, (cudaEvent_t) order_event, 0) != cudaSuccess) {
++                (void) cudaGetLastError();
++                return false;
++            }
++            ordered_seq[device] = seq;
++        }
++
++        {
++            const int64_t resident = (int64_t) t.expert_slot.size();
++            g_stage_ok++;
++            g_stage_arena_bytes += resident * (int64_t) t.expert_bytes;
++            g_stage_host_bytes  += ((int64_t) t.n_experts - resident) * (int64_t) t.expert_bytes;
++        }
++        moe_cache_stage_kernel<<<t.n_experts, 256, 0, (cudaStream_t) copy_stream>>>(
++            (char *) dst, (const char *) t.arena, (const char *) t.host_dev, t.prs_dev, t.slots,
++            (int64_t) t.expert_bytes, (int64_t) t.host_bytes, (int64_t) t.src_off,
++            rows, row_bytes, (int64_t) t.host_pitch, do2d ? 1 : 0);
++        return cudaGetLastError() == cudaSuccess;
++    }
++    g_stage_decline_nomatch++;
++    return false;
++}
++
+ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weight_cpy,
+                            const int32_t * ids, int64_t n_used, int64_t n_tok,
+                            size_t ids_nb0, size_t ids_nb1, void * stream,
+@@ -4184,6 +4363,8 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+             // Slab-backed arenas go back to the slab's free list; `cudaFree` can unmap the slab.
+             if (old_arena != nullptr) { free_arena_backing(old_device, old_arena, old_reserved, old_slots, t); }
+             if (old_remap != nullptr) { (void) cudaFree(old_remap); }
++            if (t.prs_dev != nullptr) { (void) cudaFree(t.prs_dev); t.prs_dev = nullptr; }
++            t.prs_n = 0; t.prs_gen = 0; t.prs_arena = nullptr; t.prs_slots = 0;
+             (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
+         }
+         t.device = device;
+@@ -4718,6 +4899,15 @@ void moe_cache_report() {
+         }
+     }
+ 
++    if (g_stage_ok + g_stage_decline_geom + g_stage_decline_usable + g_stage_decline_nomatch > 0) {
++        const double total = (double) g_stage_arena_bytes + (double) g_stage_host_bytes;
++        GGML_LOG_INFO("%s: prefill cache staging (R2): ok=%lld geom_decline=%lld unusable=%lld nomatch=%lld; "
++                      "arena=%.1f MiB host=%.1f MiB (H2D %.1f%% of staged)\n",
++                      __func__, (long long) g_stage_ok, (long long) g_stage_decline_geom,
++                      (long long) g_stage_decline_usable, (long long) g_stage_decline_nomatch,
++                      (double) g_stage_arena_bytes / (1024 * 1024), (double) g_stage_host_bytes / (1024 * 1024),
++                      total > 0 ? 100.0 * (double) g_stage_host_bytes / total : 0.0);
++    }
+     GGML_LOG_INFO("%s: VRAM budget: requested=%s MiB/device, free-clamped=%lld, arena alloc failures=%lld (fail-soft)\n",
+                   __func__, budget_desc(), (long long) g_alloc_clamped, (long long) g_alloc_failed);    if (g_acc_hits + g_acc_fills + g_acc_colds > 0) {
+         const int64_t acc   = g_acc_hits + g_acc_fills + g_acc_colds;
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.h b/ggml/src/ggml-cuda/moe-expert-cache.h
+index 87d7fd37d..97ef70997 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.h
++++ b/ggml/src/ggml-cuda/moe-expert-cache.h
+@@ -250,6 +250,17 @@ bool moe_cache_gather_host(const struct ggml_tensor * weight, const struct ggml_
+                            const struct ggml_tensor * ids, void * stream, int device,
+                            size_t slice_off, int split_axis);
+ 
++// wip/prefill-arena-residency (R2): fill a whole-table staging copy from the expert-cache arena (the
++// immutable prefill residency snapshot) + the pinned host master, instead of re-uploading every expert
++// over PCIe.  `host_src`/`offset` identify a registered table; `width`/`stride_src`/`n_copies` are the
++// exact copy the caller requested.  Fills `dst` on `copy_stream` (ordered after `compute_stream` when
++// the arena may have been written) and returns true; the caller records its completion event.  A
++// geometry mismatch or an unusable table declines (false) so the caller uses the plain upload.  Gated
++// by `GGML_MOE_CACHE_STAGE=1` for the WIP prototype.
++bool moe_cache_stage_table(int device, const void * host_src, size_t offset, size_t width, size_t stride_src,
++                           size_t n_copies, void * dst, void * compute_stream, void * copy_stream,
++                           void * order_event);
++
+ // Kernel consumer seam.  Given the op (`op`) and the (redirected) expert table the op will read
+ // (`weight_cpy`) plus the CUDA ordinal running it, return the compact arena the op must read instead:
+ // `arena` holds `n_slots` experts of `expert_bytes`, and `remap_dev` holds the slot-remapped ids for
