@@ -84,6 +84,29 @@ rejection is resolved by #175), `archive/work/gdn-l2-norm-pair/`,
 `archive/work/gdn-conv-snapshot-fold/` (rejected).  PR #169 (`spec-batch-budget`) stays open and unchanged:
 none of these three fusions touches the >8-row verify path that governs its verdict.
 
+**Cross-arch check on gfx1100 (RX 7900 XTX, ROCm 7.14, native Linux, `fingon`).**  The same four patches
+were re-cut and built there from the `/opt/rocm-7.14-gfx1100` tree (not the Fedora 7.1 headers) and gated
+against a **stock r80 reference built from the same sources with the four patches reverse-applied**
+(`git write-tree` = `873d033563e3a33eb680be65695eaf63aa90db16` = `release.json.base_tree`'s applied tree, so
+the reference is exactly r80):
+
+* Same-seed greedy text **identical to r80** (300 tokens, q8_0 KV, 1 GPU, layer) on three models:
+  Qwen3-Coder-30B-A3B `sha f5af07dc6502`, Qwen3.6-35B-A3B Q4_K_M `sha 86b1b02d18a0`, Qwen3.8-27B Q4_K_M
+  `sha 3b949b9d64ea`.
+* `test-logits-width-probe` PASS maxdiff **0** with **identical** W8 and row-0 hashes to r80 at P=256 and
+  P=3584 on both the 30B-A3B and the 35B-A3B (e.g. 30B-A3B P=256 `W8=a5097bc9ad1f13e1`,
+  `row0=98a558d45f81e80a` in both builds).
+* **The stock-r80 bf16 abort reproduces here, and r81 fixes it.**  Qwen3-Coder-30B-A3B (NEOX qk-norm)
+  with `-ctk bf16 -ctv bf16` aborts on stock r80 at `rope.cu:1050`; on r81 the same command completes
+  (128 tokens, and at 64 tokens 136.0 t/s) and the q8_0 arm is identical to r80.  This closes the
+  verification gap recorded above: the abort #175 0002 guards is not only the fused-kernel one
+  (`rope.cu:1087`, reachable once M-RoPE is admitted), it is also reachable on the r80 tree through the
+  5-op fusion on a NEOX qk-norm model.
+* Speed (1 GPU, layer, q8_0 KV, 2 rounds each, `llama-bench`): 35B-A3B tg256 **126.70 / 126.60 ->
+  128.80 / 128.88 t/s (+1.7 %)**, pp512 flat (4113 / 4411 -> 4406 / 4350); dense 27B tg256
+  **41.69 / 41.68 -> 42.11 / 42.09 (+1.0 %)**, pp512 1313 / 1304 -> 1305 / 1295 (flat within noise).
+  So gfx1100 gains roughly what gfx1201 does and nothing regresses.
+
 ## 261017.007 -- beta 12: `slab-transient-absorption` staged for a beta test, and `apply-all.sh --include-beta`
 
 **No release change** (`release.json` untouched, no block amended, no tag).  New: `beta/0012-slab-transient-

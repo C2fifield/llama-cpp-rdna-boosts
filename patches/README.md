@@ -46,6 +46,14 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > #175 alone +1.15 % tg256, #179 alone +1.2 % (3/3 rounds), #173 +0.4 % on top of #175.  The contributor's
 > 2-GPU tensor **+11.7 % prefill** does not reproduce here (pp31500 4470 -> 4469, flat) and their 27B +0.7 %
 > for #173 is flat on this box (53.1 both arms); everything else matched their numbers.
+> **gfx1100 cross-check** (`fingon`, RX 7900 XTX, ROCm 7.14, stock r80 reference built by reverse-applying
+> the four patches, tree verified `873d0335...`): same-seed text **identical to r80** on Qwen3-Coder-30B-A3B
+> (`f5af07dc6502`), 35B-A3B Q4_K_M (`86b1b02d18a0`) and 27B Q4_K_M (`3b949b9d64ea`); width probe maxdiff 0
+> with identical hashes at P=256/3584 on the 30B-A3B and 35B-A3B; 35B-A3B tg256 126.7/126.6 -> 128.8/128.9
+> (**+1.7 %**), 27B tg256 41.69/41.68 -> 42.11/42.09 (**+1.0 %**), pp512 flat.  That box also confirms the
+> **stock-r80 bf16 abort**: Qwen3-Coder-30B-A3B with `-ctk bf16` aborts on r80 at `rope.cu:1050` and runs on
+> r81, so 0002 closes a pre-existing abort as well as the fused-kernel one it guards (see
+> `../archive/work/mrope-rope-fusion/RESOLUTION.md`).
 > **PR #177 (`gdn-conv-snapshot-fold`) rejected:** on 35B-A3B the patched path is **not run-to-run
 > deterministic**, which the delivery's purity rule does not allow.  Details and re-entry conditions in
 > `../archive/work/gdn-conv-snapshot-fold/RESOLUTION.md`.  Records: `../WORKLOG.md` 261017.008,

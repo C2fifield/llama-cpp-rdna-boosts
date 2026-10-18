@@ -28,9 +28,23 @@ It is a **latent abort fix**, not only a guard for the new code path:
 - with 0001 + 0002 the same run is clean and **byte-identical** to stock r80 (`sha 3681f80ee0bf`, 881
   chars, 200 tokens),
 - the stock-r80 half of the claim (a NEOX qk-norm model such as Qwen3-30B-A3B with `-ctk bf16`) could
-  **not** be reproduced here: that model is not in this box's set, and Gemma4 12B QAT and gpt-oss-20b with
-  bf16 KV are clean on stock r80.  The guard is taken anyway: it is two lines, it is the documented
-  behaviour of the fused op, and the reachable half is proven.
+  not be reproduced on the gfx1201 box: that model is not in its set, and Gemma4 12B QAT and gpt-oss-20b
+  with bf16 KV are clean on stock r80.  **It was then reproduced on gfx1100** (`fingon`, RX 7900 XTX,
+  ROCm 7.14, native Linux, stock r80 reference built by reverse-applying the four patches to the r81 tree;
+  tree verified as `873d0335...`): Qwen3-Coder-30B-A3B Q4_K_M with `-ctk bf16 -ctv bf16` **aborts on stock
+  r80 at `rope.cu:1050`** and **completes on r81** (128 tokens, and 136.0 t/s at 64 tokens), with the
+  q8_0 arm byte-identical to r80.  So 0002 closes **two** aborts: the fused-kernel one at
+  `rope.cu:1087`, which 0001 makes reachable on the Qwen3.x models, and the pre-existing 5-op-fusion one
+  at `rope.cu:1050`, which a NEOX qk-norm model reaches on r80 without any of these patches.
+
+## gfx1100 cross-check (`fingon`, RX 7900 XTX, ROCm 7.14, 1 GPU)
+
+* Same-seed greedy text identical to stock r80 (300 tokens, q8_0 KV, layer) on Qwen3-Coder-30B-A3B
+  (`f5af07dc6502`), Qwen3.6-35B-A3B Q4_K_M (`86b1b02d18a0`) and Qwen3.8-27B Q4_K_M (`3b949b9d64ea`).
+* `test-logits-width-probe` PASS maxdiff 0 with identical W8 and row-0 hashes to r80 at P=256 and P=3584
+  on the 30B-A3B and the 35B-A3B (30B-A3B P=256 `W8=a5097bc9ad1f13e1`, `row0=98a558d45f81e80a` in both).
+* Speed (`llama-bench`, 2 rounds): 35B-A3B tg256 126.70 / 126.60 -> 128.80 / 128.88 (**+1.7 %**), dense
+  27B tg256 41.69 / 41.68 -> 42.11 / 42.09 (**+1.0 %**), pp512 flat on both.
 
 ## Validation here (gfx1201, 3x R9700, ROCm 10.1.0, r80 vs r80 + both patches, tree `955009dd`)
 
