@@ -16,6 +16,7 @@ is given.
 | applied tree (this box, gfx1201) | `591528bd69930ff8a38c25ccab971dcae011e131` |
 | apply | `scripts/apply-all.sh --include-beta .` (or `git am -3 <patch>` on a clean release tree) |
 | campaign record | [`../../wip/slab-transient-absorption/README.md`](../../wip/slab-transient-absorption/README.md) §8-§10.16 |
+| announcement | https://github.com/stew675/llama-cpp-rdna-boosts/discussions/180 |
 | BETA 2 validation | 2x R9700 gfx1201, `Qwen3.8-Flash-Next` IQ4_NL `-ncmoe 48`, 131k ctx, MTP draft, 73k-token prefill |
 
 ## BETA 2 — 2026-10-18

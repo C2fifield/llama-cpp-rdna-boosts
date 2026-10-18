@@ -59,8 +59,10 @@ BETA 2 **exactly equal** on every axis (R 0.66461 2374/3572, P 0.51005 482/945, 
 K 0.96262 412/428, phase 0.62752 1806/2878; mean len 4.80 / 2.62 / 5.88 / 6.57 / 2.93) and identical
 text hashes (recall `5ebd156073f6`, prose `7759fa4a7c8d`).  `validate-set.sh` green (delivery set
 unchanged).  Not run: stock-relative `llama-batched-bench -npl 1,4,8` (no decode/mmvq kernel changed),
-ROCm 7.14, 3-GPU, gfx1100/gfx1151.  Records: `wip/slab-transient-absorption/README.md` §10.16, the beta
-README/BETA-TESTING.
+ROCm 7.14, 3-GPU, gfx1100/gfx1151.  Published as BETA 2 on the delivery repo `main` and announced to
+testers in https://github.com/stew675/llama-cpp-rdna-boosts/discussions/180 (no tag, no `release.json`
+change, no fork-branch refresh: the beta is not a block).  Records: `wip/slab-transient-absorption/README.md`
+§10.16, the beta README/BETA-TESTING.
 
 ## 261018.001 (r82) -- issue #170: `-sm tensor` no longer aborts when the model has to leave layers on the host (block 00 + block 09)
 
