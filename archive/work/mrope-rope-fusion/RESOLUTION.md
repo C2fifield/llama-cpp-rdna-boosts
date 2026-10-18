@@ -68,6 +68,26 @@ had not traced where it came from; on this box there is nothing to trace.  It do
 decision (the decode win and the abort fix are independent of it), but the figure should not be quoted as
 a delivery claim.
 
+**Refinement (same day): our host link is PCIe 5.0 x4 per card, so read that as "not measurable here",
+not as refuted.**  Each R9700 has a x16 device-side link but a **x4 @ 32 GT/s uplink to the host**
+(`current_link_width` = 4 on `0000:01:00.0` / `04:00.0` / `07:00.0`), which is half of the contributor's
+x8 host and a quarter of x16, so our multi-GPU prefill is link-bound: `pp31500` scales 3613.8 (1 GPU) ->
+4481.5 (2 GPU tensor, +24 %) -> 4347.0 (3 GPU, -3 % vs 2 GPU), and `wip/three-gpu-performance/` shows the
+same +17 % / +1 % shape on the field config.  Isolating the fusion with its own kill switch in the r81
+binary (same build, so both arms carry the same link cost) gives:
+
+| prefill, 35B-A3B q8_0 | r81 default | `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE=1` | delta |
+|---|---:|---:|---:|
+| 1 GPU layer, pp31500 | 3613.8 | 3579.1 | +0.97 % |
+| 2 GPU tensor, pp31500 | 4481.5 | 4471.4 | +0.23 % |
+| 3 GPU tensor, pp31500 | 4347.0 | 4334.3 | +0.29 % |
+| 2 GPU tensor, real 31.5k prompt, `-ub 2048` | 5258.5 / 5247.4 | 5241.2 / 5237.9 | +0.2-0.3 % |
+
+So the fusion is worth ~+1 % of prefill on one card and ~+0.25 % on a tensor split here, which is the same
+order as the decode win and does not support an +11.7 % reading on any link.  The decode numbers, which
+do carry over because the per-token all-reduce traffic is negligible, are the ones to trust from this PR.
+
+
 ## Record
 
 `WORKLOG.md` 261017.008 (r81); `patches/README.md` (r81 release note); `ENVIRONMENT.md` §7.3.

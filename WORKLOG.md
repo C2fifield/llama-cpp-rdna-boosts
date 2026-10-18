@@ -107,6 +107,35 @@ the reference is exactly r80):
   **41.69 / 41.68 -> 42.11 / 42.09 (+1.0 %)**, pp512 1313 / 1304 -> 1305 / 1295 (flat within noise).
   So gfx1100 gains roughly what gfx1201 does and nothing regresses.
 
+**Addendum (same day): our host link is PCIe 5.0 x4 per card, so a tensor-split prefill claim cannot be
+measured here.**  Following a note from the maintainer, the topology was checked and it matters for the
+one figure above that did not reproduce.  Each R9700 sits behind its own PCIe switch with a **x16 @ 32 GT/s**
+device-side link but a **x4 @ 32 GT/s uplink to the host** (`current_link_width` = 4 on `0000:01:00.0`,
+`0000:04:00.0`, `0000:07:00.0`; the root ports `00:01.1` / `00:01.2` are x4 too).  The contributor's boxes
+are x8 (his R9700 pair) and x16 (the 7900 XTX on PCIe 4.0), so his cross-device bandwidth is 2-4x ours.
+
+Two measurements say our multi-GPU prefill is link-bound, not GPU-bound (r81, 35B-A3B Q4_K_M, q8_0 KV,
+`llama-bench -p 31500 -n 0 -r 3`): 1 GPU **3613.8** t/s, 2 GPU tensor **4481.5 (+24 %)**, 3 GPU tensor
+**4347.0 (+20 %, i.e. 3 % below 2 GPU)**.  `wip/three-gpu-performance/` sees the same +17 % / +1 % shape on
+the field config, so this is the host, not a model.
+
+That qualifies the #175 prefill verdict above but does **not** change it.  Isolating the fusion itself with
+its own kill switch in the r81 binary (same build, so the link cost is identical in both arms):
+
+| prefill, 35B-A3B q8_0 | r81 default | `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE=1` | delta |
+|---|---:|---:|---:|
+| 1 GPU layer, pp31500 | 3613.8 | 3579.1 | +0.97 % |
+| 2 GPU tensor, pp31500 | 4481.5 | 4471.4 | +0.23 % |
+| 3 GPU tensor, pp31500 | 4347.0 | 4334.3 | +0.29 % |
+| 2 GPU tensor, real 31.5k prompt, `-ub 2048` | 5258.5 / 5247.4 | 5241.2 / 5237.9 | +0.2-0.3 % |
+
+So the fusion is worth about +1 % of prefill on one card and +0.25 % on a tensor split on this box; a
++11.7 % reading cannot be attributed to it here even allowing for the link.  The honest statement, now
+recorded in `AGENTS.md` (Critical facts) and in the campaign note, is that the contributor's figure is
+**not measurable on our link width**, not that it is refuted, and that decode claims do carry over (the
+per-token all-reduce traffic is negligible, which is exactly why the +1.15 % tg256 gain reproduced at
+2-GPU tensor while this did not).
+
 ## 261017.007 -- beta 12: `slab-transient-absorption` staged for a beta test, and `apply-all.sh --include-beta`
 
 **No release change** (`release.json` untouched, no block amended, no tag).  New: `beta/0012-slab-transient-

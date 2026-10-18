@@ -55,8 +55,37 @@ rounding drift, not a 3-GPU cost.  Keep it out of the 3-GPU diagnosis; if it nee
 the adaptive controller's response to a changed continuation, not to the split/all-reduce path.
 Full numbers: [`../../benchmarks/2026-10-17-pr167-r79-acceptance.md`](../../benchmarks/2026-10-17-pr167-r79-acceptance.md).
 
-## 1. The work matrix this campaign must fill
+### 0.2 The host link is PCIe 5.0 **x4** per card, so multi-GPU prefill is link-bound (2026-10-17)
 
+Every 3-GPU number in this campaign (and every prefill scaling claim) has to be read against the host
+topology: each R9700 hangs off its own PCIe switch, the GPU-side link is x16 @ 32 GT/s, and the switch
+**uplink to the host is x4 @ 32 GT/s** (`/sys/bus/pci/devices/0000:01:00.0/current_link_width` = 4, root
+ports `00:01.1` and `00:01.2` also x4).  That is ~16 GB/s raw per card, half of a PCIe 5.0 x8 host and a
+quarter of x16.  The contributor boxes this campaign compares against are x8 (R9700 pair) and x16
+(gfx1100 7900 XTX on PCIe 4.0), so their cross-device bandwidth is 2-4x ours.
+
+Measured scaling on 35B-A3B Q4_K_M, `q8_0` KV, `llama-bench -p 31500 -n 0 -r 3` (r81):
+
+| GPUs | split | pp31500 t/s | vs 1 GPU |
+|---|---|---:|---:|
+| 1 | layer | 3613.8 | - |
+| 2 | tensor | **4481.5** | **+24 %** |
+| 3 | tensor | **4347.0** | **+20 %** (and **-3 %** vs 2 GPU) |
+
+The section-0 field config shows the same shape (prefill 1065 / 1246 / 1258 t/s for 1 / 2 / 3 GPUs, so
++17 % then +1 %).  A healthy x8/x16 host would put the tensor-split prefill at +80-95 % for the second
+card.  So:
+
+* **The link is a first-order suspect for the 3-GPU decode deficit too** (per-token all-reduce traffic is
+  small but the round-trip latency and the split/gather frequency are not), and it must be controlled
+  for before blaming the AR implementation.
+* **Cross-device prefill claims from an x8/x16 host can only be under-measured here.**  Record them as
+  "not measurable on our link" rather than "does not reproduce": PR #175's 2-GPU tensor prefill
+  +11.7 % is the worked example (see `../../WORKLOG.md` 261017.008 and
+  `../../archive/work/mrope-rope-fusion/RESOLUTION.md`), while its decode gain did reproduce at 2-GPU
+  tensor because the per-token AR traffic is negligible.
+
+## 1. The work matrix this campaign must fill
 Do not chase one number.  Measure the full grid, each with the arena resident and the exact prompt hash:
 
 | axis | arms | why |

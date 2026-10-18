@@ -175,6 +175,17 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   GPU (Q4_K_M `-ncmoe 99` tg1024: `-t 16` 19.6 vs `-t 8` 38.9). Size `-t` (or `--cpu-mask` with `-t`
   *inside* the mask) to leave those cores free; one CCD (8) is within 1-2 % of best. r19's block-06
   cap only covers `-ncmoe` offloaded-MoE decode; override with `GGML_CPU_MOE_OFFLOAD_THREADS=N`.
+- **Our per-card host link is PCIe 5.0 x4, not x8/x16.** Each R9700 sits behind its own PCIe switch
+  (`Navi 10 XL Upstream Port`): the GPU side negotiates **x16 @ 32 GT/s**, but the switch **uplink to the
+  host** negotiates **x4 @ 32 GT/s** (`/sys/bus/pci/devices/0000:01:00.0/current_link_width` = 4; root
+  ports `00:01.1` / `00:01.2` are x4 too). That is ~16 GB/s raw per card, **half** of a x8 host and a
+  quarter of x16.  Consequences for measurement, measured 2026-10-17 on 35B-A3B Q4_K_M q8_0
+  `pp31500`: 1 GPU 3614 t/s, 2 GPU tensor **4482 (+24 %)**, 3 GPU tensor **4347 (-3 % vs 2 GPU)**; the
+  same +17 % / +1 % shape is in `wip/three-gpu-performance/` (1065 / 1246 / 1258 t/s).  So **multi-GPU
+  prefill on this box is link-bound**, and a tensor-split prefill claim from a x8/x16 contributor host
+  can only be *under-measured* here, not refuted: report it as "not measurable on our link", not as
+  "does not reproduce".  Decode claims do carry over (the per-token AR traffic is tiny): #175's decode
+  gain reproduced at 2-GPU tensor while its prefill claim did not.
 - **`-ncmoe`/`-cmoe` host experts are always pinned (`ROCm_Host`); `--load-mode mmap` alone does NOT
   change that.** The loader rewrites the `-ncmoe` CPU override for a host `MUL_MAT_ID` weight to the
   layer device's **pinned** host buffer, and the "avoid a host buffer when using mmap" downgrade is
