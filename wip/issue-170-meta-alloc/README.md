@@ -169,6 +169,26 @@ Readings:
   4096-token prefill: decode **94.88 t/s vs 35.74** with `--no-op-offload` (+165%), prefill 445.96 vs
   498.80 (-11%).
 
+### Gate regression check on the largest host-expert case (maintainer's concern)
+
+`Qwen3.8-Flash-Next-IQ4_NL` (100 GB, 176.9B A3B), 9-part `PROJFIX`, **2 GPUs**, `-sm tensor`,
+`-ngl 99 -ncmoe 48`, ctx 32768, 4096-token prefill + 128 decode, `-t 8`, `--load-mode none
+--lazy-mode off` (no PLE lazy-reader variance), expert cache auto (arena 39234.4 MiB, 60.5 %
+residency, identical in every arm):
+
+| arm | pp t/s | tg t/s |
+|---|---:|---:|
+| pre-gate build #1 | 246.99 | 39.92 |
+| pre-gate build #2 | 248.14 | 40.88 |
+| gated build #1 | 244.46 | 39.83 |
+| gated build #2 | 246.40 | 40.68 |
+| gated build, `--no-op-offload` | 66.25 | 18.32 |
+
+Gated vs pre-gate is inside the run-to-run spread (pp 0.7 to 1.0 % lower, tg 0.5 to 2.5 % lower, with
+an 0.8 % / 2.1 % spread within the gated repeats), and the hook is still doing its job: 3.7x prefill
+and 2.2x decode over `--no-op-offload`. The reason is structural: under `-ncmoe` the only host-resident
+weights are the expert tensors, whose op is `MUL_MAT_ID`, which the gate keeps.
+
 * Not validated: gfx1100 itself (no hardware).  The fix is validated at 24 GiB *free-memory* parity,
   which is the reporter's configuration class.  The reporter has confirmed **ROCm 10.1.0**, the same
   tree we reproduce on, so the reproduction is not cross-version.
@@ -189,6 +209,7 @@ Readings:
    the meta split state.  The `-sm layer` measurement (7.2x prefill) says the dense-layer win is real, so
    this is a TODO rather than a "never"; it needs upload + gather (or a one-device fallback for such a
    node) plus its own correctness/perf gates.
-4. **Reporter reply**: drafted 2026-10-18 — the trigger, the two workarounds (`--no-op-offload`,
+4. **Reporter reply**: **posted 2026-10-18** (`#issuecomment-6248869022`); draft kept in
+   `COMMENT-2026-10-18.md`. Originally drafted 2026-10-18 — the trigger, the two workarounds (`--no-op-offload`,
    `GGML_OP_OFFLOAD_MIN_BATCH=1000000`), the fix, and a note that an updated delivery patch release is
    coming.  ROCm 10.1.0 confirmed by the reporter (same as ours).
