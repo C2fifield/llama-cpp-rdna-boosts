@@ -76,6 +76,36 @@ the measured prefill is 16 s, i.e. the upload is a large share and the staging o
 of it.  The r33 PR #121 measurement (2.9k/61k) is the empirical proof that removing that upload is worth
 roughly 2×.
 
+## 0.2 Devmap vs the prefill reader — **not the same feature**
+
+The r40 sweep removed two things that shared one component, and it is worth keeping them apart:
+
+* **DEVMAP (decode)** — the device-built slot remap plus deferred post-graph promotion.  This *is* the
+  one that produced the incoherent/wrong-expert outputs: the device `slot_dev` map was built from the
+  **pre-promotion** state, a later fill refilled that slot, and the remap pointed at a slot that by then
+  held a different expert — `FINDINGS-single-seq-rollback.md` §5f records the validator line
+  `SLOT-DEV-MISMATCH layer=0 expert=2 dev=19 host=-1` and the mechanism ("a device-built remap from that
+  map points at slot 19, which by then holds a *different* expert, so the routed read returns the wrong
+  expert").  Setting `MOE_EXPERT_CACHE_DEVMAP=0` (the eager host-routing remap) made **every** divergent
+  pair pure.  A generation guard (`res_gen == dev_gen`) then removed the map-mismatch class, a residual
+  divergence remained, and the final attribution was a layout-sensitive **hipBLASLt** solution flip, not
+  the cache (`FINDINGS-devmap-removal.md` §2).  That multi-session hunt (and the ~14 % decode it bought
+  versus the eager path) is what drove the removal.
+* **The prefill reader (PR #121)** — cache-aware staging and in-place MMQ reads.  It *consumed* the same
+  device slot map as a **read-only** expert source (guarded by `dev_gen == res_gen`), but it did not build
+  remaps, promote, or mutate residency.  Its own gates were clean: greedy output identical to r33,
+  level-3 slot-content mismatches **0**, `MUL_MAT_ID` 932/932.  It was deleted because the r40 "remove
+  DEVMAP for good" sweep also removed the shared `slot_dev` / generation plumbing, not because it was
+  incoherent.
+
+So: **devmap was the decode remap policy that caused the wrong-expert outputs; the prefill reader was a
+separate, correct feature that happened to share its map.**  The reason this campaign still needs a
+decision is that reviving the prefill reader as-is reintroduces that shared map.  The stale-map failure
+mode needs a decode-side mutation between map-build and read; the prefill reader has no such mutation
+(the arena is frozen during prefill, and the map would be rebuilt from the authoritative host
+`expert_slot` on `g_write_seq`), but the r40 note's blanket wording still applies until the maintainer
+scopes it.
+
 ## 1. What PR #121 actually did (the revival reference)
 
 Source: `git show 670765b` (`wip/moe-cache-inplace/README.md` + an 816-line format-patch); folded at
