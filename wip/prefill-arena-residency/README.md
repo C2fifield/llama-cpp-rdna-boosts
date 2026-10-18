@@ -2,8 +2,9 @@
 
 **Status: OPEN / ACTIVE (seeded 2026-10-18).  Maintainer decision received 2026-10-18: the old
 mutating device-remap implementation is NOT to return; a greatly reduced, focused, immutable-after-
-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging + PRS) and the phase-aware
-75/25 freeze are implemented and measured; the freeze is a net-loss opt-in, R1 remains.**  Not part of
+snapshot prefill-only residency map IS approved.  R2 (cache-aware staging + PRS) is implemented and
+measured; the phase-aware 75/25 freeze was implemented, measured as a net prefill loss with no decode
+gain, and dropped.  R1 remains.**  Not part of
 the delivery; nothing here may be applied to the fork or to `patches/` without the maintainer's go-ahead
 (WIP and promotion rules in `AGENTS.md`).
 
@@ -242,7 +243,7 @@ not a device-side authority.
 ## 4.1 R2 prototype — measured (2026-10-18)
 
 **Status: implemented, env-gated OFF, measured, byte-identical output.  Not promoted.**  Diff:
-[`r2-prototype.patch`](r2-prototype.patch) (456 insertions, 13 files; sha256 `e5590f93…`).  The
+[`r2-prototype.patch`](r2-prototype.patch) (227 insertions, 3 files; sha256 `2bfdb826…`).  The
 `~/llama.cpp` working tree currently has it applied (uncommitted; **not** in `patches/`).
 
 What it does: the `stage_from_cache` stub is live again, but with the **PRS** instead of the removed
@@ -279,12 +280,17 @@ seed 42 temp 0.  `stage=0` = whole-table staging; `stage=1` = R2.
   / 45 712.8 MiB after the prefill = ~70.5 %**, decode hit `h=0.7698`.  The residence fraction barely
   moves between 32k and 64k on this config; the field's 50-60 % is its 131k/MTP context.
 
-**The 75/25 freeze is now in the prototype** and is phase-aware (server slot states, not batch
-composition): it arms only while a prefill and a decode are active together.  Measured, it is a
-**net loss** on these workloads (Scenario A −6.6 % prefill, Scenario B −22 %, no decode hit-rate gain)
-because the frozen 75 % of a ~67 %-full arena is only ~50 % of the experts, so H2D rises from 33 % to
-49 %.  It is correct and exactly as specified, but it should stay **opt-in** (`GGML_MOE_CACHE_FREEZE=0`
-disables it); the non-freeze R2 is the throughput path.  Full A/B and the phase logic are in
+**The 75/25 freeze was implemented, measured, and dropped.**  It was phase-aware (server slot states:
+`PROCESSING_PROMPT`/`STARTED` = prefill, `GENERATING` = decode; arm only while both are present) and
+correct, but a **net prefill loss** on the tested workloads (Scenario A −6.6 %, Scenario B −22 %, no
+decode hit-rate gain): the frozen 75 % of a ~67 %-full arena is only ~50 % of the experts, so H2D rises
+from 33 % to 49 %.  The maintainer proposed a per-layer/per-ring-slot pin instead, but in this scheduler
+that is a no-op: prefill and decode are separate serialized graphs, a ubatch runs all layers, and the
+arena is already stable inside a graph — the erosion happens between graphs, so a pin that survives it
+covers every table (a 100 % freeze; a fraction is the 75/25 policy).  **The true limitation is the
+serialized scheduler**, so the per-layer pin only becomes useful when a decode graph can overlap a
+prefill graph (`../moe-cpu-overlap/`).  The freeze code is removed from the prototype and remains
+recoverable at campaign commit `8134e23`; the A/B is in
 [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).  R1 (in-place MMQ read) remains the next
 throughput step if the ring copy is still material.
 
@@ -343,26 +349,19 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
 
 ## 7. Open questions for the maintainer
 
-1. **Freeze default:** the measurements say the 75/25 freeze is a net prefill loss on the tested mixed
-   workloads (no decode hit-rate gain; the long decode is scheduler-starved).  Keep it **opt-in**
-   (`GGML_MOE_CACHE_FREEZE=0`), or drop it from the prototype?  The recommended end state for the
-   throughput path is the non-freeze R2.
-2. **Freeze split:** currently `K = min(3*slots/4, slots - n_used_hint)` (top 75 % of *occupied* slots
-   by `(count, heat, last)`; at least 8 mutable).  If a future workload justifies the freeze, should K
-   be 75 % of the **experts** rather than of the slots (the current form freezes 75 % of a partially
-   filled arena, which is only ~50 % of the experts at 67 % residency)?
-3. **Activity plumbing:** the server now passes exact slot states (`llama_moe_cache_set_activity`).
-   Keep that public API, or move it behind the existing device iface only for the server?  A generic
-   `llama-cli`/library user with multiple sequences has no equivalent hint.
-4. **Beta-12 compatibility:** deferred to a follow-up session at the maintainer's request.  The hunks
+1. **Scheduler overlap:** the 75/25 freeze is dropped because the serialized scheduler is the
+   limitation.  The next real step for coexistence is a decode graph overlapping a prefill graph (the
+   `../moe-cpu-overlap/` shape); when that exists, the maintainer's per-layer/per-ring-slot pin becomes
+   the right primitive and should be designed then, not now.
+2. **Beta-12 compatibility:** deferred to a follow-up session at the maintainer's request.  The hunks
    appear disjoint (`stage_h2d_gbps` vs `stage_from_cache`; `moe-expert-cache.*` untouched by beta 12;
-   the activity plumbing is new), but both apply orders + a build + the 16k A/B still need verifying.
-5. **R2 vs R1:** R2 is implemented and measured (+31-45 % single-session).  R1 (in-place MMQ) is the
+   the freeze plumbing is removed), but both apply orders + a build + the 16k A/B still need verifying.
+3. **R2 vs R1:** R2 is implemented and measured (+31-45 % single-session).  R1 (in-place MMQ) is the
    proven ~2× but the larger change; only worth it if the remaining ring copy is still material.
-6. Is `--host-experts pool` in scope for the cold half, or is declining for pooled tables acceptable?
-7. The stale `ENVIRONMENT.md` rows for `GGML_MOE_CACHE_INPLACE`/`STAGE`: fix now (documentation) or
-   with the revival?  (Add `GGML_MOE_CACHE_STAGE` / `_FREEZE` when this leaves `wip/`.)
-8. Should this be a **new block** or an amendment to block 09 when promoted?  (WIP only until then.)
+4. Is `--host-experts pool` in scope for the cold half, or is declining for pooled tables acceptable?
+5. The stale `ENVIRONMENT.md` rows for `GGML_MOE_CACHE_INPLACE`/`STAGE`: fix now (documentation) or
+   with the revival?  (Add `GGML_MOE_CACHE_STAGE` when this leaves `wip/`.)
+6. Should this be a **new block** or an amendment to block 09 when promoted?  (WIP only until then.)
 
 ## 8. Record
 
@@ -382,11 +381,15 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
   **1 091.8 → 1 433.1** (`-ub 4096`, +31.3 %), 31.6k **1 183.6 → 1 561.3** (`-ub 4096`, +31.9 %);
   H2D staged **27.1 %** (arena 272.6 GiB vs host 101.6 GiB), `geom_decline=0`; greedy sha identical in
   every pair.  Freeze and R1 were the remaining steps.
-* **2026-10-18 (freeze implemented/measured)** — server slot-state activity
+* **2026-10-18 (freeze implemented/measured/DROPPED)** — server slot-state activity
   (`llama_moe_cache_set_activity`), top-75 % immutable per table, decode limited to the mutable 25 %,
   PRS keyed on the freeze generation.  Scenario A arms once (two prefills → one decode) and costs 6.6 %
   prefill; Scenario B arms once per short request and costs 22 %; H2D 36.5 %/49.1 % vs 33 % no-freeze;
-  decode hit rate unchanged.  **Net loss on these workloads → opt-in, not default.**  R1 remains.
+  decode hit rate unchanged.  **Net loss → the freeze is dropped from the prototype** (recoverable at
+  campaign commit `8134e23`).  The per-layer-pin alternative is a no-op in the serialized scheduler;
+  the true limitation is graph serialization, so the next step for coexistence is scheduler overlap.
+  R2-only patch restored and re-verified: 16k `-ub 4096` **1 092.1 → 1 431.7 t/s**, hash `a60a39e11133`.
+  R1 remains.
 * **2026-10-18 (concurrency)** — two-slot stress (`-np 2`, 64k/slot, `-b/-ub 4096`, field loader):
   Scenario A (15.7k prefill + 5.3k prefill/decode) R2 **754.9 → 889.4 t/s** (+17.8 %); Scenario B
   (60 s long-decode window + 3.9k prefill stream) short prefill **1 162.8 → 1 479.1 t/s** (+27.2 %),
@@ -394,13 +397,12 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
   `PRS rebuilds == staged calls` (1 180 / 4 956) and H2D 33.2-33.4 %: the freeze is needed.  The slab
   re-arms 54 tables per prefill→decode transition independently.  Full record:
   [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md).
-* **The 75/25 freeze (2026-10-18 later):** implemented with exact server slot states
-  (`llama_moe_cache_set_activity` → device hook → `moe_cache_set_activity`), top 75 % of the occupied
-  slots immutable, decode evicts only the mutable ~25 %, PRS keyed on the freeze generation.  Scenario A
-  (two prefills → one switches to decode) arms **once**; Scenario B (long decode + short prefills) arms
-  once per short request.  **Measured cost:** A long prefill **830.4 t/s** (vs 889.4 no-freeze, 754.9
-  stage0), B short prefill **1 150.1** (vs 1 479.1), H2D **36.5 % / 49.1 %** (vs 33 %), decode hit rate
-  unchanged, long decode still scheduler-starved.  **Recommendation: keep it opt-in
-  (`GGML_MOE_CACHE_FREEZE=0`), do not default it on** — the non-freeze PRS rebuild already gives
-  correctness; the freeze is only worth it if a decode-latency/hit-rate objective or a fully resident
-  arena changes the trade.  Beta-12 compatibility is deferred to a follow-up session.
+* **The 75/25 freeze (2026-10-18 later): implemented, measured, DROPPED.**  Exact server slot states,
+  top 75 % of the occupied slots immutable, decode limited to the mutable ~25 %, PRS keyed on the freeze
+  generation.  Scenario A (two prefills → one switches to decode) armed **once**; Scenario B (long decode
+  + short prefills) armed once per short request.  **Measured cost:** A long prefill **830.4 t/s** (vs
+  889.4 no-freeze, 754.9 stage0), B short prefill **1 150.1** (vs 1 479.1), H2D **36.5 % / 49.1 %** (vs
+  33 %), decode hit rate unchanged, long decode still scheduler-starved.  The per-layer-pin alternative
+  is not a third option in this scheduler (see §4.1 / the concurrency record): it protects a window in
+  which nobody can evict, and a pin that spans the inter-graph decode ubatch is global.  **The limitation
+  is the serialized scheduler**, not the cache.  Beta-12 compatibility is deferred to a follow-up session.

@@ -139,6 +139,21 @@ the mutable region does **not** rebuild it or order the copy stream.
   the one to ship for throughput; the freeze is a policy option for a decode-latency-sensitive mixed
   workload.
 
+**Decision (maintainer, 2026-10-18): the 75/25 freeze is DROPPED.**  It is correct and phase-accurate,
+but a net prefill loss with no measurable decode gain on the tested workloads, and the per-layer-pin
+concept the maintainer proposed collapses to the same thing in this scheduler (see below).  The prototype
+patch is R2-only again; the freeze implementation remains recoverable at campaign commit `8134e23`.
+
+**Why the per-layer pin is not a third option in this scheduler.**  Prefill and decode are separate,
+serialized graphs: one `llama_decode` graph at a time, and a ubatch runs **all layers**.  Inside a graph
+the arena is already stable, so a pin that lasts for the layer/ring slot being prefilled protects a
+window in which nobody can evict anyway.  The erosion happens *between* graphs, when a decode ubatch runs
+`moe_cache_update_host`.  A pin that survives that must cover every table the next prefill ubatch stages
+— i.e. all of them — which is a 100 % freeze; a fraction of it is the 75/25 policy just measured.  The
+ring read-ahead is inside the same graph, so it does not change this.  **The true limitation is the
+serialized scheduler**; a per-layer/per-ring-slot pin becomes the right primitive only once a decode graph
+can overlap a prefill graph (the `moe-cpu-overlap` / pipelined-scheduler work).
+
 **Beta-12 compatibility:** deferred to a follow-up session at the maintainer's request.  The beta patch's
 only overlap with this prototype is `ggml-cuda-moe-cache-hooks.cu`, where beta 12 changes
 `stage_h2d_gbps` (the calibration probe) and this prototype changes `stage_from_cache`; the hunks are
