@@ -57,6 +57,16 @@ apply orders give byte-identical content, and the two-slot stress is unchanged. 
 promotes onto an R2-carrying tree it should be a win on both prefill and decode.  Record:
 `archive/work/prefill-arena-residency/BETA12-INTEGRATION-2026-10-18.md`.
 
+**Published.**  Tag `v12-097cf33d9-r83` pushed (annotated, on the release commit); CI **Validate delivery
+set** green on both `main` and the tag, **Release patch set** green (assets `rdna-boosts-all.patch`,
+`patches.tar.gz`, `release.json`, `SHA256SUMS`).  The personal fork's `rdna-boosts` branch was
+force-pushed (`--force-with-lease`, personal fork only) to the released chain, so a fresh
+`git fetch origin rdna-boosts` reports `ca236e6b5` / tree `a1309717`, matching `release.json`; a clean
+checkout of that branch was rebuilt and re-gated (dense coherence `1c5d32ac537d`, 16k prefill
+1093.4 -> 1440.6 t/s, hash `a60a39e11133`, prefill-logit PASS).  The ROCm container images are built
+and pushed off-host by the worker watcher (`scripts/container-watch.sh` on `radiance`), which picked the
+tag up on its next poll and started `build-containers.sh --rocm "7.14.1 10.1" --push --prune`.
+
 **Gates (delivered tree `ca236e6b5`).**  Same-seed greedy text **byte-identical** to r82 in every pair
 (hashes above; dense `Qwen3.5-4B Q8_0` `1c5d32ac537d` with the staging on, off and unset).
 Prefill-logit (`gate-prefill-logits.sh`, base recorded from the r82 build, PPL 225.1593): **mean KLD

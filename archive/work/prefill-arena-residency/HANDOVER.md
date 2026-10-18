@@ -1,5 +1,8 @@
 # HANDOVER — `prefill-arena-residency` (R2) → beta-12 integration, gates, delivery prep
 
+**ARCHIVED — this campaign was promoted at r83 (blocks 09/10); see `WORKLOG.md` 261018.003.  The
+checkpoint/tasks below are kept as the record of how it was done.**
+
 **For the next session.  Read first:** `AGENTS.md`, then this campaign's `README.md`,
 `CONCURRENCY-2026-10-18.md`, then this file.  Nothing here is delivery work yet; nothing may be
 committed to `patches/` without the maintainer's go-ahead.
