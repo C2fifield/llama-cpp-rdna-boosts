@@ -86,3 +86,61 @@ staged call**, arena 43 410.9 MiB, hit `h=0.9779`.
 2. Re-run scenarios A and B (stage 0 vs 1) and compare PRS rebuilds, H2D split, prefill rate, decode
    rate.  The expected effect is F3 only; F2/F4 should not move.
 3. Then decide on R1 (in-place MMQ read) for the remaining ring copy.
+
+---
+
+## Follow-up: the 75/25 freeze, implemented and measured (2026-10-18)
+
+**Activity signal.**  The per-batch token classification was too coarse (the server alternates
+prefill-only and decode-only batches, and the freeze toggled 16×/60 s with no benefit).  The server now
+passes its exact **slot states**: `server_context::decode` counts slots in
+`PROCESSING_PROMPT`/`STARTED` as prefill and `GENERATING` as decode, and calls
+`llama_moe_cache_set_activity(model, n_prefill, n_decode)` → device hook → `moe_cache_set_activity`.
+A 4-decode-batch hold covers the decode-only batches that can separate two prefill chunks of the same
+request.  Arm only while `n_prefill > 0 && n_decode > 0`; a pure prefill or a pure decode uses the whole
+arena.  Kill switch: `GGML_MOE_CACHE_FREEZE=0`.
+
+**Frozen set.**  Per table, the top ~75 % of the **occupied** slots by `(count, heat, last)` are
+immutable; decode admission may only evict the other ~25 %, and at least `n_used_hint` (8) slots stay
+mutable.  The PRS marks only frozen slots and is keyed on the freeze generation, so a decode fill into
+the mutable region does **not** rebuild it or order the copy stream.
+
+| scenario | metric | stage 0 | R2, no freeze | R2 + freeze |
+|---|---|---:|---:|---:|
+| A (long prefill + short prefill/decode) | long prefill | 754.9 | 889.4 | **830.4** |
+| A | short prompt | 293.3 | 339.2 | **309.6** |
+| A | short decode | 26.7 | 26.8 | 26.3 |
+| A | H2D staged | 100 % | 33.2 % | 36.5 % |
+| A | freeze arms | — | — | **1** |
+| B (long decode + short prefill stream) | short prefill | 1 162.8 | 1 479.1 | **1 150.1** |
+| B | long decode (concurrent) | 3.76 | 4.17 | 3.73 |
+| B | H2D staged | 100 % | 33.4 % | 49.1 % |
+| B | freeze arms | — | — | **16** |
+| A/B | decode hit rate | — | A 0.8466 / B 0.9795 | A 0.8453 / B 0.9796 |
+
+**Interpretation.**
+
+* The phase logic is exactly as specified.  Scenario A (two prefills, one switches to decode) arms
+  **once** and unfreezes at the end.  Scenario B arms **once per short request** (its prefill freezes,
+  its own 4-token decode unfreezes) — the literal "freeze only while a prefill and a decode are active
+  together" rule.
+* **The freeze costs prefill throughput.**  The frozen set is 75 % of the *arena*, and the arena is
+  ~67 % of the expert set at 64k/slot, so the prefill's effective residency is ~50 % and H2D rises from
+  33 % to 49 % (A: 36.5 %, because only part of the run is armed).  Scenario A loses 6.6 % prefill;
+  scenario B loses 22 %.
+* **No measurable decode-side benefit:** the decode hit rate is unchanged, and the long decode is
+  scheduler-starved (3.7-4.2 t/s) with or without the freeze.  The freeze is therefore a **correct,
+  phase-accurate but net-loss** policy on these workloads.  Keep it opt-in inside the prototype
+  (`GGML_MOE_CACHE_FREEZE=0` disables it); do **not** default it on until a workload where decode
+  latency/hit rate is the objective shows a benefit, or the arena is fully resident (then the frozen
+  75 % is 75 % of the experts, not 50 %).
+* **Correctness does not depend on the freeze.**  The PRS is rebuilt when the cache writes or the arena
+  moves; the freeze only changes *which* residents the snapshot exposes.  So the non-freeze R2 path is
+  the one to ship for throughput; the freeze is a policy option for a decode-latency-sensitive mixed
+  workload.
+
+**Beta-12 compatibility:** deferred to a follow-up session at the maintainer's request.  The beta patch's
+only overlap with this prototype is `ggml-cuda-moe-cache-hooks.cu`, where beta 12 changes
+`stage_h2d_gbps` (the calibration probe) and this prototype changes `stage_from_cache`; the hunks are
+disjoint, as are `moe-expert-cache.*` (not touched by beta 12) and the new activity plumbing.  It must
+still be verified by applying both orders and building/running the 16k A/B.

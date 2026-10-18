@@ -1,3 +1,75 @@
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index 0ff98e861..9b08bf2bd 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -49,6 +49,8 @@ extern "C" {
+     // cache.  Returns true when a cache remains active.  `max_host_table_bytes` is the largest single
+     // host-resident weight tensor (wip/slab-ring-region: sizes the slab's H2D-ring hole).
+     GGML_API bool                  ggml_backend_dev_moe_cache_preflight(ggml_backend_dev_t dev, size_t host_expert_bytes, size_t aux_reserve_bytes, size_t max_host_table_bytes);
++    // wip/prefill-arena-residency: per-decode-batch activity (prefill vs decode sequences).
++    GGML_API void                  ggml_backend_dev_moe_cache_activity(ggml_backend_dev_t dev, int n_prefill, int n_decode);
+ 
+     // WIP r42 (TODO #42): reserve `bytes` of this device's free VRAM for the post-prefill compute
+     // layout.  Called at the prefill -> decode transition, before the MoE expert cache arena is sized.
+diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
+index 0ec066f58..87211ac03 100644
+--- a/ggml/src/ggml-backend-impl.h
++++ b/ggml/src/ggml-backend-impl.h
+@@ -342,6 +342,12 @@ extern "C" {
+         // that will never serve it (measured ~3.5x slower under MTP).
+         bool (*moe_cache_preflight)(ggml_backend_dev_t dev, size_t host_expert_bytes, size_t aux_reserve_bytes, size_t max_host_table_bytes);
+ 
++        // (optional) wip/prefill-arena-residency: per-decode-batch sequence activity.  `n_prefill` counts
++        // the sequences with more than the cache band of tokens in the batch, `n_decode` the rest.  The
++        // cache arms its 75/25 prefill snapshot freeze only while a prefill and a decode are active
++        // together; a pure prefill or a pure decode uses the whole arena.
++        void (*moe_cache_activity)(ggml_backend_dev_t dev, int n_prefill, int n_decode);
++
+         // (optional) MoE expert cache: hold `bytes` of the free VRAM for the post-prefill compute
+         // layout, so the auto-sized arena does not take the space a later compute growth needs.
+         // WIP r42 (TODO #42).
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 8f148d52b..8c59ec37f 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -310,6 +310,7 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
+     /* .event_free           = */ ggml_backend_meta_device_event_free,
+     /* .event_synchronize    = */ ggml_backend_meta_device_event_synchronize,
+     /* .moe_cache_preflight  = */ nullptr,
++    /* .moe_cache_activity   = */ nullptr,
+     /* .moe_cache_set_reserve = */ nullptr,
+     /* .moe_cache_stats      = */ nullptr,
+     /* .moe_cache_rearm      = */ nullptr,
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 37531ee18..960536a96 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -282,6 +282,13 @@ bool ggml_backend_dev_moe_cache_preflight(ggml_backend_dev_t dev, size_t host_ex
+     return dev->iface.moe_cache_preflight(dev, host_expert_bytes, aux_reserve_bytes, max_host_table_bytes);
+ }
+ 
++void ggml_backend_dev_moe_cache_activity(ggml_backend_dev_t dev, int n_prefill, int n_decode) {
++    if (dev == nullptr || dev->iface.moe_cache_activity == nullptr) {
++        return;
++    }
++    dev->iface.moe_cache_activity(dev, n_prefill, n_decode);
++}
++
+ void ggml_backend_dev_moe_cache_set_reserve(ggml_backend_dev_t dev, size_t bytes) {
+     // WIP r42 (TODO #42): see ggml_backend_dev_moe_cache_preflight.
+     if (dev == nullptr || dev->iface.moe_cache_set_reserve == nullptr) {
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index f7840ee7c..ccdc3a41b 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -693,6 +693,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+     /* .event_free           = */ NULL,
+     /* .event_synchronize    = */ NULL,
+     /* .moe_cache_preflight  = */ nullptr,
++    /* .moe_cache_activity   = */ nullptr,
+     /* .moe_cache_set_reserve = */ nullptr,
+     /* .moe_cache_stats      = */ nullptr,
+     /* .moe_cache_rearm      = */ nullptr,
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
 index a443887e4..4a73a7cba 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
@@ -40,11 +112,36 @@ index a443887e4..4a73a7cba 100644
  }
  
  void ggml_backend_cuda_stage_upload(ggml_backend_t backend, void * dst, const void * data, size_t size, ggml_backend_event_t ev) {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index ad7f556da..744fa4dbe 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -6212,6 +6212,12 @@ void ggml_cuda_h2d_ring_cap_set(size_t bytes) {
+     g_h2d_ring_cap_bytes = bytes;
+ }
+ 
++// wip/prefill-arena-residency: per-decode-batch activity, forwarded to the cache's freeze policy.
++static void ggml_backend_cuda_device_moe_cache_activity(ggml_backend_dev_t dev, int n_prefill, int n_decode) {
++    GGML_UNUSED(dev);
++    moe_cache_set_activity(n_prefill, n_decode);
++}
++
+ static bool ggml_backend_cuda_device_moe_cache_preflight(ggml_backend_dev_t dev, size_t host_expert_bytes, size_t aux_reserve_bytes, size_t max_host_table_bytes) {
+     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
+     const bool on = moe_cache_preflight(ctx->device, host_expert_bytes, aux_reserve_bytes);
+@@ -6389,6 +6395,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+     /* .event_free              = */ ggml_backend_cuda_device_event_free,
+     /* .event_synchronize       = */ ggml_backend_cuda_device_event_synchronize,
+     /* .moe_cache_preflight     = */ ggml_backend_cuda_device_moe_cache_preflight,
++    /* .moe_cache_activity      = */ ggml_backend_cuda_device_moe_cache_activity,
+     /* .moe_cache_set_reserve   = */ ggml_backend_cuda_device_moe_cache_set_reserve,
+     /* .moe_cache_stats         = */ ggml_backend_cuda_device_moe_cache_stats,
+     /* .moe_cache_rearm         = */ ggml_backend_cuda_device_moe_cache_rearm,
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
-index f07573571..00bb40f3d 100644
+index f07573571..92bc85056 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.cu
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -104,6 +104,18 @@ struct table_t {
+@@ -104,6 +104,27 @@ struct table_t {
      std::vector<int32_t> remap_host;    // persistent staging (the async H2D must not race its source)
      std::vector<int32_t> hook_experts;  // the routing the hook last consumed (read-check only)
  
@@ -60,10 +157,19 @@ index f07573571..00bb40f3d 100644
 +    int         prs_slots   = 0;        // slot count the snapshot was built against
 +    std::vector<int32_t> prs_host;      // persistent staging (the async H2D must not race its source)
 +
++    // wip/prefill-arena-residency: the 75/25 freeze.  `slot_frozen[s]` is 1 for the top ~75 % of the
++    // occupied slots (by live count / heat / last use) while a prefill and a decode are active
++    // together.  Decode admission may only evict a slot with `slot_frozen[s] == 0`; the PRS marks only
++    // frozen slots, so a decode fill into the mutable region cannot change what the prefill reads.
++    std::vector<uint8_t> slot_frozen;
++    bool                frozen_valid = false;
++    uint64_t            prs_freeze_gen = 0;
++    int                 n_used_hint = 8;   // experts per token (set by the decode hook; 8 is a safe floor)
++
      // Provisional slots (MOE_EXPERT_CACHE_PROVISIONAL=1): a pre-filled/loaded expert is "provisional"
      // until it is hit.  While it is, the touch doorkeeper is bypassed for it, so the entry is evictable
      // like an empty slot while still serving hits - the model-both-ways behaviour arbitrary pre-fill
-@@ -307,6 +319,17 @@ static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device
+@@ -307,6 +328,30 @@ static void moe_cache_note_unregisterable(const ggml_tensor * weight, int device
  // last staging on that device: during a prefill nothing writes, so the staging keeps overlapping the compute.
  std::atomic<uint64_t>               g_write_seq{1};
  bool                                g_cold_uva        = false;  // MOE_EXPERT_CACHE_COLD=uva: serve rejected misses from the host alias
@@ -78,18 +184,47 @@ index f07573571..00bb40f3d 100644
 +int64_t                             g_stage_decline_usable = 0;
 +int64_t                             g_stage_decline_nomatch = 0;
 +int64_t                             g_prs_rebuilds     = 0;   // immutable snapshot refreshes (churn indicator)
++// wip/prefill-arena-residency: phase-aware freeze.  `g_frozen` is true only while a prefill and a
++// decode are active together (a pure prefill or a pure decode uses the whole arena).  While frozen the
++// top ~75 % of each table's slots is immutable for prefill and decode admission may only evict the
++// bottom ~25 %; `g_freeze_gen` changes only when the frozen set does, so a decode admission to the
++// mutable region does not invalidate the prefill snapshot.
++bool                                g_frozen           = false;
++uint64_t                            g_freeze_gen       = 0;
++int                                 g_freeze_hold      = 0;   // batches to keep the freeze after the prefill leaves the batch
++int                                 g_act_prefill      = 0;
++int                                 g_act_decode       = 0;
++bool                                g_freeze_enabled   = true;  // GGML_MOE_CACHE_FREEZE=0 disables the 75/25 policy (A/B)
++int64_t                             g_freeze_arms      = 0;
++int64_t                             g_freeze_slots_sum = 0;
  int64_t                             g_cold_reaches    = 0;
  // Phase 1b fill-vs-cold admission policy (only consulted when a cold read is available):
  //   0 = always : fill every miss (LFRU eviction is the whole admission control)
-@@ -559,6 +582,7 @@ void parse_env() {
+@@ -559,6 +604,8 @@ void parse_env() {
      // reads the pinned host slice in place (the same bytes the H2D fill would have placed in the
      // slot), and it also lets a small arena represent an overflow (`id = slots + e`).
      g_cold_uva = env_int("MOE_EXPERT_CACHE_COLD_UVA", 1) != 0;
 +    g_stage_cache = env_int("GGML_MOE_CACHE_STAGE", 0) != 0;
++    g_freeze_enabled = env_int("GGML_MOE_CACHE_FREEZE", 1) != 0;
      // Admission: `touch` (measured best at every arena size): a first-touch expert is served cold and
      // only a re-touch is admitted, so one-shot experts stop churning the arena - which raises `h` as
      // well as cutting transferred bytes.
-@@ -2083,6 +2107,39 @@ static __device__ __forceinline__ void moe_cache_policy_copy(char * __restrict__
+@@ -1352,12 +1399,14 @@ moe_cache_alias access_locked(table_t & t, int32_t expert, void * stream,
+     int32_t victim = -1;   // arena resident evicted by this miss (also fetched into the pool: additive)
+     if ((int) t.expert_slot.size() < t.slots) {
+         for (int s = 0; s < t.slots; s++) {
++            if (s < (int) t.slot_frozen.size() && t.slot_frozen[s]) { continue; }
+             if (t.slot_expert[s] < 0) { slot = s; break; }
+         }
+     }
+     if (slot < 0) {
+         // evict the resident with the smallest decaying count; tie -> oldest use.
+         for (int s = 0; s < t.slots; s++) {
++            if (s < (int) t.slot_frozen.size() && t.slot_frozen[s]) { continue; }
+             const int32_t e = t.slot_expert[s];
+             if (e < 0 || is_protected(e)) { continue; }
+             if (victim < 0 || t.count[e] < t.count[victim] ||
+@@ -2083,6 +2132,39 @@ static __device__ __forceinline__ void moe_cache_policy_copy(char * __restrict__
  
  
  
@@ -129,7 +264,7 @@ index f07573571..00bb40f3d 100644
  // Host-weight expert gather (B2, session 15): for an offloaded `MUL_MAT_ID` expert upload, copy only the
  // experts the routing selects, straight from the host master into the scheduler's device `input_cpy`,
  // ON DEVICE.  This replaces the non-staging path's host ids readback (`ggml_backend_tensor_get_async` +
-@@ -2216,6 +2273,8 @@ static void free_table_buffers_locked(table_t & t) {
+@@ -2216,6 +2298,8 @@ static void free_table_buffers_locked(table_t & t) {
          t.arena = nullptr;
      }
      if (t.remap_dev != nullptr){ (void) cudaFree(t.remap_dev); t.remap_dev = nullptr; }
@@ -138,10 +273,134 @@ index f07573571..00bb40f3d 100644
      free_heat_dev_locked(t);   // folds the prefill tally into `heat` before the mirror goes away
      (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
  
-@@ -4066,6 +4125,128 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -2230,6 +2314,9 @@ static void free_table_buffers_locked(table_t & t) {
+     t.remap_n_used   = 0;
+     t.remap_n_tok    = 0;
+     t.slot_dirty     = true;
++    t.slot_frozen.clear();
++    t.frozen_valid   = false;
++    t.prs_freeze_gen = 0;
+     t.slot_expert.clear();
+     t.slot_prov.clear();
+     t.expert_slot.clear();
+@@ -2347,6 +2434,9 @@ void alloc_table_locked(table_t & t, int slots) {
+     (void) cudaMemset(t.arena, 0, arena_size);
+     t.slot_expert.assign(slots, -1);
+     t.slot_prov.assign(slots, 0);
++    t.slot_frozen.assign(slots, 0);
++    t.frozen_valid = false;
++    t.prs_freeze_gen = 0;
+     t.count.assign(t.n_experts, 0);
+     t.ghost.assign(t.n_experts, 0);
+     t.last.assign(t.n_experts, 0);
+@@ -3064,6 +3154,9 @@ static void stand_down_table_locked(table_t & t, int idx) {
+     t.remap_n_tok  = 0;
+     t.slots        = 0;
+     t.slot_dirty   = true;
++    t.slot_frozen.clear();
++    t.frozen_valid = false;
++    t.prs_freeze_gen = 0;
+     t.slot_expert.clear();
+     t.expert_slot.clear();
+     g_arena_bytes -= (int64_t) old_slots * (int64_t) t.expert_bytes;
+@@ -4066,6 +4159,255 @@ bool moe_cache_gather_host(const ggml_tensor * weight, const ggml_tensor * weigh
      return true;
  }
  
++
++// wip/prefill-arena-residency: choose the immutable top ~75 % of this table's occupied slots.  Ranked
++// by live use (`count`) then the persisted prior (`heat`) then MRU (`last`); empty slots stay mutable.
++// At least `n_used_hint` slots stay mutable so a decode miss can still be admitted.
++static void apply_freeze_locked(table_t & t) {
++    t.frozen_valid = true;
++    if (t.slots <= 0) {
++        t.slot_frozen.clear();
++        return;
++    }
++    t.slot_frozen.assign((size_t) t.slots, 0);
++    if (!g_frozen) {
++        return;
++    }
++    const int min_mutable = std::min(t.slots, std::max(1, t.n_used_hint));
++    const int k = std::min(3 * t.slots / 4, t.slots - min_mutable);
++    if (k <= 0) {
++        return;
++    }
++    std::vector<int> order;
++    order.reserve((size_t) t.slots);
++    for (int s = 0; s < t.slots; s++) {
++        if (t.slot_expert[(size_t) s] >= 0) {
++            order.push_back(s);
++        }
++    }
++    std::sort(order.begin(), order.end(), [&](int a, int b) {
++        const int32_t ea = t.slot_expert[(size_t) a];
++        const int32_t eb = t.slot_expert[(size_t) b];
++        const int64_t ca = (ea >= 0 && ea < (int) t.count.size()) ? t.count[(size_t) ea] : 0;
++        const int64_t cb = (eb >= 0 && eb < (int) t.count.size()) ? t.count[(size_t) eb] : 0;
++        if (ca != cb) { return ca > cb; }
++        const int64_t ha = (ea >= 0 && ea < (int) t.heat.size()) ? t.heat[(size_t) ea] : 0;
++        const int64_t hb = (eb >= 0 && eb < (int) t.heat.size()) ? t.heat[(size_t) eb] : 0;
++        if (ha != hb) { return ha > hb; }
++        const int64_t la = (ea >= 0 && ea < (int) t.last.size()) ? t.last[(size_t) ea] : 0;
++        const int64_t lb = (eb >= 0 && eb < (int) t.last.size()) ? t.last[(size_t) eb] : 0;
++        if (la != lb) { return la > lb; }
++        return a < b;
++    });
++    const int n_freeze = std::min(k, (int) order.size());
++    for (int i = 0; i < n_freeze; i++) {
++        t.slot_frozen[(size_t) order[(size_t) i]] = 1;
++        g_freeze_slots_sum++;
++    }
++}
++
++// wip/prefill-arena-residency: per-decode-batch activity from `llama_context::decode`.  Arm only while
++// a prefill and a decode are active together; a pure prefill or a pure decode uses the whole arena.
++// `g_freeze_hold` covers the decode-only batches that can separate two prefill chunks of the same
++// request (the prefill is still in flight, but this batch has no prefill tokens).
++void moe_cache_set_activity(int n_prefill, int n_decode) {
++    if (!g_enabled) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(g_mutex);
++    g_act_prefill = n_prefill;
++    g_act_decode  = n_decode;
++
++    bool want;
++    if (n_prefill > 0 && n_decode > 0) {
++        want = true;
++        g_freeze_hold = 4;
++    } else if (n_decode == 0) {
++        want = false;
++        g_freeze_hold = 0;
++    } else if (n_prefill == 0 && g_frozen) {
++        want = (--g_freeze_hold > 0);
++    } else {
++        want = g_frozen;
++    }
++    if (!g_freeze_enabled) {
++        want = false;
++    }
++    if (want == g_frozen) {
++        return;
++    }
++    g_frozen = want;
++    g_freeze_gen++;
++    g_freeze_hold = want ? 4 : 0;
++    if (want) {
++        g_freeze_arms++;
++        g_freeze_slots_sum = 0;
++    }
++    for (table_t & t : g_tables) {
++        t.frozen_valid = false;
++        if (!want) {
++            t.slot_frozen.clear();
++        }
++    }
++    GGML_LOG_INFO("%s: activity prefill=%d decode=%d -> %s (gen %llu)\n", __func__,
++                  n_prefill, n_decode, want ? "FREEZE top 75% for prefill" : "unfreeze (whole arena)",
++                  (unsigned long long) g_freeze_gen);
++}
 +
 +// wip/prefill-arena-residency (R2): fill a whole-table staging copy from the arena + the pinned host
 +// master.  `host_src`/`offset` identify the registered table (the same key the decode hooks use), and
@@ -206,8 +465,22 @@ index f07573571..00bb40f3d 100644
 +            }
 +            t.prs_n   = t.n_experts;
 +            t.prs_gen = 0;
++            t.prs_freeze_gen = 0;
 +        }
-+        if (t.prs_gen != seq || t.prs_arena != (void *) t.arena || t.prs_slots != t.slots) {
++        // Freeze bookkeeping: choose the immutable top-75 % on the first staging call after an arm,
++        // or after a slab re-arm rebuilt the slots.
++        if (g_frozen && !t.frozen_valid) {
++            apply_freeze_locked(t);
++        }
++
++        const bool arena_moved = t.prs_arena != (void *) t.arena || t.prs_slots != t.slots;
++        // Frozen: the snapshot stays valid across decode admissions to the mutable 25 %, so it is keyed
++        // on the freeze generation, not on `g_write_seq`.  Unfrozen: every cache write can evict any slot.
++        const bool stale = g_frozen
++            ? (t.prs_freeze_gen != g_freeze_gen || arena_moved)
++            : (t.prs_gen != seq || arena_moved);
++        bool rebuilt = false;
++        if (stale) {
 +            if ((int) t.prs_host.size() != t.n_experts) {
 +                t.prs_host.assign((size_t) t.n_experts, -1);
 +            } else {
@@ -215,31 +488,43 @@ index f07573571..00bb40f3d 100644
 +            }
 +            for (const auto & kv : t.expert_slot) {
 +                const int e = kv.first;
-+                if (e >= 0 && e < t.n_experts) {
-+                    t.prs_host[(size_t) e] = kv.second;
++                const int sl = kv.second;
++                if (e < 0 || e >= t.n_experts || sl < 0) {
++                    continue;
 +                }
++                if (g_frozen) {
++                    // The mutable 25 % is deliberately absent: a decode fill there must not change what
++                    // the prefill snapshot points at (it is read from the host instead).
++                    if (sl >= (int) t.slot_frozen.size() || !t.slot_frozen[(size_t) sl]) {
++                        continue;
++                    }
++                }
++                t.prs_host[(size_t) e] = sl;
 +            }
-+            // TODO(freeze, phase 2): while a concurrent decode is active, mark only the frozen top ~75 %
-+            // of the slots here; the mutable 25 % is treated as cold by prefill (campaign README §2.5).
-+            // The first prototype snapshots the whole arena (single-session measurement).
 +            // Upload on the COPY stream: the staging kernel follows it on the same stream, so the map is
 +            // ordered where it is read, and the copy stream is NOT forced to wait for the compute stream
-+            // just because a map was (re)built.  Only an arena write orders against compute below.
++            // just because a map was (re)built.
 +            if (cudaMemcpyAsync(t.prs_dev, t.prs_host.data(), (size_t) t.n_experts * sizeof(int32_t),
 +                                cudaMemcpyHostToDevice, (cudaStream_t) copy_stream) != cudaSuccess) {
 +                (void) cudaGetLastError();
 +                return false;
 +            }
-+            t.prs_gen   = seq;
++            if (g_frozen) {
++                t.prs_freeze_gen = g_freeze_gen;
++            } else {
++                t.prs_gen = seq;
++            }
 +            t.prs_arena = (void *) t.arena;
 +            t.prs_slots = t.slots;
 +            g_prs_rebuilds++;
++            rebuilt = true;
 +        }
 +
-+        // Order the copy stream after the compute stream ONLY when the arena may have been written since
-+        // the last staging on this device (a decode admission between prefill ubatches).  During a pure
-+        // prefill nothing writes, so the staging keeps overlapping the previous split's compute.
-+        if (ordered_seq[device] != seq) {
++        // Order the copy stream after the compute stream ONLY when the snapshot may reference freshly
++        // written arena bytes (a rebuild after an arm/re-arm) or on the unfrozen path (decode may evict
++        // any slot).  While frozen and valid, decode only writes the mutable 25 %, which the snapshot
++        // never references, so the staging keeps overlapping compute.
++        if (rebuilt || (!g_frozen && ordered_seq[device] != seq)) {
 +            if (cudaEventRecord((cudaEvent_t) order_event, (cudaStream_t) compute_stream) != cudaSuccess ||
 +                cudaStreamWaitEvent((cudaStream_t) copy_stream, (cudaEvent_t) order_event, 0) != cudaSuccess) {
 +                (void) cudaGetLastError();
@@ -249,7 +534,14 @@ index f07573571..00bb40f3d 100644
 +        }
 +
 +        {
-+            const int64_t resident = (int64_t) t.expert_slot.size();
++            int64_t resident = 0;
++            for (const auto & kv : t.expert_slot) {
++                const int sl = kv.second;
++                if (!g_frozen ||
++                    (sl >= 0 && sl < (int) t.slot_frozen.size() && t.slot_frozen[(size_t) sl])) {
++                    resident++;
++                }
++            }
 +            g_stage_ok++;
 +            g_stage_arena_bytes += resident * (int64_t) t.expert_bytes;
 +            g_stage_host_bytes  += ((int64_t) t.n_experts - resident) * (int64_t) t.expert_bytes;
@@ -267,7 +559,17 @@ index f07573571..00bb40f3d 100644
  bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weight_cpy,
                             const int32_t * ids, int64_t n_used, int64_t n_tok,
                             size_t ids_nb0, size_t ids_nb1, void * stream,
-@@ -4184,6 +4365,8 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+@@ -4119,6 +4461,9 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
+     }
+     std::lock_guard<std::mutex> lock(g_mutex);
+     table_t & t = g_tables[table];
++    if (n_used > 0) {
++        t.n_used_hint = (int) n_used;
++    }
+ 
+     // wip/moe-expert-cache prefill seed (MOE_EXPERT_CACHE_PREFILL_SEED=1).  A prefill ubatch is never
+     // cache-managed (the arena serves the decode band only), but its routing is the strongest available
+@@ -4184,6 +4529,8 @@ bool moe_cache_update_host(const ggml_tensor * weight, const ggml_tensor * weigh
              // Slab-backed arenas go back to the slab's free list; `cudaFree` can unmap the slab.
              if (old_arena != nullptr) { free_arena_backing(old_device, old_arena, old_reserved, old_slots, t); }
              if (old_remap != nullptr) { (void) cudaFree(old_remap); }
@@ -276,7 +578,7 @@ index f07573571..00bb40f3d 100644
              (void) cudaGetLastError();   // fail soft: a bad free must not abort a run
          }
          t.device = device;
-@@ -4718,6 +4901,16 @@ void moe_cache_report() {
+@@ -4718,6 +5065,20 @@ void moe_cache_report() {
          }
      }
  
@@ -289,15 +591,31 @@ index f07573571..00bb40f3d 100644
 +                      (double) g_stage_arena_bytes / (1024 * 1024), (double) g_stage_host_bytes / (1024 * 1024),
 +                      total > 0 ? 100.0 * (double) g_stage_host_bytes / total : 0.0,
 +                      (long long) g_prs_rebuilds);
++        GGML_LOG_INFO("%s: prefill freeze: state=%s arms=%lld frozen_slots=%lld activity(prefill=%d decode=%d) gen=%llu\n",
++                      __func__, g_frozen ? "FROZEN top-75%" : "whole-arena", (long long) g_freeze_arms,
++                      (long long) g_freeze_slots_sum, g_act_prefill, g_act_decode,
++                      (unsigned long long) g_freeze_gen);
 +    }
      GGML_LOG_INFO("%s: VRAM budget: requested=%s MiB/device, free-clamped=%lld, arena alloc failures=%lld (fail-soft)\n",
                    __func__, budget_desc(), (long long) g_alloc_clamped, (long long) g_alloc_failed);    if (g_acc_hits + g_acc_fills + g_acc_colds > 0) {
          const int64_t acc   = g_acc_hits + g_acc_fills + g_acc_colds;
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.h b/ggml/src/ggml-cuda/moe-expert-cache.h
-index 87d7fd37d..97ef70997 100644
+index 87d7fd37d..18a1815b9 100644
 --- a/ggml/src/ggml-cuda/moe-expert-cache.h
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.h
-@@ -250,6 +250,17 @@ bool moe_cache_gather_host(const struct ggml_tensor * weight, const struct ggml_
+@@ -87,6 +87,11 @@ bool moe_cache_floor_active();
+ // the first call; returns true when the cache remains active.
+ bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserve_bytes);
+ 
++// wip/prefill-arena-residency: per-decode-batch sequence activity.  Arms the 75/25 prefill snapshot
++// freeze only while a prefill and a decode are active together; a pure prefill or a pure decode uses
++// the whole arena.  Safe to call with the cache disabled (no-op).
++void moe_cache_set_activity(int n_prefill, int n_decode);
++
+ // WIP r42 (TODO #42): hold `bytes` of the free VRAM on `device` for the post-prefill compute layout,
+ // so the auto-sized arena does not take the space a later compute growth needs.  Called at the
+ // prefill -> decode transition, before the arena is sized.
+@@ -250,6 +255,17 @@ bool moe_cache_gather_host(const struct ggml_tensor * weight, const struct ggml_
                             const struct ggml_tensor * ids, void * stream, int device,
                             size_t slice_off, int split_axis);
  
@@ -315,3 +633,79 @@ index 87d7fd37d..97ef70997 100644
  // Kernel consumer seam.  Given the op (`op`) and the (redirected) expert table the op will read
  // (`weight_cpy`) plus the CUDA ordinal running it, return the compact arena the op must read instead:
  // `arena` holds `n_slots` experts of `expert_bytes`, and `remap_dev` holds the slot-remapped ids for
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 8798940c0..279bf88a7 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -2915,6 +2915,7 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
+     /* .event_free           = */ ggml_backend_rpc_device_event_free,
+     /* .event_synchronize    = */ ggml_backend_rpc_device_event_synchronize,
+     /* .moe_cache_preflight  = */ nullptr,
++    /* .moe_cache_activity   = */ nullptr,
+     /* .moe_cache_set_reserve = */ nullptr,
+     /* .moe_cache_stats      = */ nullptr,
+     /* .moe_cache_rearm      = */ nullptr,
+diff --git a/include/llama.h b/include/llama.h
+index 2519ee713..5817d5618 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -638,6 +638,11 @@ extern "C" {
+     // (a before/after delta gives the turn's decode hit rate).  Returns false when no cache is active.
+     LLAMA_API bool llama_moe_cache_stats(const struct llama_model * model, int64_t * hits, int64_t * misses, int64_t * arena_bytes);
+ 
++    // wip/prefill-arena-residency: tell the MoE expert cache how many sequences are prefilling and how
++    // many are decoding.  The cache arms its 75/25 prefill snapshot freeze only while both are present;
++    // a pure prefill or a pure decode uses the whole arena.  Server slot states, not batch composition.
++    LLAMA_API void llama_moe_cache_set_activity(const struct llama_model * model, int n_prefill, int n_decode);
++
+     // Host-resident MoE expert bytes on the model's device `dev_index` (same order as
+     // llama_model_get_device).  0 when no expert weight is host-resident on that device.
+     LLAMA_API size_t llama_model_moe_host_expert_bytes(const struct llama_model * model, uint32_t dev_index);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index b72762156..9df7f3c71 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -3975,6 +3975,16 @@ bool llama_moe_cache_stats(const llama_model * model, int64_t * hits, int64_t *
+     return false;
+ }
+ 
++void llama_moe_cache_set_activity(const llama_model * model, int n_prefill, int n_decode) {
++    if (model == nullptr) {
++        return;
++    }
++    // Real devices, not `model->devices` (the Meta wrapper under -sm tensor).
++    for (const auto & kv : model->moe_host_expert_bytes) {
++        ggml_backend_dev_moe_cache_activity(kv.first, n_prefill, n_decode);
++    }
++}
++
+ size_t llama_model_moe_host_expert_bytes(const llama_model * model, uint32_t dev_index) {
+     if (model == nullptr || dev_index >= model->devices.size()) {
+         return 0;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 32765716b..5cd47df4e 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -4174,6 +4174,22 @@ private:
+ 
+         metrics_pre_decode();
+ 
++        // wip/prefill-arena-residency: exact slot-state activity (not batch composition) for the MoE
++        // cache's 75/25 freeze.  A slot is prefilling while it is processing a prompt and decoding
++        // while it is generating; the cache freezes only when both are present.
++        {
++            int n_prefill = 0;
++            int n_decode  = 0;
++            iterate(slots, [&](server_slot & slot) {
++                if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
++                    n_prefill++;
++                } else if (slot.state == SLOT_STATE_GENERATING) {
++                    n_decode++;
++                }
++            });
++            llama_moe_cache_set_activity(llama_get_model(ctx_tgt), n_prefill, n_decode);
++        }
++
+         if (batch.size() == 0) {
+             SRV_WRN("%s", "no tokens to decode\n");
+ 
