@@ -77,6 +77,17 @@ at the alloc asserts.
   residency is 1779.69 / 32.32 t/s versus ~114 / 7.3 for the 54/66 split, which is the number a 24 GiB
   user needs (quant or context, not offload policy).
 
+**gfx1100 cross-check** (`fingon`, single RX 7900 XTX, ROCm 7.14, `build-rocm`): r82 builds there and
+is **byte-identical to r81** for same-seed greedy text (`-ctk/-ctv q8_0`, `-n 128 --seed 42 --temp 0`,
+`prompts/reasoning.txt`) on Qwen3.8-27B Q4_K_M (`1064 chars sha=c606b3d55f24`) and Qwen3.6-35B-A3B
+Q4_K_M (`1046 chars sha=2c04f104b88e`), i.e. inert on a single device.  That box has one card, so it
+cannot exercise `-sm tensor`; the reporter's retest is still the gfx1100 tensor-split confirmation.
+Host-tooling note: `fingon`'s `~/bin/build-llama-rocm` does not honour `BUILD_DIR` and configures
+`build/` against the **system** ROCm 7.1 clang, whose HIP backend crashes on `unary.cu`
+(`Cannot select: bf16 = uint_to_fp`).  That is the Fedora-7.1-header trap from `AGENTS.md`, not a code
+problem: building in the existing `build-rocm` (configured with `/opt/rocm-7.14-gfx1100/lib/llvm/bin/clang`)
+is clean.
+
 **Issue reply**: posted 2026-10-18 (`#issuecomment-6248869022`), draft kept in
 `archive/work/issue-170-meta-alloc/COMMENT-2026-10-18.md`.
 

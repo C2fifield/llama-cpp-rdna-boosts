@@ -195,9 +195,15 @@ an 0.8 % / 2.1 % spread within the gated repeats), and the hook is still doing i
 and 2.2x decode over `--no-op-offload`. The reason is structural: under `-ncmoe` the only host-resident
 weights are the expert tensors, whose op is `MUL_MAT_ID`, which the gate keeps.
 
-* Not validated: gfx1100 itself (no hardware).  The fix is validated at 24 GiB *free-memory* parity,
-  which is the reporter's configuration class.  The reporter has confirmed **ROCm 10.1.0**, the same
-  tree we reproduce on, so the reproduction is not cross-version.
+* **gfx1100 cross-check** (`fingon`, single RX 7900 XTX, gfx1100, ROCm 7.14, `build-rocm`): r82 vs the
+  r81 build on the same box, same-seed greedy with `-ctk/-ctv q8_0`, `-n 128 --seed 42 --temp 0`,
+  `prompts/reasoning.txt`: **byte-identical** on Qwen3.8-27B Q4_K_M (`1064 chars sha=c606b3d55f24`) and
+  Qwen3.6-35B-A3B Q4_K_M (`1046 chars sha=2c04f104b88e`), i.e. the change is inert on a single device.
+  That box has one card, so it **cannot** exercise `-sm tensor` (the code path that changed); the
+  reporter's retest remains the gfx1100 tensor-split confirmation.  The reporter has confirmed
+  **ROCm 10.1.0**, the same tree we reproduce on, so the reproduction is not cross-version.
+* Not validated: gfx1100 with two cards (`-sm tensor`).  The fix is validated at 24 GiB *free-memory*
+  parity on gfx1201, which is the reporter's configuration class.
 
 ## 5. Open questions / next steps
 

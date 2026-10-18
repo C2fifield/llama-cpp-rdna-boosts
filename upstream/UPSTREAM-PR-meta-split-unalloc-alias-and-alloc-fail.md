@@ -99,7 +99,9 @@ card presents a 7900 XTX's free-memory figure (`../archive/work/issue-170-meta-a
 
 * No NVIDIA/MUSA/SYCL/Vulkan hardware: the change is meta-backend-only code, so the other backends are
   untouched by construction.
-* No gfx1100 hardware (the reporter's card). The reproduction is a free-memory-parity reproduction on
-  gfx1201 under the **same ROCm 10.1.0**, which the reporter has confirmed he runs.
+* No *two-card* gfx1100 (the reporter's configuration): we have a single 7900 XTX, on which r82 is
+  byte-identical to r81 for same-seed text, but a single card cannot exercise `-sm tensor`. The
+  reproduction is a free-memory-parity reproduction on gfx1201 under the **same ROCm 10.1.0**, which
+  the reporter has confirmed he runs.
 * The fork-local companion (gating the meta `offload_op` hook to `MUL_MAT_ID`) is not part of this PR;
   upstream does not have the hook at all.
