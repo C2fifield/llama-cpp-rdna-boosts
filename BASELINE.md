@@ -2,9 +2,18 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r81`** (canonical tip `d86db8c92`, net tree
-`0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`).  r81 folds four patches from three contributor PRs into
-**block 10**: M-RoPE / IMROPE admitted to the fused rope + FWHT kernel (PR #175 0001), a BF16
+**`v12-097cf33d9-r83`** (canonical tip `ca236e6b5`, net tree
+`a130971754b5abfb4a153e6fd1144fd578f1154a`).  r83 promotes **prefill cache staging** from
+`archive/work/prefill-arena-residency/` into **block 09** (the engine + the immutable prefill residency
+snapshot) and **block 10** (the `stage_from_cache` hook; it is block 10 that creates
+`ggml-cuda-moe-cache-hooks.cu`).  A whole-table staging copy now fills each expert from the cache arena
+when it is resident and from the pinned host master otherwise, so only the misses cross PCIe; the
+staged bytes and every consumer are unchanged.  Default on (`GGML_MOE_CACHE_STAGE=0` is the kill
+switch).  Measured on gfx1201 (2x R9700, Flash-Next IQ4_NL `-ncmoe 48`): prefill +32-54 %, greedy text
+byte-identical, prefill-logit KLD 0 / 100 %.  Before it, r82 fixes **issue #170** (**blocks 00, 09**:
+an unallocated meta alias resolved through its view chain, a failed constituent allocation returns
+NULL, and the meta `offload_op` hook is limited to `GGML_OP_MUL_MAT_ID`).  Before it, r81 folds four
+patches from three contributor PRs into **block 10**: M-RoPE / IMROPE admitted to the fused rope + FWHT kernel (PR #175 0001), a BF16
 `SET_ROWS` refused by the 5-op norm+rope+set_rows fusion so the fused op cannot abort (PR #175 0002; a
 latent abort on r80 for a NEOX qk-norm model with `-ctk bf16`), the q8_0 K/V cache writes folded into
 that kernel (PR #173, reachable now that the fusion runs on `rope_multi` models), and the GDN q/k l2

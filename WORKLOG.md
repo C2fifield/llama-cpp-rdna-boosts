@@ -1,5 +1,80 @@
 # WORKLOG - dated delivery records
 
+## 261018.003 (r83) -- prefill cache staging: upload only the experts the cache arena does not already hold (blocks 09, 10)
+
+**Release `v12-097cf33d9-r83`**: base `097cf33d9`, canonical tip `ca236e6b5`, net tree
+`a130971754b5abfb4a153e6fd1144fd578f1154a`, **12 blocks** (block 00 + 01-11).  **Block 09 amended** (the
+cache engine) and **block 10 amended** (the staging hook; block 10 is what creates
+`ggml-cuda-moe-cache-hooks.cu`, so the change cannot all live in block 09).  No new block.
+`release.json` regenerated; `validate-set.sh` green (fresh tarball, strict 12/12, tree matches).
+Promoted from `archive/work/prefill-arena-residency/` (the R2 prototype, `r2-prototype.patch`): the revival of
+PR #121's cache-aware staging **without** the device-remap policy removed at r40, plus the smaller
+inspection surface.
+
+**What landed.**  Every prefill ubatch used to push the whole host-resident expert set over PCIe
+(`-ncmoe 48` on a 176B-A3B: 48 layers x 3 tables x ~225 MiB/device ~= **32 GiB/device/ubatch**).  The
+scheduler's whole-table staging copy is now filled by one kernel per table: an expert already resident
+in the cache arena is copied from its slot (D2D, the device's compact `expert_bytes` slice), the rest
+from the pinned host master (H2D), into the ordinary staged table **in expert order**, so every
+consumer is unchanged and the bytes are identical.  Both staging call sites are covered
+(`stage_upload` under `-sm layer`, `stage_gather` under the `-sm tensor` meta split).  The source map
+is a per-table **prefill residency snapshot**: a small device copy of the authoritative host
+`expert_slot`, rebuilt when the cache writes (`g_write_seq`), the arena moves or the slot count
+changes, uploaded on the copy stream (the copy stream is ordered after compute only when the arena
+may have been written, so a pure prefill keeps overlapping), never mutated by decode.  It declines to
+the plain upload for a table the movable-boundary slab stood down mid-prefill, an unpinned host master
+(issue #116) or a geometry mismatch.  **DEFAULT ON**; kill switch `GGML_MOE_CACHE_STAGE=0` restores the
+full whole-table upload.  `moe_cache_report` now prints the staged arena/host split and the H2D
+percentage.  `ENVIRONMENT.md` corrected: the r36 `GGML_MOE_CACHE_INPLACE` row is gone (that path was
+removed at r40) and `GGML_MOE_CACHE_STAGE` is documented as it now behaves.
+
+**Measured** (2x R9700 gfx1201, ROCm 10.1.0, `Qwen3.8-Flash-Next IQ4_NL` 176.9B-A3B, `-sm tensor
+-ncmoe 48 -fa 1 -ctk/-ctv f16 -t 8`, field loader `--load-mode none --lazy-mode off`, greedy `-n 64`
+seed 42, stage 0 = the kill switch):
+
+| prompt / `-ub` | off | **on** | gain | greedy sha |
+|---|---:|---:|---:|---|
+| 15 800 tok / 2048 | 582.1 | **836.4** | +43.7 % | `7171139467ce` |
+| 15 800 tok / 4096 | 1091.6 | **1442.8** | +32.2 % | `a60a39e11133` |
+| 31 555 tok / 4096 | 1182.4 | **1585.0** | +34.1 % | `98800fdba634` |
+| 15 800 tok / 4096, `-sm layer` | 755.0 | **1160.2** | +53.7 % | `37ea05798d5d` |
+| 15 800 tok / 2048, `--host-experts pool` | 472.7 | **662.9** | +40.2 % | `7171139467ce` |
+
+Staged H2D falls to **27.1 %** of the table bytes (arena 46 604 MiB = 71.9 % residency, 368/512
+slots/table), `geom_decline=0`, `nomatch=0`; `unusable` (287-315 tables per run) is the slab standing
+tables down mid-prefill, and those correctly fall back.  PRS rebuilds = one per table per ubatch
+(the map is 2 KiB; the cost is the copy-stream ordering, not the map).  Two-slot concurrency
+(`-np 2`, 64k/slot, `-b/-ub 4096`, harness in `archive/work/prefill-arena-residency/tools/`): long prefill
+**750.8 -> 877.4 t/s**, short prefill **1091.4 -> 1285.2**, and the long decode still collapses to
+~4 t/s under a prefill stream **with the staging off and on** -- that is the serialized two-slot
+scheduler, not this cache.  **Redirect mode** (`GGML_SCHED_STAGE_MODE=1`) is neutral (1437 vs 1443
+t/s, same hash).
+
+**Beta 12 interaction, measured but not delivered** (`beta/0012-slab-transient-absorption`, still a
+beta): on top of this r83 code beta 12 adds **+8.6 … +9.6 %** more prefill (arena 46.6 -> 52.3 GiB,
+residency 71.9 -> 80.7 %, staged H2D 27.1 -> 17.6 %) and costs ~1 % with the staging disabled; both
+apply orders give byte-identical content, and the two-slot stress is unchanged.  So when beta 12
+promotes onto an R2-carrying tree it should be a win on both prefill and decode.  Record:
+`archive/work/prefill-arena-residency/BETA12-INTEGRATION-2026-10-18.md`.
+
+**Gates (delivered tree `ca236e6b5`).**  Same-seed greedy text **byte-identical** to r82 in every pair
+(hashes above; dense `Qwen3.5-4B Q8_0` `1c5d32ac537d` with the staging on, off and unset).
+Prefill-logit (`gate-prefill-logits.sh`, base recorded from the r82 build, PPL 225.1593): **mean KLD
+-0.000000, same-top-p 100.0 %** on the default arm and on the kill-switch arm.  The host-expert MoE
+prefill path is the one this change touches, so it was gated directly too (Flash-Next IQ4_NL, 1 GPU,
+`-ncmoe 48`, ctx 512, 40 wikitext chunks, `--save-all-logits` / `--kl-divergence`, base = the
+kill-switch arm, PPL 2.7445): **max KLD 5.9e-5, same-top-p 100.0 %**.  `gate-qwen4exp-quant-coherence.sh`
+PASS (IQ3_XXS / IQ4_NL / Q4_K_M transparent; one Q4_K_M run hit the documented `-sm tensor` near-tie
+nondeterminism and matched on re-run; IQ4_XS model absent).  Adaptive-MTP 4 axes + phase-switching
+(`Gemma4-26B-A4B` Q4_K_XL + Q4_0 MTP draft, 2 GPUs `-sm layer -ncmoe 20`,
+`GGML_OP_OFFLOAD_MIN_BATCH=1`, `-n 3000`, reasoning pinned, adaptive n7): **exactly equal to r82 on
+every axis** (R 0.66461 2374/3572, P 0.51005 482/945, C 0.76070 2489/3272, K 0.96262 412/428, phase
+0.62752 1806/2878; mean len 4.80 / 2.62 / 5.88 / 6.57 / 2.93), prose text hash `7759fa4a7c8d`.
+`test-backend-ops -o MUL_MAT_ID` 947/947 (3/3 backends).  `check-gpu-faults.sh` clean; no `////`.
+Not run: ROCm 7.14, gfx1100 / gfx1151, 3-GPU, and the stock-relative `llama-batched-bench -npl 1,4,8`
+gate (no decode/mmvq kernel changed -- the staging path is prefill-only and the MTP acceptance is
+identical).
+
 ## 261018.002 (r82) -- beta 12 BETA 2: measure the MTP draft instead of predicting it, and stop capturing inside an armed wide band
 
 **Not a release; a BETA candidate update.**  `beta/0012-slab-transient-absorption` regenerated as one

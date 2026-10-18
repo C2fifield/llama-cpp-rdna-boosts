@@ -11,6 +11,44 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r83` (2026-10-18) -- prefill cache staging: a staging copy uploads only the experts that are not already in the cache arena (blocks 09, 10):**
+> canonical tip `ca236e6b5`, net tree `a130971754b5abfb4a153e6fd1144fd578f1154a`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended (the engine:
+> `moe_cache_stage_table`, the prefill residency snapshot, `moe_cache_stage_kernel`, the report counters)
+> and **Block 10** amended (the hook: `ggml_backend_cuda_stage_from_cache`).  No new block.  **DEFAULT
+> ON**, kill switch `GGML_MOE_CACHE_STAGE=0` restores the full whole-table upload.
+>
+> Every prefill ubatch used to push the whole host-resident expert set over PCIe (48 layers x 3 tables x
+> ~225 MiB/device ~= 32 GiB/device for a `-ncmoe 48` 176B-A3B).  The scheduler's staging copy
+> (`stage_upload` under `-sm layer`, `stage_gather` under the `-sm tensor` meta split) is now filled by
+> one kernel per table: a resident expert is copied from its arena slot (D2D, the device's compact
+> `expert_bytes` slice), the rest from the pinned host master (H2D), into the ordinary staged table in
+> expert order - so every consumer is unchanged and the bytes are identical.  The source map is a
+> per-table **prefill residency snapshot**: a small device copy of the authoritative host `expert_slot`,
+> rebuilt when the cache writes (`g_write_seq`), the arena moves or the slot count changes, uploaded on
+> the copy stream (so the compute stream is not serialised behind it), never mutated by decode, and
+> **not** the device-remap policy removed at r40.  It declines to the plain upload for a table the slab
+> stood down mid-prefill, an unpinned host master (issue #116) or a geometry mismatch.
+> `moe_cache_report` prints the staged arena/host split and the H2D percentage.
+>
+> **Measured** (2x R9700 gfx1201, ROCm 10.1.0, `Qwen3.8-Flash-Next IQ4_NL` 176.9B-A3B, `-sm tensor
+> -ncmoe 48 -fa 1 -ctk/-ctv f16`, `--load-mode none --lazy-mode off`, greedy `-n 64` seed 42): prefill
+> **1092 -> 1443 t/s** (15 800-token prompt, `-ub 4096`, +32 %), **582 -> 836** (`-ub 2048`, +44 %),
+> **1182 -> 1585** (31 555 tokens, +34 %); `-sm layer` **755 -> 1160** (+54 %); `--host-experts pool`
+> 473 -> 663 (+40 %).  Staged H2D falls to **27.1 %** of the table bytes (arena 46.6 GiB = 71.9 %
+> residency, 368/512 slots/table), `geom_decline=0`, `nomatch=0`; `unusable` is the movable-boundary slab
+> standing tables down mid-prefill (they fall back to the plain upload).  Two-slot concurrency (`-np 2`,
+> 64k/slot): long prefill 751 -> 877, short prefill 1091 -> 1285 t/s; the long-decode collapse under a
+> prefill stream is the serialized two-slot scheduler (identical with the staging off and on).
+>
+> **Gates** (delivered tree `ca236e6b5`): same-seed greedy text **byte-identical** to r82 in every pair
+> (`a60a39e11133` 16k/ub4096, `7171139467ce` 16k/ub2048, `98800fdba634` 31.6k, `37ea05798d5d`
+> `-sm layer`; dense 4B `1c5d32ac537d`); prefill-logit **mean KLD -0.000000 / same-top-p 100.0 %**
+> (dense) and **max KLD 5.9e-5 / 100 %** on the host-expert MoE path (`--save-all-logits` /
+> `--kl-divergence`, base = the kill-switch arm); `gate-qwen4exp-quant-coherence.sh` PASS; adaptive-MTP
+> 4 axes + phase probe **identical** (0.66461 / 0.51005 / 0.76070 / 0.96262 / 0.62752); `MUL_MAT_ID`
+> 947/947; redirect mode (`GGML_SCHED_STAGE_MODE=1`) neutral; no GPU faults; no `////`.
+
 > **Current release `v12-097cf33d9-r82` (2026-10-18) -- issue #170: no abort when layers have to stay on the host (blocks 00, 09):**
 > canonical tip `7d238ae80`, net tree `dc48b4a983cba245f71e60ce8825abedac8e2a45`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** amended (`ggml-backend-meta`):

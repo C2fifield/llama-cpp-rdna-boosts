@@ -1,4 +1,4 @@
-From b58fd7215263257a495928834b7c8fc7e2011e79 Mon Sep 17 00:00:00 2001
+From 9255b89e0c3a81f84378bc0bb2ab2a7eb020874e Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -59,6 +59,14 @@ the rope + FWHT fusion that #172 and #174 put here in r78):
 Rejected in the same review: PR #177 (GDN direct conv also writes the recurrent snapshot tails).  It is
 not run-to-run deterministic on the 35B-A3B prefill under HIP graph capture and does not reproduce the
 stock logits there; record in archive/work/gdn-conv-snapshot-fold/.
+
+Prefill cache staging hook (r83): ggml_backend_cuda_stage_from_cache is live again for the expert-cache
+arena.  The scheduler's whole-table staging copy of a host-resident expert table (stage_upload for
+-sm layer, stage_gather for the -sm tensor meta split) is filled by one kernel from the arena (resident
+experts, D2D) + the pinned host master (the rest, H2D) instead of a full H2D re-upload; the destination
+is the ordinary staged table in expert order, so every consumer is unchanged.  It declines to the plain
+upload for an unusable/stood-down table, an unpinned host master or a geometry mismatch.  Kill switch
+GGML_MOE_CACHE_STAGE=0.
 ---
  common/arg.cpp                                |    3 +-
  ggml/include/ggml-alloc.h                     |   13 +
@@ -90,7 +98,7 @@ stock logits there; record in archive/work/gdn-conv-snapshot-fold/.
  ggml/src/ggml-cuda/gdn-conv.cuh               |    1 +
  ggml/src/ggml-cuda/ggml-cuda-arena.cu         |   57 +
  ggml/src/ggml-cuda/ggml-cuda-arena.cuh        |   11 +
- .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  238 +
+ .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  256 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cuh   |   26 +
  ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1224 +++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2540 +++++++++
@@ -164,7 +172,7 @@ stock logits there; record in archive/work/gdn-conv-snapshot-fold/.
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 104 files changed, 20447 insertions(+), 4975 deletions(-)
+ 104 files changed, 20465 insertions(+), 4975 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -4555,10 +4563,10 @@ index 000000000..215139a25
 +size_t ggml_backend_cuda_buffer_type_get_compute_chunk_bytes(ggml_backend_buffer_type_t buft);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
 new file mode 100644
-index 000000000..a443887e4
+index 000000000..41ce3deba
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.cu
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,256 @@
 +// MoE expert-cache callbacks + op-offload staging hooks (block 06/09) and the FA/H2D staging
 +// accounting.  Split out of ggml-cuda.cu (an upstream hub).
 +
@@ -4578,14 +4586,32 @@ index 000000000..a443887e4
 +    return cuda_ctx->h2d_stage_buffer(slot, size);
 +}
 +
-+// MoE expert cache: whole-table staging from the cache arena (removed with the device-remap path; this
-+// now always declines so the caller falls back to the plain staging upload).
++// MoE expert cache: whole-table staging from the cache arena.  Fills the ring slot from the immutable
++// prefill residency snapshot (an arena slot for a resident expert, the pinned host master for the rest),
++// so only the non-resident experts cross PCIe; declines (false) when the table is not
++// cache-managed/usable, so the caller falls back to the plain upload.  Kill switch
++// `GGML_MOE_CACHE_STAGE=0`.  The deferred (in-place) read of the r36 design is not used: `defer` is
++// ignored and the destination is always filled.
 +static bool ggml_backend_cuda_stage_from_cache(ggml_backend_cuda_context * cuda_ctx, const void * src, size_t offset,
 +        size_t width, size_t stride_src, size_t n_copies, void * dst, ggml_backend_event_t ev, bool defer) {
-+    // The cache no longer participates in whole-table staging (that path required the device slot map).
-+    GGML_UNUSED(cuda_ctx); GGML_UNUSED(src); GGML_UNUSED(offset); GGML_UNUSED(width); GGML_UNUSED(stride_src);
-+    GGML_UNUSED(n_copies); GGML_UNUSED(dst); GGML_UNUSED(ev); GGML_UNUSED(defer);
-+    return false;
++    GGML_UNUSED(defer);
++    if (!moe_cache_enabled()) {
++        return false;
++    }
++    static cudaEvent_t order_ev[GGML_CUDA_MAX_DEVICES] = {};
++    const int dev = cuda_ctx->device;
++    if (order_ev[dev] == nullptr && cudaEventCreateWithFlags(&order_ev[dev], cudaEventDisableTiming) != cudaSuccess) {
++        (void) cudaGetLastError();
++        order_ev[dev] = nullptr;
++        return false;
++    }
++    cudaStream_t s = cuda_ctx->copy_stream();
++    if (!moe_cache_stage_table(dev, src, offset, width, stride_src, n_copies, dst,
++                               cuda_ctx->stream(), s, order_ev[dev])) {
++        return false;
++    }
++    CUDA_CHECK(cudaEventRecord((cudaEvent_t) ev->context, s));
++    return true;
 +}
 +
 +void ggml_backend_cuda_stage_upload(ggml_backend_t backend, void * dst, const void * data, size_t size, ggml_backend_event_t ev) {

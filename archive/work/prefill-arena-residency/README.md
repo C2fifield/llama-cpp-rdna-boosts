@@ -1,12 +1,21 @@
 # `prefill-arena-residency` — serve prefill from the expert-cache arena, upload only the misses
 
-**Status: OPEN / ACTIVE (seeded 2026-10-18; beta-12 integration + full gate matrix green 2026-10-18 —
-awaiting the maintainer's go-ahead for the delivery prep).**
+**Status: PROMOTED (r83, 2026-10-18) — closed; the record is kept here for reference.**
+The R2 prototype (cache-aware whole-table staging + the immutable prefill residency snapshot, no freeze)
+is folded into **block 09** (the engine) and **block 10** (the `stage_from_cache` hook), default-on with
+`GGML_MOE_CACHE_STAGE=0` as the kill switch; see `WORKLOG.md` 261018.003.  The measured result on the
+delivered tree: prefill **+32-54 %** on a host-expert MoE, greedy text byte-identical, prefill-logit
+KLD 0 / 100 %.  Not promoted: the 75/25 freeze (measured net loss, dropped) and R1 (the in-place MMQ
+read, still the follow-on if the remaining ring copy is material); the coexistence limit is the
+serialized scheduler — see `../moe-cpu-overlap/`.
+
+Original campaign header follows.
+
+**Status (as seeded/written): OPEN / ACTIVE.**
 Maintainer decision: the old mutating device-remap implementation is NOT to return; a greatly reduced,
 focused, immutable-after-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging +
 PRS) is implemented and measured; the phase-aware 75/25 freeze was measured as a net prefill loss with
-no decode gain and **dropped**.  R1 remains.  Not part of the delivery; nothing here may be applied to
-the fork or to `patches/` without the maintainer's go-ahead (WIP and promotion rules in `AGENTS.md`).
+no decode gain and **dropped**.  R1 remains.
 
 > **Decision (2026-10-18).**
 > * **Not revived:** `DEVMAP` / `DEVPOLICY` / `KSLOT` / `DEV_EAGER`, the mutating `slot_dev` device

@@ -223,8 +223,10 @@ configuration.
 | `GGML_STAGE_META_REDIRECT` | off | diagnostic | meta redirection instead of the explicit d2d completion. |
 | `GGML_STAGE_NO_RESTORE` | off | diagnostic | skip the redirect restore (debug only — unsafe). |
 | `GGML_STAGE_GATHER_SCRATCH` | off | diagnostic | force the gather scratch path. |
-| `GGML_MOE_CACHE_INPLACE` | on | kill-switch | r36.  With `-ncmoe` host experts, `0` keeps the cache-aware staging copy (arena + host, one kernel) instead of reading the routed table in place. |
-| `GGML_MOE_CACHE_STAGE` | on | kill-switch | r36.  `0` restores the plain whole-table upload (pre-r36 behaviour, the full staging copy). |
+| `GGML_MOE_CACHE_STAGE` | on | kill-switch | r83.  With `-ncmoe`/`-cmoe` host experts, a whole-table staging copy is filled from the expert-cache arena for the experts already resident and from the pinned host master for the rest, so only the non-resident experts cross PCIe.  `0` restores the full whole-table upload.  It declines to the plain upload for a table the slab stood down mid-prefill, an unpinned host master or a geometry mismatch; `moe_cache_report` prints the staged arena/host split and the H2D percentage. |
+
+`GGML_MOE_CACHE_INPLACE` (r36) was removed with the device-remap path at r40 and is not read by this
+set; the cache-aware staging above is the only prefill residency path.
 
 ---
 

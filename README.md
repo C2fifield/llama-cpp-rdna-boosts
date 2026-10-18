@@ -12,10 +12,13 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r81`**; it puts the
-rope + FWHT fusion on the M-RoPE models (every Qwen3.x here), folds the q8_0 K/V cache writes into that
-kernel, pairs the GDN q/k l2 norms into one launch, and closes a latent BF16-KV abort in the 5-op
-norm+rope fusion.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r83`**; it lets a prefill
+re-use the MoE expert cache: a whole-table staging copy now uploads only the experts that are not
+already resident in the cache arena, instead of pushing the whole host-resident expert set over PCIe
+every ubatch.  Measured on `Qwen3.8-Flash-Next IQ4_NL` (176.9B-A3B, 2x R9700, `-sm tensor -ncmoe 48`):
+prefill **+32 % / +44 % / +34 %** at 16k/`-ub 4096`, 16k/`-ub 2048` and 31.6k, greedy output
+byte-identical.  It also carries r82's issue #170 fix (no abort when `--fit` has to leave layers on the
+host) and r81's rope + FWHT fusion / GDN norm pairing work.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -155,8 +158,8 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
 | `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
-| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52) |
+| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83) |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the

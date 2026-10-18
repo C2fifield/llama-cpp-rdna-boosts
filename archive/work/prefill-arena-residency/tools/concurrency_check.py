@@ -235,7 +235,7 @@ def cache_report(log_path):
     with open(log_path, errors="replace") as f:
         for line in f:
             if any(k in line for k in (
-                "prefill cache staging (R2)", "prefill freeze", "activity prefill",
+                "prefill cache staging", "prefill freeze", "activity prefill",
                 "MoE expert cache:", "per-device sizing")):
                 kept.append(line.rstrip())
     return kept
