@@ -5,9 +5,19 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r79`** (canonical tip `8408293e2`, net tree
-`c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r79 folds PR #167 into **blocks 07/10**: the MoE expert
+**`097cf33d9`**, released as **`v12-097cf33d9-r81`** (canonical tip `d86db8c92`, net tree
+`0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r81 folds four patches from three contributor PRs into
+**block 10**: the rope + FWHT fusion extended to `GGML_ROPE_TYPE_MROPE` / `IMROPE` (PR #175 0001), a
+BF16 `SET_ROWS` declined by the 5-op norm+rope+set_rows fusion so the fused op cannot abort (PR #175
+0002, a latent abort on r80), the q8_0 K/V cache writes folded into that kernel (PR #173) and the GDN
+q/k l2 norms paired into one launch (PR #179).  All bit-identical; gfx1201 gates: same-seed text
+**byte-identical to r80** on 35B-A3B and the dense 27B (also with `GGML_CUDA_GRAPH_OPT=1`), width probe
+maxdiff **0** with the r80 hashes at P=256/3584, prefill-logit **0.000000 / 100.000 %** on both,
+`RMS_NORM_MUL_ROPE` 298/298.  MoE 2-GPU tensor tg256 **114.4 -> 117.4 t/s (+2.7 %)**, MTP decode
++1.0-1.7 %, prefill and the verify widths flat.  PR #177 (GDN conv snapshot fold) was rejected: not
+run-to-run deterministic on 35B-A3B.  Before it, r80 fixes the MoE heat-map doubling (**block 09**).
+Before it, r79 folds PR #167 into **blocks 07/10**: the MoE expert
 kernel takes `vec_dot_q4_K_q8_1_vdr4_dense` (same layout and VDR 4, one integer chain per sub-block),
 **default on RDNA3_0** and an **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`, off by
 default; the ccache host-visibility constant ships with it).  **Block 10** also flips the PR #168 KV

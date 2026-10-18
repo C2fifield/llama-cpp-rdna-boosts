@@ -1,5 +1,89 @@
 # WORKLOG - dated delivery records
 
+## 261017.008 (r81) -- rope + FWHT fusion on M-RoPE, the q8_0 K/V cache write folded into it, paired GDN q/k norms (PRs #175, #173, #179); #177 rejected
+
+**Release `v12-097cf33d9-r81`**: base `097cf33d9`, canonical tip `d86db8c92`, net tree
+`0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`, **12 blocks** (block 00 + 01-11).  **Block 10** amended, no new
+block (`patches/0010-*`, message extended with the four folded patches).  `release.json` regenerated;
+`validate-set.sh` green (fresh tarball, strict 12/12, tree matches).
+
+**What landed (all bit-identical, from five contributor PRs reviewed together):**
+
+* **#175 0001** -- `GGML_ROPE_TYPE_MROPE` / `IMROPE` admitted to `ggml_cuda_should_fuse_rms_norm_mul_rope`,
+  with theta computed in the kernel from `rope_multi`'s own section selection (NEOX pairing, `n_offs == 0`,
+  VISION still rejected).  This is the TODO item recorded against #172 (the MROPE gap): it is what makes
+  the rope-fusion class reach the Qwen3.x models instead of only Gemma4 / gpt-oss-20b.
+* **#175 0002** -- a **BF16** `SET_ROWS` is declined by the 5-op `RMS_NORM, MUL, ROPE, VIEW, SET_ROWS`
+  match.  That fusion runs `ggml_cuda_op_rms_norm_mul_rope_fused`, which writes F32 / F16 rows only and
+  otherwise aborts, while `ggml_cuda_should_fuse_rope_set_rows` admits BF16: a latent abort on r80 for a
+  NEOX qk-norm model with `-ctk bf16`, and reachable for the Qwen3.x models once 0001 lands.  **Checked:
+  0001 alone aborts at `rope.cu:1087` on the 27B with bf16 KV; 0001 + 0002 is clean and byte-identical to
+  r80.**  (No model on this box reproduced the pre-0001 abort: Gemma4 12B and gpt-oss-20b with bf16 KV are
+  clean on stock r80, so the latent half is unverified here -- the 0001-reachable half is not.)
+* **#173** -- the q8_0 K and V cache writes folded into the fused rope kernel (warp 0 quantizes the rotated
+  K row from its FWHT registers, each block its slice of the V row, through
+  `ggml_cuda_quantize_q8_0_group`, i.e. `k_set_rows_q8_0_group`'s body moved into `set-rows.cuh`).  Only the
+  K write is folded inside a concurrent-stream region (`GGML_CUDA_GRAPH_OPT=1`).  This is the PR rejected at
+  r78 because its matcher could not fire; #175 is what makes it reachable (qwen35/qwen35moe use the
+  non-iSWA `build_attn`, which expands K last), exactly the re-entry condition recorded then.
+* **#179** -- the GDN q and k l2 norms in one `rms_norm_scale_pair_f32<256>` launch (blocks `[0, nrows)` q,
+  `[nrows, 2*nrows)` k, same per-row body).  Matcher: no-op nodes only between the two pairs, both inputs
+  F32 views of one `view_src` with equal shape/strides/eps/scale, and the second input must not read the
+  first pair's output.
+* Kill switches: `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE`, `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS`
+  (presence-only), `GGML_CUDA_DISABLE_NORM_PAIR=1`.  `ENVIRONMENT.md` §7.1-§7.3 updated.
+
+**Rejected: #177 (`gdn-conv-snapshot-fold`).**  The direct GDN conv also writing the recurrent snapshot
+ tails is **not run-to-run deterministic** on this box, so it is out on purity grounds, not on speed:
+
+* 35B-A3B Q4_K_M, 1 GPU, `test-logits-width-probe` P=256: stock r80 is stable at `W8=dfcb48a5be95c5ac`
+  (5+ runs, and identical on the #175 / #179 / #173 arms); r80 + #177 gave **two distinct results in four
+  runs** (`W8=48272966cab954fb`, row-0 `907b3e9c40b8c546`, and `W8=cb29e653528bddcf`, row-0
+  `361d76c6d5ff877e`).  `width_purity` still reports maxdiff 0 within a run -- the difference is between
+  runs, in the prefill.
+* `GGML_CUDA_DISABLE_GDN_CONV_SNAP=1` reproduces stock exactly (`dfcb48a5be95c5ac`, twice), so the patch is
+  the cause.  With `GGML_CUDA_DISABLE_GRAPHS=1` the patched value is stable (`48272966...`) but still not
+  stock's, so the capture path adds a second, independent divergence on top.
+* Dense 27B is identical to stock at both P values, and the 400-token greedy text is stable and identical
+  to r80 on 35B-A3B (3 runs), so this is a logits-level/prefill effect that the text and KLD gates do not
+  see (prefill-logit KLD on both models is 0.000000 / 100.000 % for the patched arm as well).
+* The **speed win is real**: 27B MTP decode 1 GPU 52.8 -> 53.3-53.4 t/s (+1.0 %); MoE 2-GPU tensor tg256
+  and pp31500 flat.  Re-entry is a deterministic result; record in `archive/work/gdn-conv-snapshot-fold/`.
+
+**Verification (gfx1201, 3x R9700, ROCm 10.1.0, `~/bin/build-llama-rocm`, r81 built from the applied set at
+`097cf33d9`):**
+
+* Same-seed greedy text **byte-identical to r80** in six arms -- 35B-A3B Q4_K_M `sha ecb4e0796ba5` (1588
+  chars) and dense 27B UD-Q4_K_XL `sha 980719527364` (1719 chars), 3-GPU tensor, q8_0 KV, `--spec-type
+  none` == `draft-mtp --spec-draft-n-max 3`, each also with `GGML_CUDA_GRAPH_OPT=1`.
+* `test-logits-width-probe` PASS, worst maxdiff **0**, hashes identical to r80 at P=256 and P=3584 on both
+  models (35B-A3B `dfcb48a5be95c5ac` / `411dbddc12367530`, row-0 `a44efecb25966236` / `513ac4a7cf4c5f4b`;
+  27B `1dc6005a73f0e23f` / `1a12e8c36005890e`, row-0 `96905fdd2fe775ae` / `c6872278f34fa35f`).
+* Prefill-logit KLD **0.000000 / 100.000 %** on both models against bases recorded from the stock r80
+  build (1 GPU, ctx 512, 40 chunks, wikitext-2 test).
+* `test-backend-ops`: `RMS_NORM_MUL_ROPE` **298/298**, `ROPE` 450/450, `SET_ROWS` 159/159, `RMS_NORM`
+  53/53, `SCALE` 7/7, `CONCAT` 183/183, `CPY` 251/251, `SSM_CONV` 45/45.  No GPU faults
+  (`scripts/check-gpu-faults.sh`).
+* Launches (rocprofv3, 35B-A3B 1 GPU, 120-token decode): `rope_multi` 2500 -> 40, `fwht_cuda<256>`
+  2500 -> 40, `rms_norm_f32<256,true,false,false>` 6120 -> 3660, `k_set_rows_q8_0_group` 2500 -> 20,
+  `rms_norm_f32<256,false,false,true>` 7500 -> 3750; `rms_norm_mul_rope_f32<256,false,float,256>` appears
+  (1220 Q + 1240 K-with-cache-writes) and `rms_norm_scale_pair_f32<256>` 3750.  Total kernels 140131 ->
+  ~129k across the three fusions.
+* Perf, 2-GPU tensor, 35B-A3B Q4_K_M, q8_0 KV, interleaved rounds: tg256 **114.33-114.67 -> 117.30-117.49
+  t/s (+2.7 %)**; `draft-mtp` n3 `-n 400` **176.1-178.3 -> 178.3-181.3**; `pp512`, `pp31500` and
+  `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` flat (B=1 0.52-0.54 -> 0.52-0.57 s, B=4 1.23 -> 1.23,
+  B=8 0.60 -> 0.60).  Dense 27B 1-GPU layer MTP decode 52.8 -> 53.2 (+0.8 %).  Per arm: #175 +1.15 %
+  tg256, #179 +1.2 % (3/3 rounds), #173 +0.4 % on top of #175.
+* Contributor-claim deltas: their 2-GPU tensor **+11.7 % prefill 31.5k** for #175 does **not** reproduce
+  (4470 -> 4469 t/s, flat), and their 27B +0.7 % for #173 is flat here (53.1 both arms).  Everything else
+  reproduced (decode percentages, kernel counts, hashes, KLD, backend-ops counts).
+
+**Records:** `patches/README.md` (release note + block 10), `ENVIRONMENT.md` §7.1-§7.3,
+`archive/work/mrope-rope-fusion/`, `archive/work/kv-cache-q8-write/RESOLUTION.md` (updated: the r78
+rejection is resolved by #175), `archive/work/gdn-l2-norm-pair/`,
+`archive/work/gdn-conv-snapshot-fold/` (rejected).  PR #169 (`spec-batch-budget`) stays open and unchanged:
+none of these three fusions touches the >8-row verify path that governs its verdict.
+
 ## 261017.007 -- beta 12: `slab-transient-absorption` staged for a beta test, and `apply-all.sh --include-beta`
 
 **No release change** (`release.json` untouched, no block amended, no tag).  New: `beta/0012-slab-transient-

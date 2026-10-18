@@ -639,22 +639,32 @@ references block-15 struct members such as `out_xn_bf16` / `store_xn_f32`), and 
 `ggml-backend-meta.cpp` move is blocked on the block-15 `ggml_backend_device_i` / `ggml_backend_i`
 fields.  Spec: `archive/work/r50-merge-hygiene/REDISTRIBUTION.md`.
 
-## Rejected PR #173 (`kv-cache-q8-write`) re-entry, and the MROPE gap in PR #172
+## CLOSED (r81) -- PR #173 (`kv-cache-q8-write`) re-entry and the MROPE gap in PR #172
 
-**#173 is not shipped (r78):** its matcher folds the q8_0 K/V cache `SET_ROWS` launches into the #172
-fused rope kernel, but it cannot fire on the current tree.  It needs the K cache `VIEW, SET_ROWS` to
-immediately follow the K rotation's `RESHAPE`, and the **ISWA** graph builder
-(`build_attn(llm_graph_input_attn_kv_iswa*)` in `src/llama-graph.cpp`) expands `q_cur, k_cur, v_cur` and
-only then the two cache writes, so the V projection/norm/rotation sit in between; the non-iSWA builders
-already expand `q_cur, v_cur, k_cur` for exactly this reason.  Re-entry needs either a bounded-window
-match that tolerates the interposed V block, or the ISWA expand reorder measured on its own (graph
-splits), plus a trace showing the two `set_rows` launches are gone.  Detail:
-`archive/work/kv-cache-q8-write/RESOLUTION.md`.
+**Both are shipped in `v12-097cf33d9-r81` (block 10), via PR #175:**
 
-**The larger reachable win is the MROPE gap:** #172's fused rope kernel requires `GGML_ROPE_TYPE_NORMAL`
-or `NEOX`, and every Qwen3.x model on this box (3.5/3.6/3.8) runs `rope_multi`.  So the whole
-rope+FWHT fusion class -- #172 and, with it, #173's K/V cache write -- is inert on the maintainer's
-primary models, and only fires on Gemma4 / gpt-oss-20b.  Extending the fused kernel to `GGML_ROPE_TYPE_MROPE`
-(same in-warp FWHT, `mrope_sections` from `rope_multi`) would put both fusions on the 27B and 35B-A3B
-paths.  Needs the same gate set as #172 (greedy hash identity, `W=1..8` probe, prefill-logit against a
-recorded base, decode t/s at 2 and 3 GPUs).
+- The **MROPE gap** is closed: `GGML_ROPE_TYPE_MROPE` / `IMROPE` are admitted by
+  `ggml_cuda_should_fuse_rms_norm_mul_rope` and the kernel computes theta from `rope_multi`'s own section
+  selection, so the rope + FWHT fusion now runs on every Qwen3.x model (traced: `rope_multi` 2500 -> 40 on
+  a 35B-A3B decode).  `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE=1` restores the r78 matcher.
+- **#173's matcher now fires**, because qwen35/qwen35moe build attention through the **non-iSWA**
+  `build_attn`, which expands K last; the q8_0 K and V cache `SET_ROWS` launches are folded into the fused
+  rope kernel (traced: `k_set_rows_q8_0_group` 2500 -> 20).  `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS=1`
+  restores them.
+
+PR #175 0002 also closes a **latent abort** found while testing the pair: the 5-op `RMS_NORM, MUL, ROPE,
+VIEW, SET_ROWS` fusion runs `ggml_cuda_op_rms_norm_mul_rope_fused`, which writes F32 / F16 rows only and
+otherwise aborts, but `ggml_cuda_should_fuse_rope_set_rows` admits a BF16 `SET_ROWS`.  A NEOX qk-norm model
+with `-ctk bf16` can reach it on r78 (not reproducible on this box's model set); the 5-op match now
+declines BF16 and the `RMS_NORM + MUL + ROPE` fusion plus a plain `SET_ROWS` take it.
+
+Validation (r80 against r81 built from the applied set, gfx1201): same-seed text byte-identical on 35B-A3B
+and 27B, width probe maxdiff 0 with the r80 hashes at P=256/3584, prefill-logit **0.000000 / 100.000 %** on
+both models, `RMS_NORM_MUL_ROPE` 298/298, MoE 2-GPU tensor tg256 **+2.7 %**, dense 27B MTP +0.8 %.  Record:
+`WORKLOG.md` 261017.008.
+
+**Still open in this area (not shipped):** the **ISWA** ordering seen at r78 -- `build_attn(llm_graph_input_attn_kv_iswa*)`
+expands `q_cur, k_cur, v_cur` and only then the two cache writes, so the V block sits between the K rotation
+and the K cache write.  #173 is therefore still inert on iSWA models (Gemma4).  Either a bounded-window match
+that tolerates the interposed V block, or the iSWA expand reorder measured on its own (graph splits), plus a
+trace showing the two `set_rows` launches are gone.  Detail: `archive/work/kv-cache-q8-write/RESOLUTION.md`.

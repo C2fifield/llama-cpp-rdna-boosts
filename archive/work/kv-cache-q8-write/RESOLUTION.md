@@ -1,8 +1,37 @@
 # RESOLUTION -- `kv-cache-q8-write` (PR #173, @briansp2020)
 
-**Status: REJECTED for `v12-097cf33d9-r78` (2026-10-17) -- not shipped.  Re-entry conditions below.**
-The contributor's format-patch and write-up are preserved here.  Nothing was left behind as a `wip/`
-stub (the campaign arrived as a PR branch, never on `main`'s `wip/`).
+**Status: Resolved in two stages.  REJECTED for `v12-097cf33d9-r78` (2026-10-17), then SHIPPED in
+`v12-097cf33d9-r81` (2026-10-17) as part of block 10 -- the re-entry conditions below were met by the
+rebased patch (`0001-...-r80.patch` here) on top of PR #175.**
+
+The contributor's original format-patch (r71), the r80-rebased one, and both write-ups are preserved
+here.  The r78 rejection text below is kept as written; read it as `why it was rejected at r78`, not as
+the current state.
+
+## r81 (shipped): how the re-entry conditions were met
+
+1. **Rebase** on the r78 set: done, `0001-...-r80.patch` applies on `v12-097cf33d9-r80` + #175 (tree
+   `67245faf`), unchanged in substance.
+2. **Matcher fires.** The Qwen3.x models are not reachable via the iSWA builder; qwen35 / qwen35moe use
+   the **non-iSWA** `build_attn`, which expands K last, so the K cache write follows the K rotation.  The
+   iSWA ordering for Gemma4 is unchanged and still not matched (see `TODO.md`).  Traced on gfx1201
+   35B-A3B 1 GPU, 120-token decode: `k_set_rows_q8_0_group` **2500 -> 20**, and
+   `rms_norm_mul_rope_f32<256,false,float,256>` splits into 1220 Q writes and 1240 K + cache writes.
+3. **Re-measured** on models where it fires: same-seed text byte-identical to r80 and to r80 + #175 in
+   six arms (35B-A3B `sha ecb4e0796ba5`, 27B `sha 980719527364`), width probe PASS maxdiff 0 with the r80
+   hashes at P=256/3584, prefill-logit **0.000000 / 100.000 %** on both models, `SET_ROWS` 159/159,
+   `ROPE` 450/450, `RMS_NORM_MUL_ROPE` 298/298.  Decode on top of #175 (2-GPU tensor, 35B-A3B): tg256
+   115.67 / 115.46 -> 116.17 / 115.83 (**+0.4 %**), `draft-mtp` flat; dense 27B MTP decode flat (53.1 both
+   arms, so their +0.7 % does not reproduce).
+4. Pairing it with the M-RoPE extension (#175) is exactly what made it reachable; the note in `TODO.md`
+   was the right call.
+
+---
+
+# r78 record (kept as written at rejection)
+
+**Status at r78: REJECTED for `v12-097cf33d9-r78` -- not shipped.  Re-entry conditions below.**
+The contributor's format-patch and write-up are preserved here.
 
 ## What it does
 

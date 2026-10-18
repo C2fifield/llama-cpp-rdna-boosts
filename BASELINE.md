@@ -2,8 +2,17 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r79`** (canonical tip `8408293e2`, net tree
-`c9ed11139a9a1e469bff18b037aef9cc1b0b2c93`).  r79 folds PR #167 into **blocks 07/10**: the MoE
+**`v12-097cf33d9-r81`** (canonical tip `d86db8c92`, net tree
+`0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`).  r81 folds four patches from three contributor PRs into
+**block 10**: M-RoPE / IMROPE admitted to the fused rope + FWHT kernel (PR #175 0001), a BF16
+`SET_ROWS` refused by the 5-op norm+rope+set_rows fusion so the fused op cannot abort (PR #175 0002; a
+latent abort on r80 for a NEOX qk-norm model with `-ctk bf16`), the q8_0 K/V cache writes folded into
+that kernel (PR #173, reachable now that the fusion runs on `rope_multi` models), and the GDN q/k l2
+norms paired into one launch (PR #179).  All bit-identical: same-seed text byte-identical to r80 on
+35B-A3B and dense 27B, width probe maxdiff 0 with the r80 hashes, prefill-logit 0.000000 / 100.000 % on
+both.  PR #177 (GDN conv snapshot fold) was rejected -- not run-to-run deterministic on 35B-A3B -- and
+its record is `archive/work/gdn-conv-snapshot-fold/`.  Before it, r80 fixes the MoE heat-map doubling
+(**block 09**).  Before it, r79 folds PR #167 into **blocks 07/10**: the MoE
 expert kernel takes the 32-element dense Q4_K dot product (same layout and VDR 4, one integer chain per
 sub-block), **default on RDNA3_0** and a **RDNA4 build-time opt-in** (`-DGGML_HIP_RDNA4_Q4K_MOE_VDR4`,
 off by default; the ccache host-visibility constant ships with it).  **Block 10** also makes the PR #168

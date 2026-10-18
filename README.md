@@ -12,9 +12,10 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r79`**; it makes the
-multi-GPU KV prefill pad default-on (inactive on a single GPU) and adds the RDNA3_0 MoE Q4_K VDR-4 dot
-product, with the RDNA4 arm available as a build-time opt-in.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r81`**; it puts the
+rope + FWHT fusion on the M-RoPE models (every Qwen3.x here), folds the q8_0 K/V cache writes into that
+kernel, pairs the GDN q/k l2 norms into one launch, and closes a latent BF16-KV abort in the 5-op
+norm+rope fusion.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

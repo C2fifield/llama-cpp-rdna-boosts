@@ -335,6 +335,8 @@ These use `getenv(...) == nullptr || atoi(...) != 0`, so unset = **on** and `0` 
 The same idiom — and therefore also default-on despite the name — covers
 `GGML_CUDA_DISABLE_IDX_RELU_SUM`, `GGML_CUDA_CONCAT_VERIFY` and (r46, block 15) `GGML_CUDA_FUSE_GDN_STATE_GATHER`.
 
+`GGML_CUDA_DISABLE_NORM_PAIR` is value-gated (listed with §7.2): `0` keeps the paired GDN q/k norm.
+
 `GGML_CUDA_FUSE_ADD_RMS_Q8=0` (r78) is the A/B switch for the **single-token** ADD + `rms_norm_q8_1`
 fusion as well as the verify band: the r78 change dropped the old `ne[1] > 1` gate, so the FFN residual
 ADD after an MoE/`ffn_out` producer now folds into the norm at one token too.  Measured on gfx1201:
@@ -347,6 +349,7 @@ already consumed by the fused shared-expert output epilogue.
 
 `GGML_CUDA_DISABLE_FUSED_ADDMUL`, `GGML_CUDA_DISABLE_FUSION`, `GGML_CUDA_DISABLE_GDN_CPY`,
 `GGML_CUDA_DISABLE_HC_FUSION`, `GGML_CUDA_DISABLE_L2_NORM_PAIR`, `GGML_CUDA_DISABLE_MOE_DOWN_FOLD`,
+`GGML_CUDA_DISABLE_NORM_PAIR` (r81, the paired GDN q/k norm below),
 `GGML_CUDA_DISABLE_MOE_MMQ_FUSION`, `GGML_CUDA_DISABLE_MWR`, `GGML_CUDA_DISABLE_NORM_Q8_1`,
 `GGML_CUDA_DISABLE_NORM_ROWS`, `GGML_CUDA_DISABLE_ROPE_SETROWS`, `GGML_CUDA_DISABLE_SCALE_UNARY`,
 `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE`, `GGML_CUDA_DISABLE_SNAKE`, `GGML_CUDA_DISABLE_SSM_CONV_IN`,
@@ -355,13 +358,27 @@ already consumed by the fused shared-expert output epilogue.
 `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` is the A/B switch for the byte-identical fused shared-expert band
 (`1 <= nt <= 8`).
 
+`GGML_CUDA_DISABLE_NORM_PAIR=1` (r81) restores the two separate `rms_norm_f32<256, false, false, true>`
+launches for the GDN q and k l2 norms that `build_gdn_l2_norm` builds; the default runs both in one
+`rms_norm_scale_pair_f32<256>` launch (blocks `[0, nrows)` take q, `[nrows, 2*nrows)` take k, same
+per-row body, so each output is bit-identical).  It is taken only when both inputs are F32 views of the
+same `view_src` with equal shape, strides, eps and scale and only no-op nodes sit between the pairs.
+Measured on gfx1201 35B-A3B Q4_K_M 2-GPU tensor: tg256 114.4 -> 115.7 t/s (+1.2 %, 3/3 rounds) and the
+kernel count for the norms halves (7500 -> 3750 per 120-token decode).
+
 ### 7.3 `GGML_CUDA_DISABLE_*` — **presence-only** (any value, including `0`, disables)
 
 `GGML_CUDA_DISABLE_CONV_FUSION`, `GGML_CUDA_DISABLE_MMID_512`, `GGML_CUDA_DISABLE_MMQ_ROUTED`,
 `GGML_CUDA_DISABLE_MMVQ_DENSE_BAND`, `GGML_CUDA_DISABLE_MMVQ_MOE_BAND`,
 `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE`, `GGML_CUDA_DISABLE_ROPE_SET_ROWS`,
 `GGML_CUDA_DISABLE_TOPK_MOE_FUSION`,
-and (r78, block 10) `GGML_CUDA_DISABLE_ROPE_FWHT` and `GGML_CUDA_DISABLE_FWHT_Q8_1`.
+(r78, block 10) `GGML_CUDA_DISABLE_ROPE_FWHT` and `GGML_CUDA_DISABLE_FWHT_Q8_1`,
+and (r81, block 10) `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE` and `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS`.
+
+`GGML_CUDA_DISABLE_ROPE_MROPE_FUSE` (r81) puts `GGML_ROPE_TYPE_MROPE` / `IMROPE` back on the unfused
+`rms_norm_f32` + `rope_multi` + `fwht_cuda` chain (the r78 matcher, NORMAL/NEOX only);
+`GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` (r81) stops the fused rope kernel from also writing the q8_0 K/V
+cache rows, so the two `SET_ROWS` launches come back.
 
 The two r78 switches split PR #172's two fusions: `GGML_CUDA_DISABLE_ROPE_FWHT` keeps the KV rotation's
 FWHT as its own `fwht_cuda` launch (rope only, no shared-memory staging row) and
@@ -369,8 +386,14 @@ FWHT as its own `fwht_cuda` launch (rope only, no shared-memory staging row) and
 Q8_1 activation (the projection then runs its own `quantize_q8_1`).  Both fusions are bit-identical to
 the unfused path; measured together on gfx1201 Gemma4 12B QAT UD-Q4_K_XL (1 GPU, layer, q8_0 KV):
 tg256 61.05 t/s default, 60.41 with `DISABLE_ROPE_FWHT=1`, 60.80 with `DISABLE_FWHT_Q8_1=1`, 60.15 on
-the r77 build.  They only fire for NORMAL/NEOX rope with the `RMS_NORM, MUL, ROPE` chain, so they are
-inert on `rope_multi` models (all Qwen3.x here) -- a trace shows `rope_multi` + `fwht_cuda` there.
+the r77 build.  They only fire for NORMAL/NEOX rope with the `RMS_NORM, MUL, ROPE` chain, so on r78 they were
+inert on `rope_multi` models (all Qwen3.x here) -- a trace showed `rope_multi` + `fwht_cuda` there.
+**r81 closes that gap:** `GGML_ROPE_TYPE_MROPE` / `IMROPE` are admitted too, so the same two fusions
+(and the K/V cache write fold) now run on every Qwen3.x model.  Measured on gfx1201 35B-A3B Q4_K_M,
+1 GPU, 120-token decode: `rope_multi` 2500 -> 40, `fwht_cuda<256>` 2500 -> 40,
+`rms_norm_f32<256,true,...>` 6120 -> 3660, and 2460 `rms_norm_mul_rope_f32<256,...,256>` launches
+replace them; with the cache-write fold, `k_set_rows_q8_0_group` 2500 -> 20 (all 35B-A3B 2-GPU tensor,
+see `../WORKLOG.md` 261017.008).
 
 ### 7.4 Other kernel tuning
 

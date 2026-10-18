@@ -11,7 +11,48 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r80` (2026-10-17) -- the MoE heat map no longer doubles itself into saturation (block 09):**
+> **Current release `v12-097cf33d9-r81` (2026-10-17) -- the rope + FWHT fusion reaches M-RoPE, the q8_0 K/V cache write folds into it, and the GDN q/k norms pair up (PRs #175, #173, #179, block 10):**
+> canonical tip `d86db8c92`, net tree `0c3a4413131c2b1e8fab208c5d6bf7aa8cf7ba4a`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.
+> **PR #175 (0001)** admits `GGML_ROPE_TYPE_MROPE` / `IMROPE` to `ggml_cuda_should_fuse_rms_norm_mul_rope`
+> and computes theta in the kernel with `rope_multi`'s own section selection and float expressions (NEOX
+> pairing, `n_offs == 0` so `iw == i0`, VISION still rejected); this is the TODO item recorded against
+> #172, and it is what makes the whole rope-fusion class reach the dense 27B and the 35B-A3B instead of
+> only Gemma4 / gpt-oss-20b.  **PR #175 (0002)** declines the 5-op `RMS_NORM, MUL, ROPE, VIEW, SET_ROWS`
+> match for a **BF16** `SET_ROWS`: that fusion runs `ggml_cuda_op_rms_norm_mul_rope_fused`, which writes
+> F32 / F16 rows only and otherwise aborts, while `ggml_cuda_should_fuse_rope_set_rows` admits BF16.
+> A latent abort on r80 for a NEOX qk-norm model with `-ctk bf16`, and reachable for the Qwen3.x models
+> once 0001 lands (confirmed: 0001 alone aborts at `rope.cu:1087` on the 27B with bf16 KV; 0001+0002 is
+> clean and byte-identical).  **PR #173** folds the q8_0 K and V cache writes into the same kernel
+> (warp 0 quantizes the rotated K row from its FWHT registers, each block its slice of the V row, through
+> `ggml_cuda_quantize_q8_0_group` = `k_set_rows_q8_0_group`'s body moved into `set-rows.cuh`), which the
+> M-RoPE fusion makes reachable: qwen35/qwen35moe build attention through the non-iSWA `build_attn`, which
+> expands K last.  **PR #179** runs the GDN q and k l2 norms in one `rms_norm_scale_pair_f32<256>` launch
+> (blocks `[0, nrows)` q, `[nrows, 2*nrows)` k, same per-row body).  Kill switches
+> `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE`, `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` (presence-only) and
+> `GGML_CUDA_DISABLE_NORM_PAIR=1`.
+> **Verified on gfx1201 (3x R9700, ROCm 10.1.0), r80 against r81 built from the applied set:** same-seed
+> text **byte-identical** in six arms (35B-A3B Q4_K_M `sha ecb4e0796ba5`, dense 27B UD-Q4_K_XL
+> `sha 980719527364`; 3-GPU tensor, q8_0 KV, `none == draft-mtp n3`, and with
+> `GGML_CUDA_GRAPH_OPT=1`); width probe PASS maxdiff **0** at P=256/3584 on both models with the r80
+> hashes; prefill-logit **0.000000 / 100.000 %** on both models against bases recorded from stock r80;
+> `test-backend-ops` 298/298 `RMS_NORM_MUL_ROPE`, 450/450 `ROPE`, 159/159 `SET_ROWS`, 53/53 `RMS_NORM`,
+> 7/7 `SCALE`; no GPU faults.  Launches (rocprofv3, 35B-A3B 1 GPU decode): `rope_multi` 2500 -> 40,
+> `fwht_cuda<256>` 2500 -> 40, `rms_norm_f32<256,true,...>` 6120 -> 3660, `k_set_rows_q8_0_group`
+> 2500 -> 20, `rms_norm_f32<256,false,false,true>` 7500 -> 3750.
+> **Perf (2-GPU tensor, 35B-A3B, q8_0 KV, interleaved rounds):** tg256 **114.4 -> 117.4 t/s (+2.7 %)**,
+> `draft-mtp` n3 decode -n 400 **176-178 -> 178-181 t/s (+1.0 to +1.7 %)**, pp512 / pp31500 and
+> `llama-batched-bench -npl 1,4,8` flat; dense 27B 1-GPU layer MTP decode 52.8 -> 53.2 (+0.8 %).  Per PR:
+> #175 alone +1.15 % tg256, #179 alone +1.2 % (3/3 rounds), #173 +0.4 % on top of #175.  The contributor's
+> 2-GPU tensor **+11.7 % prefill** does not reproduce here (pp31500 4470 -> 4469, flat) and their 27B +0.7 %
+> for #173 is flat on this box (53.1 both arms); everything else matched their numbers.
+> **PR #177 (`gdn-conv-snapshot-fold`) rejected:** on 35B-A3B the patched path is **not run-to-run
+> deterministic**, which the delivery's purity rule does not allow.  Details and re-entry conditions in
+> `../archive/work/gdn-conv-snapshot-fold/RESOLUTION.md`.  Records: `../WORKLOG.md` 261017.008,
+> `../archive/work/mrope-rope-fusion/`, `../archive/work/kv-cache-q8-write/RESOLUTION.md` (updated),
+> `../archive/work/gdn-l2-norm-pair/`.
+>
+> **Previous release `v12-097cf33d9-r80` (2026-10-17) -- the MoE heat map no longer doubles itself into saturation (block 09):**
 > canonical tip `00f4b1ef8`, net tree `873d033563e3a33eb680be65695eaf63aa90db16`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended, no new block.
 > `heat_apply_loaded_locked()` loads the persisted prior **into** `t.heat`, and every debounced save then
