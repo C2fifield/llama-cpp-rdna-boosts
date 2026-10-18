@@ -1,5 +1,59 @@
 # WORKLOG - dated delivery records
 
+## 261018.002 (r82) -- beta 12 BETA 2: measure the MTP draft instead of predicting it, and stop capturing inside an armed wide band
+
+**Not a release; a BETA candidate update.**  `beta/0012-slab-transient-absorption` regenerated as one
+squashed commit (13 commits with `--include-beta`), sha256 `9facba49…`, applied tree
+`591528bd69930ff8a38c25ccab971dcae011e131` on the r82 tree `dc48b4a9…`.  No `patches/`, `release.json` or
+tag change.
+
+**Reporter failure** (maintainer, 2x R9700 gfx1201, `Qwen3.8-Flash-Next` IQ4_NL `-ncmoe 48`, 131k ctx,
+`-sm tensor`, MTP draft): a ~70k-token prefill aborted with `ROCm error: operation not permitted when
+stream is capturing` at `ggml_cuda_pool_leg::alloc`'s `hipDeviceSynchronize()` (`ggml-cuda.cu:844`), after a
+400 MiB allocation failed on device 1.  Reproduced exactly by sending a 322-token system prompt and a 73k
+user prompt (`/completion` prompt array) with `ROCBLAS_USE_HIPBLASLT=0` (otherwise the same config dies a
+sibling OOM inside hipBLASLt at the first 4096-row GEMM).
+
+**Two defects.**
+1. **Capture under an armed wide band.**  The MTP draft context skips `slab_ring_set`
+   (`ctx_type != LLAMA_CONTEXT_TYPE_MTP`), so the target's prefill band stayed armed for the draft's graph.
+   Capture skips the band by design; the warmup had been band-served, so the capture allocated outside,
+   and when the pool's 512 MiB free-VRAM floor refused it, the floor's flush+`cudaDeviceSynchronize`
+   recovery ran inside the capture.  The abort was the *floor's* reclaim path, not a real cudaMalloc
+   failure.
+2. **The outside reserve was short on the heavy device.**  The 400 MiB is the Meta backend's all-reduce
+   temp (`ggml_backend_alloc_buffer`, outside the slab by design).  The reserve charged the draft equally
+   (`3078/2 + 704 + 128 = 2371`), but `-sm tensor` places the 1-layer draft as a WHOLE LAYER on one device:
+   measured **1601.81 MiB dev1 vs 1091.81 MiB dev0**.  dev1 had **384.5 MiB** free at the wide arm where
+   dev0 had **890.5**.  `SLAB_STATS free=` hid it: `cudaMemGetInfo` was called without selecting the
+   device, so every device repeated device 0's figure (the r60/r80 2-GPU tables were device-0-only).
+
+**What landed (all in `beta/0012`).**
+* The draft **model** is loaded before the target context (`common_speculative_load_model` +
+  `preload_draft`), so the slab measures the asymmetric weights from free VRAM; the reserve carries only
+  the draft **context** (`total - weights` = kv + compute + slack, whole KV per device).  `--fit` keeps the
+  full reserve.  `MOE_EXPERT_CACHE_AUX_RESERVE_MIB` is now the context reserve (verbatim, per device).
+* Capture safety: no capture/recapture while `ggml_cuda_slab_wide_available(device)` (replay unaffected);
+  one disarmed warmup before a deferred capture; the pool's floor/OOM path never syncs or flushes inside a
+  capture.
+* `GGML_CUDA_SLAB_HEADROOM_MIB` default `512+128*n` -> `640+128*n` (768 / 896 / 1024 MiB): the decode
+  steady state was **148 MiB** free at 768 (decode graph-capture pool temporaries + the 400 MiB temp);
+  896 settles at **270 / 268 MiB**.
+* Diagnostics: device-selected `free=`, `outside_max`, `outside_failed`, `free_min`, and
+  `GGML_CUDA_GRAPH_TRACE`.
+
+**Measured** (2x R9700, 73 527-token prefill, default env, `GGML_CUDA_SLAB_STATS=1`): `SLAB_INIT free`
+27.21 / 26.71 GiB (draft resident), reserve 1.98 GiB (headroom 0.875 + aux 1.11), free at the wide arm
+1012.5 / 1014.5, `outside_failed=0` (the 400 MiB temp fits), `free_min` 412.5 / 414.5, free at the wide
+drop 436.5 / 438.5, idle steady state **270 / 268 MiB**, arena 18 880 / 18 368 (asymmetric by exactly the
+measured draft split), prefill **945 t/s**, HTTP 200.  Step 4 costs ~256 MiB of total arena vs the
+(broken) equal split (whole-KV-per-device) and the headroom bump 128 MiB/device.
+
+**Not re-gated on this tree.**  The r80 coherence / adaptive-MTP / prefill-logit results do not carry over
+(the arena size changes expert-cache residency, a documented numerics flipper); those gates must be run on
+the applied tree before promotion.  Records: `wip/slab-transient-absorption/README.md` §10.16, the beta
+README/BETA-TESTING.
+
 ## 261018.001 (r82) -- issue #170: `-sm tensor` no longer aborts when the model has to leave layers on the host (block 00 + block 09)
 
 **Release `v12-097cf33d9-r82`**: base `097cf33d9`, canonical tip `7d238ae80`, net tree

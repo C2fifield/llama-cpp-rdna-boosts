@@ -1381,3 +1381,98 @@ With the offload decision made independent of cache residency the two arms agree
 * the beta's coherence gate therefore compares against a build with the same cache budget, or compares logits
   (`gate-prefill-logits.sh` is unaffected: it is a prefill-path comparison and measured 0.000000 across this
   whole campaign).  Worth a `GREEDY-PURITY.md` entry when this is promoted.
+
+---
+
+## 10.16 2026-10-18 — step 4: measure the draft, don't predict it (+ the capture abort)
+
+**Status: implemented, validated on 2× R9700 (gfx1201) with `Qwen3.8-Flash-Next` IQ4_NL `-ncmoe 48`,
+131k ctx and the MTP draft; folded into `beta/0012-slab-transient-absorption` as BETA 2.**
+
+### The failure the maintainer hit
+
+A 70k-token prefill on the 2-GPU tensor + MTP config aborted in the *first* prefill:
+
+```
+E ROCm error: operation not permitted when stream is capturing
+E   current device: 0, in function alloc at ggml-cuda.cu:844
+E   hipDeviceSynchronize()
+```
+
+and, just before it, a 400 MiB `ggml_backend_cuda_buffer_type_alloc_buffer` failure on device 1.  A
+reproduction needed one extra variable: `ROCBLAS_USE_HIPBLASLT=0` (otherwise the *same* config dies earlier
+inside `hipblaslt.cpp` at the first 4096-row GEMM — a sibling outside-slab OOM, not this bug).
+
+### Two independent defects
+
+**(1) A capture was started while the wide band was armed.**  The MTP draft context skips `slab_ring_set`
+(`llama-context.cpp`: `cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP`), so the target's prefill band stayed
+armed for the draft's small graph.  `pool_leg::alloc` deliberately skips the band during capture (a captured
+graph's pointer must survive the drop), but the pre-capture warmup had been served *by* the band, so the pool
+held nothing for the capture and it allocated outside the slab.  Device 1 had nothing left; the pool's
+free-VRAM **floor** (512 MiB when the MoE cache is active) refused the allocation, and the floor's only
+recovery is flush + `cudaDeviceSynchronize()` — illegal inside a capture.  So the abort is the *floor's*
+reclaim path, not a real cudaMalloc failure, which is why the message looked so odd.
+
+**(2) The outside reserve was short on the heavy device.**  The failing 400 MiB is the Meta backend's
+all-reduce temp (`ggml_backend_meta_graph_compute` -> `ggml_backend_alloc_buffer`, `n_reduce_steps = 1`),
+a plain buffer and therefore **outside the slab by design**.  The reserve charged the draft equally per
+device (`3078/2 + 704 + 128 = 2371`), but under `-sm tensor` the draft is placed by **layer**: a 1-layer
+draft lands as a whole layer on ONE device.  Measured at load: **1601.81 MiB on dev1 vs 1091.81 MiB on
+dev0** — dev1 was ~510 MiB under-reserved.  With the 768 MiB headroom, dev1 had **384.5 MiB** free where
+dev0 had **890.5**, and the 400 MiB temp did not fit.
+
+**The diagnostic that hid it:** `ggml_cuda_slab_log_stats_locked()` called `cudaMemGetInfo()` without
+selecting the device, so every device's `free=` repeated device 0's figure.  Both printed 890.5.  The
+corrected code printed 890.5 / 384.5.  The r60/r80 2-GPU tables were therefore device-0-only; the "300 MiB
+excess per device" for 2-GPU tensor was never a per-device measurement.
+
+### The fix (measure, don't predict)
+
+1. **The draft MODEL is loaded before the target context.**  `common_init_result` calls the new
+   `common_speculative_load_model()` before `llama_init_from_model()` and hands ownership to the speculative
+   init (gated on `preload_draft`, so tools that never create a speculative context do not load it).  The slab
+   is created inside the target context and sizes itself from the free VRAM it measures, so the draft's
+   per-device footprint is **measured**, not predicted: dev0's surplus becomes arena, dev1's deficit becomes a
+   smaller arena.  The draft *context* still comes after the target context (it needs `ctx_other`).
+2. **The reserve is the draft CONTEXT only** (`total - weights` = kv + compute + slack), whole KV per device
+   (the KV follows the layer placement too; the safe bound costs at most `(n-1)/n` of the KV on a device).
+   `--fit` keeps the **full** draft reserve (conservative: the weights load after the fit).
+3. **Capture safety:** never capture/recapture while `ggml_cuda_slab_wide_available(device)`; replay of an
+   existing instance is unaffected.  A deferred capture does one direct run on the first disarmed pass (so the
+   pool really holds the temporaries) and captures on the next.  The pool's floor/OOM path is capture-safe:
+   no floor, no `cudaDeviceSynchronize`, no `clear_pool` inside a capture.
+4. **Headroom default 512+128n -> 640+128n** (768 / 896 / 1024 MiB).  `free_min` showed why: after the request
+   the cards settle at **148 MiB free** at 768 (the decode-phase graph captures' pool temporaries are outside
+   the slab and cached for the run, on top of the 400 MiB reduce temp).  At 896 the same run settles at
+   **270 / 268 MiB**.
+5. **Diagnostics:** device-selected `free=`, `outside_max`, `outside_failed`, `free_min`, and
+   `GGML_CUDA_GRAPH_TRACE`.  `outside_failed=400.0 MiB` now names the shortfall in one line.
+
+### Measured (2× R9700, Flash-Next IQ4_NL, 131k ctx, MTP, 73 527-token prefill)
+
+| | equal-split reserve (768) | step 4 + 896 |
+|---|---:|---:|
+| `SLAB_INIT free` dev0 / dev1 | 28.28 / 28.28 GiB (before draft) | **27.21 / 26.71 GiB** (after draft) |
+| reserve / headroom / aux | 3.07 / 0.75 / 2.32 GiB | **1.98 / 0.875 / 1.11 GiB** |
+| free at wide-arm dev0 / dev1 | 890.5 / **384.5** | **1012.5 / 1014.5** |
+| 400 MiB reduce temp | **fails on dev1** | fits, `outside_failed=0` |
+| `free_min` dev0 / dev1 | — (crash) | 412.5 / 414.5 |
+| free at wide-drop | 436.5 / 332.0 | 436.5 / 438.5 |
+| **idle steady state** | 148 (crash run) | **270 / 268** |
+| arena at the drop dev0 / dev1 | 18 880 / 18 880 | 18 880 / 18 368 |
+| prefill | — | **945 t/s** |
+
+The arena is asymmetric by exactly the measured draft split (dev0 +512 MiB).  The step-4 fix costs
+**~256 MiB of total arena** versus the (broken) equal split — the whole-KV-per-device charge — and buys a
+symmetric cushion.  The headroom bump costs a further 128 MiB/device.
+
+### Follow-ups (deliberately deferred)
+
+* The draft's per-device KV is charged whole to every device.  Once the draft model is loaded before the
+  slab, its layer placement is available, so the KV could be measured the same way (~215 MiB/device
+  recoverable on this config).  Deferred: a future move to streaming KV weights may make the term moot.
+* `--fit` still reserves the full draft; with the preload it could reserve only the context (the weights are
+  loaded before the target context, but fit runs before both).
+* Re-run the coherence, adaptive-MTP and prefill-logit gates **on the step-4 tree** before promotion: the
+  arena size changes expert-cache residency, which is a documented numerics flipper (`§10.15`).

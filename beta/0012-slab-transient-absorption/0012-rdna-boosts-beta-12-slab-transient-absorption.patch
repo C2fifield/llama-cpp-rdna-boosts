@@ -1,6 +1,6 @@
-From 0000c905bd9abda9f1ccf52d58fdf68063de9843 Mon Sep 17 00:00:00 2001
+From 76d0b42cdbd28c544eab1071f8637bf15742a041 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
-Date: Sat, 17 Oct 2026 17:42:12 -0500
+Date: Sun, 18 Oct 2026 08:07:35 -0500
 Subject: [PATCH] rdna-boosts: beta 12: slab-transient-absorption (slab
  transients + derived draft reserve)
 
@@ -12,57 +12,79 @@ release tree (patches/0000-0011) with:
 The movable-boundary slab keeps the MoE expert-cache arena and a wide prefill
 alive together, but everything that could not live inside it was paid for out of
 GGML_CUDA_SLAB_HEADROOM_MIB -- permanently, because the slab cannot unmap
-sub-ranges.  This block moves those transients into the slab and sizes the
-outside cushion from measurements instead of a guess.
+sub-ranges.  This block moves those transients into the slab and then sizes the
+outside cushion from measurements:
 
 - H2D staging ring is slab-only in host-expert mode (+ migration-leak fix).
 - A wide-phase auxiliary region above the live work boundary, released with the
-  ring at the prefill -> decode drop: it hosts the FA prefill staging arena, the
-  QSA3 prefill workspace, and the chunked-GDN prefill scratch.
+  ring at the prefill -> decode drop: FA prefill staging, QSA3 prefill
+  workspace, chunked-GDN prefill scratch.  It tracks its live blocks (a plain
+  bump stack ratchets: 7.4 GiB of holes in one 6.6k prefill).
 - The workspace pool (ggml_cuda_pool_leg) serves its LARGE prefill temporaries
-  from that band (pool_leg::set_wide_routing + ggml_cuda_pool_wide_pin for the
-  retained sites), with a POOL_WIDE_LEAK tripwire at the drop.
-- The per-graph caches (MMB activation cache + producer slots, BF16 src1) are
-  released at the END of a compute, so nothing retained crosses a graph boundary.
-- The wide-aux region tracks its live blocks (a bump stack alone ratchets: 7.4 GiB
-  of holes in one 6.6k prefill).
-- The load-time H2D calibration probe comes from the slab arena.
-- The MTP draft reserve is DERIVED from the draft's own GGUF (weights + KV(n_ctx
-  at the real -ctk/-ctv size) + a measured compute tier + slack) instead of the
-  flat LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT, and --fit reserves it (an MTP
-  draft cannot be measured during fitting: it needs ctx_other).
-- GGML_CUDA_SLAB_HEADROOM_MIB default 4096 -> 512 + 128 x n_gpu (640/768/896),
-  and under an equal -sm tensor split the draft reserve is charged per device.
+  from that band, with a POOL_WIDE_LEAK tripwire; the per-graph caches (MMB
+  activation cache + producer slots, BF16 src1) are released at the END of a
+  compute, so nothing retained crosses a graph boundary.
+- The load-time H2D calibration probe (512 MiB) comes from the slab arena.
+- BETA 2 (step 4): the draft MODEL is loaded BEFORE the target context, so the
+  slab MEASURES the draft's per-device (asymmetric) weight footprint from free
+  VRAM instead of predicting it, and the reserve carries only the draft CONTEXT
+  (KV + narrow-2 compute + slack).  The equal `1/n` split under -sm tensor is
+  gone: a 1-layer draft is placed as a whole layer on ONE device (measured
+  1601.8 MiB vs 1091.8 MiB across two R9700s), which the old charge left ~510
+  MiB short on the heavy device.
+- BETA 2: a graph capture is never started while the slab's wide band is armed
+  (replay is unaffected; a deferred capture does one disarmed warmup first), and
+  the pool's free-VRAM floor / OOM reclaim path no longer calls
+  cudaDeviceSynchronize() inside a capture -- the "operation not permitted when
+  stream is capturing" abort.
+- BETA 2: the Meta backend's all-reduce temp (400 MiB/device for the Flash-Next
+  config) is an outside allocation and is now visible in SLAB_STATS
+  (outside_max/outside_failed); the headroom default moved 512+128*n ->
+  640+128*n (768 / 896 / 1024 MiB) because the 2-GPU MTP decode steady state
+  left only 148 MiB free at 768.  The same run settles at ~270 MiB at 896.
+- BETA 2 diagnostics: per-device free= (cudaMemGetInfo without a device select
+  repeated device 0's figure on every line), outside_max/outside_failed/
+  free_min, GGML_CUDA_GRAPH_TRACE.
 
-Measured (1x R9700 gfx1201 + 2/3-GPU pairs): field GSQ seesaw excess 204.5 ->
-346.5 MiB with the arena at 15666.6 -> 19776 MiB (+4.0 GiB); wide IQ4_NL
--ub 6144 599.0 MiB at the drop; 2-GPU layer 401.5 / tensor 300.0 MiB per device;
-3-GPU layer 519.5 / tensor 408.0; 35B-A3B greedy identical; prefill-logit KLD
-0.000000 / 100 % same-top-p.
+Measured (this box, 2x R9700 gfx1201, `Qwen3.8-Flash-Next` IQ4_NL -ncmoe 48,
+131k ctx, MTP draft, 73k-token prefill): no allocation failure, 945-947 t/s,
+436/438 MiB free at the wide drop, 270/268 MiB free in the decode steady state,
+and the arena is asymmetric by exactly the measured draft split (dev0 +512 MiB)
+instead of both devices being charged an equal share.  The r80 campaign's
+35B-A3B coherence, MTP and prefill-logit results do NOT automatically carry over
+to this tree (the arena size changes expert-cache residency, which can flip a
+near-tie): re-run the coherence, adaptive-MTP and prefill-logit gates on the
+applied tree before promotion.
 
 Opt-outs: GGML_CUDA_SLAB_HEADROOM_MIB (verbatim total),
-MOE_EXPERT_CACHE_AUX_RESERVE_MIB (verbatim draft reserve),
-GGML_CUDA_POOL_WIDE=0, GGML_CUDA_SLAB_RING_FALLBACK=1, GGML_CUDA_SLAB=0.
+MOE_EXPERT_CACHE_AUX_RESERVE_MIB (verbatim CONTEXT reserve -- the draft weights
+are already resident when the slab is created), GGML_CUDA_POOL_WIDE=0,
+GGML_CUDA_SLAB_RING_FALLBACK=1, GGML_CUDA_SLAB=0.
 ---
  common/CMakeLists.txt                         |   2 +
- common/common.cpp                             | 107 ++++-
+ common/common.cpp                             | 110 ++++-
+ common/common.h                               |  13 +-
  common/draft-reserve.cpp                      | 212 +++++++++
  common/draft-reserve.h                        |  44 ++
  common/fit.cpp                                |  78 +++-
  common/fit.h                                  |   7 +
+ common/speculative.cpp                        |  43 +-
+ common/speculative.h                          |  14 +-
+ .../speculative-simple/speculative-simple.cpp |   4 +-
  ggml/src/ggml-cuda/allreduce-hip.cu           |   3 +
  ggml/src/ggml-cuda/allreduce.cu               |   3 +
- ggml/src/ggml-cuda/common.cuh                 | 192 ++++++++-
+ ggml/src/ggml-cuda/common.cuh                 | 197 +++++++-
  ggml/src/ggml-cuda/fattn-qsa3.cu              |  57 ++-
  ggml/src/ggml-cuda/gated_delta_net_chunked.cu |   5 +-
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  28 +-
- ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 405 +++++++++++++++++-
- ggml/src/ggml-cuda/ggml-cuda-vmm.h            |  28 ++
- ggml/src/ggml-cuda/ggml-cuda.cu               | 246 ++++++++++-
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 422 +++++++++++++++++-
+ ggml/src/ggml-cuda/ggml-cuda-vmm.h            |  38 ++
+ ggml/src/ggml-cuda/ggml-cuda.cu               | 418 ++++++++++++++++-
  ggml/src/ggml-cuda/mmb.cu                     |  34 ++
  ggml/src/ggml-cuda/mmb.cuh                    |   6 +
  include/llama.h                               |  12 +-
- 18 files changed, 1421 insertions(+), 48 deletions(-)
+ tools/server/server-context.cpp               |   4 +-
+ 23 files changed, 1679 insertions(+), 75 deletions(-)
  create mode 100644 common/draft-reserve.cpp
  create mode 100644 common/draft-reserve.h
 
@@ -80,7 +102,7 @@ index 2b307c59d..395cb43fd 100644
      fit.h
      hf-cache.cpp
 diff --git a/common/common.cpp b/common/common.cpp
-index a5b31c8a0..1f590cf5c 100644
+index a5b31c8a0..8a5bcd45e 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -7,6 +7,7 @@
@@ -91,7 +113,21 @@ index a5b31c8a0..1f590cf5c 100644
  #include "fit.h"
  #include "log.h"
  #include "llama.h"
-@@ -1240,6 +1241,30 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+@@ -1154,6 +1155,7 @@ struct common_init_result::impl {
+     common_threadpools threadpools;
+ 
+     llama_model_ptr   model;
++    llama_model_ptr   model_dft;   // wip/slab-transient-absorption (step 4): loaded before the target context
+     llama_context_ptr context;
+ 
+     std::vector<llama_adapter_lora_ptr> lora;
+@@ -1235,11 +1237,35 @@ common_gguf_info common_get_gguf_info(const std::string & fname) {
+     return info;
+ }
+ 
+-common_init_result::common_init_result(common_params & params, bool model_only) :
++common_init_result::common_init_result(common_params & params, bool model_only, bool preload_draft) :
+     pimpl(new impl{}) {
      auto mparams = common_model_params_to_llama(params);
      auto cparams = common_context_params_to_llama(params);
  
@@ -122,7 +158,7 @@ index a5b31c8a0..1f590cf5c 100644
      if (params.fit_params) {
          COM_TRC("%s", "fitting params to device memory ...\n");
          COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");
-@@ -1262,6 +1287,7 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+@@ -1262,6 +1288,7 @@ common_init_result::common_init_result(common_params & params, bool model_only)
              /*.mparams      =*/ &mparams_dft,
              /*.cparams      =*/ &cparams_dft,
              /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
@@ -130,7 +166,7 @@ index a5b31c8a0..1f590cf5c 100644
          };
  
          common_fit_params(params.model.path.c_str(), &mparams, &cparams,
-@@ -1371,14 +1397,89 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+@@ -1371,14 +1398,60 @@ common_init_result::common_init_result(common_params & params, bool model_only)
      // makes the MTP draft and the target plan different kernels -- and (b) the projected arena reflects
      // the VRAM the WEIGHTS left free.  Called after the context instead, it would see only the headroom
      // left after the KV cache, the compute buffers and the slab, and would decline the cache on every
@@ -155,64 +191,35 @@ index a5b31c8a0..1f590cf5c 100644
              const char * e = getenv("MOE_EXPERT_CACHE_AUX_RESERVE_MIB");
 -            aux_bytes = (size_t) (e != nullptr ? atoll(e) : LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT) * 1024 * 1024;
 +            if (draft_reserve.ok) {
-+                aux_bytes = draft_reserve.total;
-+                // wip/slab-transient-absorption (step 3c): the slab's reserve is PER DEVICE, so under
-+                // `-sm tensor` -- where the draft's weights and KV are SPLIT across the devices -- charging the
-+                // whole draft footprint to every device over-reserves each one by (n-1)/n of it.  Measured on
-+                // 2 GPUs: a constant +895 MiB/device of unused outside VRAM at EVERY headroom (768 -> 1296.5,
-+                // 1024 -> 1552.5, 2048 -> 2576.5 excess vs 401.5/657.5/1681.5 for `-sm layer`), i.e. ~1.4 GiB
-+                // of arena per device left on the table.  Charge each device its SHARE plus the tier that
-+                // really is per device (compute + transients): 2 GPUs -> 2371 MiB instead of 3782, measured
-+                // excess 300.0 MiB (on target) with the same greedy sha and arena 17 344 -> 18 752 MiB.
-+                //
-+                // Only for an EQUAL split: with an explicit `-ts a,b` the small-share device would be
-+                // under-reserved (the shares are not known per device at this point), and `-sm layer` must keep
-+                // the FULL value -- the MTP head's layer lands on ONE device, and the halved value was measured
-+                // to fail at draft load (`512.00 MiB allocation failed on device 1`).  Both fall back to the
-+                // full reserve, i.e. today's behaviour.
-+                bool equal_split = true;
-+                for (size_t i = 1; i < sizeof(params.tensor_split)/sizeof(params.tensor_split[0]); ++i) {
-+                    if (params.tensor_split[i] != 0.0f) {
-+                        equal_split = false;
-+                        break;
-+                    }
-+                }
-+                size_t n_gpu = 0;
-+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-+                    ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-+                    if (dev != nullptr && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-+                        n_gpu++;
-+                    }
-+                }
-+                if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && equal_split && n_gpu > 1) {
-+                    // per device: the share of (weights + KV) + the compute/transient tier + a small margin.
-+                    // The margin is needed: the estimator's total is a whole-box figure, and the measured
-+                    // per-device draw is a little above (weights+kv)/n + tier -- 2 GPUs, tier 704, formula
-+                    // 2243 MiB -> 113 MiB SHORT of a 113.87 MiB capture allocation (abort); 2371 MiB (= +128)
-+                    // measured exactly the 300 MiB target excess.  The failure mode is a loud OOM, never a
-+                    // silent one, so a small margin plus the gates is the right trade.
-+                    const size_t tier   = draft_reserve.compute + draft_reserve.slack;
-+                    const size_t margin = (size_t) 128 << 20;
-+                    const size_t split  = aux_bytes > tier ? aux_bytes - tier : aux_bytes / n_gpu;
-+                    aux_bytes = split / n_gpu + tier + margin;
-+                    LOG_WRN("%s: -sm tensor with %zu GPUs: charging each device its share of the draft reserve "
-+                            "(%.0f MiB = %.0f / %zu + %.0f tier + %.0f margin) instead of the whole %.0f MiB.\n",
-+                            __func__, n_gpu, (double) aux_bytes / 1048576.0, (double) split / 1048576.0, n_gpu,
-+                            (double) tier / 1048576.0, (double) margin / 1048576.0,
-+                            (double) draft_reserve.total / 1048576.0);
-+                }
++                // wip/slab-transient-absorption (step 4): the draft MODEL is now loaded BEFORE the target
++                // context (below), so its weights are already resident when the slab is created and are
++                // measured there from the free VRAM.  They must NOT be charged to the slab's reserve a
++                // second time.  What still arrives AFTER the slab is the draft CONTEXT: its KV cache
++                // (which follows the layer placement, so it can sit entirely on one device), the 512 MiB
++                // narrow-2 compute region (mapped from the slab's VA spare) and the load/steady slack.
++                // Charging the whole KV to each device is the safe, bounded direction: the field draft's
++                // KV is 431 MiB total, so at most (n-1)/n of it is unused on a device.  (The old equal
++                // `1/n` split assumed the weights and KV were shared evenly; a 1-layer draft is placed as
++                // a whole layer on ONE device, which is what left device 1 ~510 MiB short.)
++                const size_t context_bytes = draft_reserve.total > draft_reserve.weights
++                                           ? draft_reserve.total - draft_reserve.weights
++                                           : draft_reserve.total;
 +                if (e != nullptr) {
-+                    LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft reserve\n",
++                    aux_bytes = (size_t) atoll(e) * 1024 * 1024;
++                    LOG_INF("%s: MOE_EXPERT_CACHE_AUX_RESERVE_MIB=%.0f MiB overrides the derived draft "
++                            "context reserve (it is the reserve the slab holds back, i.e. WITHOUT the draft "
++                            "weights, which are loaded before the slab)\n",
 +                            __func__, (double) aux_bytes / 1048576.0);
 +                } else {
-+                    LOG_WRN("%s: slab draft reserve derived from '%s': %.0f MiB (weights %.0f + kv %.0f + "
-+                            "compute %.0f + slack %.0f); the flat default is %d MiB.  The reserve is "
-+                            "headroom + this, and the draft is created after the slab, so this is the "
-+                            "outside VRAM it needs -- MOE_EXPERT_CACHE_AUX_RESERVE_MIB overrides it.\n",
++                    aux_bytes = context_bytes;
++                    LOG_WRN("%s: slab draft reserve derived from '%s': draft CONTEXT %.0f MiB (kv %.0f + "
++                            "compute %.0f + slack %.0f); the draft's %.0f MiB of weights are loaded BEFORE "
++                            "this slab and are measured from the free VRAM instead of reserved.  The "
++                            "reserve is headroom + this.\n",
 +                            __func__, params.speculative.draft.mparams.path.c_str(),
-+                            (double) draft_reserve.total / 1048576.0, (double) draft_reserve.weights / 1048576.0,
-+                            (double) draft_reserve.kv / 1048576.0, (double) draft_reserve.compute / 1048576.0,
-+                            (double) draft_reserve.slack / 1048576.0, LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT);
++                            (double) aux_bytes / 1048576.0, (double) draft_reserve.kv / 1048576.0,
++                            (double) draft_reserve.compute / 1048576.0, (double) draft_reserve.slack / 1048576.0,
++                            (double) draft_reserve.weights / 1048576.0);
 +                }
 +            } else {
 +                aux_bytes = (size_t) LLAMA_MOE_CACHE_AUX_RESERVE_MIB_DEFAULT * 1024 * 1024;
@@ -223,6 +230,99 @@ index a5b31c8a0..1f590cf5c 100644
          }
          llama_model_moe_cache_preflight(model, aux_bytes);
      }
+@@ -1405,6 +1478,23 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+         }
+     }
+ 
++    // wip/slab-transient-absorption (step 4): load the draft MODEL now, BEFORE the target context.  The
++    // slab is created inside `llama_init_from_model` and sizes itself from the free VRAM it measures, so
++    // with the draft's weights already resident their per-device (asymmetric) footprint is MEASURED rather
++    // than predicted -- the term the equal-split reserve got wrong (a 1-layer draft lands as a whole layer
++    // on one device: measured 1601.8 MiB vs 1091.8 MiB across two R9700s).  The draft CONTEXT still comes
++    // after the target context, because it needs `ctx_other`.
++    if (preload_draft && params.speculative.has_dft()) {
++        common_params params_dft = common_base_params_to_speculative(params);
++        params_dft.load_progress_callback           = params.load_progress_callback;
++        params_dft.load_progress_callback_user_data = params.load_progress_callback_user_data;
++        pimpl->model_dft = common_speculative_load_model(params_dft);
++        if (!pimpl->model_dft) {
++            COM_ERR("failed to load draft model, '%s'\n", params.speculative.draft.mparams.path.c_str());
++            return;
++        }
++    }
++
+     llama_context * lctx = llama_init_from_model(model, cparams);
+     llama_model_set_embeddings_layer_inp_preset(model, nullptr, 0); // only this context: not an MTP draft context made later
+     if (lctx == NULL) {
+@@ -1423,6 +1513,14 @@ llama_model * common_init_result::model() {
+     return pimpl->model.get();
+ }
+ 
++llama_model * common_init_result::draft_model() {
++    return pimpl->model_dft.get();
++}
++
++llama_model * common_init_result::take_draft_model() {
++    return pimpl->model_dft.release();
++}
++
+ llama_context * common_init_result::context() {
+     return pimpl->context.get();
+ }
+@@ -1452,7 +1550,7 @@ static void common_batch_set_zero_state(common_batch & batch, const llama_model
+     }
+ }
+ 
+-common_init_result_ptr common_init_from_params(common_params & params, bool model_only) {
++common_init_result_ptr common_init_from_params(common_params & params, bool model_only, bool preload_draft) {
+     // --spec-draft-n-max is capped at 15 (a clamp, not an error).  There are two independent
+     // bounds, and they have different severities:
+     //
+@@ -1523,7 +1621,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
+         }
+     }
+ 
+-    common_init_result_ptr res(new common_init_result(params, model_only));
++    common_init_result_ptr res(new common_init_result(params, model_only, preload_draft));
+ 
+     llama_model * model = res->model();
+     if (model == NULL) {
+diff --git a/common/common.h b/common/common.h
+index ba632e912..072cb9477 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -1014,12 +1014,21 @@ common_gguf_info common_get_gguf_info(const std::string & fname);
+ 
+ // note: defines the model, context, samplers, ets. lifetimes
+ struct common_init_result {
+-    common_init_result(common_params & params, bool model_only = false);
++    // `preload_draft`: load the draft model BEFORE the target context (the slab then measures its resident
++    // footprint instead of predicting it).  Only a caller that goes on to create the speculative context
++    // should set it -- otherwise the draft would be loaded and never used.
++    common_init_result(common_params & params, bool model_only = false, bool preload_draft = false);
+     ~common_init_result();
+ 
+     llama_model * model();
+     llama_context * context();
+ 
++    // wip/slab-transient-absorption (step 4): the draft model is loaded BEFORE the target context (see the
++    // ctor), so the slab measures its resident footprint instead of predicting it.  `take_` transfers the
++    // ownership to the speculative init result; both return nullptr when there is no separate draft model.
++    llama_model * draft_model();
++    llama_model * take_draft_model();
++
+     common_sampler * sampler(llama_seq_id seq_id);
+     void reset_samplers();
+ 
+@@ -1032,7 +1041,7 @@ private:
+ 
+ using common_init_result_ptr = std::unique_ptr<common_init_result>;
+ 
+-common_init_result_ptr common_init_from_params(common_params & params, bool model_only = false);
++common_init_result_ptr common_init_from_params(common_params & params, bool model_only = false, bool preload_draft = false);
+ 
+ struct llama_model_params   common_model_params_to_llama  (      common_params & params);
+ struct llama_context_params common_context_params_to_llama(const common_params & params);
 diff --git a/common/draft-reserve.cpp b/common/draft-reserve.cpp
 new file mode 100644
 index 000000000..c86f4b984
@@ -614,6 +714,131 @@ index 824d386b0..9b171b54b 100644
  };
  
  // fits mparams and cparams to free device memory (assumes system memory is unlimited)
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index b3f40f2ce..f2a642ac7 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -2848,10 +2848,25 @@ struct common_speculative_init_result::impl {
+     llama_context_ptr context;
+ };
+ 
++llama_model_ptr common_speculative_load_model(common_params & params) {
++    if (!params.speculative.has_dft()) {
++        return nullptr;   // MTP runs on the target model's weights
++    }
++    auto mparams = common_model_params_to_llama(params);
++    // The draft model's own host-expert placement (`--spec-draft-n-cpu-moe`), not the target's `-ncmoe`.
++    mparams.n_cpu_moe_from_end = params.speculative.draft.n_cpu_moe;
++    mparams.allow_nextn_cpu_offload = true;
++
++    const std::string model_path = params.speculative.draft.mparams.path;
++    LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
++    return llama_model_ptr(llama_model_load_from_file(model_path.c_str(), mparams));
++}
++
+ common_speculative_init_result::common_speculative_init_result(
+     common_params & params,
+       llama_model * model_tgt,
+-    llama_context * ctx_tgt) :
++    llama_context * ctx_tgt,
++    llama_model * model_dft_pre) :
+     pimpl(new impl{}) {
+     const bool has_draft = params.speculative.has_dft();
+     const bool spec_mtp = params.speculative.has_mtp();
+@@ -2902,15 +2917,22 @@ common_speculative_init_result::common_speculative_init_result(
+     std::string model_path;
+     if (has_draft) {
+         model_path = params.speculative.draft.mparams.path;
+-        LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
+ 
+-        // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
+-        // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
+-        // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
+-        // the draft's -- but this makes the intent explicit.)
+-        mparams.allow_nextn_cpu_offload = true;
++        // wip/slab-transient-absorption (step 4): `common_init_result` normally loads the draft model
++        // before the target context, so the slab is sized from the free VRAM measured with it resident.
++        // The fallback load below keeps other callers working unchanged.
++        llama_model * model_dft = model_dft_pre;
++        if (model_dft == nullptr) {
++            LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
+ 
+-        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
++            // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
++            // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
++            // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
++            // the draft's -- but this makes the intent explicit.)
++            mparams.allow_nextn_cpu_offload = true;
++
++            model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
++        }
+         if (model_dft == NULL) {
+             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
+             return;
+@@ -2959,8 +2981,9 @@ llama_context * common_speculative_init_result::context() {
+     return pimpl->context.get();
+ }
+ 
+-common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt) {
+-    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt);
++common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt,
++                                                                       llama_model * model_dft) {
++    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt, model_dft);
+ }
+ 
+ common_speculative_output_limits common_speculative_get_output_limits(
+diff --git a/common/speculative.h b/common/speculative.h
+index 2eaa1d744..df3604a3e 100644
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -117,8 +117,17 @@ struct common_speculative_deleter {
+ 
+ typedef std::unique_ptr<common_speculative, common_speculative_deleter> common_speculative_ptr;
+ 
++// wip/slab-transient-absorption (step 4): load the draft MODEL only.  `common_init_result` calls this
++// BEFORE creating the target context, so the draft's weights are resident when the slab sizes itself from
++// the free VRAM it measures -- their per-device (asymmetric) footprint is then measured, not predicted.
++// The draft CONTEXT still comes after the target context (it needs `ctx_other`).  Returns nullptr when the
++// speculation runs on the target's own weights (MTP) or there is no draft.
++llama_model_ptr common_speculative_load_model(common_params & params);
++
+ struct common_speculative_init_result {
+-    common_speculative_init_result(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt);
++    // `model_dft` (optional) is an already loaded draft model; ownership is transferred here.
++    common_speculative_init_result(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt,
++                                   llama_model * model_dft = nullptr);
+     ~common_speculative_init_result();
+ 
+     llama_model   * model();
+@@ -131,4 +140,5 @@ private:
+ 
+ using common_speculative_init_result_ptr = std::unique_ptr<common_speculative_init_result>;
+ 
+-common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt);
++common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt,
++                                                                       llama_model * model_dft = nullptr);
+diff --git a/examples/speculative-simple/speculative-simple.cpp b/examples/speculative-simple/speculative-simple.cpp
+index cb627129b..a1b361942 100644
+--- a/examples/speculative-simple/speculative-simple.cpp
++++ b/examples/speculative-simple/speculative-simple.cpp
+@@ -44,7 +44,7 @@ int main(int argc, char ** argv) {
+     llama_context * ctx_tgt = NULL;
+ 
+     // load the target model
+-    auto llama_init_tgt = common_init_from_params(params);
++    auto llama_init_tgt = common_init_from_params(params, /*model_only =*/ false, /*preload_draft =*/ true);
+ 
+     model_tgt = llama_init_tgt->model();
+     ctx_tgt   = llama_init_tgt->context();
+@@ -57,7 +57,7 @@ int main(int argc, char ** argv) {
+     {
+         common_params params_dft = common_base_params_to_speculative(params);
+ 
+-        spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
++        spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt, llama_init_tgt->take_draft_model());
+ 
+         params.speculative.draft.ctx_tgt = ctx_tgt;
+         params.speculative.draft.ctx_dft = spec_init->context();
 diff --git a/ggml/src/ggml-cuda/allreduce-hip.cu b/ggml/src/ggml-cuda/allreduce-hip.cu
 index 648014967..2e39b27ab 100644
 --- a/ggml/src/ggml-cuda/allreduce-hip.cu
@@ -643,7 +868,7 @@ index fbbe48432..a5e3a3a44 100644
              bf16_tmp[i].alloc(ne);
              ggml_cuda_set_device(p->devices[i]);
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 39c9d71cf..14ec77bf6 100644
+index 39c9d71cf..25effbbe6 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
 @@ -1347,6 +1347,13 @@ struct ggml_cuda_pool {
@@ -686,7 +911,19 @@ index 39c9d71cf..14ec77bf6 100644
  
  // backend interface
  
-@@ -1625,6 +1651,17 @@ bool ggml_cuda_slab_active(int device);
+@@ -1422,6 +1448,11 @@ struct ggml_cuda_graph {
+     std::vector<cudaGraphNode_t> nodes;
+     bool disable_due_to_gpu_arch = false;
+     bool warmup_complete = false;
++    // A capture was deferred because the slab's wide band was armed: the direct runs in that stretch
++    // served the graph's pool temporaries from the band, so they are NOT cached for a capture.  The
++    // first disarmed compute runs directly to populate the pool (outside the slab), and the capture
++    // follows on the next one.  See the graph-capture guard in ggml-cuda.cu.
++    bool capture_deferred = false;
+     uint64_t uid = 0;
+     int64_t last_used_time = 0;
+     // ggml_cuda_graph_mem_gen() of the graph's device when it was captured: a captured graph bakes in
+@@ -1625,6 +1656,17 @@ bool ggml_cuda_slab_active(int device);
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size);
  size_t ggml_cuda_slab_ring_slot_capacity(int device);
  void   ggml_cuda_slab_ring_set(int device, bool arm);
@@ -704,7 +941,7 @@ index 39c9d71cf..14ec77bf6 100644
  
  // wip/slab-ring-region (issue #164): the H2D staging-ring cap (bytes).  `GGML_CUDA_SLAB_RING_MIB` is a
  // verbatim per-GPU override; otherwise `llama_context` auto-sizes it from the ubatch and the host-expert
-@@ -1917,14 +1954,23 @@ struct ggml_backend_cuda_context {
+@@ -1917,14 +1959,23 @@ struct ggml_backend_cuda_context {
      // The growth policy is not a performance lever (exact-fit realloc measured the same).
      char * fattn_stage[GGML_CUDA_MAX_STREAMS]      = {};
      size_t fattn_stage_size[GGML_CUDA_MAX_STREAMS] = {};
@@ -731,7 +968,7 @@ index 39c9d71cf..14ec77bf6 100644
              total += fattn_stage_size[i];
          }
          return total;
-@@ -1952,15 +1998,55 @@ struct ggml_backend_cuda_context {
+@@ -1952,15 +2003,55 @@ struct ggml_backend_cuda_context {
      // the pre-change path.  GGML_CUDA_FA_STAGE_PREALLOC=0 disables the hint (A/B and bisection).
      void * fattn_stage_try_get(int stream_no, size_t size, size_t size_hint = 0) {
          GGML_ASSERT(stream_no >= 0 && stream_no < GGML_CUDA_MAX_STREAMS);
@@ -788,7 +1025,7 @@ index 39c9d71cf..14ec77bf6 100644
              if (prealloc && size_hint >= size) {
                  const size_t hint_size = std::max<size_t>(size_t(1) << 24, size_hint);
                  if (optional_alloc_within_free_cap(cur_total + hint_size)) {
-@@ -1997,8 +2083,12 @@ struct ggml_backend_cuda_context {
+@@ -1997,8 +2088,12 @@ struct ggml_backend_cuda_context {
                  }
              }
              if (fattn_stage[stream_no] != nullptr) {
@@ -803,7 +1040,7 @@ index 39c9d71cf..14ec77bf6 100644
              }
              fattn_stage[stream_no]      = new_arena;
              fattn_stage_size[stream_no] = alloc_size;
-@@ -2165,6 +2255,22 @@ struct ggml_backend_cuda_context {
+@@ -2165,6 +2260,22 @@ struct ggml_backend_cuda_context {
          return (size_t) h2d_stage_slots() * (max_slot + 512);
      }
  
@@ -826,7 +1063,7 @@ index 39c9d71cf..14ec77bf6 100644
      void * h2d_stage_buffer(int slot, size_t size) {
          GGML_ASSERT(slot >= 0 && slot < H2D_STAGE_SLOTS);
          if (size > h2d_stage_size[slot]) {
-@@ -2191,6 +2297,13 @@ struct ggml_backend_cuda_context {
+@@ -2191,6 +2302,13 @@ struct ggml_backend_cuda_context {
                      const size_t want = cap >= new_size ? cap : new_size;
                      void * p = ggml_cuda_slab_arena_alloc_transient(device, want);
                      if (p != nullptr) {
@@ -840,7 +1077,7 @@ index 39c9d71cf..14ec77bf6 100644
                          h2d_stage[slot]      = p;
                          h2d_stage_size[slot] = want;
                          h2d_stage_total     += want - old_size;
-@@ -2199,7 +2312,24 @@ struct ggml_backend_cuda_context {
+@@ -2199,7 +2317,24 @@ struct ggml_backend_cuda_context {
                      }
                  }
              }
@@ -866,7 +1103,7 @@ index 39c9d71cf..14ec77bf6 100644
              // fit-slab-accounting revival (G4, issue #117): bound the ring by the free VRAM it would still
              // leave.  See `optional_alloc_within_free_cap` above.
              if (!optional_alloc_within_free_cap(h2d_stage_total - old_size + new_size)) {
-@@ -2395,6 +2525,8 @@ struct ggml_backend_cuda_context {
+@@ -2395,6 +2530,8 @@ struct ggml_backend_cuda_context {
      nv_bfloat16 * bf16_src1_cache_put(const ggml_tensor * root, int64_t n) {
          auto & c = bf16_src1_cache;
          c.buf.reset();
@@ -875,7 +1112,7 @@ index 39c9d71cf..14ec77bf6 100644
          c.buf       = std::make_unique<ggml_cuda_pool_alloc<nv_bfloat16>>(pool(), n);
          c.src1      = root;
          c.data      = root->data;
-@@ -2620,3 +2752,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+@@ -2620,3 +2757,49 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
      kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
      CUDA_CHECK(cudaGetLastError());
  }
@@ -1073,7 +1310,7 @@ index a443887e4..d33123708 100644
      return bw[dev];
  }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-index f6eeec2c8..8e6596779 100644
+index f6eeec2c8..9f21d7f0b 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 @@ -7,6 +7,7 @@
@@ -1117,7 +1354,7 @@ index f6eeec2c8..8e6596779 100644
      bool                     ring_requested = false; // the context classified the live ubatch as wide (prefill)
                                                  //  (`ring_set`, n_tokens >= 64).  `work_alloc` places
                                                  //  such a view above the ring even when its buffer is no
-@@ -375,24 +402,53 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
+@@ -375,24 +402,62 @@ static size_t ggml_cuda_slab_min_arena_bytes() {
  // the allocations that can still appear later.  `0` disables the extension (the slab then keeps exactly
  // the reserve it took at creation).
  //
@@ -1127,18 +1364,19 @@ index f6eeec2c8..8e6596779 100644
 -// loud (see the 2048 table in `archive/work/fit-slab-accounting/README.md` §2.2: `!!!!!!!!`, 475 t/s,
 -// and the older `hipModuleLoad failed` abort at `-ub 4096 -c 163860`).  The requirement grows with prefill
 -// width/context.
-+// DEFAULT: **512 MiB per GPU, plus 128 MiB for every additional GPU** (wip/slab-transient-absorption,
-+// 2026-10-17): 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.  See `ggml_cuda_slab_headroom_bytes`.
++// DEFAULT: **640 MiB per GPU, plus 128 MiB for every additional GPU** (wip/slab-transient-absorption,
++// 2026-10-18): 1 GPU -> 768, 2 -> 896, 3 -> 1024 MiB.  See `ggml_cuda_slab_headroom_bytes`.
  //
 -// Set it in MiB with `GGML_CUDA_SLAB_HEADROOM_MIB` (there is no boolean switch): the value is the
 -// steady-state free VRAM kept outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
-+// The headroom is the STEADY-STATE FREE VRAM kept outside the slab: the cushion every allocation that cannot
-+// live in the slab draws on.  Since the transient work it is (measured) only `T` = the hipBLASLt/Tensile
-+// workspace (104 MiB, library-owned), the Q8_1 arena, and the transients that are not slab-served -- every
-+// other prefill transient now lives in the slab (H2D ring, FA staging, QSA3/GDN scratch, the calibration
-+// probe, the workspace pool's large temporaries) and the two per-graph caches are released at the graph end
-+// (wip/slab-transient-absorption §10.6-§10.8).  It is NOT slack to be maximised: it is permanently withheld
-+// from the arena, and the arena is where the expert cache lives (~1 pt of hit rate per GiB moved).
++// 2026-10-18: the base moved 512 -> 640 (+128 on every config).  The 2-GPU MTP measurement
++// (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, 131k ctx, 73k-token prefill) left the cards at **148 MiB free
++// in the decode steady state** at 768 -- the decode-phase graph captures' pool temporaries are outside the
++// slab by design and cached for the run, and the reduce temp takes its 400 MiB out of the same cushion.
++// The old table below still measures correctly; every value is the OLD default's excess.  With 896 the same
++// run settles at ~276 MiB (measured).  Keep raising the base rather than adding a per-device term: the
++// decode pool high-water is a per-DEVICE cost, not a per-extra-GPU one (the per-GPU term is for the
++// multi-GPU peer/reduce transients, which is where the 90 MiB/extra-device figure came from).
  //
 -// TRIALLED 3072 (2026-10-10, `wip/slab-ring-region/`): the op-offload H2D staging ring moved INSIDE the
 -// slab, so it no longer spends ~1 GiB of this headroom (r38 refused a 990 MiB ring growth here), and on
@@ -1148,6 +1386,14 @@ index f6eeec2c8..8e6596779 100644
 -// corruption) while 3072 dies with `Hip error: 'out of memory' at hipblaslt.cpp:164`.  So the default
 -// stays 4096 and lowering it remains a per-user choice via the env var, not a shipped default.
 -#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 4096
++// The headroom is the STEADY-STATE FREE VRAM kept outside the slab: the cushion every allocation that cannot
++// live in the slab draws on.  Since the transient work it is (measured) only `T` = the hipBLASLt/Tensile
++// workspace (104 MiB, library-owned), the Q8_1 arena, and the transients that are not slab-served -- every
++// other prefill transient now lives in the slab (H2D ring, FA staging, QSA3/GDN scratch, the calibration
++// probe, the workspace pool's large temporaries) and the two per-graph caches are released at the graph end
++// (wip/slab-transient-absorption §10.6-§10.8).  It is NOT slack to be maximised: it is permanently withheld
++// from the arena, and the arena is where the expert cache lives (~1 pt of hit rate per GiB moved).
++//
 +// T IS PER DEVICE (each card runs its own pools, Q8_1 arena and rocBLAS workspace), which is why the default
 +// scales with the device count instead of being flat.  Measured 2026-10-17 (derived draft reserve,
 +// `GGML_CUDA_SLAB_STATS=1`; "excess" = free VRAM outside the slab at the worst arm/drop of the run):
@@ -1182,22 +1428,22 @@ index f6eeec2c8..8e6596779 100644
 +// `GGML_CUDA_SLAB_HEADROOM_MIB` sets the value VERBATIM (no per-GPU addition), like every other explicit
 +// override; the per-GPU scaling applies only to the default.  The value is the steady-state free VRAM kept
 +// outside the slab after `ggml_cuda_slab_extend` reclaims the reserve.
-+#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 512   // base; the default is 512 + 128 x n_gpu
-+#define GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU 128   // per device, so 1->640, 2->768, 3->896 MiB
++#define GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT 640   // base; the default is 640 + 128 x n_gpu
++#define GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU 128   // per device, so 1->768, 2->896, 3->1024 MiB
  
  static size_t g_slab_headroom_min_mib = 0;
  void ggml_cuda_slab_headroom_at_least_mib(size_t mib) {
-@@ -406,7 +462,18 @@ size_t ggml_cuda_slab_headroom_bytes() {
+@@ -406,7 +471,18 @@ size_t ggml_cuda_slab_headroom_bytes() {
          env_set = env != NULL;
          mib = env_set ? (size_t) atoll(env) : GGML_CUDA_SLAB_HEADROOM_MIB_DEFAULT;
      }
 -    const size_t eff = (!env_set && g_slab_headroom_min_mib > mib) ? g_slab_headroom_min_mib : mib;
-+    // The outside transients are PER DEVICE, so the default grows with the number of cards (`512 + 128 x n`,
-+    // i.e. 640 / 768 / 896 MiB for 1 / 2 / 3 GPUs); an explicit `GGML_CUDA_SLAB_HEADROOM_MIB` is taken
++    // The outside transients are PER DEVICE, so the default grows with the number of cards (`640 + 128 x n`,
++    // i.e. 768 / 896 / 1024 MiB for 1 / 2 / 3 GPUs); an explicit `GGML_CUDA_SLAB_HEADROOM_MIB` is taken
 +    // verbatim (an operator asks for a total, not a per-card value).
 +    size_t eff = mib;
 +    if (!env_set) {
-+        // `512 + 128 x n_devices`: 1 GPU -> 640, 2 -> 768, 3 -> 896 MiB.
++        // `640 + 128 x n_devices`: 1 GPU -> 768, 2 -> 896, 3 -> 1024 MiB.
 +        const int n_phys = std::max(1, ggml_cuda_info().physical_device_count);
 +        eff += (size_t) n_phys * GGML_CUDA_SLAB_HEADROOM_MIB_PER_GPU;
 +    }
@@ -1207,7 +1453,7 @@ index f6eeec2c8..8e6596779 100644
      return eff * 1024 * 1024;
  }
  
-@@ -734,6 +801,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
+@@ -734,6 +810,9 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
      s.ring_region  = 0;
      s.ring_armed   = false;
      s.ring_used    = 0;
@@ -1217,7 +1463,7 @@ index f6eeec2c8..8e6596779 100644
      s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
      s.arena_free.clear();
      s.arena_free[w] = s.mapped - w;
-@@ -960,8 +1030,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -960,8 +1039,26 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
                  device, (double) need/1048576.0, (int) narrow, (double) ret_off/1048576.0,
                  (double) s.narrow_floor/1048576.0, (double) s.ring_region/1048576.0, (double) s.boundary/1048576.0);
          }
@@ -1244,7 +1490,7 @@ index f6eeec2c8..8e6596779 100644
          if (!s.work_needs.empty()) {
              const size_t mx = *s.work_needs.rbegin();
              if (mx > floor) {
-@@ -972,6 +1060,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+@@ -972,6 +1069,14 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
              floor = contrib;
          }
          const size_t target = ggml_cuda_slab_up(floor, s.chunk);
@@ -1259,7 +1505,7 @@ index f6eeec2c8..8e6596779 100644
          base    = s.base;
          // wip/moe-verify-fusions: never grow the work pool into a pinned narrow-2 region (the draft's
          // compute VA).  A request that does not fit falls back to cudaMalloc rather than corrupt it.
-@@ -1141,6 +1237,61 @@ size_t ggml_cuda_slab_ring_region(int device) {
+@@ -1141,6 +1246,69 @@ size_t ggml_cuda_slab_ring_region(int device) {
      return s.ring_region;
  }
  
@@ -1292,15 +1538,21 @@ index f6eeec2c8..8e6596779 100644
 +    const size_t aux          = s.wide_aux_size;
 +    const bool   inited       = s.inited;
 +    size_t free_b = 0, total_b = 0;
++    // cudaMemGetInfo reports the free VRAM of the CURRENT device, so it must be selected here: without
++    // this, every device's line repeats the first device's figure and a per-device shortfall is invisible.
++    ggml_cuda_set_device(device);
 +    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
 +        (void) cudaGetLastError();
 +    }
-+    GGML_LOG_WARN("SLAB_STATS %s dev=%d slab=%d free=%.1f MiB total=%.1f MiB mapped=%.1f MiB "
++    ggml_cuda_free_min_sample(device, free_b);
++    GGML_LOG_WARN("SLAB_STATS %s dev=%d slab=%d free=%.1f MiB free_min=%.1f MiB total=%.1f MiB mapped=%.1f MiB "
 +                  "work=%.1f MiB (narrow=%.1f ring=%.1f wide_aux=%.1f narrow2=%.1f) arena=%.1f MiB "
-+                  "pool=%.1f MiB pool_wide=%.1f MiB/%zu refused=%.1f MiB headroom_cfg=%.1f MiB "
-+                  "aux_cfg=%.1f MiB wide[n_pop=%zu hole=%zu inval=%zu rebase=%zu]\n",
++                  "pool=%.1f MiB pool_wide=%.1f MiB/%zu refused=%.1f MiB outside_max=%.1f MiB "
++                  "outside_failed=%.1f MiB headroom_cfg=%.1f MiB aux_cfg=%.1f MiB "
++                  "wide[n_pop=%zu hole=%zu inval=%zu rebase=%zu]\n",
 +                  tag, device, (int) inited,
-+                  (double) free_b / 1048576.0, (double) total_b / 1048576.0, (double) mapped / 1048576.0,
++                  (double) free_b / 1048576.0, (double) ggml_cuda_free_min_bytes(device) / 1048576.0,
++                  (double) total_b / 1048576.0, (double) mapped / 1048576.0,
 +                  (double) boundary / 1048576.0, (double) narrow_floor / 1048576.0,
 +                  (double) ring / 1048576.0, (double) aux / 1048576.0, (double) narrow2 / 1048576.0,
 +                  (double) arena / 1048576.0,
@@ -1308,6 +1560,8 @@ index f6eeec2c8..8e6596779 100644
 +                  (double) ggml_cuda_pool_wide_bytes(device) / 1048576.0,
 +                  ggml_cuda_pool_wide_blocks(device),
 +                  (double) ggml_cuda_pool_wide_refused(device) / 1048576.0,
++                  (double) ggml_cuda_outside_alloc_max_bytes(device) / 1048576.0,
++                  (double) ggml_cuda_outside_fail_max_bytes(device) / 1048576.0,
 +                  (double) ggml_cuda_slab_headroom_bytes() / 1048576.0,
 +                  (double) g_slab_aux_reserve_bytes / 1048576.0,
 +                  s.wide_n_pop, s.wide_n_hole, s.wide_n_inval, s.wide_n_rebase);
@@ -1321,7 +1575,7 @@ index f6eeec2c8..8e6596779 100644
  void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      if (size == 0) {
          return nullptr;
-@@ -1159,6 +1310,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1159,6 +1327,184 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
      return p;
  }
  
@@ -1506,7 +1760,7 @@ index f6eeec2c8..8e6596779 100644
  // The context classifies each ubatch (prefill: `n_tokens >= 64`; decode/verify: below) and tells the slab
  // here.  The ring itself is still carved with a wip view -- arming is just `boundary >= narrow_floor +
  // ring_region` -- but the classification must NOT be inferred from the work request size: for the
-@@ -1167,13 +1496,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
+@@ -1167,13 +1513,55 @@ void * ggml_cuda_slab_arena_alloc_transient(int device, size_t size) {
  // `boundary == narrow_floor` and `ring_armed == false`.  `work_alloc` reads this flag and places the
  // prefill view above the ring.  A no-op for the generic arm/disarm plumbing stays valid for a future
  // non-slab allocator.
@@ -1563,10 +1817,10 @@ index f6eeec2c8..8e6596779 100644
  
  // --- Phase-2 (item 6b): state accessors for the device wrappers kept in ggml-cuda.cu ---
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-index 312476e89..c392f0c43 100644
+index 312476e89..0ea165eef 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
 +++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
-@@ -80,6 +80,34 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
+@@ -80,6 +80,44 @@ size_t ggml_cuda_slab_ring_slot_capacity(int device);
  // The ring hole's reserved size (0 when the slab carved none): `llama_context` uses it to skip the
  // narrow -> wide compute-buffer drop when there is no ring to arm.  wip/slab-ring-region (issue #164).
  size_t ggml_cuda_slab_ring_region(int device);
@@ -1588,6 +1842,16 @@ index 312476e89..c392f0c43 100644
 +void   ggml_cuda_slab_log_stats(int device, const char * tag);
 +// wip/slab-transient-absorption: physical retained by the VMM workspace pool on this device (diagnostic).
 +size_t ggml_cuda_pool_mapped_bytes(int device);
++// Largest single allocation made through `ggml_cuda_device_malloc` AFTER the slab became active, per
++// device: everything it reports is OUTSIDE the slab by construction (scheduler buffers, the Meta
++// all-reduce temp, the q8_1 arena, the pool).  Diagnostic only (GGML_CUDA_SLAB_STATS).
++size_t ggml_cuda_outside_alloc_max_bytes(int device);
++// Largest allocation the same choke point REFUSED after the slab became active (the outside-reserve
++// shortfall signal).  Diagnostic only (GGML_CUDA_SLAB_STATS).
++size_t ggml_cuda_outside_fail_max_bytes(int device);
++// Low-water mark of the free VRAM outside the slab, per device (diagnostic only).
++size_t ggml_cuda_free_min_bytes(int device);
++void   ggml_cuda_free_min_sample(int device, size_t free_b);
 +// wip/slab-transient-absorption (step 2b): bytes and block count the workspace pools have currently handed
 +// out from the slab's wide band on this device.  The block count is the LEAK TRIPWIRE: it must be 0 at the
 +// prefill -> decode drop (a non-zero value means a pool allocation outlived the band, i.e. a retained site
@@ -1602,10 +1866,119 @@ index 312476e89..c392f0c43 100644
  // prefill -> decode transition (returned to the arena, so a decode-only stretch gets the VRAM back).
  // Arming evicts the arena tables the hole had picked up; called with NO lock held.
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index ad7f556da..ae9f452d3 100644
+index ad7f556da..ff7a10d7f 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -553,8 +553,60 @@ static bool ggml_cuda_pool_floor_refuses(size_t size) {
+@@ -165,6 +165,80 @@ bool ggml_cuda_slab_enabled();
+ 
+ cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device);
+ 
++// Diagnostic (GGML_CUDA_SLAB_STATS): the largest single allocation made through the device-allocation
++// choke point AFTER the slab became active.  Everything counted here is outside the slab by construction,
++// so it is the number to compare against the reserve: the 400 MiB Meta all-reduce temp that a 70k-token
++// prefill needs was invisible in the old accounting.  Relaxed max, one update per allocation.
++static std::atomic<size_t> g_outside_alloc_max[GGML_CUDA_MAX_DEVICES];
++// Largest allocation the choke point REFUSED after the slab became active: this is the number to compare
++// against the outside reserve (a failed 400 MiB Meta all-reduce temp is the symptom of a short reserve).
++static std::atomic<size_t> g_outside_fail_max[GGML_CUDA_MAX_DEVICES];
++// Low-water mark of the free VRAM OUTSIDE the slab, per device, sampled at every large device allocation
++// and at every slab stats point (GGML_CUDA_SLAB_STATS).  This is the real margin the reserve gives: the
++// wide-arm / wide-drop lines only bracket the prefill, the dip can be in the middle of it.
++static std::atomic<size_t> g_free_min[GGML_CUDA_MAX_DEVICES];
++static std::atomic<bool>   g_free_min_set[GGML_CUDA_MAX_DEVICES];
++
++size_t ggml_cuda_free_min_bytes(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || !g_free_min_set[device].load(std::memory_order_relaxed)) {
++        return 0;
++    }
++    return g_free_min[device].load(std::memory_order_relaxed);
++}
++
++void ggml_cuda_free_min_sample(int device, size_t free_b) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return;
++    }
++    if (!g_free_min_set[device].load(std::memory_order_relaxed)) {
++        size_t first = 0;
++        (void) g_free_min[device].compare_exchange_strong(first, free_b, std::memory_order_relaxed);
++        g_free_min_set[device].store(true, std::memory_order_relaxed);
++    }
++    size_t prev = g_free_min[device].load(std::memory_order_relaxed);
++    while (free_b < prev &&
++           !g_free_min[device].compare_exchange_weak(prev, free_b, std::memory_order_relaxed)) {
++    }
++}
++
++size_t ggml_cuda_outside_alloc_max_bytes(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_outside_alloc_max[device].load(std::memory_order_relaxed);
++}
++
++size_t ggml_cuda_outside_fail_max_bytes(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return 0;
++    }
++    return g_outside_fail_max[device].load(std::memory_order_relaxed);
++}
++
++static void ggml_cuda_outside_fail_note(int device, size_t size) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || size < ((size_t) 1 << 20)) {
++        return;
++    }
++    if (!ggml_cuda_slab_active(device)) {
++        return;
++    }
++    size_t prev = g_outside_fail_max[device].load(std::memory_order_relaxed);
++    while (size > prev && !g_outside_fail_max[device].compare_exchange_weak(prev, size, std::memory_order_relaxed)) {
++    }
++}
++
++static void ggml_cuda_outside_alloc_note(int device, size_t size) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || size < ((size_t) 1 << 20)) {
++        return;
++    }
++    if (!ggml_cuda_slab_active(device)) {
++        return;   // weights / KV load before the slab: not part of the outside cushion
++    }
++    size_t prev = g_outside_alloc_max[device].load(std::memory_order_relaxed);
++    while (size > prev && !g_outside_alloc_max[device].compare_exchange_weak(prev, size, std::memory_order_relaxed)) {
++    }
++}
++
+ cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
+     ggml_cuda_set_device(device);
+     cudaError_t err;
+@@ -214,6 +288,7 @@ cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
+                           "weights / KV cache / workspaces stay outside it.\n",
+                           __func__, size / 1024.0 / 1024.0, device);
+             moe_cache_validate("device-malloc-yield");
++            ggml_cuda_outside_fail_note(device, size);
+             return err;
+         }
+         // WIP r42 (TODO #42) fail-soft policy at the ONE choke point every device allocation can share.
+@@ -246,6 +321,19 @@ cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
+         // stand-down left inconsistent before the next graph reads it.
+         moe_cache_validate("device-malloc-yield");
+     }
++    if (err == cudaSuccess) {
++        ggml_cuda_outside_alloc_note(device, size);
++        if (size >= ((size_t) 1 << 20) && ggml_cuda_slab_active(device)) {
++            size_t fb = 0, tb = 0;
++            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess) {
++                ggml_cuda_free_min_sample(device, fb);
++            } else {
++                (void) cudaGetLastError();
++            }
++        }
++    } else {
++        ggml_cuda_outside_fail_note(device, size);
++    }
+     return err;
+ }
+ 
+@@ -553,8 +641,60 @@ static bool ggml_cuda_pool_floor_refuses(size_t size) {
  
  static bool ggml_cuda_graph_capture_active();
  
@@ -1666,7 +2039,7 @@ index ad7f556da..ae9f452d3 100644
  
      int device;
      struct ggml_cuda_buffer {
-@@ -570,6 +622,19 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -570,6 +710,19 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
      size_t cached_size = 0;
      size_t cache_cap   = 0;
  
@@ -1686,7 +2059,7 @@ index ad7f556da..ae9f452d3 100644
      explicit ggml_cuda_pool_leg(int device) :
          device(device) {
          const char * cap = getenv("GGML_CUDA_POOL_CACHE_MB");
-@@ -577,8 +642,63 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -577,8 +730,63 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
          cache_cap = mb > 0 ? (size_t) mb << 20 : 0;
      }
  
@@ -1750,7 +2123,7 @@ index ad7f556da..ae9f452d3 100644
          GGML_ASSERT(pool_size == 0);
      }
  
-@@ -590,11 +710,18 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -590,11 +798,18 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
              if (b.ptr != nullptr) {
                  CUDA_CHECK(cudaFree(b.ptr));
                  pool_size -= b.size;
@@ -1769,7 +2142,7 @@ index ad7f556da..ae9f452d3 100644
      }
  
      void * alloc(size_t size, size_t * actual_size) override {
-@@ -602,6 +729,55 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -602,6 +817,55 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
          int nnz = 0;
          size_t max_size = 0;
  #endif
@@ -1825,7 +2198,38 @@ index ad7f556da..ae9f452d3 100644
          size_t best_diff = 1ull << 36;
          int ibest = -1;
          for (int i = 0; i < MAX_BUFFERS; ++i) {
-@@ -676,6 +852,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -654,12 +918,28 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         // With the MoE expert cache holding host-expert tables, the first attempt keeps a free-VRAM floor and the
+         // flush + retry below runs instead (see ggml_cuda_pool_floor_refuses).  The retry has no floor, so this
+         // never turns into an abort.
++        // A graph capture must never reach the driver's synchronization/flush path: cudaDeviceSynchronize
++        // (and the cache flush's cudaFree) is illegal inside a capture.  The graph-capture guard in
++        // `ggml_backend_cuda_graph_compute` keeps captures off the armed wide band and gives them a
++        // disarmed warmup, so a capture's temporaries come from the pool; this is the belt-and-braces
++        // for the case it does not (and it makes the failure report the real OOM, not a capture error).
++        const bool capturing = ggml_cuda_graph_capture_active();
+         cudaError_t err = cudaErrorMemoryAllocation;
+-        if (!ggml_cuda_pool_floor_refuses(look_ahead_size)) {
++        if (capturing) {
++            // The free-VRAM floor is a soft check that is normally resolved by the flush + retry below;
++            // that path is unavailable here, so go straight to the allocation without the floor.
++            err = ggml_cuda_device_malloc(&ptr, look_ahead_size, device);
++        } else if (!ggml_cuda_pool_floor_refuses(look_ahead_size)) {
+             err = ggml_cuda_device_malloc(&ptr, look_ahead_size, device);
+         }
+         if (t_pl) { g_pool_us += ggml_time_us() - t_pl; g_pool_n++; }
+-        if (err == cudaErrorMemoryAllocation) {
++        if (err == cudaErrorMemoryAllocation && capturing) {
++            g_pool_oom_n++;
++            (void)cudaGetLastError();
++            GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: %.2f MiB allocation failed during graph capture; a "
++                          "captured graph's temporaries must come from the pool (no synchronize/flush is "
++                          "possible inside a capture)\n", device, look_ahead_size/1024.0/1024.0);
++        } else if (err == cudaErrorMemoryAllocation) {
+             g_pool_oom_n++;
+             (void)cudaGetLastError();
+             const size_t cached_bytes = pool_size;
+@@ -676,6 +956,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
          CUDA_CHECK(err);
          *actual_size = look_ahead_size;
          pool_size += look_ahead_size;
@@ -1835,7 +2239,7 @@ index ad7f556da..ae9f452d3 100644
  #ifdef DEBUG_CUDA_MALLOC
          GGML_LOG_INFO("%s[%d]: %d buffers, max_size = %u MB, pool_size = %u MB, requested %u MB\n", __func__, device, nnz,
                             (uint32_t)(max_size / 1024 / 1024), (uint32_t)(pool_size / 1024 / 1024), (uint32_t)(size / 1024 / 1024));
-@@ -684,6 +863,42 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -684,6 +967,42 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
      }
  
      void free(void * ptr, size_t size) override {
@@ -1878,7 +2282,7 @@ index ad7f556da..ae9f452d3 100644
          for (int i = 0; i < MAX_BUFFERS; ++i) {
              ggml_cuda_buffer& b = buffer_pool[i];
              if (b.ptr == nullptr) {
-@@ -701,6 +916,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+@@ -701,6 +1020,9 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
          CUDA_CHECK(cudaFree(ptr));
          if (t_pf) { g_pool_free_us += ggml_time_us() - t_pf; g_pool_free_n++; }
          pool_size -= size;
@@ -1888,7 +2292,7 @@ index ad7f556da..ae9f452d3 100644
      }
  };
  
-@@ -727,6 +945,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+@@ -727,6 +1049,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
  
      ~ggml_cuda_pool_vmm() {
          if (pool_addr != 0) {
@@ -1898,7 +2302,7 @@ index ad7f556da..ae9f452d3 100644
  #if defined(GGML_USE_HIP)
              // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
              for (std::pair<CUdeviceptr, size_t> & mapping : mappings) {
-@@ -823,6 +1044,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+@@ -823,6 +1148,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
  
              // add to the pool
              pool_size += reserve_size;
@@ -1908,7 +2312,7 @@ index ad7f556da..ae9f452d3 100644
  
              //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
              //       device, (unsigned long long) (pool_size/1024/1024),
-@@ -881,6 +1105,10 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+@@ -881,6 +1209,10 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
      std::unique_lock<std::mutex> lock(ggml_cuda_lock);
      ggml_cuda_lock_cv.wait(lock, []{ return ggml_cuda_lock_counter.load(std::memory_order_relaxed) == 0; });
  
@@ -1919,7 +2323,7 @@ index ad7f556da..ae9f452d3 100644
      if (q8_1_arena != nullptr) {
          CUDA_CHECK(cudaFree(q8_1_arena));
      }
-@@ -893,7 +1121,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+@@ -893,7 +1225,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
      h2d_stage_free();
  
      for (int i = 0; i < GGML_CUDA_MAX_STREAMS; ++i) {
@@ -1928,7 +2332,7 @@ index ad7f556da..ae9f452d3 100644
              CUDA_CHECK(cudaFree(fattn_stage[i]));
          }
      }
-@@ -1700,6 +1928,8 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
+@@ -1700,6 +2032,8 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
      ggml_cuda_pool_alloc<nv_bfloat16> tmp[GGML_CUDA_MAX_DEVICES];
      for (size_t i = 0; i < n_backends; ++i) {
          ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
@@ -1937,7 +2341,20 @@ index ad7f556da..ae9f452d3 100644
          tmp[i].pool = &cuda_ctx->pool();
          tmp[i].alloc(ne);
  
-@@ -4514,6 +4744,20 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+@@ -4016,6 +4350,12 @@ static ggml_cuda_graph_key ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
+ // spec-verify widths (n_tokens <= MMVQ_MAX_BATCH_SIZE, a fixed shape every step) keep HIP
+ // graph replay.  GGML_CUDA_DISABLE_VERIFY_GRAPHS=1 restores the pre-r20 behaviour where
+ // every multi-token graph skipped the graph path.
++// Diagnostic trace for the graph capture state machine (GGML_CUDA_GRAPH_TRACE=1).  Off by default.
++static bool ggml_cuda_graph_trace() {
++    static const bool on = getenv("GGML_CUDA_GRAPH_TRACE") != nullptr;
++    return on;
++}
++
+ static bool ggml_cuda_graph_is_multi_token(const ggml_cgraph * cgraph) {
+     static const bool verify_graphs_off = getenv("GGML_CUDA_DISABLE_VERIFY_GRAPHS") != nullptr;
+     return ggml_cuda_graph_n_tokens(cgraph) > (verify_graphs_off ? 1 : MMVQ_MAX_BATCH_SIZE);
+@@ -4514,6 +4854,20 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
      ggml_cuda_mmb_set_active_ctx(cuda_ctx);
      ggml_cuda_mmb_begin_graph();
  
@@ -1958,6 +2375,88 @@ index ad7f556da..ae9f452d3 100644
      bool use_cuda_graph             = false;
      bool cuda_graph_update_required = false;
      ggml_cuda_graph_key graph_key = {};
+@@ -4543,13 +4897,38 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+             } else {
+             const bool properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
+ 
++            // A capture must NEVER start while the slab's wide band is armed.  The band is reclaimed at
++            // the prefill -> decode drop, so it cannot hold a captured graph's pointers (that is why
++            // `pool_leg::alloc` skips it during capture), and skipping it would place the capture's
++            // temporaries OUTSIDE the slab -- the exact VRAM the band exists to save.  When that outside
++            // cushion is short the allocation fails and the pool's OOM reclaim path tries to
++            // cudaDeviceSynchronize(), which is illegal inside a capture (the "operation not permitted
++            // when stream is capturing" abort).  REPLAY of an already captured graph stays safe (its
++            // pointers are outside the slab); only capture/recapture waits for a disarmed pass.
++            const bool band_armed = ggml_cuda_slab_enabled() &&
++                                    ggml_cuda_slab_wide_available(cuda_ctx->device);
++
+             if (!graph->warmup_complete) {
+                 // Warmup: need at least 2 calls with no property change on the 2nd call
+                 if (!properties_changed) {
+-                    graph->warmup_complete = true;
+-                    GGML_LOG_DEBUG("%s: CUDA graph warmup complete\n", __func__);
+-                    use_cuda_graph = true;
+-                    cuda_graph_update_required = true;
++                    if (band_armed) {
++                        // This direct run is served from the band, so it leaves nothing in the pool for a
++                        // capture: warm up again on the first disarmed pass (capture_deferred).
++                        graph->capture_deferred = true;
++                    } else if (graph->capture_deferred) {
++                        // First disarmed pass after an armed stretch: run directly so the pool really
++                        // holds this graph's temporaries, then capture on the next call.
++                        graph->capture_deferred = false;
++                        graph->warmup_complete = true;
++                        if (ggml_cuda_graph_trace()) {
++                            GGML_LOG_WARN("%s: device %d: deferred-capture warmup (direct run)\n", __func__, cuda_ctx->device);
++                        }
++                    } else {
++                        graph->warmup_complete = true;
++                        GGML_LOG_DEBUG("%s: CUDA graph warmup complete\n", __func__);
++                        use_cuda_graph = true;
++                        cuda_graph_update_required = true;
++                    }
+                 }
+                 // else: properties changed or first call - execute directly (use_cuda_graph stays false)
+             } else {
+@@ -4567,6 +4946,27 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+                         (mem_gen_check && graph->mem_gen != ggml_cuda_graph_mem_gen(cuda_ctx->device));
+                 }
+             }
++
++            if (use_cuda_graph && cuda_graph_update_required && band_armed) {
++                // Defer the capture (or recapture): run directly this time.  Do NOT leave a stale instance
++                // for a replay -- `update_required` means its pointers may no longer be valid.
++                GGML_LOG_DEBUG("%s: capture deferred, the slab wide band is armed\n", __func__);
++                if (ggml_cuda_graph_trace()) {
++                    GGML_LOG_WARN("%s: device %d: capture deferred, the slab wide band is armed\n", __func__, cuda_ctx->device);
++                }
++                use_cuda_graph = false;
++                cuda_graph_update_required = false;
++                graph->warmup_complete = false;
++                graph->capture_deferred = true;
++            }
++            if (band_armed && !use_cuda_graph) {
++                // Belt-and-braces: ANY direct run in an armed stretch served this graph's pool temporaries
++                // from the band, so the next capture must be preceded by a disarmed direct run.  This also
++                // covers the case where the band drops between two armed runs (properties changed, or the
++                // warmup was already complete) and the very next run would otherwise capture immediately.
++                graph->warmup_complete = false;
++                graph->capture_deferred = true;
++            }
+             } // else: not prefill
+         }
+     }
+@@ -4574,6 +4974,10 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+ 
+     if (use_cuda_graph && cuda_graph_update_required) {
+         // Start CUDA graph capture
++        if (ggml_cuda_graph_trace()) {
++            GGML_LOG_WARN("%s: device %d: capturing graph (n_tokens=%d)\n", __func__, cuda_ctx->device,
++                          (int) ggml_cuda_graph_n_tokens(cgraph));
++        }
+         {
+             std::lock_guard<std::mutex> lock(ggml_cuda_lock);
+             ggml_cuda_lock_counter.fetch_add(1, std::memory_order_relaxed);
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
 index 0fe5eb163..d788cbb71 100644
 --- a/ggml/src/ggml-cuda/mmb.cu
@@ -2057,6 +2556,28 @@ index 2519ee713..0c99fa0d5 100644
      LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 32765716b..e595e678a 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1231,7 +1231,7 @@ private:
+             params_base.load_progress_callback_user_data = &load_progress_text;
+         }
+ 
+-        llama_init = common_init_from_params(params_base);
++        llama_init = common_init_from_params(params_base, /*model_only =*/ false, /*preload_draft =*/ true);
+ 
+         model_tgt = llama_init->model();
+         ctx_tgt   = llama_init->context();
+@@ -1271,7 +1271,7 @@ private:
+                 params_dft.load_progress_callback           = load_progress_callback;
+                 params_dft.load_progress_callback_user_data = &load_progress_spec;
+ 
+-                spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
++                spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt, llama_init->take_draft_model());
+                 model_dft = spec_init->model();
+                 ctx_dft   = spec_init->context();
+ 
 -- 
 2.56.0
 

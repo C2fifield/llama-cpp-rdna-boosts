@@ -35,7 +35,16 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
 
 ## Current candidates
 
-_None — `rdna2` (issue #158) was folded into r70 blocks 06/10 and moved to `archive/work/rdna2/`
+* **`0012-slab-transient-absorption`** — **BETA 2, 2026-10-18.**  Absorbs the slab's outside transients
+  into the slab, loads the MTP **draft model before** the target context so the outside reserve is
+  *measured* instead of predicted, makes a graph capture impossible while the wide band is armed, and
+  raises the default headroom to `640 + 128 x n_gpu` (768 / 896 / 1024 MiB).  Validated on 2× R9700
+  gfx1201 (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, 131k ctx, MTP, 73k-token prefill); not yet re-gated
+  for coherence/MTP/prefill-logit on the applied tree.  See
+  `beta/0012-slab-transient-absorption/README.md`; record in `wip/slab-transient-absorption/README.md`
+  §10.16 and `WORKLOG.md` 261018.002.
+
+_`rdna2` (issue #158) was folded into r70 blocks 06/10 and moved to `archive/work/rdna2/`
 (record: `WORKLOG.md` 261016.002)._
 
 _`fa-stage-prealloc` (issue #138) was promoted into r53 blocks 09/10 and moved to
