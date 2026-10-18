@@ -14,7 +14,11 @@ the delivery; nothing here may be applied to the fork or to `patches/` without t
 > * **Approved:** a **prefill-only** residency map, **immutable after a snapshot**, rebuilt from the
 >   authoritative host `expert_slot`, never mutated by decode, and not the decode remap.  Call it the
 >   **prefill residency snapshot (PRS)**, not a device map.
-> * **Concurrency ruling:** if a decode session is active, snapshot/freeze the **top ~75 % (hottest)** of
+> **Resume here:** [`HANDOVER.md`](HANDOVER.md) (checkpoint, beta-12 integration, gate list, delivery
+> checklist, exact commands) and [`PROMPT-next-session.md`](PROMPT-next-session.md) (cold-start prompt).
+> The R2 patch is checkpointed as `r2-prototype.patch`; the 75/25 freeze is dropped.
+>
+> * **Concurrency ruling (superseded by the 2026-10-18 freeze measurement):** if a decode session is active, snapshot/freeze the **top ~75 % (hottest)** of
 >   the arena for prefill and leave the bottom ~25 % to decode admission; with no decode active, the
 >   prefill may snapshot the whole arena.
 
