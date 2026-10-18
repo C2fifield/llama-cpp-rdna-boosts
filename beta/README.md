@@ -39,8 +39,9 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
   into the slab, loads the MTP **draft model before** the target context so the outside reserve is
   *measured* instead of predicted, makes a graph capture impossible while the wide band is armed, and
   raises the default headroom to `640 + 128 x n_gpu` (768 / 896 / 1024 MiB).  Validated on 2× R9700
-  gfx1201 (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, 131k ctx, MTP, 73k-token prefill); not yet re-gated
-  for coherence/MTP/prefill-logit on the applied tree.  See
+  gfx1201 (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, 131k ctx, MTP, 73k-token prefill) and gate-validated on
+  that box: coherence identical, prefill-logit KLD 0.000000, adaptive-MTP 4 axes + phase-switching exactly
+  equal on both arms.  See
   `beta/0012-slab-transient-absorption/README.md`; record in `wip/slab-transient-absorption/README.md`
   §10.16 and `WORKLOG.md` 261018.002.
 

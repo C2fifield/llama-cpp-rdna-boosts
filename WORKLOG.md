@@ -49,9 +49,17 @@ drop 436.5 / 438.5, idle steady state **270 / 268 MiB**, arena 18 880 / 18 368 (
 measured draft split), prefill **945 t/s**, HTTP 200.  Step 4 costs ~256 MiB of total arena vs the
 (broken) equal split (whole-KV-per-device) and the headroom bump 128 MiB/device.
 
-**Not re-gated on this tree.**  The r80 coherence / adaptive-MTP / prefill-logit results do not carry over
-(the arena size changes expert-cache residency, a documented numerics flipper); those gates must be run on
-the applied tree before promotion.  Records: `wip/slab-transient-absorption/README.md` §10.16, the beta
+**Release gates (2026-10-18, applied tree `591528bd`, r82 build `43b176c5` as reference).**
+Coherence: dense 4B and the 2-GPU host-expert Flash-Next IQ4_NL (`-ncmoe 48`, q8_0 K/V,
+`GGML_OP_OFFLOAD_MIN_BATCH=1`) both **generated text identical**.  Prefill-logit (`gate-prefill-logits.sh`,
+base recorded from r82, PPL 5.9314): candidate `76d0b42cdbd2`, **mean KLD 0.000000, same-top-p 100 %**.
+Adaptive-MTP 4 axes + phase-switching (`Gemma4-26B-A4B` Q4_K_XL + separate Q4_0 MTP draft, 2 GPUs
+`-sm layer -ncmoe 20`, `GGML_OP_OFFLOAD_MIN_BATCH=1`, `-n 3000`, reasoning pinned, adaptive n7): r82 and
+BETA 2 **exactly equal** on every axis (R 0.66461 2374/3572, P 0.51005 482/945, C 0.76070 2489/3272,
+K 0.96262 412/428, phase 0.62752 1806/2878; mean len 4.80 / 2.62 / 5.88 / 6.57 / 2.93) and identical
+text hashes (recall `5ebd156073f6`, prose `7759fa4a7c8d`).  `validate-set.sh` green (delivery set
+unchanged).  Not run: stock-relative `llama-batched-bench -npl 1,4,8` (no decode/mmvq kernel changed),
+ROCm 7.14, 3-GPU, gfx1100/gfx1151.  Records: `wip/slab-transient-absorption/README.md` §10.16, the beta
 README/BETA-TESTING.
 
 ## 261018.001 (r82) -- issue #170: `-sm tensor` no longer aborts when the model has to leave layers on the host (block 00 + block 09)

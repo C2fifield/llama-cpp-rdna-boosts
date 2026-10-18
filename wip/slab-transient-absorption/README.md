@@ -1474,5 +1474,6 @@ symmetric cushion.  The headroom bump costs a further 128 MiB/device.
   recoverable on this config).  Deferred: a future move to streaming KV weights may make the term moot.
 * `--fit` still reserves the full draft; with the preload it could reserve only the context (the weights are
   loaded before the target context, but fit runs before both).
-* Re-run the coherence, adaptive-MTP and prefill-logit gates **on the step-4 tree** before promotion: the
-  arena size changes expert-cache residency, which is a documented numerics flipper (`§10.15`).
+* **Done 2026-10-18.**  Coherence (dense + 2-GPU host-expert) identical, prefill-logit mean KLD 0.000000 /
+  same-top-p 100 %, adaptive-MTP 4 axes + phase-switching exactly equal on both arms.  Results in
+  `beta/0012-slab-transient-absorption/README.md` ("BETA 2 gate results") and `WORKLOG.md` 261018.002.

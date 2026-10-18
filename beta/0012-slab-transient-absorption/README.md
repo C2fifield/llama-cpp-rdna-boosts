@@ -1,6 +1,7 @@
 # `0012-slab-transient-absorption` — BETA candidate (NOT part of the delivery)
 
-**Status: BETA 2 — 2026-10-18.  Awaiting independent validation; nothing here is promoted.**
+**Status: BETA 2 — 2026-10-18.  Gate-validated on the 2x R9700 development box (see "BETA 2 gate
+results"); awaiting independent validation on other hardware; nothing here is promoted.**
 BETA 1 was 2026-10-17.  BETA 2 adds the step-4 *measurement* fix (the draft model is loaded before the
 slab), the graph-capture safety fix, the 896 MiB 2-GPU headroom default and the new diagnostics — see
 "BETA 2" below.  Nothing in this directory is applied by `scripts/apply-all.sh` unless `--include-beta`
@@ -91,10 +92,37 @@ The arena is asymmetric by exactly the measured draft split (dev0 +512 MiB), the
 failure, and the prefill runs at 945-947 t/s.  At the old 768 default the same run left 148 MiB in the
 decode steady state (no failure, but very thin).
 
-**Not yet re-gated on this tree.**  The r80 campaign's coherence, adaptive-MTP and prefill-logit results
-do not automatically carry over: the arena size changes expert-cache residency, which can flip greedy
-near-ties.  Run the coherence gate, the adaptive-MTP gate and `scripts/gate-prefill-logits.sh` on the
-applied tree before promotion.
+### BETA 2 gate results (2026-10-18, this box)
+
+All run on the applied tree (`591528bd`), against the r82 build (`43b176c5`) as the reference:
+
+* **Coherence, dense** (`Qwen3.5-4B-Q8_0`, 1 GPU, seed 42, temp 0): generated text identical; the only
+  diff between the two logs is the build id and the t/s line.
+* **Coherence, host-expert MoE** (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, q8_0 K/V, 2 GPUs `-sm tensor`,
+  `GGML_OP_OFFLOAD_MIN_BATCH=1` to neutralise the arena-residency difference): **generated text identical**.
+* **Prefill-logit** (`scripts/gate-prefill-logits.sh`, base recorded from the r82 build: PPL 5.9314):
+  candidate `76d0b42cdbd2`, **mean KLD 0.000000**, **same-top-p 100.0 %** — PASS.
+* **Adaptive MTP, 4 axes + phase-switching** (`Gemma4-26B-A4B` Q4_K_XL + separate Q4_0 MTP draft, 2 GPUs
+  `-sm layer -ncmoe 20`, `GGML_OP_OFFLOAD_MIN_BATCH=1`, `-n 3000`, reasoning pinned, `draft-mtp-adaptive
+  --spec-draft-n-max 7`).  r82 and BETA 2 are **exactly equal on every axis** (same accepted/generated
+  counts, mean len and acceptance):
+
+  | axis | acceptance (r82 = BETA 2) | accepted / generated | mean len |
+  |---|---:|---:|---:|
+  | reasoning | 0.66461 | 2374 / 3572 | 4.80 |
+  | prose | 0.51005 | 482 / 945 | 2.62 |
+  | code | 0.76070 | 2489 / 3272 | 5.88 |
+  | recall | 0.96262 | 412 / 428 | 6.57 |
+  | phase-switching | 0.62752 | 1806 / 2878 | 2.93 |
+
+  Generated-text hashes (no `-lv 4`, `scripts/extract-generated.py`): recall `5ebd156073f6` (2167 chars)
+  and prose `7759fa4a7c8d` (3237 chars), **identical on both arms**.
+* **`scripts/validate-set.sh`**: green (the delivery block set is unchanged; this beta is not in it).
+
+Not run on this tree: the stock-relative `llama-batched-bench -npl 1,4,8` purity gate (no decode/mmvq
+kernel changed — the beta only changes allocation/capture), ROCm 7.14, 3-GPU, gfx1100/gfx1151.  The
+adaptive-MTP A/B pins `GGML_OP_OFFLOAD_MIN_BATCH=1` per the known-risks rule, so its absolute t/s is not
+comparable to the field numbers; the gate is the acceptance/text equality.
 
 ## Why this is a beta and not a block
 
