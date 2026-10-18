@@ -1,6 +1,7 @@
 # `prefill-arena-residency` — serve prefill from the expert-cache arena, upload only the misses
 
-**Status: OPEN / ACTIVE (seeded 2026-10-18; checkpointed for the next session 2026-10-18).**
+**Status: OPEN / ACTIVE (seeded 2026-10-18; beta-12 integration + full gate matrix green 2026-10-18 —
+awaiting the maintainer's go-ahead for the delivery prep).**
 Maintainer decision: the old mutating device-remap implementation is NOT to return; a greatly reduced,
 focused, immutable-after-snapshot prefill-only residency map IS approved.  R2 (cache-aware staging +
 PRS) is implemented and measured; the phase-aware 75/25 freeze was measured as a net prefill loss with
@@ -20,8 +21,9 @@ the fork or to `patches/` without the maintainer's go-ahead (WIP and promotion r
 >   can overlap a prefill graph (`../moe-cpu-overlap/`).  See `CONCURRENCY-2026-10-18.md`.
 
 > **Resume here:** [`HANDOVER.md`](HANDOVER.md) (checkpoint, beta-12 integration, gate list, delivery
-> checklist, exact commands) and [`PROMPT-next-session.md`](PROMPT-next-session.md) (cold-start prompt).
-> The R2 patch is checkpointed as `r2-prototype.patch`; the 75/25 freeze is dropped.
+> checklist, exact commands) and [`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md)
+> (beta-12 apply check, the +9 % beta delta, the full gate matrix).  The R2 patch is checkpointed as
+> `r2-prototype.patch`; the 75/25 freeze is dropped.
 
 ## 0. Headline: this was already built, measured, shipped — and then removed as collateral
 
@@ -410,4 +412,15 @@ Full record: [`CONCURRENCY-2026-10-18.md`](CONCURRENCY-2026-10-18.md); harness
   33 %), decode hit rate unchanged, long decode still scheduler-starved.  The per-layer-pin alternative
   is not a third option in this scheduler (see §4.1 / the concurrency record): it protects a window in
   which nobody can evict, and a pin that spans the inter-graph decode ubatch is global.  **The limitation
-  is the serialized scheduler**, not the cache.  Beta-12 compatibility is deferred to a follow-up session.
+  is the serialized scheduler**, not the cache.
+* **2026-10-18 (beta-12 integration + gate matrix — GREEN)** — see
+  [`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md).  Both apply orders give
+  byte-identical content; on the canonical tree (release → beta 12 → R2) R2 is **+43.8 % / +58.3 % /
+  +48.0 %** at 16k/ub4096, 16k/ub2048, 32k with the greedy hash identical to the record, and
+  **beta 12 adds +8.6 … +9.6 %** on top (arena 46.6 → 52.3 GiB, residency 71.9 % → 80.7 %, staged
+  H2D 27.1 % → 17.6 %) at a ~1 % stage-0 cost.  Gates green with and without beta: dense + host-expert
+  coherence, prefill-logit **KLD 0 / 100 %** (dense) and **max 5.9e-5 / 100 %** (host-expert MoE path),
+  qwen4exp, adaptive-MTP 4 axes + phase probe (identical), `MUL_MAT_ID` 947/947, `-sm layer` (+71 %),
+  redirect mode, two-slot concurrency (+23.6 % A long, +39.8 % B short; starvation unchanged), no GPU
+  fault, no `////`.  `--host-experts pool` is compatible (byte-identical, +40 %) — open question #4
+  answered.  Not promoted: awaiting the maintainer's decision on the delivery prep (`HANDOVER.md` §3.3).

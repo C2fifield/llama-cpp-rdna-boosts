@@ -14,7 +14,7 @@ committed to `patches/` without the maintainer's go-ahead.
 | prototype patch | [`r2-prototype.patch`](r2-prototype.patch), **227 insertions / 3 files**, sha256 **`2bfdb8263b0b…`** |
 | working tree | `~/llama.cpp` is on `rdna-boosts` (`24380e5c7`), R2 patch applied **uncommitted**, `build-rocm` rebuilt from it |
 | freeze | implemented, measured as a net loss with no decode gain, **dropped** (code removed; recoverable at `8134e23`) |
-| beta 12 | **not yet integrated/tested**; both apply orders checked clean with `git apply --check` on the r82 tree (`beta→R2` and `R2→beta`), 2026-10-18 |
+| beta 12 | **integrated + measured + gated (2026-10-18, session 2)** — apply both orders, canonical build, +9 % on top of R2; full matrix green: [`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md) |
 | decisions | no mutating devmap; immutable PRS approved; freeze dropped; serialized scheduler is the coexistence limit |
 
 If the `~/llama.cpp` working tree is lost:
@@ -97,6 +97,17 @@ not the cache.  The slab separately evicts/re-arms 54 tables per prefill→decod
 
 ### 3.1 Beta-12 integration (first; the maintainer asked for this)
 
+**DONE 2026-10-18 (session 2)** — see [`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md)
+§1-§5.  Both orders give byte-identical content (no reverse build needed); canonical tree
+`~/llama-beta12-r2` = release → beta 12 → R2, build id `ab3af95ee5f5`.  R2 gain on that tree
+**+43.8 %** (16k/ub4096) / **+58.3 %** (16k/ub2048) / **+48.0 %** (32k), greedy hashes identical to
+the record; **beta 12 adds +8.6 … +9.6 %** on top of R2 (arena 46.6 → 52.3 GiB, residency 71.9 % →
+80.7 %, staged H2D 27.1 % → 17.6 %) and costs ~1 % with R2 off.  `-sm layer` + `--host-experts pool`
+measured (both byte-identical, +71 % / +40 %).  Two-slot concurrency: R2 +23.6 % (A long) / +39.8 %
+(B short), starvation unchanged, re-arm 54 tables with beta vs 60 without.
+
+Historical task text (kept for method):
+
 Beta candidate:
 `beta/0012-slab-transient-absorption/0012-rdna-boosts-beta-12-slab-transient-absorption.patch`
 (sha256 `9facba49301c0f4f6efa880692bbb48d06bde3e40f4a4c45adc97db98595c5d8`, BETA 2, cut against
@@ -133,6 +144,15 @@ If a conflict appears, rebase only the R2 hook hunk; do not edit beta 12.
 
 ### 3.2 Gates (with and without beta 12)
 
+**DONE 2026-10-18 (session 2) — all green** on both trees; the table of results is
+[`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md) §6.  Highlights: dense + host-expert
+coherence identical; prefill-logit **mean KLD -0.000000 / same-top-p 100.0 %** (dense) and **max KLD
+5.9e-5 / 100 %** on the host-expert MoE path (`--save-all-logits` / `--kl-divergence`); qwen4exp PASS;
+adaptive MTP 4 axes + phase probe identical (0.66461 / 0.51005 / 0.76070 / 0.96262 / 0.62752);
+`MUL_MAT_ID` 947/947; redirect mode neutral; GPU faults clean; no `////`.
+
+Historical gate list (kept for method):
+
 Run on the R2 build (stage 1) against stage 0 as the control:
 
 - **Coherence:** dense `Qwen3.5-4B Q8_0` same-seed (known-good build reference), and the Flash-Next
@@ -153,6 +173,13 @@ Run on the R2 build (stage 1) against stage 0 as the control:
   staging gate is the host/gather path (not R2) — confirm it is unchanged.
 
 ### 3.3 Delivery prep (only after 3.1 + 3.2 are green)
+
+**Blocked on the maintainer's go-ahead.**  Decisions to record (from
+[`BETA12-INTEGRATION-2026-10-18.md`](BETA12-INTEGRATION-2026-10-18.md) §7): (a) ship the r82 numbers and
+note that the extra ~9 % arrives only if beta 12 promotes; (b) drop the `TODO(freeze, phase 2)` comment
+from the delivered patch; (c) how to fix the stale `ENVIRONMENT.md` `GGML_MOE_CACHE_INPLACE`/`STAGE` rows
+(remove `INPLACE`, rewrite `STAGE` as default-on with `0` as the kill switch); (d) block 09 amendment
+(confirmed in session 1) and the new revision number.
 
 Per `AGENTS.md`:
 
