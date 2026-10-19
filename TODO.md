@@ -59,6 +59,33 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 68. `gemma4` dense + `-sm tensor` on 2 devices aborts with a rotated K cache (`-ctk q8_0`) — CORRECTNESS
+
+**Opened 2026-10-18 (found while setting up the issue #184 A/B).**  A plain dense `gemma4` target
+(`Gemma4/12B/Q8_0`, no draft, `-ngl 99 -sm tensor -fa on -ctk q8_0 -ctv q8_0 -c 16384 -t 8 -np 1`,
+`HIP_VISIBLE_DEVICES=0,1`) aborts at the warmup decode:
+
+```
+ggml/src/ggml-backend-meta.cpp:900: unsupported mul_mat split states:
+  node=node_286 src0=Meta(ROCm0,ROCm1)#attn_inp_k_rot#0 axis=10 src1=Kcur_pos-5 (reshaped) axis=0
+```
+
+`attn_inp_k_rot` is the **K rotation matrix** (`llama_kv_cache::build_input_k_rot`, built only when
+`n_rot_k > 0`, i.e. for a rotated-cache type), so the aborting op is the rotation `ggml_mul_mat(rot,
+Kcur)` and its `src1` (Kcur) is split on **axis 0** — a combination `handle_mul_mat` does not implement.
+`-ctk f16` and `-ctk bf16` load and answer (`n_rot_k == 0`), so the trigger is the rotated cache type,
+not gemma4 as such.  Independent of `-np`, `--kv-unified`, `-fa`, and of
+`GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` / `GGML_CUDA_DISABLE_FUSION` (the rotation is a meta-side
+graph op, not a CUDA fusion).  `gemma4-assistant` (the MTP head) is separately and correctly rejected
+for `-sm tensor` by `llm_arch_supports_sm_tensor` — that half is intended behaviour.
+
+**Fix direction:** either teach `handle_mul_mat` the (MIRRORED, axis-0-split) rotation pair, or express
+the rotation so it does not present Kcur split on its hidden axis (rotate **after** the split gather, or
+per shard with a full-size matrix), or reject a rotated cache type under `-sm tensor` at the params
+level the way DFlash is rejected (TODO #58) until it is implemented — the last is the honest interim,
+since the current outcome is a crash rather than a clear error.  Repro is a 2-minute server start; the
+record of the surrounding investigation is `archive/work/issue-184-meta-r80r82/README.md` §6.
+
 ### 67. Reported HIP-graphs start-to-start decode nondeterminism (issue #151 follow-up) — NOT REPRODUCED on Linux — CORRECTNESS (open, waiting on reporter)
 
 **Opened 2026-10-16 from the issue #151 follow-up; reclassified the same day after revalidation.**

@@ -1,5 +1,77 @@
 # WORKLOG - dated delivery records
 
+## 261018.010 (no release) -- issue #184: the r80 -> r82 Meta change is not a 4-stream regression here
+
+**No delivery change** (`patches/`, `release.json` and the r86-candidate chain are untouched).  Issue
+[#184](https://github.com/stew675/llama-cpp-rdna-boosts/issues/184) (`@briansp2020`, 2x R9700, r80 vs
+r82, `-sm tensor -ncmoe 47`, shared-MTP n-max 3, 4 concurrent chats) reports **-3.48 % [-5.60, -1.37]**
+from the r82 `ggml-backend-meta.cpp` hunks alone (the #170 `[TAG_META_UNALLOC_ALIAS]` /
+`[TAG_META_ALLOC_FAIL]` pair) with the host profile on `ggml_backend_meta_get_split_state`.  Investigated,
+reproduced as a paired A/B, and **refuted as a 3.5 % effect**: on this box the two builds are equal within
++/-0.4 % with no stable sign.
+
+**The two arms are the same program for his config.**  The alias path only runs for a tensor in the
+split-state walk with no buffer of its own; on r80 that tensor asserted in
+`ggml_backend_meta_buffer_n_bufs`, so every graph that ran on r80 never reached it.  All that remains is
+codegen, measured with the exact `ggml-base` flags on **both** the reporter's clang (ROCm 10.0.0) and
+10.1.0: `.text` of the object **82 633 -> 82 857 B** (10.0) / **82 681 -> 82 905 B** (10.1), i.e. **+224 B
+(+0.27 %)**; the dispatcher is **out of line in both arms** (454 B vs 385 B) so the call structure is
+identical, and the only hot-path change is one `buffer == nullptr` test plus the classification reading a
+hoisted local.  The reporter's `+26/+28/+31 %` profile triple is most likely the same recursion
+re-attributed by `perf` when the prologue/branch layout shifts (all three frames are the same walk); on
+this box it does not become wall time.
+
+**Measured** (2x R9700, ROCm 10.1, r86-candidate tree, only `libggml-base.so.0.26.0` swapped between
+arms -- the reporter's own setup; GSQ-IQ3_XXS + shared Q8_0 MTP, `-sm tensor -ncmoe 47 -fa auto -ctk/-ctv
+q8_0 -c 131072 -b/-ub 2048 -t 8 -np 4 --fit off --load-mode none --lazy-mode off
+--spec-type draft-mtp-adaptive --spec-draft-n-max 3`, four concurrent greedy 192-token completions):
+
+| session | pairs | r82 meta | alias reverted | paired |
+|---|---:|---:|---:|---:|
+| 1 | 2 | 99.87 t/s | 99.63 t/s | +0.24 % |
+| 2 | 4 | 99.39 t/s | 99.77 t/s | **-0.39 %** |
+| 3 | 4 | 100.22 t/s | 100.24 t/s | -0.02 % |
+
+Greedy text identical in every run.  Control arms: the pre-#170 hot dispatcher restored (cold-path
+`noinline` helper for the #170 resolution) **-0.06 %**; the r84 graph-layout fingerprint disabled
+**-0.07 %**; the pristine delivery build **-0.05 %** (validates the swapped `.so`).  Same-`.so` drift
+across sessions is 0.8 %, so only same-session pairs are used.
+
+**Sensitivity calibration (a null is only worth something if the instrument could see the effect).**  The
+hot dispatcher was pessimised deliberately (a `volatile` add-loop at the top of every call): +100
+iterations ~= 120 ns/call measured **+0.23 %**, +1000 iterations ~= 1.2 us/call measured **+1.17 %** --
+linear, so the harness resolves host-path cost to ~0.2 % and a 3.5 % effect would look like ~3000
+iterations per call (~350 ns on each of the ~10k lookups a decode step performs).  The whole r82 delta is
+**one null test** (~1-2 ns/call), two orders of magnitude under the resolution limit and ~50x under what
+3.5 % would need; our per-step time is also 1.5x the reporter's (102 vs ~70 ms at mean draft length 2.8),
+so host cost weighs more here, not less.  The r82 hunks cannot produce the reported figure by instruction
+count -- if it is real on his box it is layout or inlining, which the `nm` ask settles.
+
+**Measurement pitfall (recorded because it produced a 2.2x false bimodality).**  With the four prefills
+left in the window the decode streams do not overlap for the whole window (a slot starts decoding as
+soon as its prefill ends), and the same build then measured 63.8 / 63.8 / 63.8 / **139.2** t/s.  The
+harness here caches every slot's prompt first (`cache_prompt`, one `n_predict: 1` request per slot), which
+reproduces to 0.1-0.3 % within an arm.  Also checked: a pre-warmed 4-stream request reports `graph
+reallocs = 1 / 1 (same size) / (changed size)` -- the verify graphs are **not** re-allocated each step,
+and the r84 fingerprint is not adding re-reserves, so "graph identity for parallel sessions" is not
+paying on this workload either.
+
+**No fix shipped.**  The candidate shape (hot dispatcher exactly as pre-#170, all alias/host resolution in
+a `noinline, cold` helper) is semantically identical, measured at zero, and would force a re-cut of
+`upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch`; the maintainer decides whether to
+take a measured-zero code motion.  Reply draft with the three diagnostics that would settle it on the
+reporter's box (dispatcher `nm -S` sizes, the per-request `graph reallocs` counters, and a
+layout-control arm built from two harmless perturbations of the same source):
+`archive/work/issue-184-meta-r80r82/COMMENT-2026-10-18.md`; record + harnesses in the same directory.
+
+**Separate finding (new, TODO #68).**  `gemma4` **dense** 12B Q8_0 + `-sm tensor` on 2 devices with
+`-ctk q8_0` aborts at the warmup decode: `ggml-backend-meta.cpp:900 unsupported mul_mat split states:
+node=... src0=#attn_inp_k_rot#0 axis=10 src1=Kcur_pos-5 (reshaped) axis=0`.  `attn_inp_k_rot` is the
+K-rotation matrix (`n_rot_k > 0` only for a rotated cache type), so the rotation `ggml_mul_mat(rot, Kcur)`
+reaches an unsupported split state; `-ctk f16`/`bf16` are fine, and it is independent of `-np`,
+`--kv-unified`, `-fa` and the rope/fusion kill switches.  (`gemma4-assistant` + `-sm tensor` is rejected
+cleanly by `llm_arch_supports_sm_tensor`, which is intended.)
+
 ## 261018.009 (r86 candidate) -- the band test is `ring_armed`, not "boundary above the floor" (block 10; NOT tagged)
 
 **Not a release: `patches/`, `rdna-boosts-all.patch` and `release.json` are regenerated for the r86
