@@ -10,6 +10,14 @@ tree matches).  Folded from `beta/0013-slab-narrow-floor/` (record moved to
 `archive/work/slab-narrow-floor/`), which was staged against r83 while the r84 block-00 fix landed and then
 re-cut onto the r84 base.
 
+**Published.**  Tag `v12-097cf33d9-r85` pushed (annotated, on the release commit); CI **Validate delivery
+set** green on `main` and on the tag, **Release patch set** green (assets `rdna-boosts-all.patch`,
+`patches.tar.gz`, `release.json`, `SHA256SUMS`).  The personal fork's `rdna-boosts` branch was force-pushed
+(`--force-with-lease`, personal fork only) to `a3e721ac3` / tree `a121eb0f`, matching `release.json`; the
+local canonical `~/llama.cpp` was refreshed to it and re-gated (dense coherence `1c5d32ac537d`, 16k prefill
+1405.9 t/s, hash `a60a39e11133`).  The ROCm container images are built and pushed off-host by the worker
+watcher (`scripts/container-watch.sh` on `radiance`), which polls for the new tag.
+
 **The report.**  Field config (2x R9700, `Qwen3.8-Flash-Next IQ4_NL`, 131k ctx, `-sm tensor -ncmoe 46`,
 `-b/-ub 6144`, q8_0 K/V, MTP `draft-mtp-adaptive` n6, `GGML_CUDA_ALLREDUCE=ce`, stock slab defaults):
 after a ~70k-token prefill the first decode produced a degenerate eviction sequence for seconds --
