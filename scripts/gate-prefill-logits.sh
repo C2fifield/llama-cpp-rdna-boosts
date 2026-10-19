@@ -38,6 +38,10 @@
 #   --ppl FILE        LLAMA_PPL      default ~/llama.cpp/build-rocm-hybrid/bin/llama-perplexity
 #   --ctx N           CTX            default 512
 #   --chunks N        CHUNKS         default 40
+#   --ub N            UB             pass `-ub N` (default: the tool's own ubatch, i.e. moot)
+#                                    A non-default ubatch gets its own base file, because the
+#                                    captured-graph band (`-ub 8`/`-ub 1`) is where a
+#                                    scheduler/upload defect shows up and its logits differ.
 #   --ngl N           NGL            default 99
 #   --fa on|off|auto  FA             default on
 #   --threads N       THREADS        default 8
@@ -64,6 +68,7 @@ CORPUS="${CORPUS:-/llm/models/wikitext-2-raw/wiki.test.raw}"
 BASE_DIR="${BASE_DIR:-$HOME/.cache/rdna-boosts/gates}"
 CTX="${CTX:-512}"
 CHUNKS="${CHUNKS:-40}"
+UB="${UB:-}"
 NGL="${NGL:-99}"
 FA="${FA:-on}"
 THREADS="${THREADS:-8}"
@@ -90,6 +95,7 @@ while [ $# -gt 0 ]; do
         --ppl)                  LLAMA_PPL="$2"; shift 2 ;;
         --ctx)                  CTX="$2"; shift 2 ;;
         --chunks)               CHUNKS="$2"; shift 2 ;;
+        --ub)                   UB="$2"; shift 2 ;;
         --ngl)                  NGL="$2"; shift 2 ;;
         --fa)                   FA="$2"; shift 2 ;;
         --threads)              THREADS="$2"; shift 2 ;;
@@ -159,7 +165,7 @@ resolve_model
 MODEL_STEM="$(basename "$MODEL" .gguf)"
 if [ -z "$BASE" ]; then
     mkdir -p "$BASE_DIR" || die "cannot create base dir: $BASE_DIR"
-    BASE="$BASE_DIR/prefill-logit-${ARCH}-${MODEL_STEM}.kld"
+    BASE="$BASE_DIR/prefill-logit-${ARCH}-${MODEL_STEM}${UB:+-ub${UB}}.kld"
 fi
 META="$BASE.meta"
 
@@ -192,10 +198,12 @@ echo "    logs=$LOGDIR"
 # ---------------------------------------------------------------------------
 run_ppl() {
     local extra="$1" out="$2"; shift 2
+    local ub_args=()
+    [ -n "$UB" ] && ub_args=(-ub "$UB" -b "$UB")
     # shellcheck disable=SC2086  # $extra is an intended word-split K=V list
     timeout "$TIMEOUT" env HIP_VISIBLE_DEVICES="$DEVICE" ${extra:-} \
         "$LLAMA_PPL" -m "$MODEL" -f "$CORPUS" \
-        -c "$CTX" --chunks "$CHUNKS" -ngl "$NGL" -fa "$FA" -t "$THREADS" \
+        -c "$CTX" --chunks "$CHUNKS" -ngl "$NGL" -fa "$FA" -t "$THREADS" "${ub_args[@]}" \
         "$@" >"$out" 2>&1
 }
 

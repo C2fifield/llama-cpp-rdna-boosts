@@ -11,7 +11,42 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
-> **Current release `v12-097cf33d9-r89` (2026-10-19) -- PR #182 batched async graph-input uploads folded into block 10 (`@briansp2020`):**
+> **Current release `v12-097cf33d9-r90` (2026-10-19) -- the async graph-input nondeterminism is fixed and `GGML_CUDA_ASYNC_INPUT` is default-on (block 10; follow-up to PR #182, `@briansp2020`):**
+> canonical tip `529135aed`, net tree `111559e57e820ce5d7fcac511a84ba70604604a0`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.
+> **Root cause**: `ggml_backend_cuda_set_tensor_async()` issued a pinned-source `cudaMemcpyAsync` straight
+> from the caller's live host pointer.  Such a copy is read by the copy engine when the stream reaches it,
+> so the caller must not modify the source until it completes; the scheduler uses this path for a
+> host-resident *split* input, and the one that bites is a **CPU split's** output (`node_1` /
+> `model.input_embed` in a `ROCm_Host` buffer), which the next ubatch's CPU split rewrites in place.  With
+> the host running ahead (which is what the async path buys) the copy could read the next ubatch's bytes or
+> a torn mix: a rare single-graph corruption in layer 0 that propagated to the end of the chunk (and
+> re-converged at the next chunk, because the perplexity tool clears its cache per chunk).
+> `ggml_backend_cuda_set_tensor_2d_async()` had the same shape on the meta/tensor-split splice path.
+> **The ring was never the defect**: the uploads verified byte-correct at the graph's first read
+> (769 graphs x 9-10 uploads), consecutive graphs do not overlap, HIP's wait/record ordering is correct,
+> and forcing every upload onto the compute stream (stream order alone) still diverged.
+> **The fix** (block 10, `ggml/src/ggml-cuda/ggml-cuda.cu`): both async set paths snapshot the source
+> through the pinned upload ring (a slot is not reused until the ring wraps, and the wrap is guarded by a
+> device sync), unconditionally -- with `ASYNC_INPUT=0` included, because it is a correctness fix and not an
+> async-path optimisation -- and the ring's completion wait plus its "previous graph done" guard become
+> unconditional so those snapshots stay ordered.  The old direct copy is only the fallback when the ring
+> cannot take the copy.  `GGML_CUDA_SPLICE_GATHER` now only picks the *shape* of the queued copy (compacted
+> 1-D vs strided 2-D); every arm is snapshotted.  **Default flip**: `g_async_input_on` is on unless
+> `GGML_CUDA_ASYNC_INPUT=0` (the env only disables), and the stale block-10 comment that blamed the
+> `done_ev` wait / HIP graph replay is corrected.
+>
+> **Correctness** (self-KLD, noise floor 99.967+): 4B Q8_0 12 chunks `-ub 8` **91.0 / 90.8 -> 99.967**,
+> 24 chunks 92.5 -> **99.984**, `-ub 1` 95.1 -> **99.967**, `BATCH=1` 91.3 -> **99.967**, 27B **91.6 ->
+> 100.000**, 35B-A3B 2 GPU tensor and `-ncmoe 40` **100.000**, `-ub 512` 100.000.  **Gates**: 4B
+> `7386359e5dac` (default / `ASYNC_INPUT=0` / `-ub 8`), 27B `ad1333a99867`, width probe W=1..8 identical
+> `width_purity=PASS`, prefill-logit **0.000707 / 98.755 %** (identical to the r89 base) plus a new
+> `gate-prefill-logits.sh --ub 8` base at **100.000 %**, `test-backend-ops` `ADD`/`GET_ROWS`/`CPY`/
+> `MUL_MAT` OK, `check-gpu-faults.sh` clean.  **Perf**: 35B-A3B 2 GPU tensor tg400 **111.70 vs 102.23 t/s
+> (+9.3 %)**, pp4096 flat, 1 GPU +2.3 %, 27B +0.5 %, 27B MTP n3 2 GPU tensor end-to-end **+5.2 %** with
+> byte-identical text.
+>
+> **Previous release `v12-097cf33d9-r89` (2026-10-19) -- PR #182 batched async graph-input uploads folded into block 10 (`@briansp2020`):**
 > canonical tip `399610a83`, net tree `ca9598a22946e52b74a8d6869a1ff917b181455b`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block; **two new
 > environment variables**, both default-on inside the opt-in async path.  With `GGML_CUDA_ASYNC_INPUT=1`
@@ -33,8 +68,8 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > binary's 109.3/109.8, same text).  **Gates:** 4B `7386359e5dac` (off / on / `BATCH=0`), width probe
 > W=1..8 PASS, 27B and 27B-MTP greedy byte-identical across arms, prefill-logit **0.000707 / 98.755 %**
 > (unchanged), `test-backend-ops` `ADD`/`GET_ROWS`/`CPY`/`MUL_MAT` pass, 0 GPU faults.  Record:
-> `../WORKLOG.md` 261019.004; promoted from `../archive/work/async-input-batch/`; follow-up (default-on)
-> is `../wip/async-input-graph-ordering/` and `../TODO.md` #73.
+> `../WORKLOG.md` 261019.004; promoted from `../archive/work/async-input-batch/`; the follow-up
+> (default-on) landed in r90 -- `../archive/work/async-input-graph-ordering/`, `../WORKLOG.md` 261019.007.
 
 > **Current release `v12-097cf33d9-r88` (2026-10-19) -- RDNA2 (gfx1030) FA gate fixes folded into block 05 (PR #181, `@slavap`):**
 > canonical tip `f2e884648`, net tree `04d37db108a01e04efa94bbdc77a2eb37eb1713d`; strict **12/12**

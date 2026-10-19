@@ -1,5 +1,62 @@
 # WORKLOG - dated delivery records
 
+## 261019.007 (r90) -- the async graph-input nondeterminism is FIXED (split-input uploads snapshotted); `GGML_CUDA_ASYNC_INPUT` default-on
+
+**Release `v12-097cf33d9-r90`**: base `097cf33d9`, canonical tip `529135aed`, net tree
+`111559e57e820ce5d7fcac511a84ba70604604a0`, **12 blocks** (**block 10** amended, no new block).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).  Closes **TODO #73** and the
+follow-up to **PR #182** (`@briansp2020`), whose batched uploads (r89) are what made this defect cheap to
+find.
+
+**Root cause (not the ring).**  `ggml_backend_cuda_set_tensor_async()` issued a pinned-source
+`cudaMemcpyAsync` **straight from the caller's live host pointer**.  A pinned-source async copy is read by
+the copy engine when the stream reaches it, not when it is issued, so the caller must not modify the source
+until it completes.  The scheduler uses that path for a host-resident *split* input, and the one that bites
+is a **CPU split's** output (`node_1` / `model.input_embed` in a `ROCm_Host` buffer), which the next
+ubatch's CPU split rewrites in place.  With `ASYNC_INPUT=1` the host runs ahead, so the copy could read the
+next ubatch's bytes (or a torn mix): a rare single-graph corruption in **layer 0** that propagates to the
+end of the chunk.  That is why it needed a captured graph (without capture the host is the bottleneck and
+never gets ahead), why any host delay fixed it, and why the per-chunk cache reset made it look "bounded and
+re-converging".  `ggml_backend_cuda_set_tensor_2d_async()` had the same shape on the meta/tensor-split
+splice path.  The uploads themselves were innocent: 769 graphs x 9-10 uploads verified byte-correct at the
+graph's first read, and forcing every upload onto the compute stream (stream order alone) still diverged.
+Record: `archive/work/async-input-graph-ordering/` (`FINDINGS-2026-10-19b.md`).
+
+**The change (block 10 only, `ggml/src/ggml-cuda/ggml-cuda.cu`).**  Both async set paths now **snapshot
+the source through the pinned upload ring** (a slot is not reused until the ring wraps, and the wrap is
+guarded by a device sync), unconditionally -- it is a correctness fix, not an async-path optimisation --
+with a fallback to the old copy when the ring cannot take it.  The ring's completion wait and its
+"previous graph done" guard become unconditional so the snapshots are ordered with `ASYNC_INPUT=0` too.
+`GGML_CUDA_SPLICE_GATHER` now only chooses the *shape* of the queued copy (compacted 1-D vs strided 2-D);
+every arm is snapshotted.  **Default flip:** `g_async_input_on` is now on unless
+`GGML_CUDA_ASYNC_INPUT=0` (env only disables, per the default-on policy), and the stale block-10 comment
+that blamed the `done_ev` wait / HIP graph replay is replaced with the corrected rationale.
+
+**Correctness (self-KLD, `llama-perplexity --kl-divergence-base`, same binary; noise floor 99.967+)**
+4B Q8_0 12 chunks `-ub 8`: **91.0 / 90.8** before -> **99.967** after (x5); 24 chunks 92.5 -> **99.984**;
+`-ub 1` 95.1 -> **99.967**; `BATCH=1` 91.3 -> **99.967**; 27B `UD-Q4_K_M` 91.6 -> **100.000**; 35B-A3B
+2 GPU tensor and `-ncmoe 40` **100.000**; `-ub 512` 100.000 both arms.  Deterministic with every diagnostic
+switch off and with a 300 us post-launch host delay.
+
+**Gates (r90 build, async default-on).**  4B `-n 64` seed 42 `7386359e5dac` (default / `ASYNC_INPUT=0` /
+`-ub 8`); 27B 48-token `ad1333a99867` (default / off); `test-logits-width-probe` W=1..8 identical hashes,
+`width_purity=PASS`; **prefill-logit 0.000707 / 98.755 %** against the recorded r89 base (identical to
+r89); **new `--ub` support in `gate-prefill-logits.sh`** plus a recorded `-ub 8` base (the captured-graph
+band) -> **100.000 %**; `test-backend-ops` `ADD`/`GET_ROWS`/`CPY`/`MUL_MAT` OK; `check-gpu-faults.sh`
+clean; `validate-set.sh` green.
+
+**Perf (llama-bench, `-ub/-b 2048`, q8_0 KV, `-fa on`, 3 rounds).**  Async default vs
+`GGML_CUDA_ASYNC_INPUT=0`: 35B-A3B Q4_K_M 2 GPU tensor tg400 **111.70 ± 7.36 vs 102.23 ± 5.97 t/s
+(+9.3 %)**, pp4096 7322 vs 7273 (flat); 35B-A3B 1 GPU tg400 **90.11 vs 88.10 (+2.3 %)**; 27B 1 GPU tg400
+27.44 vs 27.31 (+0.5 %).  27B MTP n3 2 GPU tensor, end-to-end `llama-cli` 400-token draft-mtp:
+**78.8 vs 74.9 t/s (+5.2 %)** with **byte-identical text** (`012f53df013f`) across arms.  This is a spot
+check, not the full 3000-token four-axis protocol; the change touches no kernel, no numerics and no
+controller.
+
+**Campaign.**  `wip/async-input-graph-ordering/` is promoted: the record (both sessions, the tooling
+patches, the standalone HIP reproducers) moves to **`archive/work/async-input-graph-ordering/`** with a
+`RESOLUTION.md`; the `wip/` entry is deleted and `wip/CAMPAIGNS.md` updated.
+
 ## 261019.006 (no release) -- correction: the async-input nondeterminism is not the ring; first campaign session
 
 **No delivery change.**  `release.json` stays `v12-097cf33d9-r89`; no patch, block or `release.json` byte

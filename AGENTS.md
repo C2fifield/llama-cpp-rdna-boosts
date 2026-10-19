@@ -271,13 +271,16 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   are bit-identical.  **The cause is NOT the ring**: the uploads verify byte-correct at the graph's first
   read, HIP's wait-before-replay / event-after-replay ordering is correct, and consecutive graphs do not
   overlap — so the async path is the *trigger* (it removes the per-copy host block), not the defect.
-  Every control that "fixes" it only slows the host, including a delay *after* the launch; the remaining
-  suspect is inside one graph's execution (top lead: the scheduler's cross-backend split hand-off around
-  a captured graph, `splits = 2` even on one GPU).  Its batched uploads
-  (`GGML_CUDA_ASYNC_INPUT_BATCH`, default on inside the opt-in path, r89/PR #182) are worth +4.6 % on
-  2-GPU MoE decode but are an *amplifier* of that exposure.  Do not flip `GGML_CUDA_ASYNC_INPUT`
-  default-on until `wip/async-input-graph-ordering/` (TODO #73) is fixed.  Evidence:
-  `wip/async-input-graph-ordering/FINDINGS-2026-10-19.md`.
+  **FIXED in r90 (TODO #73 closed)**: the defect was `ggml_backend_cuda_set_tensor_async` /
+  `_set_tensor_2d_async`, which issued a pinned-source `cudaMemcpyAsync` **straight from the caller's live
+  host pointer** while the scheduler uses that path for a host-resident split input -- a CPU split's
+  output that the next ubatch rewrites in place -- so with the host running ahead the copy could read the
+  next ubatch's bytes (a rare single-graph corruption that propagated to the end of the chunk).  Both now
+  snapshot through the pinned upload ring, unconditionally, and the ring's wait/done guard is
+  unconditional; `GGML_CUDA_ASYNC_INPUT` is **default-on** (`=0` disables) and the batched uploads
+  (`GGML_CUDA_ASYNC_INPUT_BATCH`, r89/PR #182) stay default-on inside it.  Self-KLD control 91.0-95.1 %
+  -> 99.967-100.000 %; decode +9.3 % (35B-A3B 2 GPU tensor tg400) / +5.2 % (27B MTP n3 end-to-end).
+  Evidence: `archive/work/async-input-graph-ordering/` (`RESOLUTION.md`, `FINDINGS-2026-10-19b.md`).
 - **The op-offload H2D staging ring (V2.0 block 09; old block 06, r12) has three invariants:** (1) prefill is never
   CUDA-graph captured, so a redirected split input that reaches a copy path aborts (tripwire asserts
   this); (2) the width gate is floored at **64 tokens**; (3) the arena lives **outside** the

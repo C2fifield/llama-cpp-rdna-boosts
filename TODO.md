@@ -67,7 +67,7 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
-### 73. `GGML_CUDA_ASYNC_INPUT` is nondeterministic when the consumer is a captured HIP graph — CORRECTNESS (open; blocks a default-on worth +4-6 %)
+### 73. `GGML_CUDA_ASYNC_INPUT` was nondeterministic when the consumer is a captured HIP graph — CORRECTNESS (**CLOSED 2026-10-19, r90**; the async path is now default-on)
 
 **Opened 2026-10-19 while folding PR #182 (r89).**  The async graph-input ring (block 10) is run-to-run
 nondeterministic whenever the consuming graph is captured/replayed.  r69 made it opt-in for this, but
@@ -84,7 +84,7 @@ scheduler's cross-backend split hand-off around a captured graph.  PR #182's bat
 `ASYNC_INPUT` default-on: **+5.8 % 35B-A3B 2-GPU tensor, +3.6 % 27B MTP 2-GPU**, flat on one card.
 Reproducer, the full arm matrix, the forced-sync control and the hypothesis list (including the
 maintainer's dual-scheduler/shared-state guess, plus a per-thread-`cudaStreamPerThread` ring-wrap hazard
-found during review) are in `wip/async-input-graph-ordering/`.  **First session (2026-10-19) is done** —
+found during review) are in `archive/work/async-input-graph-ordering/`.  **First session (2026-10-19) is done** —
 withdrawn reading, eliminated list, current hypothesis (cross-backend split hand-off) and the next
 experiments are in that campaign's `HANDOVER.md` + `FINDINGS-2026-10-19.md`.  **Second session
 (2026-10-19) killed the split theory** (`FINDINGS-2026-10-19b.md`): the cross-backend hand-over is the
@@ -113,6 +113,20 @@ block-10 code comment still carries the withdrawn wording (comment only; fix in 
 amendment).  Note that 35B-A3B (1 GPU and 2 GPU
 tensor) already produces 2-3 different greedy texts run-to-run **with async off**; that separate
 default-path nondeterminism is not this item and should be filed on its own.
+
+**RESOLVED (r90, 2026-10-19).**  The defect was **not** the ring, the scheduler split hand-off or any ordering
+hole: `ggml_backend_cuda_set_tensor_async()` issued a pinned-source `cudaMemcpyAsync` **directly from the
+caller's live host pointer**, and the scheduler uses that path for a host-resident split input -- a **CPU
+split's** output (`node_1` / `model.input_embed` in a `ROCm_Host` buffer) that the next ubatch rewrites in
+place.  With the host running ahead the copy could read the next ubatch's bytes (or a torn mix): a rare
+single-graph corruption in layer 0 that propagated to the end of the chunk.  `set_tensor_2d_async` had the
+same shape.  Both now snapshot the source through the pinned upload ring (unconditionally), the ring's
+wait/done guard is unconditional, and `GGML_CUDA_ASYNC_INPUT` is default-on (`=0` disables).  Self-KLD
+control 91.0-95.1 % -> 99.967-100.000 %; greedy text, width purity and prefill logits unchanged; decode
++9.3 % (35B-A3B 2 GPU tensor tg400) / +5.2 % (27B MTP n3 2 GPU tensor end-to-end).  Full record and the
+tooling: `archive/work/async-input-graph-ordering/` (`RESOLUTION.md`, `FINDINGS-2026-10-19b.md`),
+`WORKLOG.md` 261019.007.  The separate 35B-A3B greedy nondeterminism with async **off** noted below is
+still untracked and is *not* this item.
 
 ### 71. Share the tile K/V type selection between the chooser and the allocator — CORRECTNESS (open, small)
 

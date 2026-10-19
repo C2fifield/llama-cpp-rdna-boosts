@@ -12,6 +12,10 @@ Status: **2026-10-08 (r29) — gate defined and mandatory.**  Run it before tagg
 set touches a prefill kernel (and after any change to the delivery's prefill dispatch).  The first
 recorded run is the r29 issue-#113 example (`WORKLOG.md` 2026-10-08 r29).
 
+**The captured-graph band needs its own base.**  Run the gate at **`--ub 8`** as well whenever the change
+touches a copy/ordering path or anything the decode band reaches: the default ubatch does not capture a
+graph, and `--ub 8` stores a separate base file (`...-ub8.kld`) so the two never mix (added at r90).
+
 **Automation.**  `scripts/gate-prefill-logits.sh` implements this protocol and is the canonical entry
 point:
 
@@ -19,6 +23,8 @@ point:
 ./scripts/gate-prefill-logits.sh --record                 # establish the known-good base (writes $BASE.meta)
 ./scripts/gate-prefill-logits.sh                          # compare the current build against the base
 ./scripts/gate-prefill-logits.sh --ab "GGML_CUDA_GDN_CHUNKED_BF16=0"   # exact-fallback A/B
+./scripts/gate-prefill-logits.sh --ub 8 --record   # the captured-graph band gets its OWN base
+./scripts/gate-prefill-logits.sh --ub 8            # ... and its own comparison (-ub 8 -b 8)
 ```
 
 `--record` writes a `$BASE.meta` sidecar (build ref, model, corpus sha256, ctx/chunks, base sha256, PPL)

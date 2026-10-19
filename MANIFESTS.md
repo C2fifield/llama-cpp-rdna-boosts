@@ -5,17 +5,27 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r89`** (canonical tip `399610a83`, net tree
-`ca9598a22946e52b74a8d6869a1ff917b181455b`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r89 folds **PR #182** (`@briansp2020`) into **block 10**:
+**`097cf33d9`**, released as **`v12-097cf33d9-r90`** (canonical tip `529135aed`, net tree
+`111559e57e820ce5d7fcac511a84ba70604604a0`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r90 **fixes the async graph-input nondeterminism** that kept
+`GGML_CUDA_ASYNC_INPUT` opt-in since r69, and flips it **default-on**: the two
+`set_tensor_async`/`set_tensor_2d_async` paths copied out of the caller's live pinned host buffer (a CPU
+split's output the next ubatch rewrites), so with the host running ahead a rare single-graph corruption in
+layer 0 propagated to the end of the chunk; both now snapshot through the pinned upload ring,
+unconditionally, and the ring's wait/done guard is unconditional too (**block 10**, no new block; the stale
+block-10 comment is corrected).  Self-KLD control 91.0-95.1 % -> 99.967-100.000 % (4B `-ub 8`/`-ub 1`/24
+chunks/`BATCH=1`, 27B, 35B 2-GPU tensor); greedy text, width purity and the prefill-logit gate unchanged;
+decode +9.3 % (35B-A3B 2 GPU tensor tg400) and +5.2 % (27B MTP n3 2 GPU tensor end-to-end).  It is the
+follow-up to **PR #182** (`@briansp2020`), whose batched uploads (r89) are what made the defect cheap to
+isolate.  r89 folds **PR #182** (`@briansp2020`) into **block 10**:
 inside the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs are now copied by **one kernel**
 at the next graph start instead of one `cudaMemcpyAsync` + event record per input
 (`GGML_CUDA_ASYNC_INPUT_BATCH`, default on, `=0` restores per-copy), and the "previous graph done"
 event is recorded by the next upload instead of after every `graph_compute`
 (`GGML_CUDA_ASYNC_INPUT_LAZY_DONE`, default = the batch default).  Every other buffer/backend access
 drains the queue through the old per-copy path and orders `cudaStreamPerThread` after the last batch
-kernel.  `GGML_CUDA_ASYNC_INPUT` stays opt-in (the r69 nondeterminism is unchanged: it needs a captured
-graph).  Measured `ASYNC_INPUT=1`: 35B-A3B 2 GPU tensor 110.7 -> **115.8 t/s** (+5.8 % over the async-off
+kernel.  `GGML_CUDA_ASYNC_INPUT` stayed opt-in **in r89** (the r69 nondeterminism needed a captured graph; fixed in
+r90).  Measured `ASYNC_INPUT=1`: 35B-A3B 2 GPU tensor 110.7 -> **115.8 t/s** (+5.8 % over the async-off
 default), 27B MTP 2 GPU tensor 85.0 -> **86.2** (+3.6 % over default), 1 GPU parity restored; prefill
 flat; delivery default unchanged.  Gates: 4B `7386359e5dac` (off/on/`BATCH=0`), width probe PASS, 27B
 and 27B-MTP greedy identical, prefill-logit 0.000707 / 98.755 %, `test-backend-ops` pass, 0 GPU faults.

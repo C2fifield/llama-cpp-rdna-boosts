@@ -12,14 +12,18 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r89`**; it folds **PR #182**
-(`@briansp2020`) into **block 10**: inside the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs
-are copied by one kernel at the next graph start instead of one `cudaMemcpyAsync` + event record per input
-(`GGML_CUDA_ASYNC_INPUT_BATCH`, default on, `=0` restores per-copy), and the "previous graph done" event
-is recorded by the next upload instead of after every `graph_compute`.  Worth **+4.6 %** decode at 35B-A3B
-2-GPU tensor-split and +1.4 % on 27B MTP (i.e. +5.8 % / +3.6 % over the async-off default); the default
-product is unchanged because `GGML_CUDA_ASYNC_INPUT` stays opt-in (its capture-time nondeterminism is
-unchanged -- `wip/async-input-graph-ordering/`).
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r90`**; it **fixes the
+run-to-run nondeterminism of `GGML_CUDA_ASYNC_INPUT` and turns it on by default** (**block 10**, no new
+block; follow-up to **PR #182**, `@briansp2020`).  The two `set_tensor_async` / `set_tensor_2d_async` paths
+copied out of the caller's *live* pinned host buffer, and the scheduler uses them for a CPU split's output,
+which the next ubatch rewrites; with the host running ahead the copy could read the next ubatch's bytes, a
+rare single-graph corruption that propagated to the end of the chunk.  Both paths now snapshot through the
+pinned upload ring (unconditionally), so `GGML_CUDA_ASYNC_INPUT=0` is now only a kill-switch.  Worth
+**+9.3 %** decode at 35B-A3B 2-GPU tensor-split (`llama-bench` tg400) and **+5.2 %** on 27B MTP n3 2-GPU
+end-to-end, flat on one card; byte-identical greedy text, width purity and prefill logits against the
+recorded base.  r89 folded PR #182's batched uploads into the same block, and r90 fixed the capture-time
+nondeterminism that had kept `GGML_CUDA_ASYNC_INPUT` opt-in, so it is default-on now
+(`GGML_CUDA_ASYNC_INPUT=0` is the kill-switch; record in `archive/work/async-input-graph-ordering/`).
 Before it, r88 folded the RDNA2 (gfx1030)
 flash-attention gate fixes of PR #181 into **block 05** (bf16 F16-staging scratch sizing, the decode-band
 `q_h2` launch argument, and an RDNA2-gated last-tile guard tail; reported and validated by `@slavap` on a
@@ -175,7 +179,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
 | `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
 | `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85); + the slab transient absorption common half and the derived draft reserve (r86) |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86) |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86); + the async graph-input ring and its r90 split-input snapshot fix (default-on) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16; + the pre-loaded draft-model ownership handoff (r86) |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the

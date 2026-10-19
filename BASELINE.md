@@ -2,8 +2,13 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r89`** (canonical tip `399610a83`, net tree
-`ca9598a22946e52b74a8d6869a1ff917b181455b`).  r89 folds PR #182 (`@briansp2020`) into **block 10**: inside
+**`v12-097cf33d9-r90`** (canonical tip `529135aed`, net tree
+`111559e57e820ce5d7fcac511a84ba70604604a0`).  r90 fixes the async graph-input nondeterminism and flips
+`GGML_CUDA_ASYNC_INPUT` **default-on** (**block 10**, no new block): the `set_tensor_async` /
+`set_tensor_2d_async` paths copied directly from the caller's live pinned host pointer (a CPU split's
+output that the next ubatch rewrites), which corrupted a single graph whenever the host ran ahead; both now
+snapshot through the pinned upload ring, unconditionally, and the ring's wait/done guard is unconditional.
+It is the follow-up to PR #182.  r89 folds PR #182 (`@briansp2020`) into **block 10**: inside
 the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs are copied by one kernel at the next
 graph start instead of one `cudaMemcpyAsync` + event record per input, and the "previous graph done"
 event is recorded by the next upload instead of after every `graph_compute` (two new default-on
