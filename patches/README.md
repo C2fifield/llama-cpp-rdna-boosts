@@ -42,7 +42,10 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `7386359e5dac` (default / `ASYNC_INPUT=0` / `-ub 8`), 27B `ad1333a99867`, width probe W=1..8 identical
 > `width_purity=PASS`, prefill-logit **0.000707 / 98.755 %** (identical to the r89 base) plus a new
 > `gate-prefill-logits.sh --ub 8` base at **100.000 %**, `test-backend-ops` `ADD`/`GET_ROWS`/`CPY`/
-> `MUL_MAT` OK, `check-gpu-faults.sh` clean.  **Perf**: 35B-A3B 2 GPU tensor tg400 **111.70 vs 102.23 t/s
+> `MUL_MAT` OK, `check-gpu-faults.sh` clean, **MTP four-axis Protocol A `-n 3000` PASS** on 27B 1 GPU and
+> 35B-A3B 1 GPU / 2 GPU tensor (acceptance identical between arms on the dense model and the 2-GPU MoE
+> model, `draft-mtp` 1.9x-2.9x plain; `benchmarks/2026-10-19-mtp-4-axis-r90.md`).  **Perf**: 35B-A3B 2 GPU
+> tensor tg400 **111.70 vs 102.23 t/s
 > (+9.3 %)**, pp4096 flat, 1 GPU +2.3 %, 27B +0.5 %, 27B MTP n3 2 GPU tensor end-to-end **+5.2 %** with
 > byte-identical text.
 >

@@ -15,6 +15,7 @@ layer 0 propagated to the end of the chunk; both now snapshot through the pinned
 unconditionally, and the ring's wait/done guard is unconditional too (**block 10**, no new block; the stale
 block-10 comment is corrected).  Self-KLD control 91.0-95.1 % -> 99.967-100.000 % (4B `-ub 8`/`-ub 1`/24
 chunks/`BATCH=1`, 27B, 35B 2-GPU tensor); greedy text, width purity and the prefill-logit gate unchanged;
+MTP four-axis Protocol A (`-n 3000`) PASS on 27B 1 GPU and 35B-A3B 1 GPU / 2 GPU tensor;
 decode +9.3 % (35B-A3B 2 GPU tensor tg400) and +5.2 % (27B MTP n3 2 GPU tensor end-to-end).  It is the
 follow-up to **PR #182** (`@briansp2020`), whose batched uploads (r89) are what made the defect cheap to
 isolate.  r89 folds **PR #182** (`@briansp2020`) into **block 10**:

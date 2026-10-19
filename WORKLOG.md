@@ -1,5 +1,26 @@
 # WORKLOG - dated delivery records
 
+## 261019.009 (r90) -- the full Protocol A four-axis MTP gate on r90 (PASS)
+
+Follow-up to 261019.007, which recorded an end-to-end **spot check** (400 tokens, 27B MTP n3) rather than
+the full protocol.  The full Protocol A gate was then run on the r90 build (`build-rocm`, tip `529135aed`)
+for the three configs the release checklist names, `-n 3000`, reasoning pinned per axis, one run per cell,
+async default vs `GGML_CUDA_ASYNC_INPUT=0`: **PASS**.
+
+- **27B UD-Q4_K_XL 1 GPU**: plain 29.9-30.5 t/s, `draft-mtp n3` **59.5 / 73.8 / 81.0 / 87.0 t/s** (R/P/C/K),
+  acceptance **0.57681 / 0.81130 / 0.90653 / 0.99200**, and every acceptance value and the generated text
+  (`sha=5b1f6469ec6b`, code axis) are **identical between arms**.
+- **35B-A3B 2 GPU tensor**: plain 117-121, `draft-mtp n3` **252.8 / 234.2 / 270.6 / 269.1 t/s**,
+  acceptance **identical between arms** on all four axes; async default is **+6 % plain / +12.4 % MTP**.
+- **35B-A3B 1 GPU**: plain ~101, `draft-mtp n3` **196.1 / 198.9 / 219.6 / 241.1 t/s**; three of four axes
+  identical between arms.  The prose acceptance spread (0.769 vs 0.808) is the **model's own run-to-run
+  nondeterminism**: within the `on` arm it measured 0.78512 / 0.76879 / 0.76879 on three repeats, and the
+  generated text differs run to run with async off too (the separate 35B-A3B issue noted in 261019.004).
+
+Rule 2 holds everywhere (`draft-mtp` >= plain, 1.9x to 2.9x), rule 1 holds (no acceptance collapse), rule 3
+holds on the dense model.  Full tables, environment and the per-repeat stability data:
+[`benchmarks/2026-10-19-mtp-4-axis-r90.md`](benchmarks/2026-10-19-mtp-4-axis-r90.md).
+
 ## 261019.008 (r90) -- publication record (tag, push, fork refresh, PR #182 reply)
 
 `v12-097cf33d9-r90` is **published**.  Delivery commit `ebf3900`, annotated tag
@@ -68,8 +89,8 @@ clean; `validate-set.sh` green.
 (+9.3 %)**, pp4096 7322 vs 7273 (flat); 35B-A3B 1 GPU tg400 **90.11 vs 88.10 (+2.3 %)**; 27B 1 GPU tg400
 27.44 vs 27.31 (+0.5 %).  27B MTP n3 2 GPU tensor, end-to-end `llama-cli` 400-token draft-mtp:
 **78.8 vs 74.9 t/s (+5.2 %)** with **byte-identical text** (`012f53df013f`) across arms.  This is a spot
-check, not the full 3000-token four-axis protocol; the change touches no kernel, no numerics and no
-controller.
+check, **not** the full 3000-token four-axis protocol; that protocol was run afterwards and is recorded in
+261019.009 (PASS), the change touches no kernel, no numerics and no controller.
 
 **Campaign.**  `wip/async-input-graph-ordering/` is promoted: the record (both sessions, the tooling
 patches, the standalone HIP reproducers) moves to **`archive/work/async-input-graph-ordering/`** with a
