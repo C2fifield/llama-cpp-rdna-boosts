@@ -12,10 +12,18 @@ it is what makes it (and PR #182's batched uploads, r89) default-on.
 Status: **OPEN (seeded 2026-10-19)** — the first debugging session **withdrew** the original
 "the copy-completion wait does not order the graph replay" reading: the uploads are verified byte-correct
 at the graph's first read, HIP's event/graph ordering primitives are fine, and the runs have no
-inter-graph overlap at all.  What is left is a difference produced *inside* one graph's execution, with
-the cross-backend split as the top suspect.  Full data, the eliminated list and the exact instruments
-(scratch build + two standalone HIP reproducers): [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md) and
-[`tools/`](tools/).  Nothing here is part of the delivery.
+inter-graph overlap at all.  **The second session (same day) then killed the cross-backend split
+theory**: split 0 is the CPU producing the graph's inputs (the hand-over is at the *front* of the graph),
+the CUDA split contains no host tensor, the upload verification now covers the whole run (769 graphs x
+9-10 uploads, 0 mismatches), and issuing the uploads **on the compute stream** (stream order alone) still
+diverges.  The difference is produced inside the **last-layer output path** (deep layers, the last-layer
+norm, the gate and the pre-attention output are identical; the gated attention output, the output
+projection and the logits differ by 5-20 % relative), and only the graphs whose row-pruned tail is real
+can show it at all.  Live candidates and the next experiments:
+[`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md).  Session 1 data, the eliminated list and the exact
+instruments (scratch build + two standalone HIP reproducers):
+[`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md) and [`tools/`](tools/).  Nothing here is part of the
+delivery.
 
 ## Payoff if fixed
 

@@ -86,7 +86,19 @@ Reproducer, the full arm matrix, the forced-sync control and the hypothesis list
 maintainer's dual-scheduler/shared-state guess, plus a per-thread-`cudaStreamPerThread` ring-wrap hazard
 found during review) are in `wip/async-input-graph-ordering/`.  **First session (2026-10-19) is done** —
 withdrawn reading, eliminated list, current hypothesis (cross-backend split hand-off) and the next
-experiments are in that campaign's `HANDOVER.md` + `FINDINGS-2026-10-19.md`.  Also pending: the r89
+experiments are in that campaign's `HANDOVER.md` + `FINDINGS-2026-10-19.md`.  **Second session
+(2026-10-19) killed the split theory** (`FINDINGS-2026-10-19b.md`): the cross-backend hand-over is the
+CPU *producing* the graph's inputs (split 0 = CPU `GET_ROWS`, split 1 = the 2023-node ROCm graph), the
+CUDA split holds no host tensor, the upload verification now covers the whole run (769 graphs x 9-10
+uploads, 0 mismatches; `out_ids`/`inp_pos`/`kq_mask` copies byte-identical in two divergent runs), and
+issuing the uploads **on the compute stream** (stream order only) still diverges — so no ordering hole
+between copies and replay can explain it.  The difference is produced in the **last-layer output path**
+(row-pruned FFN + final norm + output MUL_MAT): deep layers, `norm-31`, the gate and `attn_pregate-31`
+are identical, while `attn_gated-31`/`attn_output-31`/`result_output` differ by 5-20 % relative, and only
+graphs whose row-pruned tail is real can show it at all (the graph alternates a "no-tail" and a "tail"
+shape in aligned 32-graph blocks).  Live candidates (H-D: the verify-band ksplit mmvq / 8-row kernels
+are themselves timing-sensitive; H-E: generic pool scratch recycled while the replay still holds its
+address) and the next experiments are in `FINDINGS-2026-10-19b.md`.  Also pending: the r89
 block-10 code comment still carries the withdrawn wording (comment only; fix in the next block-10
 amendment).  Note that 35B-A3B (1 GPU and 2 GPU
 tensor) already produces 2-3 different greedy texts run-to-run **with async off**; that separate

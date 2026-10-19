@@ -1,0 +1,741 @@
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 37531ee18..e37eed25e 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1397,7 +1397,50 @@ static char * fmt_size(size_t size) {
+     return buffer;
+ }
+ 
++// scratch AIN (wip/async-input-graph-ordering): identify the split set without relying on the log
++// verbosity path.  AIN_SPLITS=1 prints one block per scheduling, AIN_SPLITS=N the first N.
++static bool sched_ain_splits(void) {
++    static const bool on = getenv("AIN_SPLITS") != nullptr;
++    return on;
++}
++
++static void sched_ain_print_splits(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
++    static long n_calls = 0;
++    static long n_print = getenv("AIN_SPLITS") ? atol(getenv("AIN_SPLITS")) : 0;
++    const bool limited = n_print > 1;
++    if (limited && n_calls >= n_print) { n_calls++; return; }
++    fprintf(stderr, "[AIN_SPLITS] schedule #%ld: nodes=%d splits=%d leafs=%d\n",
++            n_calls, graph->n_nodes, sched->n_splits, graph->n_leafs);
++    for (int s = 0; s < sched->n_splits; s++) {
++        const struct ggml_backend_sched_split * split = &sched->splits[s];
++        ggml_backend_t sb = sched->backends[split->backend_id];
++        fprintf(stderr, "[AIN_SPLITS]   split %d: backend_id=%d backend=%s nodes=[%d,%d) graph_nodes=%d inputs=%d\n",
++                s, split->backend_id, ggml_backend_name(sb), split->i_start, split->i_end,
++                split->graph.n_nodes, split->n_inputs);
++        for (int j = 0; j < split->n_inputs; j++) {
++            struct ggml_tensor * in = split->inputs[j];
++            ggml_backend_t ib = ggml_backend_sched_get_tensor_backend(sched, in);
++            fprintf(stderr, "[AIN_SPLITS]     input %d: %-40s %8zu B buft=%s backend=%s usage=%d host=%d\n",
++                    j, in->name, ggml_nbytes(in),
++                    in->buffer ? ggml_backend_buffer_name(in->buffer) : "NULL",
++                    ib ? ggml_backend_name(ib) : "NULL",
++                    in->buffer ? (int) ggml_backend_buffer_get_usage(in->buffer) : -1,
++                    in->buffer ? (int) ggml_backend_buffer_is_host(in->buffer) : -1);
++        }
++        if (split->graph.n_nodes > 0) {
++            struct ggml_tensor * f = split->graph.nodes[0];
++            struct ggml_tensor * l = split->graph.nodes[split->graph.n_nodes - 1];
++            fprintf(stderr, "[AIN_SPLITS]     first node: %s (%s)  last node: %s (%s)\n",
++                    f->name, ggml_op_desc(f), l->name, ggml_op_desc(l));
++        }
++    }
++    n_calls++;
++}
++
+ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
++    if (sched_ain_splits()) {
++        sched_ain_print_splits(sched, graph);
++    }
+     int cur_split = 0;
+     for (int i = 0; i < graph->n_nodes; i++) {
+         if (cur_split < sched->n_splits && i == sched->splits[cur_split].i_start) {
+@@ -1982,7 +2025,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+         sched->n_splits = i_split + 1;
+     }
+ 
+-    if (sched->debug) {
++    if (sched->debug || sched_ain_splits()) {
+         ggml_backend_sched_print_assignments(sched, graph);
+     }
+ 
+@@ -2649,6 +2692,25 @@ struct ggml_backend_sched_copy_state {
+ // then used-expert pruning); upstream #29943 moved the pruning to llama_context::
+ // sched_copy_experts, but the delivery keeps it here so the scheduler stays cache-aware
+ // and upstream's llama_moe_cache (behind --moe-cache-mib) stays dormant.
++// scratch AIN (wip/async-input-graph-ordering): which copy path does each split input take at run time?
++static void sched_ain_copy_note(const char * path, ggml_backend_t input_backend, ggml_backend_t split_backend,
++                                struct ggml_tensor * input, struct ggml_tensor * input_cpy) {
++    static long n = 0;
++    static const long lim = getenv("AIN_SPLIT_COPY") ? atol(getenv("AIN_SPLIT_COPY")) : 0;
++    ++n;
++    if (lim > 0 && n > lim) { return; }
++    fprintf(stderr, "[AIN_COPY] #%ld path=%-16s src=%-6s dst=%-6s tensor=%-24s n=%8zu "
++                    "srcbuf=%-28s srchost=%d dstbuf=%-28s dsthost=%d flag_in=%d view_of_in=%d\n",
++            n, path, ggml_backend_name(input_backend), ggml_backend_name(split_backend), input->name,
++            ggml_nbytes(input_cpy),
++            input->buffer ? ggml_backend_buffer_name(input->buffer) : "NULL",
++            input->buffer ? (int) ggml_backend_buffer_is_host(input->buffer) : -1,
++            input_cpy->buffer ? ggml_backend_buffer_name(input_cpy->buffer) : "NULL",
++            input_cpy->buffer ? (int) ggml_backend_buffer_is_host(input_cpy->buffer) : -1,
++            (int) ((input->flags & GGML_TENSOR_FLAG_INPUT) != 0),
++            (int) (ggml_backend_sched_graph_input(input) != nullptr));
++}
++
+ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split, struct ggml_tensor * input, ggml_backend_sched_copy_state & st) {
+     const int split_backend_id = split->backend_id;
+     ggml_backend_t split_backend = sched->backends[split_backend_id];
+@@ -2669,6 +2731,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             ggml_backend_synchronize(split_backend);
+         }
+         ggml_backend_tensor_copy(input, input_cpy);
++        sched_ain_copy_note("sync_graph_input", input_backend, split_backend, input, input_cpy);
+     } else {
+         // staged input (issue #50 WIP): wait on the ring slot's upload event, D2D it into the
+         // real split input, then free the slot.  Both the D2D and the compute are on the main
+@@ -2931,6 +2994,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                     ggml_backend_synchronize(split_backend);
+                 }
+                 ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input_cpy));
++                sched_ain_copy_note("set_async", input_backend, split_backend, input, input_cpy);
+             } else
+             // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
+             // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
+@@ -2942,6 +3006,9 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                     ggml_backend_synchronize(split_backend);
+                 }
+                 ggml_backend_tensor_copy(input, input_cpy);
++                sched_ain_copy_note("copy_sync", input_backend, split_backend, input, input_cpy);
++            } else {
++                sched_ain_copy_note("cpy_async", input_backend, split_backend, input, input_cpy);
+             }
+         }
+     }
+@@ -2985,6 +3052,80 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         }
+ 
+         if (!sched->callback_eval) {
++            // scratch AIN: show where the first nodes' operands live (host vs device) at compute time
++            if (getenv("AIN_SPLITS_GRAPH") != nullptr) {
++                static long n_graphs = 0;
++                static const long lim = atol(getenv("AIN_SPLITS_GRAPH"));
++                if (n_graphs < lim) {
++                    fprintf(stderr, "[AIN_GRAPH] graph #%ld split %d/%d backend=%s nodes=%d inputs=%d\n",
++                            n_graphs, split_id, sched->n_splits, ggml_backend_name(split_backend),
++                            split->graph.n_nodes, split->n_inputs);
++                    const int nn = split->graph.n_nodes < 8 ? split->graph.n_nodes : 8;
++                    for (int ni = 0; ni < nn; ni++) {                        struct ggml_tensor * nd = split->graph.nodes[ni];
++                        fprintf(stderr, "[AIN_GRAPH]   node %d %-18s %-24s buf=%-20s host=%d data=%p\n",
++                                ni, ggml_op_desc(nd), nd->name,
++                                nd->buffer ? ggml_backend_buffer_name(nd->buffer) : "NULL",
++                                nd->buffer ? (int) ggml_backend_buffer_is_host(nd->buffer) : -1, nd->data);
++                        for (int si = 0; si < GGML_MAX_SRC; si++) {
++                            struct ggml_tensor * s2 = nd->src[si];
++                            if (s2 == nullptr) { continue; }
++                            fprintf(stderr, "[AIN_GRAPH]     src%d %-18s %-24s buf=%-20s host=%d data=%p view=%s\n",
++                                    si, ggml_op_desc(s2), s2->name,
++                                    s2->buffer ? ggml_backend_buffer_name(s2->buffer) : "NULL",
++                                    s2->buffer ? (int) ggml_backend_buffer_is_host(s2->buffer) : -1, s2->data,
++                                    s2->view_src ? s2->view_src->name : "-");
++                        }
++                    }
++                    if (getenv("AIN_GRAPH_TAIL") != nullptr) {
++                        for (int ni = split->graph.n_nodes - 15; ni < split->graph.n_nodes; ni++) {
++                            if (ni < 0) { continue; }
++                            struct ggml_tensor * nd = split->graph.nodes[ni];
++                            fprintf(stderr, "[AIN_GRAPH]   tail %d %-18s %-28s buf=%-20s host=%d\n",
++                                    ni, ggml_op_desc(nd), nd->name,
++                                    nd->buffer ? ggml_backend_buffer_name(nd->buffer) : "NULL",
++                                    nd->buffer ? (int) ggml_backend_buffer_is_host(nd->buffer) : -1);
++                            for (int si = 0; si < GGML_MAX_SRC; si++) {
++                                struct ggml_tensor * s2 = nd->src[si];
++                                if (s2 == nullptr) { continue; }
++                                fprintf(stderr, "[AIN_GRAPH]     src%d %-18s %-28s buf=%-20s host=%d\n",
++                                        si, ggml_op_desc(s2), s2->name,
++                                        s2->buffer ? ggml_backend_buffer_name(s2->buffer) : "NULL",
++                                        s2->buffer ? (int) ggml_backend_buffer_is_host(s2->buffer) : -1);
++                            }
++                        }
++                    }
++                }
++                ++n_graphs;
++            }
++            if (getenv("AIN_HOSTTENS") != nullptr && split_id == sched->n_splits - 1) {
++                static bool done = false;
++                if (!done) {
++                    done = true;
++                    int n_host_src = 0, n_host_dst = 0;
++                    for (int ni = 0; ni < split->graph.n_nodes; ni++) {
++                        struct ggml_tensor * nd = split->graph.nodes[ni];
++                        if (nd->buffer != nullptr && ggml_backend_buffer_is_host(nd->buffer)) {
++                            if (n_host_dst++ < 8) {
++                                fprintf(stderr, "[AIN_HOSTTENS] dst node %d %-18s %-28s buf=%s\n",
++                                        ni, ggml_op_desc(nd), nd->name, ggml_backend_buffer_name(nd->buffer));
++                            }
++                        }
++                        for (int si = 0; si < GGML_MAX_SRC; si++) {
++                            struct ggml_tensor * s2 = nd->src[si];
++                            if (s2 == nullptr || s2->buffer == nullptr) { continue; }
++                            if (ggml_backend_buffer_is_host(s2->buffer)) {
++                                if (n_host_src++ < 12) {
++                                    fprintf(stderr, "[AIN_HOSTTENS] src node %d %-18s %-28s src%d=%-28s buf=%s usage=%d\n",
++                                            ni, ggml_op_desc(nd), nd->name, si, s2->name, ggml_backend_buffer_name(s2->buffer),
++                                            (int) ggml_backend_buffer_get_usage(s2->buffer));
++                                }
++                            }
++                        }
++                    }
++                    fprintf(stderr, "[AIN_HOSTTENS] split backend=%s nodes=%d host_dst=%d host_src=%d\n",
++                            ggml_backend_name(split_backend), split->graph.n_nodes, n_host_dst, n_host_src);
++                }
++            }
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 25effbbe6..621414f1f 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1895,9 +1895,12 @@ struct ggml_backend_cuda_context {
+         // byte-identical -- e.g. the MUL_MAT_ID view [K, 1, n] and the MUL_MAT view [K, n] of one activation.
+         // GGML_CUDA_Q8_1_CACHE_EXACT=1 restores the exact-shape match (A/B).
+         static const bool exact = getenv("GGML_CUDA_Q8_1_CACHE_EXACT") != nullptr;
++        static const bool nocache = getenv("AIN_Q81_NOCACHE") != nullptr;   // scratch AIN diagnostic
++        if (nocache) { found = false; }
+         int64_t c[6];
+         q8_1_rows_canon(ne11, ne12, ne13, s11, s12, s13, c);
+         for (const auto & e : q8_1_cache) {
++            if (nocache) { break; }
+             if (e.src1 != src1 || e.data != src1->data || e.stream_no != stream_no || e.ne10 != ne10) {
+                 continue;
+             }
+@@ -2520,6 +2523,8 @@ struct ggml_backend_cuda_context {
+     } bf16_src1_cache;
+ 
+     void bf16_src1_cache_clear() {
++        static const bool ain_no_free = getenv("AIN_NO_FREE") != nullptr;   // scratch AIN diagnostic
++        if (ain_no_free) { return; }
+         bf16_src1_cache.buf.reset();
+         bf16_src1_cache.src1 = nullptr;
+         bf16_src1_cache.data = nullptr;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 9eb3280c0..e19172b9a 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1305,6 +1305,28 @@ static long     g_ain_gsum_n   = 0;           // graphs snapshotted
+ static long     g_ain_gsum_printed = 0;
+ static int      g_ain_gsum_nnodes[AIN_GSUM_MAX];
+ static char     g_ain_gsum_name[AIN_GSUM_MAX][48];
++static const char * g_tl_cur_name = nullptr;   // AIN_TL: name of the tensor being uploaded
++// AIN timeline: per-graph structural facts (no D2H, no extra device work) to correlate with divergence
++static constexpr int AIN_TL_MAX = 8192;
++static long g_tl_n = 0;
++static int  g_tl_tokens[AIN_TL_MAX], g_tl_sets[AIN_TL_MAX], g_tl_wraps[AIN_TL_MAX], g_tl_inflight[AIN_TL_MAX];
++static int  g_tl_used[AIN_TL_MAX], g_tl_upd[AIN_TL_MAX], g_tl_direct[AIN_TL_MAX];
++static long g_tl_bytes[AIN_TL_MAX];
++static void * g_tl_nodes0[AIN_TL_MAX];
++static void * g_tl_instance[AIN_TL_MAX];
++static long g_tl_cur_sets = 0, g_tl_cur_bytes = 0;
++static int  g_tl_cur_wraps = 0, g_tl_cur_inflight = 0;
++static bool g_tl_atexit = false;
++// per-graph upload list (name:size), AIN_TL
++static constexpr int AIN_TL_U = 24;
++static char g_tl_ulist[AIN_TL_MAX][512];
++static void ggml_cuda_ain_tl_dump(void) {
++    for (long g = 0; g < g_tl_n; ++g) {
++        fprintf(stderr, "AIN[tl] %ld tok=%d nodes0=%p inst=%p used=%d upd=%d direct=%d sets=%d bytes=%ld wraps=%d inflight=%d u=[%s]\n",
++                g, g_tl_tokens[g], g_tl_nodes0[g], g_tl_instance[g], g_tl_used[g], g_tl_upd[g], g_tl_direct[g],
++                g_tl_sets[g], g_tl_bytes[g], g_tl_wraps[g], g_tl_inflight[g], g_tl_ulist[g]);
++    }
++}
+ static std::atomic<long> g_path_set_sync{0}, g_path_cpy{0}, g_path_cpy_async{0}, g_path_set2d{0},
+                          g_path_set2d_async{0}, g_path_get{0}, g_path_get2d{0}, g_path_memset{0}, g_path_clear{0};
+ 
+@@ -1385,6 +1407,7 @@ struct ggml_cuda_async_input_dev {
+     cudaEvent_t  flush_ev  = nullptr;   // recorded after the last batch kernel: the ring is free once it completes
+     bool         has_flush = false;
+     int          dev       = 0;         // scratch AIN debug: this struct's device index
++    cudaStream_t main_stream = nullptr; // AIN_MAIN_COPY: the compute stream, seen at the last input wait
+ };
+ static ggml_cuda_async_input_dev g_async_input[GGML_CUDA_MAX_DEVICES];
+ // Opt-in (default OFF): the synchronous path blocks the host on every small graph-input copy, which is a
+@@ -1489,6 +1512,215 @@ static char * g_ain_vfy_got  = nullptr;   // pinned: what the compute stream saw
+ static constexpr int    AIN_VFY_MAX   = 1024;
+ static constexpr size_t AIN_VFY_BYTES = 256;
+ static long g_ain_vfy_bad = 0;
++// AIN_HASH=a,b,c: per-graph checksums of named tensors (nodes, or node srcs), 64 bytes each, D2H on the
++// compute stream at graph end.  Printed from atexit so the measurement adds no per-graph host work.
++static constexpr int AIN_HSH_K   = 8;
++static constexpr int AIN_HSH_MAX = 8192;
++static char * g_ain_hsh_pin = nullptr;
++static long   g_ain_hsh_n   = 0, g_ain_hsh_printed = 0;
++static char   g_ain_hsh_name[AIN_HSH_K][64];
++static int    g_ain_hsh_nname = 0;
++static unsigned char g_ain_hsh_mask[AIN_HSH_MAX];
++static int    g_ain_hsh_nnodes[AIN_HSH_MAX];
++static bool   g_ain_hsh_atexit = false;
++static void ggml_cuda_ain_hsh_dump(void) {
++    if (g_ain_hsh_pin == nullptr) { return; }
++    CUDA_CHECK(cudaDeviceSynchronize());
++    for (long g = g_ain_hsh_printed; g < g_ain_hsh_n; ++g) {
++        fprintf(stderr, "AIN[hsh] %ld nodes=%d", g, g_ain_hsh_nnodes[g]);
++        for (int k = 0; k < g_ain_hsh_nname; ++k) {
++            if (!(g_ain_hsh_mask[g] & (1u << k))) { fprintf(stderr, " %s=-", g_ain_hsh_name[k]); continue; }
++            unsigned long long h = 1469598103934665603ull;
++            const char * p = g_ain_hsh_pin + ((size_t) g * AIN_HSH_K + k) * 64;
++            for (int b = 0; b < 64; ++b) { h ^= (unsigned char) p[b]; h *= 1099511628211ull; }
++            fprintf(stderr, " %s=%016llx", g_ain_hsh_name[k], h);
++            static const bool as_float = getenv("AIN_HASH_FLOAT") != nullptr;
++            if (as_float) {
++                fprintf(stderr, "[");
++                for (int f = 0; f < 8; ++f) { float v; memcpy(&v, p + 4 * f, 4); fprintf(stderr, "%s%g", f ? "," : "", (double) v); }
++                fprintf(stderr, "]");
++            }
++        }
++        fprintf(stderr, "\n");
++    }
++    g_ain_hsh_printed = g_ain_hsh_n;
++}
++// AIN_VK: verify every async graph-input upload *at the graph's first read*, but with a single device
++// kernel instead of a per-copy D2H.  The host hash of the bytes it uploaded is computed for free; the
++// device hash of the destination is produced by one kernel on the compute stream immediately after
++// ggml_cuda_async_input_wait().  Compared at exit -- no per-graph host work, so the measurement does
++// not serialise the pipeline the way AIN_VERIFY's D2H does.
++static constexpr int AIN_VK = 24;
++struct ggml_cuda_ain_vk_arg {
++    int          n;
++    void *       dst[AIN_VK];
++    unsigned int size[AIN_VK];
++};
++static std::vector<ggml_cuda_ain_vk_arg> g_ain_vk_pend;   // one entry per pending graph
++static unsigned long long g_ain_vk_hosth[AIN_TL_MAX][AIN_VK];
++static int                g_ain_vk_nu[AIN_TL_MAX];
++static unsigned long long * g_ain_vk_dev = nullptr;       // [AIN_TL_MAX][AIN_VK]
++static long               g_ain_vk_slot = 0;
++static bool               g_ain_vk_atexit = false;
++static __global__ void ggml_cuda_ain_vk_kernel(ggml_cuda_ain_vk_arg a, unsigned long long * out) {
++    const int i = blockIdx.x;
++    if (i >= a.n) { return; }
++    const unsigned char * p = (const unsigned char *) a.dst[i];
++    const unsigned int    n = a.size[i];
++    unsigned long long h = 1469598103934665603ull + (unsigned long long) threadIdx.x * 0x9e3779b97f4a7c15ull;
++    for (unsigned int b = threadIdx.x; b < n; b += blockDim.x) { h ^= p[b]; h *= 1099511628211ull; }
++    __shared__ unsigned long long sh[256];
++    sh[threadIdx.x] = h;
++    __syncthreads();
++    for (int st = 128; st > 0; st >>= 1) {
++        if (threadIdx.x < st) { sh[threadIdx.x] ^= sh[threadIdx.x + st]; }
++        __syncthreads();
++    }
++    if (threadIdx.x == 0) { out[i] = sh[0]; }
++}
++static unsigned long long ggml_cuda_ain_vk_host_hash(const char * src, size_t n) {
++    unsigned long long acc = 0;
++    for (int t = 0; t < 256; ++t) {
++        unsigned long long h = 1469598103934665603ull + (unsigned long long) t * 0x9e3779b97f4a7c15ull;
++        for (size_t b = (size_t) t; b < n; b += 256) { h ^= (unsigned char) src[b]; h *= 1099511628211ull; }
++        acc ^= h;
++    }
++    return acc;
++}
++static void ggml_cuda_ain_vk_dump(void) {
++    if (g_ain_vk_dev == nullptr) { return; }
++    unsigned long long dev[AIN_VK];
++    long bad_total = 0;
++    for (long g = 0; g < g_ain_vk_slot; ++g) {
++        const int n = g_ain_vk_nu[g];
++        if (n <= 0) { continue; }
++        if (cudaMemcpy(dev, g_ain_vk_dev + (size_t) g * AIN_VK, (size_t) n * sizeof(unsigned long long), cudaMemcpyDeviceToHost) != cudaSuccess) {
++            (void) cudaGetLastError();
++            return;
++        }
++        int bad = 0;
++        for (int k = 0; k < n; ++k) { if (dev[k] != g_ain_vk_hosth[g][k]) { ++bad; } }
++        bad_total += bad;
++        fprintf(stderr, "AIN[vk] %ld uploads=%d mismatched=%d%s\n", g, n, bad, bad ? "  <-- STALE" : "");
++    }
++    fprintf(stderr, "AIN[vk] total graphs=%ld mismatched uploads=%ld\n", g_ain_vk_slot, bad_total);
++}
++// AIN_HK=a,b,c: per-node device-side hashes.  A tiny kernel is launched right after the named node's
++// kernel (on the compute stream), so it hashes the tensor at the moment it is produced -- no buffer
++// aliasing, and during capture it becomes a graph node so every replay hashes the true intermediate.
++// The replay index comes from a device counter, so the host does no per-graph work.
++static constexpr int AIN_HK = 20;
++static char  g_ain_hk_name[AIN_HK][64];
++static int   g_ain_hk_n = 0;
++static bool  g_ain_hk_on = false;
++static bool  g_ain_hk_init_done = false;
++static unsigned long long * g_ain_hk_dev = nullptr;   // [AIN_TL_MAX][AIN_HK]
++static int * g_ain_hk_cnt  = nullptr;                 // device: graph counter
++static int * g_ain_hk_slot = nullptr;                 // device: slot of the graph in flight
++static bool  g_ain_hk_atexit = false;
++static __global__ void ggml_cuda_ain_hk_kernel(const char * src, unsigned long long * out, int k,
++                                               int valid, int first, int * cnt, int * slot) {
++    if (first && threadIdx.x == 0) { *slot = atomicAdd(cnt, 1); }
++    __syncthreads();
++    const size_t g = (size_t) (*slot);
++    if (valid) {
++        // store the raw first 64 bytes (as 8 x u64) so the host can also print magnitudes
++        const uint64_t * s64 = (const uint64_t *) src;
++        for (int b = 0; b < 8; ++b) { out[(g * AIN_HK + k) * 8 + b] = s64[b]; }
++    } else {
++        for (int b = 0; b < 8; ++b) { out[(g * AIN_HK + k) * 8 + b] = 0; }
++    }
++}
++static void ggml_cuda_ain_hk_dump(void) {
++    if (g_ain_hk_dev == nullptr) { return; }
++    int n = 0;
++    if (cudaMemcpy(&n, g_ain_hk_cnt, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) { (void) cudaGetLastError(); return; }
++    if (n > AIN_TL_MAX) { n = AIN_TL_MAX; }
++    unsigned long long * host = (unsigned long long *) malloc((size_t) n * AIN_HK * 8 * sizeof(unsigned long long));
++    if (host == nullptr) { return; }
++    if (cudaMemcpy(host, g_ain_hk_dev, (size_t) n * AIN_HK * 8 * sizeof(unsigned long long), cudaMemcpyDeviceToHost) != cudaSuccess) {
++        (void) cudaGetLastError(); free(host); return;
++    }
++    const bool as_float = getenv("AIN_HK_FLOAT") != nullptr;
++    for (int g = 0; g < n; ++g) {
++        fprintf(stderr, "AIN[hk] %d", g);
++        for (int k = 0; k < g_ain_hk_n; ++k) {
++            const unsigned long long * w = host + ((size_t) g * AIN_HK + k) * 8;
++            unsigned long long h = 1469598103934665603ull;
++            for (int b = 0; b < 8; ++b) { h ^= w[b]; h *= 1099511628211ull; }
++            fprintf(stderr, " %s=%016llx", g_ain_hk_name[k], h);
++            if (as_float) {
++                fprintf(stderr, "[");
++                for (int f = 0; f < 8; ++f) { float v; memcpy(&v, &w[f / 2], 4); if (f & 1) { memcpy((char *) &v + 0, (const char *) &w[f / 2] + 4, 4); } fprintf(stderr, "%s%g", f ? "," : "", (double) v); }
++                fprintf(stderr, "]");
++            }
++        }
++        fprintf(stderr, "\n");
++    }
++    free(host);
++}
++static __global__ void ggml_cuda_ain_hk_tick(int * cnt, int * slot) {
++    if (threadIdx.x == 0) { *slot = atomicAdd(cnt, 1); }
++}
++static void ggml_cuda_ain_hk_launch(const struct ggml_tensor * node, cudaStream_t stream);
++
++static void ggml_cuda_ain_hk_init(void) {
++    g_ain_hk_init_done = true;
++    const char * e = getenv("AIN_HK");
++    if (e == nullptr) { return; }
++    char buf[1024];
++    snprintf(buf, sizeof(buf), "%s", e);
++    char * p = buf;
++    while (*p != 0 && g_ain_hk_n < AIN_HK) {
++        char * c = strchr(p, ',');
++        if (c != nullptr) { *c = 0; }
++        if (*p != 0) { snprintf(g_ain_hk_name[g_ain_hk_n], 64, "%s", p); ++g_ain_hk_n; }
++        if (c == nullptr) { break; }
++        p = c + 1;
++    }
++    if (g_ain_hk_n == 0) { return; }
++    if (cudaMalloc((void **) &g_ain_hk_dev, (size_t) AIN_TL_MAX * AIN_HK * 8 * sizeof(unsigned long long)) != cudaSuccess ||
++        cudaMalloc((void **) &g_ain_hk_cnt, sizeof(int)) != cudaSuccess ||
++        cudaMalloc((void **) &g_ain_hk_slot, sizeof(int)) != cudaSuccess) {
++        (void) cudaGetLastError();
++        g_ain_hk_dev = nullptr;
++        return;
++    }
++    if (cudaMemset(g_ain_hk_dev, 0, (size_t) AIN_TL_MAX * AIN_HK * 8 * sizeof(unsigned long long)) != cudaSuccess ||
++        cudaMemset(g_ain_hk_cnt, 0, sizeof(int)) != cudaSuccess ||
++        cudaMemset(g_ain_hk_slot, 0, sizeof(int)) != cudaSuccess) {
++        (void) cudaGetLastError();
++        g_ain_hk_dev = nullptr;
++        return;
++    }
++    if (!g_ain_hk_atexit) { g_ain_hk_atexit = true; atexit(ggml_cuda_ain_hk_dump); }
++    g_ain_hk_on = true;
++}
++static void ggml_cuda_ain_hk_launch(const struct ggml_tensor * node, cudaStream_t stream) {
++    if (!g_ain_hk_init_done) { ggml_cuda_ain_hk_init(); }
++    if (!g_ain_hk_on) { return; }
++    for (int k = 0; k < g_ain_hk_n; ++k) {
++        const ggml_tensor * tgt = nullptr;
++        if (strcmp(node->name, g_ain_hk_name[k]) == 0) {
++            tgt = node;
++        } else {
++            // also allow hashing a *source* (e.g. an uploaded graph-input copy) at its consumer
++            for (int j = 0; j < GGML_MAX_SRC; ++j) {
++                if (node->src[j] != nullptr && strcmp(node->src[j]->name, g_ain_hk_name[k]) == 0) {
++                    tgt = node->src[j];
++                    break;
++                }
++            }
++        }
++        if (tgt == nullptr) { continue; }
++        const bool valid = tgt->data != nullptr && ggml_nbytes(tgt) >= 64;
++        ggml_cuda_ain_hk_kernel<<<1, 32, 0, stream>>>(valid ? (const char *) tgt->data : nullptr,
++                                                      g_ain_hk_dev, k, valid ? 1 : 0, 0,
++                                                      g_ain_hk_cnt, g_ain_hk_slot);
++        (void) cudaGetLastError();
++    }
++}
++
+ static std::atomic<int>  g_ain_threads_set{0}, g_ain_threads_wait{0};
+ static std::atomic<unsigned long> g_ain_thread_ids_set[8], g_ain_thread_ids_wait[8];
+ static void ggml_cuda_ain_seen(std::atomic<int> & n, std::atomic<unsigned long> * ids) {
+@@ -1549,7 +1781,14 @@ static void ggml_cuda_ain_dump(const char * where) {
+ 
+ // the old path for one upload already in the ring (caller holds d.mtx)
+ static void ggml_cuda_async_input_copy_locked(ggml_cuda_async_input_dev & d, void * dst, const char * slot, size_t size) {
+-    const cudaStream_t us = ggml_cuda_ain_upload_stream(d.dev);
++    static const bool main_copy = getenv("AIN_MAIN_COPY") != nullptr;
++    const cudaStream_t us = main_copy && d.main_stream != nullptr ? d.main_stream : ggml_cuda_ain_upload_stream(d.dev);
++    if (main_copy && d.main_stream != nullptr) {
++        // the copy is on the compute stream: stream order alone puts it after the previous graph's
++        // kernels and before this graph's, so no event pair is needed
++        CUDA_CHECK(cudaMemcpyAsync(dst, slot, size, cudaMemcpyHostToDevice, us));
++        return;
++    }
+     if (d.done_pending) {
+         CUDA_CHECK(cudaEventRecord(d.done_ev, d.done_stream));
+         d.done_pending = false;
+@@ -1599,8 +1838,7 @@ static void ggml_cuda_async_input_drain(int device) {
+ }
+ 
+ static bool ggml_cuda_async_input_set(int device, void * dst, const void * src, size_t size) {
+-    ggml_cuda_async_input_dev & d = g_async_input[device];
+-    std::lock_guard<std::mutex> lock(d.mtx);
++    ggml_cuda_async_input_dev & d = g_async_input[device];    std::lock_guard<std::mutex> lock(d.mtx);
+     if (d.ring == nullptr) {
+         if (cudaMallocHost((void **) &d.ring, GGML_CUDA_ASYNC_INPUT_RING) != cudaSuccess ||
+             cudaEventCreateWithFlags(&d.ev, cudaEventDisableTiming) != cudaSuccess ||
+@@ -1624,9 +1862,25 @@ static bool ggml_cuda_async_input_set(int device, void * dst, const void * src,
+     }
+     d.dev = device;   // scratch AIN debug
+     ++g_ain_set; ggml_cuda_ain_seen(g_ain_threads_set, g_ain_thread_ids_set);
++    ++g_tl_cur_sets; g_tl_cur_bytes += (long) size;
++    if (getenv("AIN_TL") != nullptr && g_tl_n < AIN_TL_MAX) {
++        char * u = g_tl_ulist[g_tl_n];
++        const size_t ul = strlen(u);
++        snprintf(u + ul, 512 - ul, "%s%s:%zu", ul ? "," : "", g_tl_cur_name != nullptr ? g_tl_cur_name : "?", size);
++    }
++    {
++        // AIN timeline: is the previous graph still running at upload time?
++        static const bool tl_inflight = getenv("AIN_TL_INFLIGHT") != nullptr;
++        ggml_cuda_async_input_dev & dtl = g_async_input[device];
++        if (tl_inflight && dtl.done_ev != nullptr && dtl.has_done) {
++            if (hipEventQuery(dtl.done_ev) == hipErrorNotReady) { ++g_tl_cur_inflight; }
++            (void) cudaGetLastError();
++        }
++    }
+     const size_t need = (size + 255) & ~(size_t) 255;
+     if (d.head + need > d.cap) {
+         ggml_cuda_async_input_drain_locked(d);
++        ++g_tl_cur_wraps;
+         CUDA_CHECK(cudaStreamSynchronize(ggml_cuda_ain_upload_stream(device)));   // every copy out of the ring has completed
+         if (d.has_flush) {
+             CUDA_CHECK(cudaEventSynchronize(d.flush_ev));          // and every batch kernel that read it
+@@ -1707,12 +1961,25 @@ static void ggml_cuda_async_input_flush_done(int device, cudaStream_t stream) {
+     }
+ }
+ 
++// AIN_CAP_WAIT: enqueue the upload dependency again, *inside* stream capture, so the captured graph
++// carries a wait-on-event node that every replay must honour (diagnostic for "is the host-enqueued wait
++// enough for a graph replay?").
++static void ggml_cuda_async_input_wait_capture(int device, cudaStream_t stream) {
++    if (!g_async_input_on) { return; }
++    ggml_cuda_async_input_dev & d = g_async_input[device];
++    std::lock_guard<std::mutex> lock(d.mtx);
++    if (d.ev != nullptr) {
++        CUDA_CHECK(cudaStreamWaitEvent(stream, d.ev, 0));
++    }
++}
++
+ static void ggml_cuda_async_input_wait(int device, cudaStream_t stream) {
+     if (!g_async_input_on) {
+         return;
+     }
+     ggml_cuda_async_input_dev & d = g_async_input[device];
+     std::lock_guard<std::mutex> lock(d.mtx);
++    if (d.main_stream == nullptr) { d.main_stream = stream; }
+     ++g_ain_wait; ggml_cuda_ain_seen(g_ain_threads_wait, g_ain_thread_ids_wait);
+     if (d.pending) {
+         CUDA_CHECK(cudaStreamWaitEvent(stream, d.ev, 0));
+@@ -1832,7 +2099,20 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
+                 (void) cudaGetLastError();
+             }
+         }
+-        if (ggml_cuda_async_input_set(ctx->device, (char *) tensor->data + offset, data, size)) {
++        g_tl_cur_name = tensor->name;
++        const bool ain_ok = ggml_cuda_async_input_set(ctx->device, (char *) tensor->data + offset, data, size);
++        if (ain_ok && getenv("AIN_VK") != nullptr) {
++            if (g_ain_vk_pend.size() == 0) { g_ain_vk_pend.emplace_back(); g_ain_vk_pend.back().n = 0; }
++            ggml_cuda_ain_vk_arg & a = g_ain_vk_pend.back();
++            if (a.n < AIN_VK && g_ain_vk_slot < AIN_TL_MAX) {
++                a.dst[a.n]  = (char *) tensor->data + offset;
++                a.size[a.n] = (unsigned int) size;
++                g_ain_vk_hosth[g_ain_vk_slot][a.n] = ggml_cuda_ain_vk_host_hash((const char *) data, size);
++                ++a.n;
++            }
++        }
++        g_tl_cur_name = nullptr;
++        if (ain_ok) {
+             return;
+         }
+     }
+@@ -4965,6 +5245,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                 getenv("GGML_CUDA_GDN_GATHER_INDEX") ? atoi(getenv("GGML_CUDA_GDN_GATHER_INDEX")) : 1;
+             ggml_cuda_gdn_gather_index gdn_gather_index;
+             cuda_ctx->gdn_deferred_gathers.clear();
++            if (!g_ain_hk_init_done) { ggml_cuda_ain_hk_init(); }
++            if (g_ain_hk_on) { ggml_cuda_ain_hk_tick<<<1, 32, 0, cuda_ctx->stream()>>>(g_ain_hk_cnt, g_ain_hk_slot); (void) cudaGetLastError(); }
+             for (int i = 0; i < cgraph->n_nodes; i++) {
+                 ggml_tensor * node = cgraph->nodes[i];
+                 if (is_concurrent_event_active) {
+@@ -5086,6 +5368,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                     CUDA_CHECK(cudaEventRecord(op_ev1[i], cuda_ctx->stream()));
+                     op_nodes.emplace_back(node, i, false);
+                 }
++                ggml_cuda_ain_hk_launch(node, cuda_ctx->stream());
+ 
+                 if (!is_concurrent_event_active) {
+                     try_launch_concurrent_event(node);
+@@ -5221,6 +5504,24 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+ 
+     ggml_cuda_set_device(cuda_ctx->device);
+     ggml_cuda_async_input_wait(cuda_ctx->device, cuda_ctx->stream());
++    if (getenv("AIN_VK") != nullptr) {
++        if (g_ain_vk_dev == nullptr) {
++            if (cudaMalloc((void **) &g_ain_vk_dev, (size_t) AIN_TL_MAX * AIN_VK * sizeof(unsigned long long)) == cudaSuccess) {
++                (void) cudaMemset(g_ain_vk_dev, 0, (size_t) AIN_TL_MAX * AIN_VK * sizeof(unsigned long long));
++                if (!g_ain_vk_atexit) { g_ain_vk_atexit = true; atexit(ggml_cuda_ain_vk_dump); }
++            } else { (void) cudaGetLastError(); g_ain_vk_dev = nullptr; }
++        }
++        if (g_ain_vk_dev != nullptr) {
++            if (!g_ain_vk_pend.empty() && g_ain_vk_pend.back().n > 0 && g_ain_vk_slot < AIN_TL_MAX) {
++                ggml_cuda_ain_vk_kernel<<<g_ain_vk_pend.back().n, 256, 0, cuda_ctx->stream()>>>(
++                        g_ain_vk_pend.back(), g_ain_vk_dev + (size_t) g_ain_vk_slot * AIN_VK);
++                (void) cudaGetLastError();
++                g_ain_vk_nu[g_ain_vk_slot] = g_ain_vk_pend.back().n;
++            }
++            ++g_ain_vk_slot;
++        }
++        g_ain_vk_pend.clear();
++    }
+     {   // scratch AIN debug barriers (wip/async-input-graph-ordering investigation): separate "the copy has not
+         // landed before the graph replay read it" from "the host runs ahead and a later upload overwrites the buffer"
+         static const bool s_copy    = ggml_cuda_ain_dbg("AIN_SYNC_COPY");
+@@ -5383,6 +5684,10 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+ 
+         cuda_ctx->cuda_graph(graph_key)->mem_gen = ggml_cuda_graph_mem_gen(cuda_ctx->device);
+         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
++        if (getenv("AIN_CAP_WAIT") != nullptr) {
++            ggml_cuda_async_input_wait_capture(cuda_ctx->device, cuda_ctx->stream());
++            fprintf(stderr, "AIN[capwait] captured wait-on-upload-event for graph\n");
++        }
+     }
+ 
+     if (t_gc) { g_gc_pre_us += ggml_time_us() - t_gc; }
+@@ -5418,6 +5723,82 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+             ++g_ain_gsum_n;
+         }
+     }
++    if (getenv("AIN_HASH") != nullptr && g_ain_hsh_n < AIN_HSH_MAX) {
++        static const bool hsh_init = [] {
++            const char * e = getenv("AIN_HASH");
++            char buf[512];
++            snprintf(buf, sizeof(buf), "%s", e != nullptr ? e : "");
++            char * p = buf;
++            while (*p != 0 && g_ain_hsh_nname < AIN_HSH_K) {
++                char * c = strchr(p, ',');
++                if (c != nullptr) { *c = 0; }
++                if (*p != 0) { snprintf(g_ain_hsh_name[g_ain_hsh_nname], 64, "%s", p); ++g_ain_hsh_nname; }
++                if (c == nullptr) { break; }
++                p = c + 1;
++            }
++            if (cudaMallocHost((void **) &g_ain_hsh_pin, (size_t) AIN_HSH_MAX * AIN_HSH_K * 64) != cudaSuccess) {
++                (void) cudaGetLastError();
++                g_ain_hsh_pin = nullptr;
++                return false;
++            }
++            memset(g_ain_hsh_pin, 0, (size_t) AIN_HSH_MAX * AIN_HSH_K * 64);
++            if (!g_ain_hsh_atexit) { g_ain_hsh_atexit = true; atexit(ggml_cuda_ain_hsh_dump); }
++            return true;
++        }();
++        if (hsh_init) {
++            const long g = g_ain_hsh_n;
++            unsigned char mask = 0;
++            for (int k = 0; k < g_ain_hsh_nname; ++k) {
++                const ggml_tensor * found = nullptr;
++                for (int i = cgraph->n_nodes - 1; i >= 0 && found == nullptr; --i) {
++                    if (strcmp(cgraph->nodes[i]->name, g_ain_hsh_name[k]) == 0) {
++                        found = cgraph->nodes[i];
++                        break;
++                    }
++                    for (int si = 0; si < GGML_MAX_SRC; ++si) {
++                        const ggml_tensor * s2 = cgraph->nodes[i]->src[si];
++                        if (s2 != nullptr && strcmp(s2->name, g_ain_hsh_name[k]) == 0) { found = s2; break; }
++                    }
++                }
++                if (found != nullptr && found->data != nullptr && ggml_nbytes(found) >= 8) {
++                    char * slot = g_ain_hsh_pin + ((size_t) g * AIN_HSH_K + k) * 64;
++                    memset(slot, 0, 64);
++                    const size_t nb = std::min<size_t>(64, ggml_nbytes(found));
++                    CUDA_CHECK(cudaMemcpyAsync(slot, found->data, nb, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
++                    mask |= (unsigned char) (1u << k);
++                }
++            }
++            g_ain_hsh_mask[g]   = mask;
++            g_ain_hsh_nnodes[g] = cgraph->n_nodes;
++            ++g_ain_hsh_n;
++        }
++    }
++    if (getenv("AIN_TL") != nullptr && g_tl_n < AIN_TL_MAX) {
++        static const bool tl_atexit = [] { if (!g_tl_atexit) { g_tl_atexit = true; atexit(ggml_cuda_ain_tl_dump); } return true; }();
++        (void) tl_atexit;
++        const long g = g_tl_n;
++#ifdef USE_CUDA_GRAPH
++        g_tl_tokens[g]     = ggml_cuda_graph_n_tokens(cgraph);
++        g_tl_nodes0[g]     = (void *) cgraph->nodes[0];
++        g_tl_instance[g]   = (void *) graph->instance;
++        g_tl_used[g]       = (int) use_cuda_graph;
++        g_tl_upd[g]        = (int) cuda_graph_update_required;
++#else
++        g_tl_tokens[g]     = -1;
++        g_tl_nodes0[g]     = (void *) cgraph->nodes[0];
++        g_tl_instance[g]   = nullptr;
++        g_tl_used[g]       = 0;
++        g_tl_upd[g]        = 0;
++#endif
++        g_tl_direct[g]     = 0;
++        g_tl_sets[g]       = (int) g_tl_cur_sets;
++        g_tl_bytes[g]      = g_tl_cur_bytes;
++        g_tl_wraps[g]      = g_tl_cur_wraps;
++        g_tl_inflight[g]   = g_tl_cur_inflight;
++        g_tl_cur_sets = 0; g_tl_cur_bytes = 0; g_tl_cur_wraps = 0; g_tl_cur_inflight = 0;
++        if (g_tl_n + 1 < AIN_TL_MAX) { g_tl_ulist[g_tl_n + 1][0] = 0; }
++        ++g_tl_n;
++    }
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
+index d788cbb71..34f1499ed 100644
+--- a/ggml/src/ggml-cuda/mmb.cu
++++ b/ggml/src/ggml-cuda/mmb.cu
+@@ -1988,7 +1988,9 @@ uint16_t * ggml_cuda_mmb_reserve_auto(ggml_backend_cuda_context & ctx, const ggm
+ }
+ 
+ void ggml_cuda_mmb_begin_graph() {
++    static const bool ain_no_free = getenv("AIN_NO_FREE") != nullptr;   // scratch AIN diagnostic
+     mmb_ctx_state & s = mmb_state();
++    if (ain_no_free) { for (auto & e : s.slots) { e.root = nullptr; e.data = nullptr; e.n = 0; } return; }
+     for (auto & e : s.cache) delete e.buf;
+     s.cache.clear();
+     for (auto & e : s.slots) { e.root = nullptr; e.data = nullptr; e.n = 0; }
+@@ -2002,6 +2004,10 @@ void ggml_cuda_mmb_yield_caches(const ggml_backend_cuda_context * ctx) {
+     if (ctx == nullptr) {
+         return;
+     }
++    static const bool ain_no_free = getenv("AIN_NO_FREE") != nullptr;   // scratch AIN diagnostic
++    if (ain_no_free) {
++        return;
++    }
+     const auto it = g_mmb_state.find(ctx);
+     if (it == g_mmb_state.end()) {
+         return;

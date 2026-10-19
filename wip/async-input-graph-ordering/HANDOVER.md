@@ -16,6 +16,15 @@ folded into `patches/` without the maintainer's explicit go-ahead.
 
 Do not start with a re-derivation.  The facts below cost a full session.
 
+> **Session 2 (same day) is recorded in [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md).**  It kills
+> H-A below (the cross-backend hand-over is at the *front* of the graph — split 0 is the CPU producing the
+> graph's inputs — and forcing every upload onto the compute stream, so stream order alone orders them,
+> still diverges), closes the "first 1024 snapshots" gap in the upload verification (769 graphs x 9-10
+> uploads, 0 mismatches), and relocates the difference to the **last-layer output path** (deep layers,
+> `norm-31`, the gate and `attn_pregate-31` are identical; `attn_gated-31`/`attn_output-31`/`result_output`
+> differ by 5-20 % relative).  The current candidates are H-D/H-E in that file, not H-A/H-B/H-C here.
+> `GGML_SCHED_DEBUG=1` works but needs `-lv 5`, not `-lv 4`.
+
 ## Where things stand
 
 - Delivery release is **`v12-097cf33d9-r89`** (published, tagged, fork refreshed, images built by the
@@ -73,6 +82,9 @@ run-to-run spread is ~1.5 points, so only floor-vs-band is meaningful.
 
 ## Current best hypothesis (start here)
 
+> **Superseded by session 2** — see [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md) "Revised
+> hypothesis".  The block below is kept as the record of what session 1 believed.
+
 The graph is `nodes = 2025, splits = 2, input objects = 4, input tensors = 12, graphs reused = 61` on a
 **single GPU**: the scheduler splits it across the CUDA backend and a second (CPU-side) backend, and the
 hand-off is the one place the host consumes device output **without** the async ring's event discipline.
@@ -89,6 +101,10 @@ hand-off is the one place the host consumes device output **without** the async 
   *second instance of the same class*, not the cause here — keep it for the MTP configs.
 
 ## Next experiments (in order)
+
+> **Superseded by session 2** — steps 1-3 below were run and are negative except that step 1 located the
+> split structure.  The live ordered list is in [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md)
+> "Next experiments".
 
 1. **Identify split 2.**  Print `sched->splits[i].backend->get_name()` (and the split's node range) once,
    from `ggml/src/ggml-backend.cpp` or via `sched_reserve`'s existing log, in the instrumented build.
@@ -110,6 +126,12 @@ survives a *fast* host (test: the fix + `AIN_SLEEP_LAUNCH_US=300` must give the 
 must be deterministic with the sleep switches *off*).
 
 ## Tooling (already built, reuse it)
+
+`tools/DEBUGBUILD2.patch` (session 2, applies on top of `DEBUGBUILD.patch`) adds the split/copy-path
+prints, the zero-perturbation per-graph timeline (`AIN_TL`), per-node device hashes (`AIN_HK`), the
+whole-run upload verifier (`AIN_VK`), `AIN_MAIN_COPY`, `AIN_CAP_WAIT`, `AIN_NO_FREE` and
+`AIN_Q81_NOCACHE`; the table is in [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md) "Tooling".  On
+`~/llama.cpp`, branch `ain-debug` is `dcf22dfce`.
 
 - `tools/DEBUGBUILD.patch` — the full `AIN_*` diagnostic patch against r89 (`git apply` on a scratch
   branch).  Switches: `AIN_TRACE` (counters, per-tensor histogram, sync-path names), `AIN_VERIFY`,
