@@ -6,6 +6,15 @@
 `76a17b4b059d808fa24631ea249fc1308238cad2`, **12 blocks** (no new block; **block 09** amended).
 `validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).
 
+**Published.**  Tag `v12-097cf33d9-r87` pushed (annotated, on the release commit); CI **Validate delivery
+set** green on `main` and on the tag, **Release patch set** green (assets `rdna-boosts-all.patch`,
+`patches.tar.gz`, `release.json`, `SHA256SUMS`).  The personal fork's `rdna-boosts` branch was force-pushed
+(`--force-with-lease`, personal fork only) to `441b38fbc` / tree `76a17b4b`, matching `release.json`
+(verified by `git ls-remote`); the local canonical `~/llama.cpp` was refreshed to it and rebuilt (dense
+text unchanged).  The ROCm container images are built and pushed off-host by the worker watcher
+(`scripts/container-watch.sh` on `radiance`): it was still finishing the r86 build when r87 was tagged and
+picks r87 up on its next poll after that.
+
 **The regression (r85, field r86).**  On the Flash-Next IQ4_NL field config (2x R9700,
 `-sm tensor -ncmoe 46 -b/-ub 6144`, MTP adaptive n6, `--cache-idle-slots`, `--no-kv-unified`) the second
 and later chat requests decoded at **~half speed**: a 10-prompt series measured **63.3 -> 31.8 -> 36.8 ->
