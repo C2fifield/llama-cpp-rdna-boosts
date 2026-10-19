@@ -6,10 +6,13 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r88`, 2026-10-19):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `f2e884648`, net tree
-**`04d37db108a01e04efa94bbdc77a2eb37eb1713d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r88 folds the RDNA2 (gfx1030) FA gate fixes of PR #181 into **block 05** (bf16
+**Current state (release `v12-097cf33d9-r89`, 2026-10-19):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `399610a83`, net tree
+**`ca9598a22946e52b74a8d6869a1ff917b181455b`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r89 folds PR #182's batched async-input uploads into **block 10** (default-on
+*inside* the opt-in `GGML_CUDA_ASYNC_INPUT` path), and seeds the follow-up that would let async go
+default-on; see `WORKLOG.md` 261019.004 and item #73.  Before it, r88 folds the RDNA2 (gfx1030) FA gate
+fixes of PR #181 into **block 05** (bf16
 scratch sizing, the decode-band `q_h2` launch argument, a gated last-tile guard tail); see `WORKLOG.md`
 261019.003.  Items 71/72 are its follow-ups.  Before it, r87 forced the post-prefill drop on a wide ->
 narrow transition (block 09), r86 folded the two promotion candidates, r85 learned the slab narrow band
@@ -63,6 +66,23 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 #42, #44/#39/#38, and now #35) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
 
 ## Active (kept compact: only what this repo will work on next)
+
+### 73. `GGML_CUDA_ASYNC_INPUT` is nondeterministic when the consumer is a captured HIP graph — CORRECTNESS (open; blocks a default-on worth +4-6 %)
+
+**Opened 2026-10-19 while folding PR #182 (r89).**  The async graph-input ring (block 10) is run-to-run
+nondeterministic whenever the consuming graph is captured/replayed.  r69 made it opt-in for this, but
+r69's `n_seq > 1` reading was incidental: the self-KLD reproducer diverges at `-ub 8` **and at `-ub 1`**
+with `n_seq = 1` (`same top p` 96 %), while `-ub 512` (no capture: multi-token prefill graphs are
+skipped) and `GGML_CUDA_DISABLE_GRAPHS=1` are bit-identical, and a `cudaStreamSynchronize` at the
+copy->graph boundary also fixes it — so the copies are byte-correct and the missing piece is the
+transfer->replay completion dependency.  PR #182's batched uploads (now default-on *inside* the opt-in
+path) widen the window (85-90 % same-top-p), which is a useful amplifier for bisecting.  Fixing it makes
+`ASYNC_INPUT` default-on: **+5.8 % 35B-A3B 2-GPU tensor, +3.6 % 27B MTP 2-GPU**, flat on one card.
+Reproducer, the full arm matrix, the forced-sync control and the hypothesis list (including the
+maintainer's dual-scheduler/shared-state guess, plus a per-thread-`cudaStreamPerThread` ring-wrap hazard
+found during review) are in `wip/async-input-graph-ordering/`.  Note that 35B-A3B (1 GPU and 2 GPU
+tensor) already produces 2-3 different greedy texts run-to-run **with async off**; that separate
+default-path nondeterminism is not this item and should be filed on its own.
 
 ### 71. Share the tile K/V type selection between the chooser and the allocator — CORRECTNESS (open, small)
 

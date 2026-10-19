@@ -265,6 +265,12 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   on the below-gate path (35B-A3B, gemma4, Flash-Next GSQ).  A side stream is only safe with an explicit
   wait on the main stream recorded *before* this upload; the gather has no such need (it must wait for
   the reused-buffer read anyway).
+- **The async graph-input ring (`GGML_CUDA_ASYNC_INPUT`) is opt-in and is not deterministic when the
+  consumer is a captured HIP graph** (r69; re-characterised at r89).  `-ub 8`/`-ub 1` self-KLD
+  comparisons diverge with `n_seq = 1`; `-ub 512`, `GGML_CUDA_DISABLE_GRAPHS=1` and a stream sync at the
+  copy->graph boundary are bit-identical.  Its batched uploads (`GGML_CUDA_ASYNC_INPUT_BATCH`, default on
+  inside the opt-in path, r89/PR #182) are worth +4.6 % on 2-GPU MoE decode but *widen* that window.  Do
+  not flip `GGML_CUDA_ASYNC_INPUT` default-on until `wip/async-input-graph-ordering/` (TODO #73) is fixed.
 - **The op-offload H2D staging ring (V2.0 block 09; old block 06, r12) has three invariants:** (1) prefill is never
   CUDA-graph captured, so a redirected split input that reaches a copy path aborts (tripwire asserts
   this); (2) the width gate is floored at **64 tokens**; (3) the arena lives **outside** the

@@ -12,7 +12,15 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r88`**; it folds the RDNA2 (gfx1030)
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r89`**; it folds **PR #182**
+(`@briansp2020`) into **block 10**: inside the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs
+are copied by one kernel at the next graph start instead of one `cudaMemcpyAsync` + event record per input
+(`GGML_CUDA_ASYNC_INPUT_BATCH`, default on, `=0` restores per-copy), and the "previous graph done" event
+is recorded by the next upload instead of after every `graph_compute`.  Worth **+4.6 %** decode at 35B-A3B
+2-GPU tensor-split and +1.4 % on 27B MTP (i.e. +5.8 % / +3.6 % over the async-off default); the default
+product is unchanged because `GGML_CUDA_ASYNC_INPUT` stays opt-in (its capture-time nondeterminism is
+unchanged -- `wip/async-input-graph-ordering/`).
+Before it, r88 folded the RDNA2 (gfx1030)
 flash-attention gate fixes of PR #181 into **block 05** (bf16 F16-staging scratch sizing, the decode-band
 `q_h2` launch argument, and an RDNA2-gated last-tile guard tail; reported and validated by `@slavap` on a
 Radeon Pro V620 + RX 7900 XTX, and inert on gfx1100/gfx1151/gfx1201: identical text, KLD 0.000000).

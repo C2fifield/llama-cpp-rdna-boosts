@@ -11,6 +11,31 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r89` (2026-10-19) -- PR #182 batched async graph-input uploads folded into block 10 (`@briansp2020`):**
+> canonical tip `399610a83`, net tree `ca9598a22946e52b74a8d6869a1ff917b181455b`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block; **two new
+> environment variables**, both default-on inside the opt-in async path.  With `GGML_CUDA_ASYNC_INPUT=1`
+> every small graph input used to be its own `cudaMemcpyAsync` plus an event record; the uploads are now
+> queued per device and copied by one kernel on the compute stream when the next graph starts
+> (`GGML_CUDA_ASYNC_INPUT_BATCH`, `=0` restores per-copy), and the "previous graph done" event is recorded
+> by the next upload instead of after every `graph_compute` (`GGML_CUDA_ASYNC_INPUT_LAZY_DONE`, default =
+> the batch default).  Every other buffer/backend access drains the queue through the old per-copy path
+> first and orders `cudaStreamPerThread` after the last batch kernel; an overlapping upload, a full queue
+> or a ring wrap drains too.  The copy is byte-exact.  **`GGML_CUDA_ASYNC_INPUT` itself stays opt-in**:
+> the r69 nondeterminism is not fixed by this PR (it needs a *captured* graph -- `-ub 8`/`-ub 1` diverge,
+> `-ub 512` and `GGML_CUDA_DISABLE_GRAPHS=1` are bit-identical, and a stream sync at the copy->graph
+> boundary removes it), so the fold only makes the opt-in path worth having.
+>
+> **Measured** (gfx1201, 400-token greedy, per-arm spread <= 0.4 %): `ASYNC_INPUT=1` 35B-A3B 2 GPU tensor
+> **110.7 -> 115.8 t/s (+4.6 %; +5.8 % over the async-off default)**, 27B MTP n3 2 GPU tensor
+> **85.0 -> 86.2 (+1.4 %; +3.6 % over default)**, 35B-A3B 1 GPU 97.8 -> 99.6 (parity restored, -0.4 % vs
+> default), 27B 1 GPU flat; prefill flat.  Delivery default unchanged (109.5 -> 109.6/109.7 vs the stock
+> binary's 109.3/109.8, same text).  **Gates:** 4B `7386359e5dac` (off / on / `BATCH=0`), width probe
+> W=1..8 PASS, 27B and 27B-MTP greedy byte-identical across arms, prefill-logit **0.000707 / 98.755 %**
+> (unchanged), `test-backend-ops` `ADD`/`GET_ROWS`/`CPY`/`MUL_MAT` pass, 0 GPU faults.  Record:
+> `../WORKLOG.md` 261019.004; promoted from `../archive/work/async-input-batch/`; follow-up (default-on)
+> is `../wip/async-input-graph-ordering/` and `../TODO.md` #73.
+
 > **Current release `v12-097cf33d9-r88` (2026-10-19) -- RDNA2 (gfx1030) FA gate fixes folded into block 05 (PR #181, `@slavap`):**
 > canonical tip `f2e884648`, net tree `04d37db108a01e04efa94bbdc77a2eb37eb1713d`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 05** amended, no new block, no new

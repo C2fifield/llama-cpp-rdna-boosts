@@ -1,5 +1,80 @@
 # WORKLOG - dated delivery records
 
+## 261019.004 (r89) -- PR #182 (batched async graph-input uploads + lazy done event) folded into block 10
+
+**Release `v12-097cf33d9-r89`**: base `097cf33d9`, canonical tip `399610a83`, net tree
+`ca9598a22946e52b74a8d6869a1ff917b181455b`, **12 blocks** (no new block; **block 10** amended).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).  **Two new environment
+variables** (`GGML_CUDA_ASYNC_INPUT_BATCH`, `GGML_CUDA_ASYNC_INPUT_LAZY_DONE`), both default-on inside
+the opt-in async path.
+
+**Provenance.**  Folds `@briansp2020`'s PR #182 (`wip-async-input-batch`), two format-patches on the r82
+tree (sha256 `c0eba29b…` / `06b201c8…`, identical to the PR).  Block 10 owns the async graph-input ring in
+`ggml/src/ggml-cuda/ggml-cuda.cu` (r46/PR #125, default-off since r69), so both parts fold there.  The
+PR's `wip/async-input-batch/` packaging is **not** taken (same rule as #167/#172/#181); the record is
+`archive/work/async-input-batch/` with a `RESOLUTION.md`, and no `wip/` stub was created or removed.
+
+**The change.**  `0001`: with `GGML_CUDA_ASYNC_INPUT=1` every small graph input was its own
+`cudaMemcpyAsync` from the pinned ring plus an event record.  The uploads are now queued per device and
+copied by one `ggml_cuda_ain_batch_kernel` on the compute stream when the next graph starts; every other
+buffer/backend access drains the queue through the old per-copy path and orders `cudaStreamPerThread`
+after the last batch kernel (`flush_ev`), an overlapping upload / full queue / ring wrap drains too, and a
+`cudaHostGetDevicePointer` failure falls back to per-copy.  Byte-exact.  `0002`: `done_ev` is recorded by
+the next upload instead of after every `graph_compute` (a decode step runs hundreds of graphs per device);
+a context destructor flushes a still-pending event before its streams die.  **Default flip:**
+`ASYNC_INPUT_BATCH` is now on wherever the async path is on (`=0` restores per-copy) and `LAZY_DONE`
+defaults to it (`=0`/`=1` override).  **`GGML_CUDA_ASYNC_INPUT` itself stays opt-in** -- see below.
+
+**Measured (gfx1201, 3x R9700, ROCm 10.1).**  One binary, env-selected arms, interleaved rounds,
+400-token greedy, `-fa on`, q8_0 KV, `-ub/-b 2048`; per-arm spread <= 0.4 % over 5 rounds (3 for MTP/1-GPU):
+
+| config | async off (delivery) | `ASYNC_INPUT=1` before | `ASYNC_INPUT=1` after |
+|---|---|---|---|
+| 35B-A3B Q4_K_M, 2 GPU tensor | 109.5 t/s | 110.7 (+1.1 %) | **115.8 (+5.8 %)** |
+| 27B Q4_K_M MTP n3, 2 GPU tensor | 83.2 t/s | 85.0 (+2.2 %) | **86.2 (+3.6 %)** |
+| 35B-A3B, 1 GPU | 100.0 t/s | 97.8 (-2.2 %) | 99.6 (-0.4 %) |
+| 27B, 1 GPU | 31.7 t/s | 31.8 | 31.8 |
+
+The contributor's split reproduces: at 35B-A3B 2 GPU tensor, `0001` alone +1.4 %, `0002` alone +3.4 %,
+both +4.6 % over `ASYNC_INPUT=1` (they measured +0.23 / +3.87 / +4.26 %; their MTP and 1-GPU rows match
+too).  Prefill `pp4096` (35B, 2 GPU tensor) 5449 -> 5437 -> **5486** t/s: flat.  The delivery default
+(`ASYNC_INPUT` unset) is untouched: 109.6/109.7 t/s against the stock r88 binary's 109.3/109.8, and 27B
+greedy text identical (`e4b7ece03d7e`).
+
+**Gates (r89 build).**  4B Q8_0 `-n 64` seed 42 `7386359e5dac` with async off / on / `BATCH=0`
+(== the r68 known-good); `test-logits-width-probe` W=1..8 identical hashes + `width_purity=PASS` (2
+starts per arm); 27B 1-GPU (`e4b7ece03d7e`) and 27B MTP 2-GPU (`2d0766a77581`) greedy byte-identical
+across every arm; prefill-logit **0.000707 / 98.755 %** PASS (identical to the recorded base);
+`test-backend-ops` `ADD`/`GET_ROWS`/`CPY` and `MUL_MAT` (2864 cases) pass with the batch path on;
+`check-gpu-faults.sh` clean (kernel journal + logs).  `validate-set.sh` green.
+
+**Why `ASYNC_INPUT` is still opt-in -- and a new lead.**  The r69 run-to-run nondeterminism is **not**
+fixed by this PR and is not caused by it: on the r88 tree the r69 instrument diverges (95.8-96.5 %
+same-top-p) with or without the patches.  But it is now characterised.  It needs a **captured graph**:
+`-ub 512` is `100.000 %` while `-ub 8` and `-ub 1` diverge, `GGML_CUDA_DISABLE_GRAPHS=1` and
+`GGML_CUDA_DISABLE_VERIFY_GRAPHS=1` (the `-ub 8` case) are `99.984 %`, and all of it happens with
+`n_seq = 1` (so r69's "multi-sequence" reading was incidental).  A scratch build with
+`cudaStreamSynchronize` inserted between `ggml_cuda_async_input_wait()` and the graph launch is
+`99.984 %` for both the per-copy and the batched arm, so the copies are byte-correct and the missing
+piece is the transfer -> graph-replay completion dependency.  The batched/lazy patch makes the race
+**wider** (85-90 % vs 96 %) because it defers the copy later -- kept deliberately: it is the better
+amplifier for bisecting.  Reproducer, full arm matrix, controls and hypotheses (including the dual
+scheduler / shared-state hole class of r84 and a per-thread-`cudaStreamPerThread` ring-wrap hazard found
+in review): `wip/async-input-graph-ordering/`; tracker item **#73**.  Fixing it makes async default-on
+worth the +5.8 % / +3.6 % above.
+
+**Also observed (not this change).**  On 35B-A3B Q4_K_M (1 GPU and 2 GPU tensor) the **stock r88 binary**
+already produces 2-3 different 400-token greedy texts across runs with `ASYNC_INPUT=0`
+(`722063f3e28d` / `e3b891655a80` / `27d50a6d97f5`), so a text hash is not a usable coherence gate on that
+model; the 4B and 27B are deterministic and were used instead.  That default-path nondeterminism is
+unrelated to the async ring and is not tracked yet.
+
+**Review nits (not changed).**  `ggml_cuda_async_input_drain()` calls `ggml_cuda_set_device()` only when
+there is work, so the current device after the call depends on the queue state; every caller that needs
+a device sets it explicitly (and the `buffer_cpy_tensor` D2D/peer paths are device-explicit), so this is a
+latent inconsistency rather than a bug.  The per-device `done_ev`/`flush_ev` events are never destroyed
+(unchanged from r46).
+
 ## 261019.003 (r88) -- RDNA2 (gfx1030) FA gate fixes folded into block 05 (PR #181)
 
 **Release `v12-097cf33d9-r88`**: base `097cf33d9`, canonical tip `f2e884648`, net tree

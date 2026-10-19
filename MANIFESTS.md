@@ -5,9 +5,21 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r88`** (canonical tip `f2e884648`, net tree
-`04d37db108a01e04efa94bbdc77a2eb37eb1713d`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r88 folds the **RDNA2 (gfx1030) FA gate fixes** of PR #181
+**`097cf33d9`**, released as **`v12-097cf33d9-r89`** (canonical tip `399610a83`, net tree
+`ca9598a22946e52b74a8d6869a1ff917b181455b`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r89 folds **PR #182** (`@briansp2020`) into **block 10**:
+inside the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs are now copied by **one kernel**
+at the next graph start instead of one `cudaMemcpyAsync` + event record per input
+(`GGML_CUDA_ASYNC_INPUT_BATCH`, default on, `=0` restores per-copy), and the "previous graph done"
+event is recorded by the next upload instead of after every `graph_compute`
+(`GGML_CUDA_ASYNC_INPUT_LAZY_DONE`, default = the batch default).  Every other buffer/backend access
+drains the queue through the old per-copy path and orders `cudaStreamPerThread` after the last batch
+kernel.  `GGML_CUDA_ASYNC_INPUT` stays opt-in (the r69 nondeterminism is unchanged: it needs a captured
+graph).  Measured `ASYNC_INPUT=1`: 35B-A3B 2 GPU tensor 110.7 -> **115.8 t/s** (+5.8 % over the async-off
+default), 27B MTP 2 GPU tensor 85.0 -> **86.2** (+3.6 % over default), 1 GPU parity restored; prefill
+flat; delivery default unchanged.  Gates: 4B `7386359e5dac` (off/on/`BATCH=0`), width probe PASS, 27B
+and 27B-MTP greedy identical, prefill-logit 0.000707 / 98.755 %, `test-backend-ops` pass, 0 GPU faults.
+Before it, r88 folds the **RDNA2 (gfx1030) FA gate fixes** of PR #181
 (`@slavap`) into **block 05**: the bf16-to-F16 staging scratch was not reserved (the tile case chooser
 instantiates F16 wherever native BF16 tensor cores are absent), the decode/verify band was the only tile
 launch site that omitted the `q_h2` argument (a wide RDNA2 kernel then read Q from an unallocated buffer,

@@ -2,8 +2,14 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r88`** (canonical tip `f2e884648`, net tree
-`04d37db108a01e04efa94bbdc77a2eb37eb1713d`).  r88 folds @slavap's RDNA2 (gfx1030) FA gate fixes
+**`v12-097cf33d9-r89`** (canonical tip `399610a83`, net tree
+`ca9598a22946e52b74a8d6869a1ff917b181455b`).  r89 folds PR #182 (`@briansp2020`) into **block 10**: inside
+the opt-in `GGML_CUDA_ASYNC_INPUT` path a graph's staged inputs are copied by one kernel at the next
+graph start instead of one `cudaMemcpyAsync` + event record per input, and the "previous graph done"
+event is recorded by the next upload instead of after every `graph_compute` (two new default-on
+kill-switches, `GGML_CUDA_ASYNC_INPUT_BATCH` / `..._LAZY_DONE`; `ASYNC_INPUT` itself stays opt-in because
+its capture-time nondeterminism is unchanged).  Before it, r88 folds @slavap's RDNA2 (gfx1030) FA gate
+fixes
 (PR #181) into **block 05** -- bf16 F16-staging scratch sizing, the decode-band `q_h2` launch argument,
 and an RDNA2-gated last-tile guard tail -- with no re-base and no new block.  Before it, r87 fixes the
 **r86 second-request regression**: r85's
