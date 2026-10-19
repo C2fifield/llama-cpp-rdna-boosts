@@ -1,5 +1,43 @@
 # WORKLOG - dated delivery records
 
+## 261018.008 (r85) -- gfx1100 cross-check: r85 is text-identical to r84 and the narrow-band loop does not occur on RDNA3
+
+**No delivery change** (`release.json`, `patches/` and the tag are unchanged).  Independent validation of
+`v12-097cf33d9-r85` on a second RDNA family, on a contributor-class box: `fingon`, single RX 7900 XTX
+(gfx1100), ROCm 10.1.0-gfx1100, `~/bin/build-llama-rocm-101`, in-tree build of the r85 set (tree
+`a121eb0f`, verified) and an r84 control built the same way (tree `c381b745`, `~/llama-r84ctl`, since the
+r82-era gfx1100 figures were produced with ROCm **7.14** and are not comparable).
+
+**Greedy text (fully resident, q8_0 K/V, `-n 128 --seed 42 --temp 0`, `prompts/reasoning.txt`).**
+
+| model | r84 (ROCm 10.1.0) | r85 (ROCm 10.1.0) | r82 record (ROCm 7.14) |
+|---|---|---|---|
+| `Qwen3.8-27B-UD-Q4_K_M` | 1034 chars `5380385a9fc4` | 1034 chars `5380385a9fc4` | 1064 chars `c606b3d55f24` |
+| `Qwen3.6-35B-A3B-UD-Q4_K_M` | 1020 chars `b4f211677394` | 1020 chars `b4f211677394` | 1046 chars `2c04f104b88e` |
+
+r84 == r85 exactly on both, so the slab change is bit-identical on gfx1100; the difference against the r82
+figures is the toolchain (7.14 -> 10.1.0 on this box), which is the known layout-sensitive
+hipBLASLt/rocBLAS class and not attributable to this release.
+
+**Host-expert MoE + embedded MTP** (`Qwen3.6-35B-A3B-UD-Q4_K_M`, `-ngl 99 -ncmoe 24 -fa auto -ctk/-ctv
+q8_0 -c 32768 -b/-ub 4096 --load-mode none --lazy-mode off --spec-type draft-mtp-adaptive
+--spec-draft-n-max 4`, 15.8k-token prompt, 128 tokens): the slab arms (arena 10.81 GiB, **96.9 %
+residency**), and **0 `moe_cache_rearm` / 0 `moe_cache_evict_slab_range` events on both r84 and r85** --
+the narrow-band loop does not occur on this configuration; decode **135.6 t/s** (r84) / **152.9** (r85),
+prefill **3413** / **4049 t/s**.  The fix is inert there (its condition - a decode view wider than the
+band - is not reached), which is the expected outcome for a single-device 24 GB card.
+
+**Finding (pre-existing, r84 and r85 alike).**  On a 24 GB card the **stock reserve** (headroom 4096 + aux
+4096 = 8 GiB) leaves no room for the slab on a 20-25 GiB host-expert model: the slab is refused and the
+cache is disabled with an explicit message ("the movable-boundary slab does NOT fit ... only 5632 MiB is
+available after the 8192 MiB reserve ... the experts will STREAM"), i.e. a gfx1100 user with `-ncmoe` on
+one 24 GB card gets the streaming path unless they lower `GGML_CUDA_SLAB_HEADROOM_MIB` /
+`MOE_EXPERT_CACHE_AUX_RESERVE_MIB` (1024/1024 was used on both arms here).  Worth a note in the
+`-ncmoe` guidance for 24 GB cards; not caused by r85 and not changed by it.
+
+**Not validated:** gfx1151 (unified memory - host-expert offload is not meaningful there, so the slab path
+is not exercised), ROCm 7.14 for this release (the box's 7.14 tree was superseded by 10.1.0), and 3-GPU.
+
 ## 261018.007 (r85) -- the slab narrow band is learned from the real decode graph (blocks 09, 10)
 
 **Release `v12-097cf33d9-r85`**: base `097cf33d9`, canonical tip `a3e721ac3`, net tree
