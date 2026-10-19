@@ -7,6 +7,16 @@
 `validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).  **No new environment
 variable.**
 
+**Published.**  Tag `v12-097cf33d9-r88` pushed (annotated, on the release commit); CI **Validate
+delivery set** green on `main` and on the tag, **Release patch set** green (assets
+`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).  Fork branch refreshed:
+`stew675/llama.cpp@rdna-boosts` rebuilt at the same base and force-pushed with
+`--force-with-lease` from `441b38fbc` to `f2e884648` (verified tip and tree `04d37db1`).  Container
+images are the off-host worker's job (`scripts/container-watch.sh` on `radiance`); the watcher polls
+for the new `v12-*` tag, and `radiance` was unreachable from the primary box at publication time
+(no route to host), so the image build is queued rather than confirmed.  PR #181 was closed as folded,
+with the two follow-ups (TODO #71/#72) and the guard-tail gating reported to `@slavap`.
+
 **Provenance.**  Folds `@slavap`'s PR #181 (`rdna2-fa-r81`), a three-bug fix for the
 `test-backend-ops -o FLASH_ATTN_EXT` abort on gfx1030 (Radeon Pro V620: "ROCm error: an illegal memory
 access", RC=134, with `MUL_MAT` blocked behind it).  The PR's own packaging (`patches-rdma2/`,
