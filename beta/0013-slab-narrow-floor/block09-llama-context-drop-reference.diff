@@ -1,0 +1,42 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9ec417c6d..3ac273648 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1974,6 +1974,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // short-prompt workload.  Without a slab the classic wide-pass condition is kept, because there
+     // reclaiming the wide layout is exactly what used to abort.
+     bool drop_now = false;
++    // The work region actually observed before the drop.  The reference must be at least this: the narrow
++    // layout varies with the graph (the MTP decode/verify graph is wider than the `n_rs_batch` reserve the
++    // drop re-creates), and recording only the post-reserve size made every following pass look
++    // "materially wider" -- one drop per decode step, each evicting the band from the arena.
++    size_t drop_observed = 0;
+     if (drop_enabled && sched && ubatch.n_tokens <= 8 && n_tokens_prev > 0 &&
+             !model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+         bool any_slab = false;
+@@ -1983,6 +1988,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+                 continue;   // this device has no slab to reclaim the wide layout with
+             }
+             any_slab = true;
++            drop_observed = std::max(drop_observed, cur);
+             const auto it = slab_narrow_boundary.find(kv.first);
+             const size_t was = it == slab_narrow_boundary.end() ? 0 : it->second;
+             // A material difference only: the narrow layout varies a little between a 1-token and a
+@@ -2134,11 +2140,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+             }
+         }
+         // Record the work region's size AFTER the narrow re-reserve: that is the steady state this workload
+-        // settled on, and the value the next pass is compared against.
++        // settled on, and the value the next pass is compared against.  Take the MAX with the region
++        // actually observed before the drop, because the re-reserve here is not the widest narrow graph
++        // (`n_rs_batch` vs the MTP decode/verify layout).
+         for (const auto & kv : model.moe_host_expert_bytes) {
+             const size_t cur = ggml_backend_dev_slab_work_size(kv.first);
+-            if (cur > 0) {
+-                slab_narrow_boundary[kv.first] = cur;
++            const size_t settled = std::max(cur, drop_observed);
++            if (settled > 0) {
++                slab_narrow_boundary[kv.first] = settled;
+             }
+         }
+         // OPEN 2 (TODO #42): re-arm the MoE expert-cache arena with the VRAM the wide layout just

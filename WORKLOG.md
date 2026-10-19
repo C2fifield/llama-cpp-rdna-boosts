@@ -1,5 +1,44 @@
 # WORKLOG - dated delivery records
 
+## 261018.005 (r83) -- the slab narrow-band eviction loop: found, root-caused and staged as `beta/0013` (no delivery change)
+
+**Not a release; no `patches/`, `release.json` or tag change.**  A report from the field (2x R9700,
+`Qwen3.8-Flash-Next IQ4_NL`, 131k ctx, `-sm tensor -ncmoe 46 -b/-ub 6144`, q8_0 K/V, MTP adaptive n6,
+`GGML_CUDA_ALLREDUCE=ce`, stock slab defaults) showed a long degenerate eviction sequence during the
+first decode after a ~70k-token prefill: every ~165 ms `moe_cache_rearm: re-armed 66 stood-down
+expert-cache tables` then `moe_cache_evict_slab_range: evicted 3654/3664 MiB`, decode 17-25 t/s instead
+of ~45.
+
+**Reproduced and attributed.**  Same 73.5k-token prompt + MTP decode: **r82** does the identical 18
+cycles / 36 evictions, so it is **not new in r83** (r83 is only a catalyst: prefill 1305 -> 1506 t/s in
+the same run, and decode 23.6 -> 34.2 t/s inside the churn).  It scales with the draft depth (n-max 6 ->
+18 cycles, n-max 2 -> 2, `--spec-type none` -> 0), i.e. it is the MTP decode/verify layout.
+
+**Root cause (measurement, not an overwrite).**  `ggml_cuda_slab_set_narrow_floor()` is raise-only and
+returns silently while `ring_used > 0` (the ring's VA is frozen after the first prefill), so the
+always-resident narrow band stays at the pre-carve `split_only` estimate of the `n_rs_batch` shape --
+**1792 MiB** -- while the real MTP decode graph needs **2304 MiB**.  `work_alloc` therefore classified a
+*decode* view as wide, placed it above the H2D staging ring (`narrow_floor + ring_region` = 3968 MiB)
+and grew the boundary into the arena (3.65 GiB/device evicted).  The prefill -> decode drop then
+re-reserved the 1792 MiB shape and recorded *that* as its reference (`slab_narrow_boundary`), so the next
+step was "materially wider" again (512 MiB slack) -- one drop per decode step.
+
+**Staged fix (`beta/0013-slab-narrow-floor`, `0013-slab-narrow-floor.patch`, sha256 `16cee76f…`, cut
+against the r83 tree).**  `work_alloc` learns the band from the real graph (a non-wide view is narrow
+even above the floor while no wide view is live; the ring is idle there, so it is re-carved);
+`set_narrow_floor` reports a refused raise instead of dropping it; the drop reference becomes
+`max(observed-before-drop, re-reserved)`.  Measured on the fix: **1** re-arm (the normal drop),
+decode **45.4 t/s** (`-sm tensor`) / **35.8** (`-sm layer`), prefill unchanged at 74k tokens; 18 -> 1
+cycles on the `-ub 4096` variant; gates green (dense coherence `1c5d32ac537d`, Flash-Next 16k hash
+`a60a39e11133`, prefill-logit KLD 0 / 100 %, adaptive-MTP 4 axes + phase probe exactly equal to r83).
+Cost recorded: 16k prefill **1443 -> 1411 t/s (-2.2 %)** because the correctly sized band moves the ring
+up 512 MiB (disjoint regions kept deliberately -- overlapping the band into the ring VA is the
+MTP-drafter/ring-sizing hazard class).
+
+**Folds into block 10 (creates `ggml-cuda-slab.cu`) + block 09 (owns `slab_narrow_boundary` in
+`src/llama-context.cpp`).**  Held as a candidate because an r84 block-00 fix is landing; re-cut onto that
+base before promotion.  Record: `beta/0013-slab-narrow-floor/{README,BETA-TESTING}.md`.
+
 ## 261018.004 (r83) -- the ring and the copy: why R1 is parked, and the pin-scope argument (docs only)
 
 **No code, `patches/`, `release.json` or tag change.**  Records the design decision that closed the

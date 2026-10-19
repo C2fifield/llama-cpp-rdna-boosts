@@ -1,0 +1,137 @@
+From 1129eff8f2a1bea8cc35f2f7a36ac5f7cd3c23c0 Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Sun, 18 Oct 2026 19:18:33 -0500
+Subject: [PATCH] slab: learn the narrow band from the real decode graph; never
+ push a decode view above the ring
+
+The always-resident narrow band (`narrow_floor`) is estimated before the first ring carve from a
+`split_only` reserve of the `n_rs_batch` shape (1792 MiB on the field config) and frozen once the ring
+holds blocks.  The MTP decode/verify graph is wider (2304 MiB), so `work_alloc` classified every decode
+view as a wide (prefill) view, placed it above the ring (`narrow_floor + ring_region` = 3968 MiB) and
+grew the boundary into the arena: 3.65 GiB/device evicted, and the prefill -> decode drop recorded the
+band it had just reserved (1792 MiB), so the next pass looked "materially wider" again -- one drop per
+decode step, 66 tables re-armed each time, measured 18 cycles / ~3 s at 17-25 t/s instead of 45.
+
+* `work_alloc`: a view that is not a requested wide (prefill) pass is narrow even when it is wider than
+  the floor, provided no wide view is live (the ring region is only carved while one is).  Such a view
+  grows the band, and the floor + ring are re-carved from it -- the ring is idle there, so its VA may
+  move.  With a wide view live the old above-the-ring placement is kept (the ring VA must not move).
+* `set_narrow_floor`: keep refusing a raise while the ring holds blocks, but say so instead of
+  silently dropping it.
+* `llama-context`: record the drop reference as max(shape the drop re-reserved, work region observed
+  before the drop), so a re-reserve that is narrower than the real graph cannot make every following
+  pass drop again.
+---
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu | 39 +++++++++++++++++++++++++---
+ src/llama-context.cpp                | 15 ++++++++---
+ 2 files changed, 48 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index f6eeec2c8..601e35914 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -244,8 +244,8 @@ static size_t ggml_cuda_slab_wide_offset(const ggml_cuda_slab & s) {
+ void ggml_cuda_slab_set_narrow_floor(int device, size_t bytes) {
+     std::lock_guard<std::mutex> lock(g_slab_mutex);
+     ggml_cuda_slab & s = g_slabs[device];
+-    if (!s.inited || s.ring_used > 0) {
+-        return;   // the ring is already in use: its VA must not move
++    if (!s.inited) {
++        return;
+     }
+     // The `split_only` probe reports the LAYOUT size; the real compute allocation is rounded up to whole
+     // `GGML_COMPUTE_BUFFER_CHUNK_MIB` units plus one spare unit (`ggml_vbuffer_chunk_alloc_size`).  Apply
+@@ -260,6 +260,17 @@ void ggml_cuda_slab_set_narrow_floor(int device, size_t bytes) {
+         nf = ggml_cuda_slab_up(bytes, cchunk) + cchunk;
+     }
+     if (nf <= s.narrow_floor) {
++        return;   // not a raise: nothing to apply and nothing to report
++    }
++    if (s.ring_used > 0) {
++        // The ring holds blocks, so its VA must not move.  The floor is only an estimate at this point;
++        // `work_alloc` raises it from the real graph the next time a narrow view is placed while the ring
++        // is idle, so this is not fatal -- but a raise that arrives here means the estimate was too low, and
++        // that is worth knowing (it is what kept the field's decode views above the ring).
++        GGML_LOG_WARN("%s: device %d: narrow floor raise to %.1f MiB ignored (ring in use: %.1f MiB of %.1f MiB, "
++                      "floor %.1f MiB); the band is learned from the next idle-ring narrow view instead\n",
++                      __func__, device, (double) nf / (1ull << 20), (double) s.ring_used / (1ull << 20),
++                      (double) s.ring_region / (1ull << 20), (double) s.narrow_floor / (1ull << 20));
+         return;
+     }
+     s.narrow_floor = nf;
+@@ -946,7 +957,29 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+         // capped cudaMalloc and the prefill streamed.  Only force it when a region was actually carved, so
+         // a no-ring model keeps the plain size classification.
+         const bool   ring_wide = s.ring_region > 0 && s.ring_requested && s.narrow_floor > 0;
+-        const bool   narrow   = s.narrow_floor > 0 && need <= s.narrow_floor && !ring_wide;
++        // A view that is NOT a requested wide (prefill) pass belongs to the always-resident narrow band even
++        // when it is wider than the floor established so far.  The ring region is only carved while a wide
++        // pass is live, so when it is not (`boundary <= narrow_floor` and the ring is disarmed) a wider
++        // narrow view simply grows the band; pushing it above the ring instead costs `ring_region` of arena,
++        // and the prefill -> decode drop (which records the band it just reserved) then re-drops on every
++        // pass.  Measured on the field config (MTP verify/draft graph 2304 MiB against a 1792 MiB floor):
++        // 66 tables re-armed and ~3.65 GiB/device evicted per decode step, decode 17 t/s instead of 40+.
++        // While a wide view IS live the ring VA must not move, so that case keeps the above-the-ring
++        // placement (a later decode pass drops the wide view first, then the band grows here).
++        const bool   ring_live = s.narrow_floor > 0 && (s.boundary > s.narrow_floor || s.ring_armed);
++        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!ring_live || need <= s.narrow_floor);
++        if (narrow && need > s.narrow_floor) {
++            // Learn the band from the real graph: the floor is estimated before the first carve from a
++            // reserve that is not necessarily the widest narrow layout (the `n_rs_batch` probe measures
++            // 1792 MiB where the MTP decode/verify graph needs 2304), and `ggml_cuda_slab_set_narrow_floor`
++            // cannot correct it afterwards because the ring's VA is frozen once it holds blocks.  Here no
++            // wide view is live and the ring is idle, so moving its base is safe.
++            s.narrow_floor = ggml_cuda_slab_up(need, s.chunk);
++            s.ring_region  = ggml_cuda_slab_ring_candidate(s, s.narrow_floor);
++            s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
++            s.ring_used    = 0;
++            s.ring_armed   = false;
++        }
+         const size_t wide_off = ggml_cuda_slab_wide_offset(s);
+ 
+         // The boundary may shrink only to the TALLEST live view's boundary contribution.  Each view's
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9ec417c6d..3ac273648 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1974,6 +1974,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // short-prompt workload.  Without a slab the classic wide-pass condition is kept, because there
+     // reclaiming the wide layout is exactly what used to abort.
+     bool drop_now = false;
++    // The work region actually observed before the drop.  The reference must be at least this: the narrow
++    // layout varies with the graph (the MTP decode/verify graph is wider than the `n_rs_batch` reserve the
++    // drop re-creates), and recording only the post-reserve size made every following pass look
++    // "materially wider" -- one drop per decode step, each evicting the band from the arena.
++    size_t drop_observed = 0;
+     if (drop_enabled && sched && ubatch.n_tokens <= 8 && n_tokens_prev > 0 &&
+             !model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+         bool any_slab = false;
+@@ -1983,6 +1988,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+                 continue;   // this device has no slab to reclaim the wide layout with
+             }
+             any_slab = true;
++            drop_observed = std::max(drop_observed, cur);
+             const auto it = slab_narrow_boundary.find(kv.first);
+             const size_t was = it == slab_narrow_boundary.end() ? 0 : it->second;
+             // A material difference only: the narrow layout varies a little between a 1-token and a
+@@ -2134,11 +2140,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+             }
+         }
+         // Record the work region's size AFTER the narrow re-reserve: that is the steady state this workload
+-        // settled on, and the value the next pass is compared against.
++        // settled on, and the value the next pass is compared against.  Take the MAX with the region
++        // actually observed before the drop, because the re-reserve here is not the widest narrow graph
++        // (`n_rs_batch` vs the MTP decode/verify layout).
+         for (const auto & kv : model.moe_host_expert_bytes) {
+             const size_t cur = ggml_backend_dev_slab_work_size(kv.first);
+-            if (cur > 0) {
+-                slab_narrow_boundary[kv.first] = cur;
++            const size_t settled = std::max(cur, drop_observed);
++            if (settled > 0) {
++                slab_narrow_boundary[kv.first] = settled;
+             }
+         }
+         // OPEN 2 (TODO #42): re-arm the MoE expert-cache arena with the VRAM the wide layout just
+-- 
+2.56.0
+
