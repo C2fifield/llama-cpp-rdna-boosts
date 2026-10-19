@@ -6,6 +6,15 @@
 `bb8258610763da19d03d375865838aac7e79ed30`, **12 blocks** (no new block).  `validate-set.sh` green
 (checksums OK, strict 12/12 `git am` on a fresh tarball, applied tree == recorded tree).
 
+**Published.**  Tag `v12-097cf33d9-r86` pushed (annotated, on the release commit); CI **Validate delivery
+set** green on `main` and on the tag, **Release patch set** green (assets `rdna-boosts-all.patch`,
+`patches.tar.gz`, `release.json`, `SHA256SUMS`).  The personal fork's `rdna-boosts` branch was force-pushed
+(`--force-with-lease`, personal fork only) to `ab342776c` / tree `bb825861`, matching `release.json`
+(verified by `git ls-remote`).  The build/gate tree was the canonical chain in `~/llama-fold` (a fresh
+clone at `097cf33d9` + `scripts/apply-all.sh` + the folded block commits).  The ROCm container images are
+built and pushed off-host by the worker watcher (`scripts/container-watch.sh` on `radiance`), which picked
+the tag up on its 05:10 poll and started `build-containers.sh --rocm "7.14.1 10.1" --push --prune`.
+
 **What was folded, and where.**  Both `beta/` candidates are promoted:
 
 - `beta/0013-meta-hot-dispatcher` -> **block 00** (as decided): `ggml_backend_meta_get_split_state` is the
