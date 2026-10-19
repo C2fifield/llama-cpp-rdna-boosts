@@ -73,10 +73,14 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 nondeterministic whenever the consuming graph is captured/replayed.  r69 made it opt-in for this, but
 r69's `n_seq > 1` reading was incidental: the self-KLD reproducer diverges at `-ub 8` **and at `-ub 1`**
 with `n_seq = 1` (`same top p` 96 %), while `-ub 512` (no capture: multi-token prefill graphs are
-skipped) and `GGML_CUDA_DISABLE_GRAPHS=1` are bit-identical, and a `cudaStreamSynchronize` at the
-copy->graph boundary also fixes it — so the copies are byte-correct and the missing piece is the
-transfer->replay completion dependency.  PR #182's batched uploads (now default-on *inside* the opt-in
-path) widen the window (85-90 % same-top-p), which is a useful amplifier for bisecting.  Fixing it makes
+skipped) and `GGML_CUDA_DISABLE_GRAPHS=1` are bit-identical.  **First session (2026-10-19):** the
+uploads were verified byte-correct at the graph's first read (1024/1024 device-side snapshots), there is
+no inter-graph overlap, and HIP's wait-before-replay / event-after-replay ordering is fine — so the
+original "the copy lands late" reading is withdrawn.  Every switch that fixes it (including a host delay
+*after* the launch) only slows the host, the per-graph checksums differ in a bounded region and
+re-converge, and the graph is `splits = 2` (CUDA + a CPU-side split): the current top suspect is the
+scheduler's cross-backend split hand-off around a captured graph.  PR #182's batched uploads (default-on
+*inside* the opt-in path) are an amplifier (85-90 % same-top-p), not the cause.  Fixing it makes
 `ASYNC_INPUT` default-on: **+5.8 % 35B-A3B 2-GPU tensor, +3.6 % 27B MTP 2-GPU**, flat on one card.
 Reproducer, the full arm matrix, the forced-sync control and the hypothesis list (including the
 maintainer's dual-scheduler/shared-state guess, plus a per-thread-`cudaStreamPerThread` ring-wrap hazard

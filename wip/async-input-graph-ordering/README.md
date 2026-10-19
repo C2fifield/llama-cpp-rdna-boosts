@@ -4,8 +4,13 @@
 HIP graph.**  That is the whole reason the async graph-input ring has been opt-in since r69, and fixing
 it is what makes it (and PR #182's batched uploads, r89) default-on.
 
-Status: **OPEN (seeded 2026-10-19)** — mechanism narrowed to "the copy-completion wait does not order
-the graph replay"; the exact hole is not identified yet.  Nothing here is part of the delivery.
+Status: **OPEN (seeded 2026-10-19)** — the first debugging session **withdrew** the original
+"the copy-completion wait does not order the graph replay" reading: the uploads are verified byte-correct
+at the graph's first read, HIP's event/graph ordering primitives are fine, and the runs have no
+inter-graph overlap at all.  What is left is a difference produced *inside* one graph's execution, with
+the cross-backend split as the top suspect.  Full data, the eliminated list and the exact instruments
+(scratch build + two standalone HIP reproducers): [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md) and
+[`tools/`](tools/).  Nothing here is part of the delivery.
 
 ## Payoff if fixed
 
@@ -63,6 +68,12 @@ run lazy_ub1     "GGML_CUDA_ASYNC_INPUT=1 GGML_CUDA_ASYNC_INPUT_LAZY_DONE=1"    
 
 ## Results (r88 + PR #182 as the candidate tree; r89 reproduces the same numbers)
 
+> **Read the [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md) session note first.**  The table and the
+> "Readings" below are the data that motivated this campaign; reading 5 (the conclusion that the copies
+> land late) was **withdrawn** after the first debugging session — the copies verify byte-correct at the
+> graph's first read, and a host delay *after* the launch fixes the run too, so it is not a
+> copy->replay window.  The measurements themselves still reproduce.
+
 | arm | `-ub/-b` | graphs | same top p |
 |---|---|---|---|
 | `ASYNC_INPUT=0` | 8/8 | on | **99.984** (noise floor) |
@@ -104,8 +115,28 @@ Readings:
    ```
 
    `PR182_FORCE_SYNC=1` gives `99.984 %` for both `ASYNC_INPUT=1` and `ASYNC_INPUT=1 BATCH=1` at
-   `-ub 1`.  So the copies themselves are byte-correct and the ring bookkeeping is sound: the missing
-   piece is the **completion dependency between the transfer and the replayed graph**.
+   `-ub 1`.  **Withdrawn as a conclusion:** a delay *after* the launch (no ordering change at all)
+   does the same, so this only says "a slower host hides it" — see the session note.  The copies are
+   byte-correct at the graph's first read; the remaining difference is produced inside one graph.
+
+## Session update (2026-10-19): the upload-ordering reading is withdrawn
+
+Measured with the scratch instrumentation in [`tools/DEBUGBUILD.patch`](tools/DEBUGBUILD.patch):
+a D2H of each upload destination taken on the compute stream **right after the input event wait**
+matches the uploaded bytes (1024/1024, no intervening sync), the `done_ev`/`pending` bookkeeping is
+consistent (every wait sees `pending`, `done_ev` already complete at every upload — consecutive graphs
+do not overlap), and all per-graph host writes are either the async ring (verified) or the main-stream
+splice-gather.  HIP orders `hipStreamWaitEvent` before a graph replay and covers the replay's execution
+with an event (both proven standalone, including a slow graph with the host far ahead).  A delay **after**
+the launch also makes the run deterministic, so the effect is not a copy->launch window at all; it is
+"how fast the host proceeds", globally.
+
+Two runs' per-graph output checksums differ in a *bounded* region (graphs 97..128 and 289..298 of 299)
+and re-converge, which a diverged KV write could not do — so the difference looks like a value computed
+*within* a graph.  The graph is `splits = 2` (CUDA + a second backend) and `graphs reused = 61`, so the
+top suspect is now the **scheduler's cross-backend split hand-off** (backend event record/wait around a
+captured graph), not the input ring.  Detail and the test plan:
+[`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md).
 
 ## Hypotheses to test
 
