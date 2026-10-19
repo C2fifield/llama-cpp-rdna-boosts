@@ -84,7 +84,11 @@ scheduler's cross-backend split hand-off around a captured graph.  PR #182's bat
 `ASYNC_INPUT` default-on: **+5.8 % 35B-A3B 2-GPU tensor, +3.6 % 27B MTP 2-GPU**, flat on one card.
 Reproducer, the full arm matrix, the forced-sync control and the hypothesis list (including the
 maintainer's dual-scheduler/shared-state guess, plus a per-thread-`cudaStreamPerThread` ring-wrap hazard
-found during review) are in `wip/async-input-graph-ordering/`.  Note that 35B-A3B (1 GPU and 2 GPU
+found during review) are in `wip/async-input-graph-ordering/`.  **First session (2026-10-19) is done** —
+withdrawn reading, eliminated list, current hypothesis (cross-backend split hand-off) and the next
+experiments are in that campaign's `HANDOVER.md` + `FINDINGS-2026-10-19.md`.  Also pending: the r89
+block-10 code comment still carries the withdrawn wording (comment only; fix in the next block-10
+amendment).  Note that 35B-A3B (1 GPU and 2 GPU
 tensor) already produces 2-3 different greedy texts run-to-run **with async off**; that separate
 default-path nondeterminism is not this item and should be filed on its own.
 

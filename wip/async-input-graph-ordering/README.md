@@ -4,6 +4,11 @@
 HIP graph.**  That is the whole reason the async graph-input ring has been opt-in since r69, and fixing
 it is what makes it (and PR #182's batched uploads, r89) default-on.
 
+> **Starting a new session? Read [`HANDOVER.md`](HANDOVER.md) first** — it is the compact state of
+> play (what is established, what is ruled out, the current hypothesis, the next experiments, the
+> tooling and the r90 checklist).  The detailed record is
+> [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md).
+
 Status: **OPEN (seeded 2026-10-19)** — the first debugging session **withdrew** the original
 "the copy-completion wait does not order the graph replay" reading: the uploads are verified byte-correct
 at the graph's first read, HIP's event/graph ordering primitives are fine, and the runs have no
