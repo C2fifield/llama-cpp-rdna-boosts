@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261019.005 (r89) -- record the publication (tag, CI, fork refresh, worker image build, PR #182 closed as folded)
+
+**No delivery change.**  `release.json` stays `v12-097cf33d9-r89` (release commit `06b58a5`); this entry
+records the publication only, so there is no re-tag and no gate re-run.
+
+**Published.**  Tag `v12-097cf33d9-r89` pushed (annotated, on the release commit); CI **Validate
+delivery set** green on `main` and on the tag, **Release patch set** green (assets
+`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).  Fork branch refreshed:
+`stew675/llama.cpp@rdna-boosts` rebuilt at the same base and force-pushed with `--force-with-lease`
+from `f2e884648` to `399610a83` (verified tip and tree `ca9598a2`; the local canonical `~/llama.cpp`
+was already that chain, so it was pushed as-is).  Container images: the off-host worker watcher on
+`radiance` picked the tag up on its 09:50 poll (`new release v12-097cf33d9-r89 (last built:
+v12-097cf33d9-r88); building`) and is building `--rocm "7.14.1 10.1" --push --prune`; nothing was built
+on the primary box.
+
+**PR #182 closed as folded.**  `@briansp2020`'s batched async-input uploads are in block 10 (release
+notes in 261019.004), so the PR branch is not merged: the record is
+`archive/work/async-input-batch/` (both format-patches verbatim + `RESOLUTION.md`), with no `wip/` stub.
+The closing reply gives them (1) the per-arm reproduction of their table on gfx1201,
+(2) the default flip and why `GGML_CUDA_ASYNC_INPUT` itself stays opt-in, (3) the gate list, and
+(4) the **determinism finding they would not otherwise see**: the async path diverges run-to-run
+whenever the consumer is a captured graph (`-ub 8` / `-ub 1`, `n_seq = 1`), the copies are proven
+byte-exact by the stream-sync control, and **their batching widens that window** (85-90 % vs 96 %
+same-top-p) -- which is exactly why it ships default-on and why the ordering hole is now the top
+follow-up (`wip/async-input-graph-ordering/`, TODO #73).  They were also told that 35B-A3B greedy text
+is not reproducible run-to-run on our box even on stock r88, so a hash gate cannot validate a change
+there.
+
 ## 261019.004 (r89) -- PR #182 (batched async graph-input uploads + lazy done event) folded into block 10
 
 **Release `v12-097cf33d9-r89`**: base `097cf33d9`, canonical tip `399610a83`, net tree
