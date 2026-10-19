@@ -74,9 +74,17 @@ candidate if a vanilla reproduction ever appears.
 binaries) were session-local; the fix itself is the block-00 delta above.  The related campaign record is
 `archive/work/draft-sched2/` (the r65 second scheduler this exposed).
 
-**Outstanding (maintainer's call, not done here):** publication (tag, fork `rdna-boosts` refresh, worker
-image build), the issue #183 reply, and the `ENVIRONMENT.md` nit that the `LLAMA_DRAFT_SCHED2` row says
-"(r65, block 11)" while the code and `patches/0009` put the second scheduler in **block 09**.
+**Published.**  Tag `v12-097cf33d9-r84` pushed (annotated, on the release commit `3cbfeeb9`); CI
+**Validate delivery set** green on `main` and on the tag and **Release patch set** green (assets
+`patches.tar.gz`, `rdna-boosts-all.patch` sha256 `8194355321173e58...` = `release.json.all_patch`,
+`release.json`, `SHA256SUMS`).  Fork `rdna-boosts` re-cut to `adf90e2de` (tree `c381b7452` =
+`release.json.tree`, only the block-00 commit message differs from the gated build) and force-pushed with
+lease to the personal fork only.  The worker watcher on `radiance` builds and pushes the ROCm 7.14.1 / 10.1
+container images off the tag (not yet confirmed at the time of writing).  The block-00 commit body and
+`patches/0000` both carry the issue reference, so the fork's `git log` names issue #183.  Also fixed the
+`ENVIRONMENT.md` nit: the `LLAMA_DRAFT_SCHED2` row named block 11, the second scheduler is in **block 09**,
+and the row now records its dependency on the r84 layout fingerprint.  The issue #183 reply was posted by
+the maintainer.
 ## 261018.005 (r83) -- the slab narrow-band eviction loop: found, root-caused and staged as `beta/0013` (no delivery change)
 
 **Not a release; no `patches/`, `release.json` or tag change.**  A report from the field (2x R9700,
