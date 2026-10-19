@@ -1,5 +1,82 @@
 # WORKLOG - dated delivery records
 
+## 261018.006 (r84) -- issue #183: the graph allocator only reuses its layout for the graph it was computed for (block 00)
+
+**Release `v12-097cf33d9-r84`**: base `097cf33d9`, canonical tip `adf90e2de`, net tree
+`c381b74523086cc5db90632f54e7abd2c5f2e392`, **12 blocks** (block 00 + 01-11).  **Block 00 amended, no
+new block, no new environment variable** (`release.json` regenerated; `validate-set.sh` green -- checksums
+OK, strict 12/12 `git am` on a fresh tarball, applied tree equals the recorded tree).  Fixes
+[issue #183](https://github.com/stew675/llama-cpp-rdna-boosts/issues/183) (`@overdoingism`, r82, gfx1201):
+DFlash drafting on a `--parallel 4` server worked on the first slot that served a request and collapsed
+to ~1 % acceptance on every other slot, 2.5x slower per token; `LLAMA_DRAFT_SCHED2=0` hid it.
+
+**Root cause (allocator, not DFlash).**  `ggml_gallocr_alloc_graph()` reapplies the recorded
+`node_allocs`/`leaf_allocs` **positionally** and only recomputes them when `ggml_gallocr_needs_realloc()`
+says so; that check compared the node/leaf *count* and, per node, `size_max >= size` -- nothing about node
+order, ops, shapes or which tensors carry `GGML_TENSOR_FLAG_OUTPUT`.  The in-graph sampling graph
+(`build_sampling`: one chain per sequence x output row, selected with `ggml_build_forward_select`) keeps
+its node count but changes **both** its node order and its output set when a different chain is selected --
+which is exactly what happens when another slot starts drafting.  In the reused layout the previously
+inactive chains' `top_k` outputs were dead (not outputs, so their block is recycled and shared), so the
+newly active -- now `OUTPUT` -- `top_k` tensors all inherited that one address: every output row then read
+the last computed candidate ids.  The sampled top-k *logits* stayed correct, which is why only the
+drafted token ids (and therefore acceptance) were wrong.  r65's second scheduler (block 09) is what puts
+two consecutive same-node-count step graphs on one scheduler; with `LLAMA_DRAFT_SCHED2=0` the 84-node
+injection graph alternates with the 335-node step graph, so a re-layout happens on every call anyway --
+the 0.5 ms/cycle the second scheduler exists to remove, and the reason the single-scheduler path never
+saw it.
+
+**Fix (block 00, `ggml/src/ggml-alloc.c`, +53 lines).**  `ggml_gallocr` records an FNV-1a fingerprint of
+the graph its layout was computed for -- node/leaf order, op (in-place eligibility), element type and
+`ne[]` (sizes), `view_src`, and the INPUT/OUTPUT/COMPUTE flags, plus the node/leaf split -- and
+`ggml_gallocr_needs_realloc()` requires a match.  A topology change now re-reserves instead of applying a
+foreign layout.  This is the generic invariant block 00 was already about (it holds the allocator fix for
+unused-view `n_views` and the "outputs are never freed" rule), so every block -- and any future
+speculative mechanism -- can rely on it rather than handling it case by case.  It only ever *adds* a
+re-reserve (one per topology change, ~once per slot switch here); it never skips one.  There is no kill
+switch because there is nothing to disable: the old behaviour was simply wrong.
+
+**Evidence (gfx1151, r83 tree, 35B-A3B Q4_K_M + dflash-Q8_0 draft, prose prompt, 256 greedy tokens, one
+request per slot in one process).**  r83: slot 0 `193/303 = 0.637` / 18.3 ms per token, slots 1-3
+`6/1230 = 0.005` / 46 ms.  With the fix (and identically with `LLAMA_DRAFT_SCHED2=0`): **every slot
+`193/303 = 0.637`, 18.0-18.3 ms, text `b1e6c82b5688`** in all cells, including the case where the request
+order starts at slot 3 and a different-prompt pair.  Instrumentation showed: the denoise graph receives
+identical k_idxs / mask / K-cache hashes in both arms and the selected top-k logits are identical, while
+the candidate ids differ; on the second sequence all six `res->t_candidates[i]->data` are the *same*
+address (six distinct addresses on the first sequence, and the gathered `top_k_rows` stay distinct);
+`ggml_gallocr_needs_realloc()` returned 0 for a graph whose node-count-unchanged fingerprint differed;
+`--no-spec-draft-backend-sampling`, a second scheduler on the injection graph only, or on both graphs,
+all fix it (only "step graph on the second scheduler, injection on the main one" breaks).
+
+**Gates (delivered tree `c381b7452`, gfx1151).**  Same-seed greedy text **byte-identical to r83**: dense
+`Qwen3.5-4B Q8_0` `-sm tensor` `7e6229b260f6` (111 chars), MoE `Qwen3.6-35B-A3B Q4_K_M -ncmoe 40` (host
+master / slab path) `8d733a56c740` (271 chars).  `llama-bench -p 512 -n 64 -r 3` (MoE, `-ncmoe 40`):
+pp512 2127.2 +/- 6.2, tg64 61.05 +/- 0.25 against r83's 1991.3 +/- 220.4 / 60.93 +/- 0.40 (the pp
+spread is the unchanged-build noise; no regression).  Four concurrent requests (`-np 4`): fixed arm ==
+`SCHED2=0` arm == r83 arm, same acceptance and text per slot (that shape never triggered it).  No new
+`ENVIRONMENT.md` row (no knob); `check-gpu-faults.sh` not run (no kernel changed and no fault was seen in
+any arm).  **Not run: the gfx1201 3-GPU box, the adaptive-MTP gate (the local 35B-A3B GGUF carries no MTP
+head) and `gate-prefill-logits.sh`** -- this is an allocator-invariant change with byte-identical generated
+text on both a dense and a host-expert MoE model, so the prefill-logit instrument (which compares prefill
+logits, issue #113) has nothing to see; re-run it on the primary box if the maintainer wants a gfx1201
+record before publishing.
+
+**Upstream status.**  The insufficient assumption ("same node count and sizes => same layout") is upstream
+`ggml-alloc` code, but **no vanilla llama.cpp configuration was found that triggers it** (tested: no
+speculative decoding at all, backend sampling on, `--parallel 4`, 4 slots -- pre-fix and fixed builds
+produce the same text on every slot `a063a316d1df`), and r83 with `LLAMA_DRAFT_SCHED2=0` is byte-identical
+to the fixed build.  So it is not staged under `upstream/` for now; the delivery's own feature exposed it.
+The MTP draft context has the same shape (step graph only on the second scheduler) and is expected to be
+protected by the same fix, but that is unverified here (no MTP head locally).  Revisit the upstream
+candidate if a vanilla reproduction ever appears.
+
+**Records.**  Candidate patch and reproduction harness (issue-183 repro, concurrency harness, before/after
+binaries) were session-local; the fix itself is the block-00 delta above.  The related campaign record is
+`archive/work/draft-sched2/` (the r65 second scheduler this exposed).
+
+**Outstanding (maintainer's call, not done here):** publication (tag, fork `rdna-boosts` refresh, worker
+image build), the issue #183 reply, and the `ENVIRONMENT.md` nit that the `LLAMA_DRAFT_SCHED2` row says
+"(r65, block 11)" while the code and `patches/0009` put the second scheduler in **block 09**.
 ## 261018.005 (r83) -- the slab narrow-band eviction loop: found, root-caused and staged as `beta/0013` (no delivery change)
 
 **Not a release; no `patches/`, `release.json` or tag change.**  A report from the field (2x R9700,

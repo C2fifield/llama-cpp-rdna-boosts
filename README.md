@@ -12,13 +12,19 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r83`**; it lets a prefill
-re-use the MoE expert cache: a whole-table staging copy now uploads only the experts that are not
-already resident in the cache arena, instead of pushing the whole host-resident expert set over PCIe
-every ubatch.  Measured on `Qwen3.8-Flash-Next IQ4_NL` (176.9B-A3B, 2x R9700, `-sm tensor -ncmoe 48`):
-prefill **+32 % / +44 % / +34 %** at 16k/`-ub 4096`, 16k/`-ub 2048` and 31.6k, greedy output
-byte-identical.  It also carries r82's issue #170 fix (no abort when `--fit` has to leave layers on the
-host) and r81's rope + FWHT fusion / GDN norm pairing work.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r84`**; it fixes
+**issue #183**, where DFlash drafting on a `--parallel` server worked on the first slot that served a
+request and collapsed to about 1 % acceptance on every other slot.  The fault was not DFlash: the graph
+allocator re-applied a recorded layout positionally and invalidated it only on a node **count** or size
+change, so a graph with the same node count but a different node order, shape set or output marking
+inherited a foreign layout.  In-graph sampling is exactly such a graph, so the newly active sequence's
+candidate ids all landed on one recycled block.  **Block 00** now records an FNV-1a fingerprint of the
+graph the layout was computed for and re-reserves on a mismatch; all slots draft identically again
+(`193/303` acceptance, text identical to the `LLAMA_DRAFT_SCHED2=0` reference) with no measurable cost.
+It also carries r83's prefill cache staging (a whole-table staging copy uploads only the experts not
+already resident in the cache arena: prefill **+32 % / +44 % / +34 %** on `Qwen3.8-Flash-Next IQ4_NL`,
+2x R9700, greedy output byte-identical), r82's issue #170 fix (no abort when `--fit` has to leave layers
+on the host) and r81's rope + FWHT fusion / GDN norm pairing work.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

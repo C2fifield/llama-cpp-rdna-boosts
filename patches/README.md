@@ -11,6 +11,31 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r84` (2026-10-18) -- issue #183: the graph allocator only reuses its layout for the graph it was computed for (block 00):**
+> canonical tip `adf90e2de`, net tree `c381b74523086cc5db90632f54e7abd2c5f2e392`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** amended, no new block, **no new
+> environment variable**.  `ggml_gallocr_alloc_graph()` re-applies the recorded `node_allocs` positionally
+> and invalidated them only on a node/leaf **count** or per-node size change, so a graph with the same node
+> count but a different node order, op/shape set or output marking inherited a foreign layout.  In-graph
+> sampling (`build_sampling` + `ggml_build_forward_select`) is exactly such a graph: selecting another
+> sequence's chain keeps the node count and changes which `top_k` tensors are outputs, so on a `--parallel`
+> server the newly active chains' candidate-id tensors all landed on the one recycled block -- every output
+> row read the last computed ids.  DFlash drafting therefore worked on the first slot that served a request
+> and collapsed to ~1 % acceptance on the rest (**issue #183**, r82, gfx1201; `LLAMA_DRAFT_SCHED2=0` hid it).
+> The allocator now records an FNV-1a **fingerprint** of the graph the layout was computed for (node/leaf
+> order, op, type, `ne[]`, `view_src`, INPUT/OUTPUT/COMPUTE flags, node/leaf split) and re-reserves on a
+> mismatch; it only ever adds a re-reserve (one per topology change), never skips one.  Generic block-00
+> invariant (it already owns the unused-view `n_views` and "outputs are never freed" rules), so any block
+> and any future speculative mechanism can rely on it.
+>
+> **Gates (gfx1151)**: issue-183 repro 4/4 slots `193/303 = 0.637` and text `b1e6c82b5688`, byte-identical
+> to the `LLAMA_DRAFT_SCHED2=0` reference; dense `Qwen3.5-4B Q8_0` text `7e6229b260f6` and MoE
+> `35B-A3B Q4_K_M -ncmoe 40` text `8d733a56c740` **identical to r83**; `llama-bench` pp512 2127 +/- 6 /
+> tg64 61.05 (r83 1991 +/- 220 / 60.93, no regression); 4-slot concurrent arm unchanged.  No vanilla
+> llama.cpp configuration was found that triggers the allocator assumption, so it is **not** staged under
+> `upstream/`; the MTP draft context has the same shape and is expected to be protected (unverified: no MTP
+> head in the local GGUF).
+
 > **Current release `v12-097cf33d9-r83` (2026-10-18) -- prefill cache staging: a staging copy uploads only the experts that are not already in the cache arena (blocks 09, 10):**
 > canonical tip `ca236e6b5`, net tree `a130971754b5abfb4a153e6fd1144fd578f1154a`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended (the engine:

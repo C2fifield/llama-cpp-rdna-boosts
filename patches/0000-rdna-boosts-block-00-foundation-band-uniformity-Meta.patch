@@ -1,4 +1,4 @@
-From 77369a7dfc711393081603aeb2ac87a11124d425 Mon Sep 17 00:00:00 2001
+From 9d2b4c53e40b3f7bb5465c514c4160e0be103676 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:38 -0500
 Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
@@ -12,6 +12,8 @@ Groundwork block (multiple base-level concerns, by design):
 - meta-buffer compute-container headroom 16 -> 128 (recurrent snapshot views)
 - multi-ubatch logits readback ordering (async D2H race)
 - ggml-alloc: release view sources whose views are never consumed (W4)
+- ggml-alloc: reuse the recorded layout only for the graph it was computed for
+  (graph fingerprint; delivery repo issue #183)
 
 Sources: old 00, 05, 07, 09a(compute headroom), 06(readback), 15(W4).
 
@@ -28,13 +30,26 @@ Also carries two generic upstream foundation changes:
   GGML_CUDA_NO_PINNED, LLAMA_GRAPH_INPUT_DEBUG (per graph input) and LLAMA_BATCH_DEBUG
   (per batch).  getenv() is expensive on Windows.
 
+Also fixes delivery repo issue #183.  ggml_gallocr_alloc_graph() re-applied the recorded
+node_allocs/leaf_allocs positionally and invalidated them only on a node/leaf count or a per-node
+size change, so a graph with the same node count but a different node order, op/shape set or output
+marking inherited a layout computed for a different graph.  In-graph sampling (build_sampling +
+ggml_build_forward_select, one chain per sequence x output row) is exactly such a graph: selecting
+another sequence's chain keeps the node count and changes which top_k tensors are outputs, so with
+the second scheduler on a --parallel server the newly active candidate-id tensors all landed on one
+recycled block and every output row read the last computed ids.  DFlash drafting therefore produced
+correct drafts only for the first slot that served a request.  The allocator now records an FNV-1a
+fingerprint of the graph its layout belongs to (node/leaf order, op, type, ne[], view_src,
+INPUT/OUTPUT/COMPUTE flags, node/leaf split) and re-reserves on a mismatch; it only ever adds a
+re-reserve, never skips one.
+
 Also extend the -Wshadow sweep to the remaining upstream shadowing declarations the clang
 build reports (all present at the fork point): step35.cpp per-layer n_embd_k_gqa/n_embd_v_gqa,
 llama-moe-cache.cpp init_ctx, llama-vocab.cpp _try_copy, llama-quant.cpp layer_info, and
 llama-model.cpp make_gpu_buft_list / get_tensor.
 ---
  common/speculative.cpp                        |  10 +-
- ggml/src/ggml-alloc.c                         |  35 ++
+ ggml/src/ggml-alloc.c                         |  88 ++++
  ggml/src/ggml-backend-meta.cpp                |  76 +++-
  ggml/src/ggml-cpu/llamafile/sgemm.cpp         |   8 +-
  ggml/src/ggml-cuda/fattn-common.cuh           |  10 +-
@@ -81,7 +96,7 @@ llama-model.cpp make_gpu_buft_list / get_tensor.
  src/models/step35.cpp                         |  16 +-
  src/models/vllm-decision2.cpp                 |   8 +-
  src/models/wavtokenizer-dec.cpp               |  64 +--
- 48 files changed, 1174 insertions(+), 984 deletions(-)
+ 48 files changed, 1227 insertions(+), 984 deletions(-)
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
 index c5043a4a8..226473421 100644
@@ -105,10 +120,64 @@ index c5043a4a8..226473421 100644
  
          if (chain_heads) {
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index b0c067b49..cfe0b113c 100644
+index b0c067b49..022ff710e 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
-@@ -760,6 +760,41 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
+@@ -491,6 +491,10 @@ struct ggml_gallocr {
+     struct node_alloc * node_allocs; // [n_nodes]
+     int n_nodes;
+ 
++    // fingerprint of the graph the recorded layout (node_allocs/leaf_allocs) was computed for; see
++    // ggml_gallocr_graph_fp
++    uint64_t layout_fp;
++
+     struct leaf_alloc * leaf_allocs; // [n_leafs]
+     int n_leafs;
+ };
+@@ -596,6 +600,42 @@ static bool ggml_gallocr_is_allocated(ggml_gallocr_t galloc, struct ggml_tensor
+         || ggml_gallocr_is_own(galloc, t); // tensor will be allocated by galloc
+ }
+ 
++// FNV-1a over a per-tensor descriptor: a fingerprint of everything the linear-scan layout depends
++// on -- the node/leaf order, the op (which decides in-place eligibility), the element type and shape
++// (which decide the sizes) and the input/output/compute flags (outputs are never freed, and inputs
++// are allocated up front, so both change the plan).  Two graphs with the same fingerprint get the
++// same layout; a different one must not reuse node_allocs positionally -- that would hand a tensor
++// the address the plan gave to some unrelated tensor, which may be a block the plan recycles.
++//
++// This is not hypothetical: a graph built by ggml_build_forward_select (in-graph sampling, one chain
++// per sequence x output row) keeps its node count but changes both its node order and which tensors
++// are outputs when a different chain is selected, e.g. when another sequence starts drafting.
++static uint64_t ggml_gallocr_graph_fp(const struct ggml_cgraph * graph) {
++    uint64_t h = 1469598103934665603ull;
++
++    const uint32_t flags_mask = GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT | GGML_TENSOR_FLAG_COMPUTE;
++
++    const int n_tensors = graph->n_nodes + graph->n_leafs;
++    for (int i = 0; i < n_tensors; ++i) {
++        const struct ggml_tensor * t = i < graph->n_nodes ? graph->nodes[i] : graph->leafs[i - graph->n_nodes];
++
++        uint64_t v = (uint64_t) t->op;
++        v = v*0x100000001b3ull ^ (uint64_t) t->type;
++        for (int d = 0; d < GGML_MAX_DIMS; ++d) {
++            v = v*0x100000001b3ull ^ (uint64_t) t->ne[d];
++        }
++        v = v*0x100000001b3ull ^ (uint64_t) (t->view_src != NULL);
++        v = v*0x100000001b3ull ^ (uint64_t) (t->flags & flags_mask);
++
++        h = (h ^ v) * 1099511628211ull;
++    }
++
++    // the node/leaf split itself is part of the plan
++    h = (h ^ ((uint64_t) graph->n_nodes << 32 | (uint32_t) graph->n_leafs)) * 1099511628211ull;
++
++    return h;
++}
++
+ // free the extra space at the end if the new tensor is smaller
+ static void ggml_gallocr_free_extra_space(ggml_gallocr_t galloc, struct ggml_tensor * node, struct ggml_tensor * parent) {
+     struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
+@@ -760,6 +800,41 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
          }
      }
  
@@ -150,6 +219,33 @@ index b0c067b49..cfe0b113c 100644
      // allocate tensors
      for (int i = 0; i < graph->n_nodes; i++) {
          struct ggml_tensor * node = graph->nodes[i];
+@@ -847,6 +922,10 @@ static bool ggml_gallocr_reserve_n_impl(
+     // allocate in hash table
+     ggml_gallocr_alloc_graph_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids);
+ 
++    // the layout now describes this graph; note the failure case leaves it recorded too, which the
++    // caller must handle (a failed buffer allocation is reported through the return value)
++    galloc->layout_fp = ggml_gallocr_graph_fp(graph);
++
+     // set the node_allocs from the hash table
+     if (galloc->n_nodes < graph->n_nodes) {
+         free(galloc->node_allocs);
+@@ -1021,6 +1100,15 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
+         return true;
+     }
+ 
++    // node_allocs/leaf_allocs are applied positionally, so the layout only holds for a graph with the
++    // same node order, ops, shapes and output/input markings (see ggml_gallocr_graph_fp)
++    if (galloc->layout_fp != ggml_gallocr_graph_fp(graph)) {
++#ifndef NDEBUG
++        GGML_LOG_DEBUG("%s: graph topology changed (fingerprint mismatch)\n", __func__);
++#endif
++        return true;
++    }
++
+     for (int i = 0; i < graph->n_nodes; i++) {
+         struct ggml_tensor * node = graph->nodes[i];
+         struct node_alloc * node_alloc = &galloc->node_allocs[i];
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
 index 86748b689..a21e43bd2 100644
 --- a/ggml/src/ggml-backend-meta.cpp

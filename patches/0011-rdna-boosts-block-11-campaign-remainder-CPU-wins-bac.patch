@@ -1,4 +1,4 @@
-From ca236e6b57f10e1ad86c2818ba1d849374cfd0c9 Mon Sep 17 00:00:00 2001
+From adf90e2de09069358e225ee0c41bdf1dbef34a9b Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -511,10 +511,10 @@ index 4a498b0c1..b7ec31448 100644
  GGML_API size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id);
  
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index 9cac9c2c3..8d0a8249a 100644
+index b47a1423e..89b85fbce 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
-@@ -1017,15 +1017,15 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -1061,15 +1061,15 @@ static bool ggml_gallocr_reserve_n_impl(
              if (buffers_grown != NULL) {
                  *buffers_grown = true;
              }
@@ -538,7 +538,7 @@ index 9cac9c2c3..8d0a8249a 100644
              if (no_alloc) {
                  // sizing/probe path: leave the existing buffers untouched so that the layout can be
                  // computed (and whether a reallocation would be needed) without disturbing the memory
-@@ -1038,12 +1038,21 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -1082,12 +1082,21 @@ static bool ggml_gallocr_reserve_n_impl(
                  galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
                  if (galloc->buffers[i] == NULL) {
                      GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), new_size);
@@ -560,7 +560,7 @@ index 9cac9c2c3..8d0a8249a 100644
      return true;
  }
  
-@@ -1076,6 +1085,31 @@ bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
+@@ -1120,6 +1129,31 @@ bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
      return ggml_gallocr_reserve_n(galloc, graph, NULL, NULL);
  }
  
@@ -592,7 +592,7 @@ index 9cac9c2c3..8d0a8249a 100644
  static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor * tensor, struct tensor_alloc * tensor_alloc) {
      int buffer_id = tensor_alloc->buffer_id;
      assert(tensor->data || tensor->view_src || ggml_backend_buft_get_alloc_size(galloc->bufts[buffer_id], tensor) <= tensor_alloc->size_max);
-@@ -1116,6 +1150,13 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
+@@ -1160,6 +1194,13 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
  }
  
  static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
@@ -606,7 +606,7 @@ index 9cac9c2c3..8d0a8249a 100644
      if (galloc->n_nodes != graph->n_nodes) {
  #ifndef NDEBUG
          GGML_LOG_DEBUG("%s: graph has different number of nodes\n", __func__);
-@@ -1280,28 +1321,3 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx,
+@@ -1333,28 +1374,3 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx,
  ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors(struct ggml_context * ctx, ggml_backend_t backend) {
      return ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_get_default_buffer_type(backend));
  }

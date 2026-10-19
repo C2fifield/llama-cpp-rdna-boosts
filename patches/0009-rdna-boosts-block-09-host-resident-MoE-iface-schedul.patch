@@ -1,4 +1,4 @@
-From fdce50cc3fb88bb3a23064841341730edbed8a20 Mon Sep 17 00:00:00 2001
+From 80e7d3e0a693db2b5627d2a3393eddd69abb3569 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -877,7 +877,7 @@ index 7a65d8121..0ff98e861 100644
      // Utils
      //
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index cfe0b113c..337709f31 100644
+index 022ff710e..d83b3fb76 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
 @@ -421,6 +421,52 @@ static size_t ggml_vbuffer_size(struct vbuffer * buf) {
@@ -946,7 +946,7 @@ index cfe0b113c..337709f31 100644
          if (buf->chunks[n] == NULL) {
              ggml_vbuffer_free(buf);
              return NULL;
-@@ -493,6 +541,14 @@ struct ggml_gallocr {
+@@ -497,6 +545,14 @@ struct ggml_gallocr {
  
      struct leaf_alloc * leaf_allocs; // [n_leafs]
      int n_leafs;
@@ -961,7 +961,7 @@ index cfe0b113c..337709f31 100644
  };
  
  ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
-@@ -1206,3 +1262,28 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx,
+@@ -1259,3 +1315,28 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx,
  ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors(struct ggml_context * ctx, ggml_backend_t backend) {
      return ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_get_default_buffer_type(backend));
  }

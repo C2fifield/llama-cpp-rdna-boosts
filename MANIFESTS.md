@@ -5,11 +5,24 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r83`** (canonical tip `ca236e6b5`, net tree
-`a130971754b5abfb4a153e6fd1144fd578f1154a`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r83 promotes **prefill cache staging** from
-`archive/work/prefill-arena-residency/`: **block 09** gains the staging engine (a per-table prefill residency
-snapshot, a fill kernel, the report counters) and **block 10** the `stage_from_cache` hook.  A
+**`097cf33d9`**, released as **`v12-097cf33d9-r84`** (canonical tip `adf90e2de`, net tree
+`c381b74523086cc5db90632f54e7abd2c5f2e392`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r84 fixes **issue #183** (DFlash drafting collapsed on
+every `--parallel` slot except the first one used; `LLAMA_DRAFT_SCHED2=0` hid it): **block 00** now
+records an FNV-1a fingerprint of the graph the allocator layout was computed for and re-reserves when it
+changes.  `ggml_gallocr_alloc_graph()` re-applies `node_allocs` positionally and invalidated them only on
+a node/leaf count or per-node size change, so a graph with the same node count but a different node
+order, op/shape set or output marking inherited a foreign layout; the in-graph sampling graph
+(`build_sampling` + `ggml_build_forward_select`) is exactly that when another sequence's chain becomes
+the active one, so the newly active candidate-id tensors all landed on one recycled block.  The second
+scheduler (r65, block 09) is what puts two such same-count graphs side by side.  No new block, no new
+environment variable; it only ever adds a re-reserve (one per topology change).  Verified on gfx1151:
+all four slots `193/303 = 0.637` acceptance and text `b1e6c82b5688`, identical to the
+`LLAMA_DRAFT_SCHED2=0` reference; dense 4B `7e6229b260f6` and MoE `-ncmoe 40` `8d733a56c740` text
+identical to r83; `llama-bench` pp512 2127 / tg64 61.05 against r83's 1991 / 60.93.  Before it, r83
+promotes **prefill cache staging** from `archive/work/prefill-arena-residency/`: **block 09** gains the
+staging engine (a per-table prefill residency snapshot, a fill kernel, the report counters) and
+**block 10** the `stage_from_cache` hook.  A
 whole-table staging copy of a host-resident expert table now uploads only the experts the cache arena
 does not already hold (arena slot D2D for a resident expert, pinned host master H2D for the rest),
 into the same staged bytes in expert order, so every consumer is unchanged.  Default on; kill switch
