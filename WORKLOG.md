@@ -59,7 +59,16 @@ paying on this workload either.
 **Issue reply**: posted 2026-10-18 ([#issuecomment-6259247216](https://github.com/stew675/llama-cpp-rdna-boosts/issues/184#issuecomment-6259247216)),
 label `needs more info` added; draft kept in `archive/work/issue-184-meta-r80r82/COMMENT-2026-10-18.md`.
 
-**No fix shipped.**  The candidate shape (hot dispatcher exactly as pre-#170, all alias/host resolution in
+**Decision (maintainer, 2026-10-18): bank it, no standalone release.**  The cold-path restructure is
+staged as `beta/0013-meta-hot-dispatcher` (patch sha256 `d4303170...`, cut against the r86-candidate tree,
+verified with strict `git am` on a fresh `apply-all.sh --include-beta` checkout: 12/12 blocks + beta 12 +
+beta 13, tree `bb825861` for the pair, `82360b48` for this one alone) and folds into **block 00 at the next
+revision**, where its gates run (the #170 24 GiB-parity reproduction first among them).  Measured: the
+dispatcher drops **454 -> 287 B** (below the 385 B of the pre-#170 build) with the cold helper out of line
+at 164 B, throughput -0.06 % (nothing), greedy text identical.  The upstream staging patch
+(`upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch`) must be re-cut at the same time.
+
+**The candidate shape (hot dispatcher exactly as pre-#170, all alias/host resolution in
 a `noinline, cold` helper) is semantically identical, measured at zero, and would force a re-cut of
 `upstream/UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch`; the maintainer decides whether to
 take a measured-zero code motion.  Reply draft with the three diagnostics that would settle it on the

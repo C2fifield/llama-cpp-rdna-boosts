@@ -45,6 +45,17 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
   `beta/0012-slab-transient-absorption/README.md`; record in `wip/slab-transient-absorption/README.md`
   §10.16 and `WORKLOG.md` 261018.002.
 
+* **`0013-meta-hot-dispatcher`** — **decided 2026-10-18, fold into block 00 at the next revision** (no
+  standalone release).  Pure code motion in `ggml-backend-meta.cpp`: the split-state dispatcher goes back
+  to the exact pre-#170 shape and the issue #170 resolution (view-chain buffer, host test, host-view
+  assert) moves into a `noinline, cold` helper.  Reason: `ggml_backend_meta_get_split_state` is a ~10k
+  lookups/decode-step hot path, and the r82 #170 fix put a null test plus an `is_host()` sub-buft walk in
+  front of the classification (issue #184).  Measured on 2x R9700, 4 concurrent streams, only
+  `libggml-base.so` swapped: **-0.06 %** vs the delivery tree (nothing), greedy text identical; the
+  dispatcher drops 454 -> 287 B.  It edits a file block 00 owns, so it waits here rather than in `wip/`.
+  See `beta/0013-meta-hot-dispatcher/README.md`; record in `WORKLOG.md` 261018.010 and
+  `archive/work/issue-184-meta-r80r82/`.
+
 _`rdna2` (issue #158) was folded into r70 blocks 06/10 and moved to `archive/work/rdna2/`
 (record: `WORKLOG.md` 261016.002)._
 

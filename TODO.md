@@ -59,6 +59,19 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 69. Fold the `ggml-backend-meta` hot-path code motion into block 00 at the next revision — PERFORMANCE (decided, deferred)
+
+**Decided 2026-10-18 (issue #184 follow-up): bank it, no standalone release.**  `beta/0013-meta-hot-dispatcher`
+holds the patch: the split-state dispatcher returns to the exact pre-#170 shape and the issue #170
+resolution (view-chain buffer, host test, host-view assert) moves into a `noinline, cold` helper.  Pure
+code motion, no behaviour change, no env knob.  Reason: `ggml_backend_meta_get_split_state` is a ~10k
+lookups/decode-step path under `-sm tensor` and the r82 #170 fix put a null test plus an `is_host()`
+sub-buft walk in front of the classification.  Measured on 2x R9700, 4 concurrent streams with only
+`libggml-base.so` swapped: **-0.06 %** (nothing measurable), greedy text identical; dispatcher 454 -> 287 B.
+Fold into `patches/0000` when the next revision is cut, re-cut the upstream staging patch at the same
+time, and run the checklist in `beta/0013-meta-hot-dispatcher/README.md` (the #170 24 GiB-parity
+reproduction first).  Detail: `WORKLOG.md` 261018.010, `archive/work/issue-184-meta-r80r82/`.
+
 ### 68. `gemma4` dense + `-sm tensor` on 2 devices aborts with a rotated K cache (`-ctk q8_0`) — CORRECTNESS
 
 **Opened 2026-10-18 (found while setting up the issue #184 A/B).**  A plain dense `gemma4` target

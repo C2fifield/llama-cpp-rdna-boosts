@@ -1,0 +1,91 @@
+From 522e5da8a30cd783fdcf922303d67411c1c10ecc Mon Sep 17 00:00:00 2001
+From: Stew Forster <ci@rdna-boosts.invalid>
+Date: Mon, 19 Oct 2026 04:31:12 -0500
+Subject: [PATCH] rdna-boosts: beta 13: meta-hot-dispatcher (pre-#170 hot path
+ with a cold alias path)
+
+BETA candidate, not part of the delivery block set.  Apply on top of the
+release tree (patches/0000-0011) with:
+
+    scripts/apply-all.sh --include-beta .
+
+Pure code motion in block 00's ggml-backend-meta.cpp hunk, no behaviour
+change: the split-state dispatcher goes back to the exact pre-#170 shape
+(`is_meta(tensor->buffer)` first, then the buffer context and the recursive
+call) with nothing else in it, and the whole issue #170 resolution -- the
+view-chain buffer lookup, the host-buffer test and the HOST_VIEWS assert --
+moves into a `noinline, cold` helper that only host tensors and the
+unallocated-alias case reach.
+
+Why: `ggml_backend_meta_get_split_state` runs on every tensor of every graph
+allocation under `-sm tensor` (~10k lookups per decode step in the field
+config), and the r82 #170 fix added a null test plus an `is_host()` evaluation
+in front of the classification.  Issue #184 reported that as a ~3.5% loss at 4
+concurrent decode streams; it did not reproduce here (measured <= 0.4% with no
+stable sign, text identical), but the arrangement is the right one regardless:
+the #170 path costs one branch on the hot path instead of an extra
+classification.
+
+Measured (2x R9700, r86-candidate tree, only libggml-base.so swapped, 4
+concurrent greedy streams, pre-warmed prompt caches): -0.06% vs the delivery
+tree (i.e. nothing measurable), greedy text identical.
+---
+ ggml/src/ggml-backend-meta.cpp | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index 8f148d52b..26c6dc44f 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -1618,7 +1618,19 @@ static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
+     return ggml_is_view(tensor) && ggml_backend_buffer_is_host(tensor->view_src->buffer);
+ }
+ 
+-static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
++// [TAG_META_UNALLOC_ALIAS] cold path of the split-state lookup -- a tensor that is *not* in a meta
++// buffer: a host tensor/view, another device's buffer, or (issue #170) a nested alias that the
++// allocator has not given its inherited buffer yet.  Out of line on purpose: the hot dispatcher below
++// runs on every tensor of every graph allocation (~10k lookups per decode step under `-sm tensor`), so
++// it keeps the exact pre-#170 two-test shape and this path -- which only the #170 alias case and host
++// tensors take -- is kept out of it (issue #184).
++#if defined(__GNUC__)
++#  define GGML_META_COLD __attribute__((noinline, cold))
++#else
++#  define GGML_META_COLD
++#endif
++static GGML_META_COLD struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state_cold(
++        const struct ggml_tensor * tensor, bool assume_sync) {
+     // [TAG_META_UNALLOC_ALIAS] a nested alias may not have its inherited buffer yet: resolve the chain
+     // to the buffer the allocator will give it, so it is classified like the tensor it aliases
+     ggml_backend_buffer_t buffer = tensor->buffer;
+@@ -1641,15 +1653,20 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
+     // TODO: technically, this check should not be needed if the backend scheduler correctly prevents assigning
+     //       such host-buffer views to the meta backend. figure out how to update the scheduler logic to achieve that
+     //       ref: https://github.com/ggml-org/llama.cpp/pull/30217
+-    if (!ggml_backend_buffer_is_meta(buffer)) {
+-        GGML_ASSERT(ggml_backend_meta_is_host_view(tensor));
++    GGML_ASSERT(tensor->buffer == nullptr || ggml_backend_meta_is_host_view(tensor));
+ 
+-        // the view is not allocated in the meta buffer, it is not split across the sub-devices
+-        return { GGML_BACKEND_SPLIT_AXIS_NONE, {0}, {1}, 1 };
+-    }
++    // the view is not allocated in the meta buffer, it is not split across the sub-devices
++    return { GGML_BACKEND_SPLIT_AXIS_NONE, {0}, {1}, 1 };
++}
++#undef GGML_META_COLD
+ 
+-    ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) buffer->context;
+-    return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
++static inline struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
++    // hot path: a tensor in a meta buffer -- unchanged from the pre-#170 dispatcher
++    if (ggml_backend_buffer_is_meta(tensor->buffer)) {
++        ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
++        return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
++    }
++    return ggml_backend_meta_get_split_state_cold(tensor, assume_sync);
+ }
+ 
+ static void * ggml_backend_meta_buffer_get_base(ggml_backend_buffer_t buffer) {
+-- 
+2.56.0
+
