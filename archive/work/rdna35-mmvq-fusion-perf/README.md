@@ -1,13 +1,15 @@
 # `rdna35-mmvq-fusion-perf` — restore the block-13 RDNA3_5 single-token fusion perf (TODO item 16)
 
-**Status: PARKED (seeded 2026-10-11), low priority.** Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
-This is the parked TODO item *"Restore the block-13 RDNA3_5 single-token fusion perf (item 16)"*.
+**Status: CLOSED 2026-10-19 (ending B — no delivery change).**  Archived from `wip/` after the
+investigation.  The original premise is **refuted**: the fused gate/up arithmetic is bit-identical to
+the standalone path (all 640 rows of the qwen4exp `blk.47` dense shexp, bit for bit); the W=1 impurity
+is the `GLU -> MMQ down` fusion being preempted when the GLU node is consumed.  The full bit-level
+evidence, the gate table and the validated-but-not-promoted candidate A are in
+[`RESOLUTION.md`](RESOLUTION.md).  Nothing here was applied to the fork; the skip stays.
 
-> **Cold start.** Read this file, then
-> [`archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md`](../../archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md)
-> **§9** (the post-fold analysis that re-scoped this item), and `GREEDY-PURITY.md` §36. Report findings to
-> the maintainer before any delivery change and wait.
+> **Cold start (historical).** Read this file, then
+> [`archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md`](../strix-halo/rdna35-mmvq-fusion-purity/README.md)
+> **§9** (the post-fold analysis that re-scoped this item), and `GREEDY-PURITY.md` §36.
 
 ## 0. The item
 

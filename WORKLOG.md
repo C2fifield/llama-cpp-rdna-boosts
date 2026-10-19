@@ -1,5 +1,36 @@
 # WORKLOG - dated delivery records
 
+## 261019.011 (no release) -- rdna35 mmvq fusion: the impurity is the preempted `GLU -> MMQ down` fusion, not the fused gate/up
+
+**Campaign closed (ending B).**  `wip/rdna35-mmvq-fusion-perf/` -> `archive/work/rdna35-mmvq-fusion-perf/`
+with a `RESOLUTION.md`; TODO item 16 closed; the skip stays.  Tree r91 (`45f817cc3`), gfx1151, qwen4exp
+UD-Q4_K_XL, `prompts/prose-rdna-boosts.txt` P=256.
+
+**The old premise is refuted.**  Temporary ksplit dumps (reverted) of the `blk.47` dense shexp
+(Q8_0 2560x640, `nwarps=2`, rpb=1) compared the fused GLU launch with the default path's **dual-output**
+gate+up fusion: all **640 rows x 3 passes** had bit-identical `up` and `gate`.  Codegen/FMA contraction and
+the Q8_1 cache are exonerated; the fused kernel does reproduce the standalone `mul_mat_vec_q` arithmetic.
+
+**Mechanism.**  The default path fuses `GLU + down` into an **MMQ** down matmul
+(`ggml_cuda_mul_mat_q_swiglu_try_fuse`, `target_qwen4exp`; trace: `ffn_swiglu-47 -> ffn_shexp-47`).  Enabling
+the dense gate+up+GLU fusion consumes the GLU node, so that fusion cannot fire; W=1 then takes the normal
+down path while W>=2 still takes the GLU+MMQ fusion.  The down-kernel-family change is the whole W=1/W=8
+difference.
+
+**Hashes (row 0):** default W=1 = W=8 = `578528d234936576` (PASS); env ON W=1 `173282800f97009f` vs W=8
+`578528...` (FAIL, maxdiff 0.323269); env ON + GLU->MMQ off W=1..8 = `1732828...` (PASS); default +
+GLU->MMQ off W=1..8 = `1732828...` (PASS).  The sibling weighted-down tail is pure once the down path is
+uniform (env ON + GLU->MMQ off, weighted-down on: PASS).
+
+**Candidate A (validated, not promoted).**  Default-on dense gate+up fusion on RDNA3_5 + suppress the
+GLU->MMQ down fusion for dense GLUs on RDNA3_5.  tg128 26.39 ± 0.05 -> 26.55 ± 0.06 (+0.6 %); pp512/2048
+953.87/964.89 -> 954.97/961.04 (flat); batched-bench npl 1/4/8 TG 25.92/64.45/85.76 -> 26.05/64.55/85.59;
+qwen4exp plain == draft-mtp n3 text 35 chars `sha=359ff4337837`; 4B f16/bf16/q8_0 same-seed text identical
+(280 chars `sha=7386359e5dac`).  Not promoted because it changes the band hash `578528...` -> `1732828...`
+(text unchanged on the tested prompts) and disables a prefill fusion globally on RDNA3_5; preserving the
+current hash needs a three-way gate+up+GLU+MMQ-down fusion, which the ~0.6-0.9 % win does not justify.
+Record: `archive/work/rdna35-mmvq-fusion-perf/RESOLUTION.md`.
+
 ## 261019.010 (r91) -- the rollback-boundary and umem-arena campaigns close; the bound is enforced by `n_rs_batch`
 
 **Release `v12-097cf33d9-r91`**: base `097cf33d9`, canonical tip `45f817cc3`, net tree

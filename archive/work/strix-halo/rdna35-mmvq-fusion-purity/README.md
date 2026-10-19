@@ -182,6 +182,14 @@ directly and is the natural gate to add this fix to.
 
 ## 9. Post-fold follow-up analysis (2026-09-12 (7)): the "pin nwarps/rps/item-split" plan is a dead end
 
+> **Superseded 2026-10-19 (TODO item 16, closed).**  The two live candidates below were tested end to
+> end on the r91 tree.  The fused gate/up arithmetic is **bit-identical** to the standalone path (all
+> 640 rows of the qwen4exp `blk.47` dense shexp), so codegen and the Q8_1 cache are both exonerated.
+> The W=1 impurity is the **`GLU -> MMQ down` fusion being preempted** when the dense gate+up+GLU
+> fusion consumes the GLU node: W=1 then takes the normal down path while W>=2 still takes the
+> GLU+MMQ down fusion.  See
+> [`archive/work/rdna35-mmvq-fusion-perf/RESOLUTION.md`](../../work/rdna35-mmvq-fusion-perf/RESOLUTION.md).
+
 TODO item 16 proposed restoring the ~0.9 % `tg128` by making the fused `ncols_dst == 1` kernels
 *reproduce the standalone reduction* — "pin `nwarps`/`rps`/item-split", the §17 pattern.  Read against
 the current delivery, that plan does **not** apply: the fused and unfused dense paths are **already

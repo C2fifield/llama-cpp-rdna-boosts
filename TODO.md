@@ -767,10 +767,15 @@ columns, and r6 made native bf16 default-on so the arm is live.  Record:
   (cosmetic).
 
 ## Parked (not planned now)
-- **Restore the block-13 RDNA3_5 single-token fusion perf (item 16).**  The ~0.9 % `tg128` the purity
-  skip costs; the proposed "pin `nwarps`/`rps`/item-split" fix is **invalid** (the two arms are already
-  launch-identical).  Live candidates: codegen (`has_fusion` register pressure / FMA contraction) and the
-  Q8_1 cache.  Low priority — the skip is the accepted purity trade.  `archive/work/strix-halo/rdna35-mmvq-fusion-purity/README.md` §9.
+- **Restore the block-13 RDNA3_5 single-token fusion perf (item 16) — CLOSED 2026-10-19.**  The premise
+  is **refuted**: the fused gate/up arithmetic is bit-identical to the standalone path (all 640 rows of
+  the qwen4exp `blk.47` dense shexp, bit for bit), and codegen / the Q8_1 cache are exonerated.  The W=1
+  impurity is the **`GLU -> MMQ down` fusion being preempted** when the dense gate+up+GLU fusion
+  consumes the GLU node; W=1 then takes the normal down path while W>=2 keeps the GLU+MMQ down fusion.
+  A bit-exact candidate (gate+up default-on + GLU->MMQ suppression on RDNA3_5 dense GLUs) was validated
+  (+0.6 % tg128, prefill flat, text gates pass) but is **not promoted**: it changes the band hash
+  `578528...` -> `1732828...` (text unchanged) and needs a three-way fusion to preserve the current
+  reference.  Ending B: the skip stays.  `archive/work/rdna35-mmvq-fusion-perf/RESOLUTION.md`.
 - **`ssm_alpha` + `ssm_beta` single-walk fusion (item 5(b)) — CLOSED 2026-10-13.**  Re-measured on
   r53: 1.43x on the pair at N=8192 (bit-identical on gfx1201), but only ~0.3-0.6 % prefill and blocked
   by the non-adjacent DFS order; closed below the adoption bar.
