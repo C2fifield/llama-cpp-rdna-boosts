@@ -12,19 +12,11 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r84`**; it fixes
-**issue #183**, where DFlash drafting on a `--parallel` server worked on the first slot that served a
-request and collapsed to about 1 % acceptance on every other slot.  The fault was not DFlash: the graph
-allocator re-applied a recorded layout positionally and invalidated it only on a node **count** or size
-change, so a graph with the same node count but a different node order, shape set or output marking
-inherited a foreign layout.  In-graph sampling is exactly such a graph, so the newly active sequence's
-candidate ids all landed on one recycled block.  **Block 00** now records an FNV-1a fingerprint of the
-graph the layout was computed for and re-reserves on a mismatch; all slots draft identically again
-(`193/303` acceptance, text identical to the `LLAMA_DRAFT_SCHED2=0` reference) with no measurable cost.
-It also carries r83's prefill cache staging (a whole-table staging copy uploads only the experts not
-already resident in the cache arena: prefill **+32 % / +44 % / +34 %** on `Qwen3.8-Flash-Next IQ4_NL`,
-2x R9700, greedy output byte-identical), r82's issue #170 fix (no abort when `--fit` has to leave layers
-on the host) and r81's rope + FWHT fusion / GDN norm pairing work.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r85`**; it lets a prefill
+re-use the MoE expert cache (a staging copy uploads only the experts not already resident, +30-44 % prefill
+on a `-ncmoe` host-expert model), fixes the slab's always-resident narrow band so an MTP decode no longer
+re-evicts the expert-cache arena every step (decode 23 -> 46 t/s on the reported config), and carries r84's
+graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's rope + FWHT / GDN norm work.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -164,8 +156,8 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
 | `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
-| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83) |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83) |
+| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85) |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the

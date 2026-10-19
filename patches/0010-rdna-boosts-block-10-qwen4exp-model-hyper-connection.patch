@@ -1,4 +1,4 @@
-From 14a5254188313b71e960420b7d3a08cbeb45b577 Mon Sep 17 00:00:00 2001
+From 0e84693f5ce9d0163dd5f40bddb4afc946481e87 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -67,6 +67,20 @@ experts, D2D) + the pinned host master (the rest, H2D) instead of a full H2D re-
 is the ordinary staged table in expert order, so every consumer is unchanged.  It declines to the plain
 upload for an unusable/stood-down table, an unpinned host master or a geometry mismatch.  Kill switch
 GGML_MOE_CACHE_STAGE=0.
+
+Slab narrow band (r85): the always-resident narrow band was an estimate taken before the first ring carve
+(a `split_only` reserve of the `n_rs_batch` shape, 1792 MiB on the field config), and `set_narrow_floor`
+cannot correct it afterwards because the ring's VA is frozen once it holds blocks.  The real MTP
+decode/verify graph needs 2304 MiB, so `work_alloc` classified every decode view as wide, placed it above
+the H2D staging ring and evicted 3.65 GiB/device of arena.  `work_alloc` now learns the band from the real
+graph: a view that is not a requested wide (prefill) pass is narrow even above the floor while no wide view
+is live (the ring region is only carved while one is), and the floor + ring are re-carved from it (the ring
+is idle there).  With a wide view live the above-the-ring placement is kept: the ring's VA must not move.
+A refused raise is reported instead of dropped silently.
+
+Measured (2x R9700, Flash-Next IQ4_NL -ncmoe 46, 131k ctx, -b/-ub 6144, MTP n6): 18 -> 1 re-arm, decode
+23.6 -> 45.4 t/s (-sm tensor) / 35.8 (-sm layer), prefill unchanged; cost: 16k prefill 1443 -> 1411 t/s
+(-2.2 %) because the correctly sized band moves the ring up 512 MiB.
 ---
  common/arg.cpp                                |    3 +-
  ggml/include/ggml-alloc.h                     |   13 +
@@ -100,7 +114,7 @@ GGML_MOE_CACHE_STAGE=0.
  ggml/src/ggml-cuda/ggml-cuda-arena.cuh        |   11 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  256 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cuh   |   26 +
- ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1224 +++++
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1257 +++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2540 +++++++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   34 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |   15 +
@@ -172,7 +186,7 @@ GGML_MOE_CACHE_STAGE=0.
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 104 files changed, 20465 insertions(+), 4975 deletions(-)
+ 104 files changed, 20498 insertions(+), 4975 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -4858,10 +4872,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..f6eeec2c8
+index 000000000..601e35914
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1224 @@
+@@ -0,0 +1,1257 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -5108,8 +5122,8 @@ index 000000000..f6eeec2c8
 +void ggml_cuda_slab_set_narrow_floor(int device, size_t bytes) {
 +    std::lock_guard<std::mutex> lock(g_slab_mutex);
 +    ggml_cuda_slab & s = g_slabs[device];
-+    if (!s.inited || s.ring_used > 0) {
-+        return;   // the ring is already in use: its VA must not move
++    if (!s.inited) {
++        return;
 +    }
 +    // The `split_only` probe reports the LAYOUT size; the real compute allocation is rounded up to whole
 +    // `GGML_COMPUTE_BUFFER_CHUNK_MIB` units plus one spare unit (`ggml_vbuffer_chunk_alloc_size`).  Apply
@@ -5124,6 +5138,17 @@ index 000000000..f6eeec2c8
 +        nf = ggml_cuda_slab_up(bytes, cchunk) + cchunk;
 +    }
 +    if (nf <= s.narrow_floor) {
++        return;   // not a raise: nothing to apply and nothing to report
++    }
++    if (s.ring_used > 0) {
++        // The ring holds blocks, so its VA must not move.  The floor is only an estimate at this point;
++        // `work_alloc` raises it from the real graph the next time a narrow view is placed while the ring
++        // is idle, so this is not fatal -- but a raise that arrives here means the estimate was too low, and
++        // that is worth knowing (it is what kept the field's decode views above the ring).
++        GGML_LOG_WARN("%s: device %d: narrow floor raise to %.1f MiB ignored (ring in use: %.1f MiB of %.1f MiB, "
++                      "floor %.1f MiB); the band is learned from the next idle-ring narrow view instead\n",
++                      __func__, device, (double) nf / (1ull << 20), (double) s.ring_used / (1ull << 20),
++                      (double) s.ring_region / (1ull << 20), (double) s.narrow_floor / (1ull << 20));
 +        return;
 +    }
 +    s.narrow_floor = nf;
@@ -5810,7 +5835,29 @@ index 000000000..f6eeec2c8
 +        // capped cudaMalloc and the prefill streamed.  Only force it when a region was actually carved, so
 +        // a no-ring model keeps the plain size classification.
 +        const bool   ring_wide = s.ring_region > 0 && s.ring_requested && s.narrow_floor > 0;
-+        const bool   narrow   = s.narrow_floor > 0 && need <= s.narrow_floor && !ring_wide;
++        // A view that is NOT a requested wide (prefill) pass belongs to the always-resident narrow band even
++        // when it is wider than the floor established so far.  The ring region is only carved while a wide
++        // pass is live, so when it is not (`boundary <= narrow_floor` and the ring is disarmed) a wider
++        // narrow view simply grows the band; pushing it above the ring instead costs `ring_region` of arena,
++        // and the prefill -> decode drop (which records the band it just reserved) then re-drops on every
++        // pass.  Measured on the field config (MTP verify/draft graph 2304 MiB against a 1792 MiB floor):
++        // 66 tables re-armed and ~3.65 GiB/device evicted per decode step, decode 17 t/s instead of 40+.
++        // While a wide view IS live the ring VA must not move, so that case keeps the above-the-ring
++        // placement (a later decode pass drops the wide view first, then the band grows here).
++        const bool   ring_live = s.narrow_floor > 0 && (s.boundary > s.narrow_floor || s.ring_armed);
++        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!ring_live || need <= s.narrow_floor);
++        if (narrow && need > s.narrow_floor) {
++            // Learn the band from the real graph: the floor is estimated before the first carve from a
++            // reserve that is not necessarily the widest narrow layout (the `n_rs_batch` probe measures
++            // 1792 MiB where the MTP decode/verify graph needs 2304), and `ggml_cuda_slab_set_narrow_floor`
++            // cannot correct it afterwards because the ring's VA is frozen once it holds blocks.  Here no
++            // wide view is live and the ring is idle, so moving its base is safe.
++            s.narrow_floor = ggml_cuda_slab_up(need, s.chunk);
++            s.ring_region  = ggml_cuda_slab_ring_candidate(s, s.narrow_floor);
++            s.ring_slots   = ggml_backend_cuda_context::h2d_stage_slots();
++            s.ring_used    = 0;
++            s.ring_armed   = false;
++        }
 +        const size_t wide_off = ggml_cuda_slab_wide_offset(s);
 +
 +        // The boundary may shrink only to the TALLEST live view's boundary contribution.  Each view's
@@ -23138,7 +23185,7 @@ index 0dc4cc961..21c19a41d 100644
              return true;
      }
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index caf54da1a..6ab35e5ac 100644
+index aaeda58c2..abc19a519 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,6 +1,7 @@
@@ -23330,7 +23377,7 @@ index caf54da1a..6ab35e5ac 100644
  
  llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
      if (mctx && !mctx->apply()) {
-@@ -1952,7 +2054,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1961,7 +2063,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
              return nullptr;
          }
  
@@ -23357,7 +23404,7 @@ index caf54da1a..6ab35e5ac 100644
              LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
              ret = GGML_STATUS_ALLOC_FAILED;
              return nullptr;
-@@ -1978,6 +2098,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1987,6 +2107,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          return nullptr;
      }
  
@@ -23365,7 +23412,7 @@ index caf54da1a..6ab35e5ac 100644
      ret = GGML_STATUS_SUCCESS;
  
      return res;
-@@ -2325,6 +2446,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2334,6 +2455,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
      output_swaps.clear();
      embd_batch_idxs.clear();
@@ -23373,7 +23420,7 @@ index caf54da1a..6ab35e5ac 100644
  
      sched_reserve();
  
-@@ -2623,6 +2745,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2632,6 +2754,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
          }
      } while (true);
  
@@ -23396,7 +23443,7 @@ index caf54da1a..6ab35e5ac 100644
      // set to total number of outputs in the batch, for use in llama_get_logits_ith
      n_outputs = n_outputs_all;
  
-@@ -2854,8 +2992,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs_l) {
+@@ -2863,8 +3001,130 @@ uint32_t llama_context::output_reserve(int32_t n_outputs_l) {
      return n_outputs_max;
  }
  
@@ -23527,7 +23574,7 @@ index caf54da1a..6ab35e5ac 100644
      for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
          if (!cparams.embeddings_layer_inp[il]) {
              continue;
-@@ -2956,7 +3216,8 @@ void llama_context::output_reorder() {
+@@ -2965,7 +3225,8 @@ void llama_context::output_reorder() {
                  }
              }
              for (auto & layer : embd_layer_inp) {
@@ -23537,7 +23584,7 @@ index caf54da1a..6ab35e5ac 100644
                      for (size_t k = 0; k < n_embd; ++k) {
                          std::swap(layer.data[i*n_embd + k], layer.data[j*n_embd + k]);
                      }
-@@ -3158,10 +3419,34 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -3167,10 +3428,34 @@ ggml_cgraph * llama_context::graph_reserve(
          } else {
              ggml_backend_sched_split_graph(sched.get(), gf);
          }
@@ -23576,7 +23623,7 @@ index caf54da1a..6ab35e5ac 100644
      }
  
      return gf;
-@@ -4568,6 +4853,26 @@ llama_context_params llama_context_default_params() {
+@@ -4577,6 +4862,26 @@ llama_context_params llama_context_default_params() {
      return result;
  }
  
@@ -23603,7 +23650,7 @@ index caf54da1a..6ab35e5ac 100644
  llama_context * llama_init_from_model(
                   llama_model * model,
          llama_context_params   params) {
-@@ -4603,10 +4908,49 @@ llama_context * llama_init_from_model(
+@@ -4612,10 +4917,49 @@ llama_context * llama_init_from_model(
          if (model->get_split_state_ud.n_devices == 1) {
              LLAMA_LOG_WARN("%s: SPLIT_MODE_TENSOR being used for a single device is not recommended\n", __func__);
          }
@@ -23655,7 +23702,7 @@ index caf54da1a..6ab35e5ac 100644
          return nullptr;
      }
  
-@@ -4835,6 +5179,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+@@ -4844,6 +5188,26 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
      return ctx->get_embeddings_nextn_ith(i);
  }
  

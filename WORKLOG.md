@@ -1,5 +1,72 @@
 # WORKLOG - dated delivery records
 
+## 261018.007 (r85) -- the slab narrow band is learned from the real decode graph (blocks 09, 10)
+
+**Release `v12-097cf33d9-r85`**: base `097cf33d9`, canonical tip `a3e721ac3`, net tree
+`a121eb0fb443a928d42773b2035fda89ccbdcf36`, **12 blocks** (block 00 + 01-11).  **Block 09 amended** (the
+prefill -> decode drop reference) and **block 10 amended** (the slab's narrow band); no new block, no new
+environment variable.  `release.json` regenerated; `validate-set.sh` green (fresh tarball, strict 12/12,
+tree matches).  Folded from `beta/0013-slab-narrow-floor/` (record moved to
+`archive/work/slab-narrow-floor/`), which was staged against r83 while the r84 block-00 fix landed and then
+re-cut onto the r84 base.
+
+**The report.**  Field config (2x R9700, `Qwen3.8-Flash-Next IQ4_NL`, 131k ctx, `-sm tensor -ncmoe 46`,
+`-b/-ub 6144`, q8_0 K/V, MTP `draft-mtp-adaptive` n6, `GGML_CUDA_ALLREDUCE=ce`, stock slab defaults):
+after a ~70k-token prefill the first decode produced a degenerate eviction sequence for seconds --
+`moe_cache_rearm: re-armed 66 stood-down expert-cache tables` followed ~3 ms later by
+`moe_cache_evict_slab_range: evicted 3654 / 3664 MiB`, every ~165 ms -- with decode 17-25 t/s instead of
+~45, until it self-terminated.
+
+**Root cause (a mis-measured band, not an overwrite).**  The always-resident narrow band
+(`narrow_floor`) is estimated before the first ring carve from a `split_only` reserve of the
+`n_rs_batch` shape = **1792 MiB**, and `ggml_cuda_slab_set_narrow_floor()` is raise-only *and returns
+silently while `ring_used > 0`* (the ring's VA is frozen once it holds blocks).  The real MTP
+decode/verify graph needs **2304 MiB**, so `work_alloc` classified a *decode* view as wide, placed it above
+the H2D staging ring (`narrow_floor + ring_region` = 3968) and grew the boundary into the arena.  The
+prefill -> decode drop then re-reserved the 1792 MiB shape and recorded *that* as its reference, so the
+next step was "materially wider" again (512 MiB slack) -- one drop per decode step, 66 tables re-armed and
+~3.65 GiB/device evicted each time.  Scaling confirms the MTP attribution: n-max 6 -> 18 cycles, n-max 2 ->
+2, `--spec-type none` -> 0.
+
+**Not new in r83, and r84 does not fix it.**  The r82 build reproduces the identical 18 cycles / 36
+evictions, and so does the r84 tree (block 00's allocator fingerprint does not change the band estimate).
+r83 is only a catalyst: its prefill is faster (1305 -> 1506 t/s in the same run), so the same churn costs
+relatively more.
+
+**The fix.**  *Block 10 (slab)*: `work_alloc` learns the band from the real graph -- a view that is not a
+requested wide (prefill) pass is narrow even when it exceeds the floor, provided no wide view is live (the
+ring region is only carved while one is); the floor and ring are then re-carved from it (the ring is idle
+there, so its VA may move).  With a wide view live the above-the-ring placement is kept, and a refused
+raise is now reported instead of dropped silently.  *Block 09*: the drop reference becomes
+`max(work region observed before the drop, shape the drop re-reserved)`.
+
+**Measured** (2x R9700, 73.5k-token prompt, 90 generated tokens, same config):
+
+| | before | after |
+|---|---:|---:|
+| decode `re-armed` cycles | 18 | **1** (the normal prefill -> decode drop) |
+| decode t/s | 23.6 (r82) / 23.4 (r84) / 34.2 (r83) | **45.6** (`-sm tensor`), **35.5** (`-sm layer`) |
+| prefill t/s, 74k tokens | 1506-1510 | 1511 |
+| 16k prefill `-ub 4096` | 1443 | **1406 (-2.6 %)** |
+
+**Cost, recorded deliberately:** a correctly sized band moves the ring up 512 MiB, so the wide (prefill)
+layout starts 512 MiB higher and the arena is 512 MiB smaller during a prefill -- that is the 16k
+`-ub 4096` delta above (staging off is unchanged at 1080.7).  Overlapping the band into the ring VA was
+rejected: it is the same hazard class as the MTP-drafter/ring-sizing incident.
+
+**Gates (r84 base, delivered tree `a3e721ac3`).**  Dense `Qwen3.5-4B Q8_0` coherence `1c5d32ac537d`;
+Flash-Next 16k staging off/on 1080.7 -> 1406.3 t/s with hash `a60a39e11133`; prefill-logit **mean KLD
+-0.000000 / same-top-p 100.0 %**; adaptive-MTP 4 axes + phase-switching **exactly equal to r84** (R 0.66461
+2374/3572, P 0.51005 482/945, C 0.76070 2489/3272, K 0.96262 412/428, phase 0.62752 1806/2878; mean len
+4.80 / 2.62 / 5.88 / 6.57 / 2.93); `MUL_MAT_ID` 947/947 (3/3 backends); two-slot concurrency unchanged
+(long prefill 880.9 t/s, long decode 49.3 alone -> 4.1 under the prefill stream, i.e. the scheduler);
+`-sm layer` loop-free; `check-gpu-faults.sh` clean; no `////`.  Not run: ROCm 7.14, gfx1100 / gfx1151,
+3-GPU, and the stock-relative `llama-batched-bench -npl 1,4,8` gate (no decode/mmvq kernel changed).
+
+**Also in this release:** the archived concurrency harness (`archive/work/prefill-arena-residency/tools/`)
+computed the repo root one level short after the campaign was archived, so scenario A could not find
+`prompts/prose-rdna-boosts.txt`; fixed while running it here.
+
 ## 261018.006 (r84) -- issue #183: the graph allocator only reuses its layout for the graph it was computed for (block 00)
 
 **Release `v12-097cf33d9-r84`**: base `097cf33d9`, canonical tip `adf90e2de`, net tree

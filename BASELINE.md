@@ -2,8 +2,12 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r83`** (canonical tip `ca236e6b5`, net tree
-`a130971754b5abfb4a153e6fd1144fd578f1154a`).  r83 promotes **prefill cache staging** from
+**`v12-097cf33d9-r85`** (canonical tip `a3e721ac3`, net tree
+`a121eb0fb443a928d42773b2035fda89ccbdcf36`).  r85 fixes the slab narrow band: it is learned from the real
+decode graph (**block 10**) and the prefill->decode drop reference takes the region actually observed
+(**block 09**), so an MTP decode view is no longer placed above the H2D staging ring and re-evicting the
+expert-cache arena every step (18 -> 1 re-arm, decode 23.6 -> 45.6 t/s, at 16k prefill 1443 -> 1406 t/s).
+Before it, r83 promotes **prefill cache staging** from
 `archive/work/prefill-arena-residency/` into **block 09** (the engine + the immutable prefill residency
 snapshot) and **block 10** (the `stage_from_cache` hook; it is block 10 that creates
 `ggml-cuda-moe-cache-hooks.cu`).  A whole-table staging copy now fills each expert from the cache arena

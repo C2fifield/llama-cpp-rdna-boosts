@@ -1,4 +1,4 @@
-From 80e7d3e0a693db2b5627d2a3393eddd69abb3569 Mon Sep 17 00:00:00 2001
+From 96dda4c7217324c345a15abe95aafee48c919f13 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -40,6 +40,13 @@ Measured (2x R9700 gfx1201, Qwen3.8-Flash-Next IQ4_NL 176.9B-A3B, `-sm tensor -n
 ctx): prefill 1092 -> 1436 t/s (16k-token prompt, `-ub 4096`), 583 -> 839 (`-ub 2048`), 1181 ->
 1585 (31.6k); `-sm layer` 742 -> 1269.  Staged H2D falls to 27% of the table (arena 46.6 GiB,
 71.9% residency).  Greedy text byte-identical to r82; prefill-logit mean KLD 0 / same-top-p 100%.
+
+Slab drop reference (r85): the prefill -> decode drop recorded the work region it had just re-reserved as
+its "settled narrow" reference, but that re-reserve is the `n_rs_batch` shape, narrower than the real MTP
+decode/verify graph.  Every following decode pass therefore looked "materially wider" and dropped again:
+measured one drop per decode step, 66 tables re-armed and ~3.65 GiB/device of arena evicted each time
+(decode 17-25 t/s instead of 45).  The reference is now max(work region observed before the drop, shape the
+drop re-reserved).
 ---
  common/arg.cpp                           |   21 +-
  common/common.cpp                        |   26 +
@@ -85,7 +92,7 @@ ctx): prefill 1092 -> 1436 t/s (16k-token prompt, `-ub 4096`), 583 -> 839 (`-ub 
  ggml/src/ggml-zdnn/ggml-zdnn.cpp         |    6 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp     |    6 +
  include/llama.h                          |   50 +
- src/llama-context.cpp                    |  318 +-
+ src/llama-context.cpp                    |  327 +-
  src/llama-context.h                      |   27 +
  src/llama-cparams.h                      |   11 +
  src/llama-ext.h                          |   11 +
@@ -100,7 +107,7 @@ ctx): prefill 1092 -> 1436 t/s (16k-token prompt, `-ub 4096`), 583 -> 839 (`-ub 
  src/llama.cpp                            |   16 +-
  tools/cli/cli.cpp                        |    6 +
  tools/llama-bench/llama-bench.cpp        |   65 +-
- 59 files changed, 13346 insertions(+), 384 deletions(-)
+ 59 files changed, 13355 insertions(+), 384 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cuh
  create mode 100644 ggml/src/ggml-cuda/ggml-cuda-vmm.h
@@ -14715,7 +14722,7 @@ index 0eab7fec5..2519ee713 100644
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 9b9f14297..caf54da1a 100644
+index 9b9f14297..aaeda58c2 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -462,9 +462,10 @@ llama_context::llama_context(
@@ -14811,7 +14818,7 @@ index 9b9f14297..caf54da1a 100644
  llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
      if (mctx && !mctx->apply()) {
          LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
-@@ -1693,6 +1738,183 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1693,6 +1738,192 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          return nullptr;
      }
  
@@ -14838,6 +14845,11 @@ index 9b9f14297..caf54da1a 100644
 +    // short-prompt workload.  Without a slab the classic wide-pass condition is kept, because there
 +    // reclaiming the wide layout is exactly what used to abort.
 +    bool drop_now = false;
++    // The work region actually observed before the drop.  The reference must be at least this: the narrow
++    // layout varies with the graph (the MTP decode/verify graph is wider than the `n_rs_batch` reserve the
++    // drop re-creates), and recording only the post-reserve size made every following pass look
++    // "materially wider" -- one drop per decode step, each evicting the band from the arena.
++    size_t drop_observed = 0;
 +    if (drop_enabled && sched && ubatch.n_tokens <= 8 && n_tokens_prev > 0 &&
 +            !model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
 +        bool any_slab = false;
@@ -14847,6 +14859,7 @@ index 9b9f14297..caf54da1a 100644
 +                continue;   // this device has no slab to reclaim the wide layout with
 +            }
 +            any_slab = true;
++            drop_observed = std::max(drop_observed, cur);
 +            const auto it = slab_narrow_boundary.find(kv.first);
 +            const size_t was = it == slab_narrow_boundary.end() ? 0 : it->second;
 +            // A material difference only: the narrow layout varies a little between a 1-token and a
@@ -14942,11 +14955,14 @@ index 9b9f14297..caf54da1a 100644
 +            }
 +        }
 +        // Record the work region's size AFTER the narrow re-reserve: that is the steady state this workload
-+        // settled on, and the value the next pass is compared against.
++        // settled on, and the value the next pass is compared against.  Take the MAX with the region
++        // actually observed before the drop, because the re-reserve here is not the widest narrow graph
++        // (`n_rs_batch` vs the MTP decode/verify layout).
 +        for (const auto & kv : model.moe_host_expert_bytes) {
 +            const size_t cur = ggml_backend_dev_slab_work_size(kv.first);
-+            if (cur > 0) {
-+                slab_narrow_boundary[kv.first] = cur;
++            const size_t settled = std::max(cur, drop_observed);
++            if (settled > 0) {
++                slab_narrow_boundary[kv.first] = settled;
 +            }
 +        }
 +        // OPEN 2 (TODO #42): re-arm the MoE expert-cache arena with the VRAM the wide layout just
@@ -14995,7 +15011,7 @@ index 9b9f14297..caf54da1a 100644
      auto * res = get_gf_res_prev();
      auto * gf  = res->get_gf();
  
-@@ -1762,6 +1984,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1762,6 +1993,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
  }
  
  int llama_context::encode(const llama_batch_ext & batch_inp) {
@@ -15008,7 +15024,7 @@ index 9b9f14297..caf54da1a 100644
      if (batch_inp.tokens.empty()) {
          LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
          return -1;
-@@ -2001,6 +2229,12 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+@@ -2001,6 +2238,12 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
  }
  
  int llama_context::decode(const llama_batch_ext & batch_inp) {
@@ -15021,7 +15037,7 @@ index 9b9f14297..caf54da1a 100644
      if (!memory) {
          LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
          return encode(batch_inp);
-@@ -2531,6 +2765,15 @@ uint32_t llama_context::output_reserve(int32_t n_outputs_l) {
+@@ -2531,6 +2774,15 @@ uint32_t llama_context::output_reserve(int32_t n_outputs_l) {
          // try to use the host buffer of the device where the output tensor is allocated for faster transfer to system memory
          auto * output_dev = model.dev_output();
          auto * output_dev_host_buft = output_dev ? ggml_backend_dev_host_buffer_type(output_dev) : nullptr;
@@ -15037,7 +15053,7 @@ index 9b9f14297..caf54da1a 100644
          if (output_dev_host_buft) {
              buft = output_dev_host_buft;
          }
-@@ -2863,6 +3106,7 @@ ggml_cgraph * llama_context::graph_reserve(
+@@ -2863,6 +3115,7 @@ ggml_cgraph * llama_context::graph_reserve(
          }
      }
      gf_res_prev_active = nullptr;
@@ -15045,7 +15061,7 @@ index 9b9f14297..caf54da1a 100644
  
      // store the n_outputs as it is, and restore it afterwards
      // TODO: not sure if needed, might simplify in the future by removing this
-@@ -3938,6 +4182,52 @@ void llama_context::perf_reset() {
+@@ -3938,6 +4191,52 @@ void llama_context::perf_reset() {
      // note: the reallocation counters are not reset - they track the lifetime totals for this context
  }
  
@@ -15098,7 +15114,7 @@ index 9b9f14297..caf54da1a 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3948,22 +4238,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3948,22 +4247,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -15139,7 +15155,7 @@ index 9b9f14297..caf54da1a 100644
          }
      }
      return ret;
-@@ -4120,6 +4426,7 @@ void llama_context::opt_epoch_iter(
+@@ -4120,6 +4435,7 @@ void llama_context::opt_epoch_iter(
  
              // the optimizer graph is allocated outside sched, so the next decode must rebuild
              gf_res_prev_active = nullptr;
@@ -15147,7 +15163,7 @@ index 9b9f14297..caf54da1a 100644
              res->reset();
  
              auto * gf = model.build_graph(gparams);
-@@ -4252,6 +4559,7 @@ llama_context_params llama_context_default_params() {
+@@ -4252,6 +4568,7 @@ llama_context_params llama_context_default_params() {
          /*.op_offload                  =*/ true,
          /*.swa_full                    =*/ true,
          /*.kv_unified                  =*/ false,

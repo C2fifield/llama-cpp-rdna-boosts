@@ -36,6 +36,31 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `upstream/`; the MTP draft context has the same shape and is expected to be protected (unverified: no MTP
 > head in the local GGUF).
 
+> **Current release `v12-097cf33d9-r85` (2026-10-18) -- the slab narrow band is learned from the real decode graph (blocks 09, 10):**
+> canonical tip `a3e721ac3`, net tree `a121eb0fb443a928d42773b2035fda89ccbdcf36`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended (the prefill -> decode drop
+> reference) and **Block 10** amended (the slab's narrow band).  No new block, no new env var.
+>
+> A field decode loop: on a host-expert MoE with MTP (`-ncmoe 46`, 131k ctx, `-b/-ub 6144`, n-max 6) the
+> first decode after a ~70k-token prefill evicted ~3.65 GiB/device of expert-cache arena every ~165 ms
+> (66 tables re-armed each time) at 17-25 t/s instead of ~45.  The always-resident narrow band was an
+> estimate taken before the first ring carve from a `split_only` reserve of the `n_rs_batch` shape
+> (**1792 MiB**), and `set_narrow_floor` cannot correct it afterwards because the ring's VA is frozen once
+> it holds blocks; the real MTP decode/verify graph needs **2304 MiB**, so `work_alloc` classified a decode
+> view as wide, placed it above the H2D staging ring and grew the boundary into the arena -- and the drop
+> then recorded the smaller reserve as its reference, so it repeated every step.  `work_alloc` now learns
+> the band from the real graph (a non-wide view is narrow even above the floor while no wide view is live;
+> the ring is idle there and is re-carved), keeps the above-the-ring placement while a wide view is live,
+> and reports a refused raise; the drop reference is `max(observed, re-reserved)`.  **18 -> 1 re-arm,
+> decode 23.6 -> 45.6 t/s (`-sm tensor`) / 35.5 (`-sm layer`)**, prefill unchanged at 74k.  Cost: 16k
+> prefill `-ub 4096` 1443 -> 1406 t/s, because the correctly sized band moves the ring up 512 MiB (disjoint
+> regions kept deliberately).  Reproduced on r82 and on r84 without the fix, so it is pre-existing.
+>
+> **Gates** (delivered tree `a3e721ac3`): dense coherence `1c5d32ac537d`, Flash-Next 16k hash
+> `a60a39e11133`, prefill-logit KLD 0 / 100 %, adaptive-MTP 4 axes + phase probe exactly equal to r84,
+> `MUL_MAT_ID` 947/947, two-slot concurrency unchanged, `-sm layer` loop-free, no GPU fault, no `////`.
+> Record: `../archive/work/slab-narrow-floor/`.
+
 > **Current release `v12-097cf33d9-r83` (2026-10-18) -- prefill cache staging: a staging copy uploads only the experts that are not already in the cache arena (blocks 09, 10):**
 > canonical tip `ca236e6b5`, net tree `a130971754b5abfb4a153e6fd1144fd578f1154a`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended (the engine:

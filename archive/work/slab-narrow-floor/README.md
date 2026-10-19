@@ -1,8 +1,10 @@
-# `0013-slab-narrow-floor` — the narrow band is measured from the wrong graph (candidate, NOT in the delivery)
+# `slab-narrow-floor` — the narrow band is measured from the wrong graph (promoted in r85)
 
-**Status: 2026-10-18 — fix implemented and measured on gfx1201 (2× R9700). Staged against the r83 tree
-(`v12-097cf33d9-r83`, tree `a1309717…`) to be folded into the block set after r84 lands. Nothing here is
-in `patches/`, `release.json` or `rdna-boosts-all.patch`.**
+**Status: PROMOTED (r85, 2026-10-18) — folded into block 09 + block 10 and shipped in
+`v12-097cf33d9-r85`; record kept here for reference.**  It was staged as a candidate against the r83 tree
+while the r84 block-00 fix landed, then re-cut onto the r84 base (both per-block diffs applied clean) and
+re-validated there.  Measured on the r84 base: **r84 alone still loops** (18 re-arms, 23.4 t/s), with this
+fix 1 re-arm and 45.6 t/s.  See `WORKLOG.md` 261018.007.
 
 | | |
 |---|---|
@@ -81,7 +83,7 @@ prefill-logit **mean KLD −0.000000 / same-top-p 100.0 %**; adaptive-MTP 4 axes
 **exactly equal** to r83 (R 0.66461, P 0.51005, C 0.76070, K 0.96262, phase 0.62752; mean len
 4.80/2.62/5.88/6.57/2.93); `-sm layer` and `-sm tensor` both clear.
 
-## Rebase onto r84 (when it lands)
+## Rebase onto r84 (done — this is how it was folded in)
 
 r84 carries a block-00 fix; this candidate is cut against r83.  To fold it in:
 
@@ -97,7 +99,7 @@ git rebase -i <block08>   # edit block 09: git apply block09-llama-context-drop-
 Both diffs are against the r83 tree; block 00's change is not expected to touch either hunk, but if it
 does, re-cut them by hand (the two hunks are small and self-contained).
 
-## Testing it now (without promoting)
+## Testing the candidate (historical)
 
 ```bash
 cd <fresh apply-all checkout at r83>

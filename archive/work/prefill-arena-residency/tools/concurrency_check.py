@@ -24,8 +24,8 @@ import threading
 import time
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(os.path.dirname(ROOT))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # archive/work/<campaign>
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(ROOT)))       # repository root (prompts/)
 LLAMA = os.environ.get("LLAMA_DIR", "/home/stew675/llama.cpp")
 SERVER = os.path.join(LLAMA, "build-rocm/bin/llama-server")
 MODEL_DIR = "/llm/models/Qwen3.8/Flash-Next/IQ4_NL"

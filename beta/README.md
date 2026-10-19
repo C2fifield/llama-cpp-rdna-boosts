@@ -35,20 +35,6 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
 
 ## Current candidates
 
-* **`0013-slab-narrow-floor`** — **candidate, 2026-10-18 (pending the r84 base).**  Fixes a degenerate
-  slab eviction loop on host-expert MoE + MTP decodes: the always-resident narrow band was estimated from
-  a `split_only` `n_rs_batch` reserve (1792 MiB) and frozen once the ring held blocks, so the wider MTP
-  decode/verify graph (2304 MiB) was classified *wide*, placed above the H2D staging ring, and evicted
-  3.65 GiB/device of arena — and the prefill→decode drop then recorded the smaller reserve as its
-  reference, so it repeated **every decode step** (66 tables re-armed, 18 cycles ≈ 3 s at 17–25 t/s vs
-  45).  Reproduced identically on **r82** (pre-existing, not an r83 regression); scales with the draft
-  depth (n-max 6 → 18 cycles, n-max 2 → 2, no MTP → 0).  The candidate learns the band from the real
-  graph (`work_alloc`), reports a refused raise instead of dropping it silently, and takes the drop
-  reference as `max(observed, re-reserved)`.  Measured: **1** re-arm, decode **45.4 t/s** (`-sm tensor`)
-  / **35.8** (`-sm layer`), prefill unchanged at 74k tokens; 16k prefill −2.2 % (the correctly sized band
-  moves the ring up 512 MiB).  Folds into **block 10** (slab) + **block 09** (drop reference) once the
-  r84 block-00 fix lands; see `beta/0013-slab-narrow-floor/README.md`.
-
 * **`0012-slab-transient-absorption`** — **BETA 2, 2026-10-18.**  Absorbs the slab's outside transients
   into the slab, loads the MTP **draft model before** the target context so the outside reserve is
   *measured* instead of predicted, makes a graph capture impossible while the wide band is armed, and
