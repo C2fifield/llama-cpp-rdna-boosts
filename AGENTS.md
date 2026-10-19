@@ -265,12 +265,19 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   on the below-gate path (35B-A3B, gemma4, Flash-Next GSQ).  A side stream is only safe with an explicit
   wait on the main stream recorded *before* this upload; the gather has no such need (it must wait for
   the reused-buffer read anyway).
-- **The async graph-input ring (`GGML_CUDA_ASYNC_INPUT`) is opt-in and is not deterministic when the
-  consumer is a captured HIP graph** (r69; re-characterised at r89).  `-ub 8`/`-ub 1` self-KLD
-  comparisons diverge with `n_seq = 1`; `-ub 512`, `GGML_CUDA_DISABLE_GRAPHS=1` and a stream sync at the
-  copy->graph boundary are bit-identical.  Its batched uploads (`GGML_CUDA_ASYNC_INPUT_BATCH`, default on
-  inside the opt-in path, r89/PR #182) are worth +4.6 % on 2-GPU MoE decode but *widen* that window.  Do
-  not flip `GGML_CUDA_ASYNC_INPUT` default-on until `wip/async-input-graph-ordering/` (TODO #73) is fixed.
+- **The async graph-input ring (`GGML_CUDA_ASYNC_INPUT`) is opt-in and a run is not start-to-start
+  deterministic when the consumer is a captured HIP graph** (r69; re-characterised 2026-10-19).  `-ub 8`
+  and `-ub 1` self-KLD comparisons diverge with `n_seq = 1`; `-ub 512` and `GGML_CUDA_DISABLE_GRAPHS=1`
+  are bit-identical.  **The cause is NOT the ring**: the uploads verify byte-correct at the graph's first
+  read, HIP's wait-before-replay / event-after-replay ordering is correct, and consecutive graphs do not
+  overlap — so the async path is the *trigger* (it removes the per-copy host block), not the defect.
+  Every control that "fixes" it only slows the host, including a delay *after* the launch; the remaining
+  suspect is inside one graph's execution (top lead: the scheduler's cross-backend split hand-off around
+  a captured graph, `splits = 2` even on one GPU).  Its batched uploads
+  (`GGML_CUDA_ASYNC_INPUT_BATCH`, default on inside the opt-in path, r89/PR #182) are worth +4.6 % on
+  2-GPU MoE decode but are an *amplifier* of that exposure.  Do not flip `GGML_CUDA_ASYNC_INPUT`
+  default-on until `wip/async-input-graph-ordering/` (TODO #73) is fixed.  Evidence:
+  `wip/async-input-graph-ordering/FINDINGS-2026-10-19.md`.
 - **The op-offload H2D staging ring (V2.0 block 09; old block 06, r12) has three invariants:** (1) prefill is never
   CUDA-graph captured, so a redirected split input that reaches a copy path aborts (tripwire asserts
   this); (2) the width gate is floored at **64 tokens**; (3) the arena lives **outside** the

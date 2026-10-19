@@ -1,5 +1,48 @@
 # WORKLOG - dated delivery records
 
+## 261019.006 (no release) -- correction: the async-input nondeterminism is not the ring; first campaign session
+
+**No delivery change.**  `release.json` stays `v12-097cf33d9-r89`; no patch, block or `release.json` byte
+changes.  This entry corrects the *cause* recorded in 261019.004 (the fold) and in the block-10 code
+comment, and records the first debugging session of `wip/async-input-graph-ordering/`.
+
+**Correction.**  261019.004 said the missing piece was "the transfer -> graph-replay completion
+dependency" (i.e. the ring's uploads landing after the replay read them).  That is **withdrawn**.  With
+the scratch instrumentation preserved as `wip/async-input-graph-ordering/tools/DEBUGBUILD.patch`:
+
+- a D2H snapshot of each upload destination, taken on the compute stream **immediately after
+  `ggml_cuda_async_input_wait()`** (exactly where the graph's first read happens), matched the uploaded
+  bytes in **1024 / 1024** cases with no intervening device sync;
+- the ring bookkeeping is consistent (`wait` sees `pending` every time, one thread, one stream pair) and
+  `hipEventQuery(done_ev)` reports the previous graph **complete** at all 14227 uploads, i.e. consecutive
+  graphs do not overlap in this workload at all;
+- the per-graph host writes are only the async ring (verified) and the main-stream
+  `set_tensor_2d_async` splice-gather; the sync-path `set_tensor` calls are model-weight loads at startup;
+- HIP's primitives are correct in two standalone reproducers (`tools/ain_hip_test{,2}.cpp`): a
+  `hipStreamWaitEvent` before `hipGraphLaunch` orders the replay, and an event recorded after the launch
+  covers the replay's execution, including a slow graph with the host running several graphs ahead;
+- **every** switch that made the run deterministic only slows the host -- a host delay *before* **or
+  *after* the launch**, `AIN_SYNC_SET/COPY/COMPUTE/DEVICE`, and the scheduler synchronize before
+  `set_inputs`.  So none of them is a diagnosis, and the effect is global host speed, not a copy->launch
+  window;
+- not GDN (dense 27B diverges identically), not the fusions (`GGML_CUDA_DISABLE_FUSION=1` still diverges),
+  not the per-thread default stream (`AIN_EXPL_STREAM` still diverges), not the r25 graph-lifetime
+  machinery (`GRAPH_MEM_GEN=0`, `HIP_GRAPH_FORCE_UPDATE=1` still diverge).
+
+Per-graph output checksums differ in a *bounded* region (graphs 97-128 and 289-298 of 299) and
+re-converge, which a diverged KV write could not do.  Combined with the absence of inter-graph overlap,
+the remaining difference is produced **inside a single graph's execution**; the top suspect is the
+scheduler's cross-backend split hand-off (`graph: nodes = 2025, splits = 2` on one GPU), i.e. the host
+not waiting for a device signal at a split boundary.  Next steps are in
+`wip/async-input-graph-ordering/FINDINGS-2026-10-19.md`.
+
+**Consequences recorded.**  `AGENTS.md` and `ENVIRONMENT.md` now say the async path is the trigger, not
+the defect.  The one-line block-10 code comment in the r89 tree still carries the withdrawn wording and
+should be fixed in the next block-10 amendment (it is a comment only, so it does not affect behaviour).
+PR #182's batching remains an amplifier of the exposure (85-90 % vs 96 % same-top-p), which is why it is
+documented as such rather than reverted.  Campaign record: `wip/async-input-graph-ordering/`
+(FINDINGS-2026-10-19.md, tools/, TODO #73).
+
 ## 261019.005 (r89) -- record the publication (tag, CI, fork refresh, worker image build, PR #182 closed as folded)
 
 **No delivery change.**  `release.json` stays `v12-097cf33d9-r89` (release commit `06b58a5`); this entry
