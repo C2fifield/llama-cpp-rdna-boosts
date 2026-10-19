@@ -3,7 +3,9 @@
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
 **`v12-097cf33d9-r85`** (canonical tip `a3e721ac3`, net tree
-`a121eb0fb443a928d42773b2035fda89ccbdcf36`).  r85 fixes the slab narrow band: it is learned from the real
+`a121eb0fb443a928d42773b2035fda89ccbdcf36`).
+`main` also carries the **untagged r86 candidate** (block 10: the band test is `ring_armed`;
+tree `f6f55ffc…`, no tag yet).  r85 fixes the slab narrow band: it is learned from the real
 decode graph (**block 10**) and the prefill->decode drop reference takes the region actually observed
 (**block 09**), so an MTP decode view is no longer placed above the H2D staging ring and re-evicting the
 expert-cache arena every step (18 -> 1 re-arm, decode 23.6 -> 45.6 t/s, at 16k prefill 1443 -> 1406 t/s).

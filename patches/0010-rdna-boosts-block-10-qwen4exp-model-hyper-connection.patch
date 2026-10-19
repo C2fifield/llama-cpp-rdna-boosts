@@ -1,4 +1,4 @@
-From 0e84693f5ce9d0163dd5f40bddb4afc946481e87 Mon Sep 17 00:00:00 2001
+From dbdbfe0a9005fe5c2cba0c5361b987281847da80 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -81,6 +81,15 @@ A refused raise is reported instead of dropped silently.
 Measured (2x R9700, Flash-Next IQ4_NL -ncmoe 46, 131k ctx, -b/-ub 6144, MTP n6): 18 -> 1 re-arm, decode
 23.6 -> 45.4 t/s (-sm tensor) / 35.8 (-sm layer), prefill unchanged; cost: 16k prefill 1443 -> 1411 t/s
 (-2.2 %) because the correctly sized band moves the ring up 512 MiB.
+
+The "may the band move" test is `ring_armed` alone: a live WIDE view is the only thing that makes the ring
+region part of the reserved layout (`ring_armed` is set exactly when the boundary covers the carved ring).
+`ring_used` is a bump cursor that stays at the end after a prefill, and `boundary > narrow_floor` is true
+for an unrelated narrow view one chunk above the floor; treating either as "the ring may not move" left
+the band unlearned on a single device -- measured gfx1100 `-ncmoe 40`: floor 1280 MiB against a 1536 MiB
+decode view, one arena eviction per prefill -> decode transition.  With this test the band is learned
+there too (floor 1280 -> 1536, view placed at base 0, no eviction) and the two gfx1100 greedy hashes are
+unchanged.
 ---
  common/arg.cpp                                |    3 +-
  ggml/include/ggml-alloc.h                     |   13 +
@@ -114,7 +123,7 @@ Measured (2x R9700, Flash-Next IQ4_NL -ncmoe 46, 131k ctx, -b/-ub 6144, MTP n6):
  ggml/src/ggml-cuda/ggml-cuda-arena.cuh        |   11 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cu    |  256 +
  .../ggml-cuda/ggml-cuda-moe-cache-hooks.cuh   |   26 +
- ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1257 +++++
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu          | 1263 +++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu      | 2540 +++++++++
  ggml/src/ggml-cuda/ggml-cuda-try-fuse.cuh     |   34 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |   15 +
@@ -186,7 +195,7 @@ Measured (2x R9700, Flash-Next IQ4_NL -ncmoe 46, 131k ctx, -b/-ub 6144, MTP n6):
  tests/test-llama-archs.cpp                    |   12 +-
  tests/test-logits-width-probe.cpp             |   44 +-
  tools/server/server-context.cpp               |   24 +
- 104 files changed, 20498 insertions(+), 4975 deletions(-)
+ 104 files changed, 20504 insertions(+), 4975 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cu
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa.cuh
  create mode 100644 ggml/src/ggml-cuda/fattn-qsa3.cu
@@ -4872,10 +4881,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..601e35914
+index 000000000..005fff439
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1257 @@
+@@ -0,0 +1,1263 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -5844,8 +5853,14 @@ index 000000000..601e35914
 +        // 66 tables re-armed and ~3.65 GiB/device evicted per decode step, decode 17 t/s instead of 40+.
 +        // While a wide view IS live the ring VA must not move, so that case keeps the above-the-ring
 +        // placement (a later decode pass drops the wide view first, then the band grows here).
-+        const bool   ring_live = s.narrow_floor > 0 && (s.boundary > s.narrow_floor || s.ring_armed);
-+        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!ring_live || need <= s.narrow_floor);
++        // A live wide view is the only thing that makes the ring region part of the reserved layout:
++        // `ring_armed` is set exactly when the boundary covers the carved ring.  `ring_used` is NOT a
++        // usable test (it is a bump cursor that stays at the end after a prefill) and neither is
++        // `boundary > narrow_floor` (the boundary can sit a chunk or two above the floor for an
++        // unrelated narrow view) -- treating either as "the ring may not move" stopped the band from
++        // being learned on a single device: measured gfx1100 `-ncmoe 40`, floor 1280 MiB against a
++        // 1536 MiB decode view, one arena eviction per prefill -> decode transition.
++        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!s.ring_armed || need <= s.narrow_floor);
 +        if (narrow && need > s.narrow_floor) {
 +            // Learn the band from the real graph: the floor is estimated before the first carve from a
 +            // reserve that is not necessarily the widest narrow layout (the `n_rs_batch` probe measures

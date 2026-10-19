@@ -21450,10 +21450,10 @@ index 000000000..5879c8de3
 +size_t ggml_backend_cuda_h2d_stage_bound(ggml_backend_t backend, size_t max_table);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
 new file mode 100644
-index 000000000..601e35914
+index 000000000..005fff439
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
-@@ -0,0 +1,1257 @@
+@@ -0,0 +1,1263 @@
 +// Movable-boundary slab (OPEN 2 / r42): the per-device VMM reserve + work/arena boundary move.
 +// Split out of ggml-cuda.cu (an upstream hub); the API is declared in ggml-cuda-vmm.h.
 +
@@ -22422,8 +22422,14 @@ index 000000000..601e35914
 +        // 66 tables re-armed and ~3.65 GiB/device evicted per decode step, decode 17 t/s instead of 40+.
 +        // While a wide view IS live the ring VA must not move, so that case keeps the above-the-ring
 +        // placement (a later decode pass drops the wide view first, then the band grows here).
-+        const bool   ring_live = s.narrow_floor > 0 && (s.boundary > s.narrow_floor || s.ring_armed);
-+        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!ring_live || need <= s.narrow_floor);
++        // A live wide view is the only thing that makes the ring region part of the reserved layout:
++        // `ring_armed` is set exactly when the boundary covers the carved ring.  `ring_used` is NOT a
++        // usable test (it is a bump cursor that stays at the end after a prefill) and neither is
++        // `boundary > narrow_floor` (the boundary can sit a chunk or two above the floor for an
++        // unrelated narrow view) -- treating either as "the ring may not move" stopped the band from
++        // being learned on a single device: measured gfx1100 `-ncmoe 40`, floor 1280 MiB against a
++        // 1536 MiB decode view, one arena eviction per prefill -> decode transition.
++        const bool   narrow   = s.narrow_floor > 0 && !ring_wide && (!s.ring_armed || need <= s.narrow_floor);
 +        if (narrow && need > s.narrow_floor) {
 +            // Learn the band from the real graph: the floor is estimated before the first carve from a
 +            // reserve that is not necessarily the widest narrow layout (the `n_rs_batch` probe measures

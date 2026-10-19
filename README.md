@@ -17,6 +17,8 @@ re-use the MoE expert cache (a staging copy uploads only the experts not already
 on a `-ncmoe` host-expert model), fixes the slab's always-resident narrow band so an MTP decode no longer
 re-evicts the expert-cache arena every step (decode 23 -> 46 t/s on the reported config), and carries r84's
 graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's rope + FWHT / GDN norm work.
+`main` additionally carries the **untagged r86 candidate** (block 10: the slab band test is `ring_armed`,
+which learns the band on single-device RDNA3 too); see `WORKLOG.md` 261018.009.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

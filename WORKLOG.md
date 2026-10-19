@@ -1,5 +1,33 @@
 # WORKLOG - dated delivery records
 
+## 261018.009 (r86 candidate) -- the band test is `ring_armed`, not "boundary above the floor" (block 10; NOT tagged)
+
+**Not a release: `patches/`, `rdna-boosts-all.patch` and `release.json` are regenerated for the r86
+candidate (`tip 0190f6d96`, tree `f6f55ffc…`) but no tag is cut** -- the tag is cut with the maintainer's
+incoming PR merge, which picks this up.  One-hunk refinement of r85's fix, in **block 10**.
+
+**Why.**  r85 gated the band learning on `boundary > narrow_floor || ring_armed`.  The gfx1100 `-ncmoe 40`
+trace (`fingon`, RX 7900 XTX, ROCm 10.1.0) shows why that is too strict: the boundary sits one chunk above
+the floor for an unrelated narrow view (floor 1280 MiB, boundary 1536 MiB), so a **1536 MiB decode view**
+was still classified wide and placed above the ring (`ret_off` = 1280 + 4160 = 5440 MiB), costing one arena
+eviction per prefill -> decode transition (milder than the gfx1201 loop, same class).  The correct test is
+**`ring_armed` alone**: it is set exactly when the boundary covers the carved ring, i.e. when a live wide
+(prefill) view actually owns the ring region.  `ring_used` is not usable either -- it is a bump cursor that
+stays at the end after a prefill.
+
+**Measured.**  gfx1100 (`-ncmoe 40`, Q5_K_M, 15.8k prompt, MTP n4): before the refinement, floor 1280 /
+view 1536 -> above the ring, 1 eviction at the transition; after, **floor 1280 -> 1536 (learned), view at
+base 0**, one eviction during the prefill (the wide view taking chunks) and **one re-arm at the normal drop,
+nothing after it**; decode 89.3 t/s, prefill 3146 t/s; the two greedy references are **unchanged**
+(`Qwen3.8-27B-UD-Q4_K_M` 1034 chars `5380385a9fc4`, `Qwen3.6-35B-A3B-UD-Q4_K_M` 1020 chars
+`b4f211677394`).  gfx1201 (the reported loop config): still **1** re-arm, decode **43.8 t/s**, prefill
+1494 t/s; 16k prefill 1079.9 -> 1406.1 t/s with hash `a60a39e11133`; dense coherence `1c5d32ac537d`;
+prefill-logit **KLD 0 / 100 %**.
+
+**State.**  `release.json` names `v12-097cf33d9-r86` with tip `0190f6d96` / tree `f6f55ffc…` and
+`validate-set.sh` is green on it (strict 12/12, tree matches); no tag, no GitHub release, and the personal
+fork's `rdna-boosts` branch still points at the released r85 chain (`a3e721ac3`) until r86 is cut.
+
 ## 261018.008 (r85) -- gfx1100 cross-check: r85 is text-identical to r84 and the narrow-band loop does not occur on RDNA3
 
 **No delivery change** (`release.json`, `patches/` and the tag are unchanged).  Independent validation of
@@ -34,6 +62,15 @@ available after the 8192 MiB reserve ... the experts will STREAM"), i.e. a gfx11
 one 24 GB card gets the streaming path unless they lower `GGML_CUDA_SLAB_HEADROOM_MIB` /
 `MOE_EXPERT_CACHE_AUX_RESERVE_MIB` (1024/1024 was used on both arms here).  Worth a note in the
 `-ncmoe` guidance for 24 GB cards; not caused by r85 and not changed by it.
+
+**Correction (same day, after a bench on the same box).**  The paragraph above overstates the reserve
+finding: `llama-bench -fa 1 -m <Q5_K_M> -ctv q8_0 -ctk q8_0 -ncmoe 40` runs fine on fingon at the **stock**
+8 GiB reserve.  What does not fit is a *partially* offloaded config (`-ncmoe 24` on the Q4_K_M, or the
+25 GiB Q5_K_M at `-ncmoe 16`), where the GPU still holds enough expert bytes that the free VRAM after
+weights/KV cannot cover `reserve + work + ring + arena floor`.  With `-ncmoe 40` the slab arms normally
+(free 20.58 GiB, arena 11 067 MiB, 48.8 % residency) and the expert cache is active, so "24 GB cards
+cannot use the cache" is wrong -- the correct statement is "lower the reserve (or offload more layers)
+when the slab does not fit", which the existing error message already says.
 
 **Not validated:** gfx1151 (unified memory - host-expert offload is not meaningful there, so the slab path
 is not exercised), ROCm 7.14 for this release (the box's 7.14 tree was superseded by 10.1.0), and 3-GPU.

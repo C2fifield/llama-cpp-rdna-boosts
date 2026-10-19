@@ -36,6 +36,16 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `upstream/`; the MTP draft context has the same shape and is expected to be protected (unverified: no MTP
 > head in the local GGUF).
 
+> **Untagged r86 candidate on `main` (2026-10-18) -- block 10: the slab band test is `ring_armed`:**
+> **not a release.**  `patches/`, `rdna-boosts-all.patch` and `release.json` are regenerated for
+> `tip 0190f6d96` / tree `f6f55ffc…` (`validate-set.sh` green, strict 12/12) and no tag is cut; the tag comes
+> with the maintainer's next merge.  One hunk: r85 gated the band learning on `boundary > narrow_floor ||
+> ring_armed`, which is too strict -- the boundary can sit one chunk above the floor for an unrelated narrow
+> view (gfx1100: floor 1280 MiB, boundary 1536 MiB), so a 1536 MiB decode view was still pushed above the
+> ring.  `ring_armed` alone is the correct test (it is set exactly when a live wide view owns the ring
+> region).  gfx1100: the band is now learned (1280 -> 1536), no post-drop evictions, greedy text unchanged;
+> gfx1201 loop config unchanged (1 re-arm, 43.8 t/s).  See `../WORKLOG.md` 261018.009.
+
 > **Current release `v12-097cf33d9-r85` (2026-10-18) -- the slab narrow band is learned from the real decode graph (blocks 09, 10):**
 > canonical tip `a3e721ac3`, net tree `a121eb0fb443a928d42773b2035fda89ccbdcf36`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended (the prefill -> decode drop
