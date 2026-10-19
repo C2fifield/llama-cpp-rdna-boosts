@@ -5,9 +5,16 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r87`** (canonical tip `441b38fbc`, net tree
-`76a17b4b059d808fa24631ea249fc1308238cad2`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r87 fixes the **r86 second-request regression**: r85's
+**`097cf33d9`**, released as **`v12-097cf33d9-r88`** (canonical tip `f2e884648`, net tree
+`04d37db108a01e04efa94bbdc77a2eb37eb1713d`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r88 folds the **RDNA2 (gfx1030) FA gate fixes** of PR #181
+(`@slavap`) into **block 05**: the bf16-to-F16 staging scratch was not reserved (the tile case chooser
+instantiates F16 wherever native BF16 tensor cores are absent), the decode/verify band was the only tile
+launch site that omitted the `q_h2` argument (a wide RDNA2 kernel then read Q from an unallocated buffer,
+GQA-16 decode shapes, fault near 0x1000), and the `ncols2 > 1` last-tile load needed a 511-row guard tail
+after each converted operand (reserved on RDNA2 only).  gfx1201/gfx1100/gfx1151: greedy text identical,
+prefill-logit 0.000000 / 100.000 % (and -0.000000 / 100.000 % on the other two).  Before it, r87 fixes
+the **r86 second-request regression**: r85's
 `slab_narrow_boundary` recorded the wide prefill region, so an equally-wide second prefill never dropped
 the wide compute layout or re-armed the arena (decode ~half speed from request 2, and a GPU page fault by
 request 5).  **Block 09** now forces the drop on every wide -> narrow transition while keeping r85's

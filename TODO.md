@@ -6,10 +6,15 @@ closed and retired work lives in `WORKLOG.md` and the dated records it points to
 live here — they live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`,
 `GREEDY-PURITY.md`, `wip/*` and `benchmarks/`.
 
-**Current state (release `v12-097cf33d9-r75`, 2026-10-16):** the delivery is the **12-block V2.0 set**
-against fork point **`097cf33d9`**, canonical tip `ca33b8647`, net tree
-**`8add179f9ddcc33e87e576a38670745f39aa96f0`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
-reproduces the tree).  r75 fixes a release blocker exposed by r74 (the wide/H2D-ring alias: the wide
+**Current state (release `v12-097cf33d9-r88`, 2026-10-19):** the delivery is the **12-block V2.0 set**
+against fork point **`097cf33d9`**, canonical tip `f2e884648`, net tree
+**`04d37db108a01e04efa94bbdc77a2eb37eb1713d`** (`validate-set.sh` green; `apply-all.sh` on a fresh clone
+reproduces the tree).  r88 folds the RDNA2 (gfx1030) FA gate fixes of PR #181 into **block 05** (bf16
+scratch sizing, the decode-band `q_h2` launch argument, a gated last-tile guard tail); see `WORKLOG.md`
+261019.003.  Items 71/72 are its follow-ups.  Before it, r87 forced the post-prefill drop on a wide ->
+narrow transition (block 09), r86 folded the two promotion candidates, r85 learned the slab narrow band
+from the real decode graph.  **Older state (r75, 2026-10-16):** r75 fixed a release blocker exposed by r74
+(the wide/H2D-ring alias: the wide
 prefill compute view was placed from the live ring request instead of the carved region, so on a
 host-expert model with MTP the first prefill faulted; blocks 10/11); see `WORKLOG.md` 261016.010.  r74
 (the warmup arena sizing + seed floor) and r73 (unified heat-map sidecar) were **internal pre-release
@@ -58,6 +63,29 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 #42, #44/#39/#38, and now #35) are in `WORKLOG.md` as well.  See `AGENTS.md` for the policy layer.
 
 ## Active (kept compact: only what this repo will work on next)
+
+### 71. Share the tile K/V type selection between the chooser and the allocator — CORRECTNESS (open, small)
+
+**Opened 2026-10-19 while folding PR #181.**  The tile kernel's K/V type is decided twice by hand:
+`ggml_cuda_flash_attn_ext_tile_case_type` (`fattn-tile.cu`, the instantiation) and
+`ggml_cuda_flash_attn_ext_get_alloc_size` (`fattn.cu`, the F16 scratch the launcher may stage into).  They
+have now drifted three times: the missing q4_0 arm (wasted whole-cache scratch), the mixed-K/V NaNs (the
+kernel read a staging buffer `need_f16_K == false` had left unwritten), and the RDNA2 bf16 case (scratch
+missing entirely, the whole-cache converter wrote past the node).  Extract one
+`ggml_cuda_fattn_tile_type(K, V, cc)` (bf16 under `bf16_mma_hardware_available`, else the native dequant
+arm, else F16) and have both call it, so "the allocator and the launcher agree" is a property of the code
+instead of a comment.  Touches block 05 only; needs the FA coherence + prefill-logit gates.
+
+### 72. The unchecked `ncols2 > 1` tile load can over-read a natively-read K/V operand — CORRECTNESS (open, RDNA2)
+
+**Opened 2026-10-19 while folding PR #181; reported to `@slavap` for follow-up.**  The r88 guard tail
+reserves 511 rows after each *converted* F16 operand, which covers the last-tile over-read for the staged
+path.  A natively-read operand (an f16 KV cache) in the same branch (`oob_check = false` for the last tile
+on every backend) still reads up to `nbatch_fa - 1` rows past the KV **view**.  In a real model that stays
+inside the KV cache allocation (one tensor per cache), so it is not a field issue; it is exposed only by
+an exact-size tensor as in `test-backend-ops`, where it can read into the neighbouring allocation.  Options:
+extend the guard to the native path (pad the cache view or mask the tail), or take the checked tail for
+the last tile on RDNA2 and measure the register cost the original change avoided.  Block 05.
 
 ### 69. Fold the `ggml-backend-meta` hot-path code motion into block 00 at the next revision — PERFORMANCE (**CLOSED r86**)
 

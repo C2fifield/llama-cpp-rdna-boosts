@@ -2,8 +2,11 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r87`** (canonical tip `441b38fbc`, net tree
-`76a17b4b059d808fa24631ea249fc1308238cad2`).  r87 fixes the **r86 second-request regression**: r85's
+**`v12-097cf33d9-r88`** (canonical tip `f2e884648`, net tree
+`04d37db108a01e04efa94bbdc77a2eb37eb1713d`).  r88 folds @slavap's RDNA2 (gfx1030) FA gate fixes
+(PR #181) into **block 05** -- bf16 F16-staging scratch sizing, the decode-band `q_h2` launch argument,
+and an RDNA2-gated last-tile guard tail -- with no re-base and no new block.  Before it, r87 fixes the
+**r86 second-request regression**: r85's
 drop reference recorded the wide prefill region, so an equally-wide second prefill never dropped the wide
 compute layout or re-armed the arena (decode ~half speed from request 2, GPU page fault by request 5).
 **Block 09** now forces the drop on every wide -> narrow transition; a 10-prompt field series runs

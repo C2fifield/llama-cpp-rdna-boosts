@@ -11,6 +11,30 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r88` (2026-10-19) -- RDNA2 (gfx1030) FA gate fixes folded into block 05 (PR #181, `@slavap`):**
+> canonical tip `f2e884648`, net tree `04d37db108a01e04efa94bbdc77a2eb37eb1713d`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 05** amended, no new block, no new
+> environment variable.  Three defects made `test-backend-ops -o FLASH_ATTN_EXT` abort with an illegal
+> memory access on gfx1030 (Radeon Pro V620) and blocked `MUL_MAT` behind it: (1) `get_alloc_size` mapped
+> `FATTN_KV_NATIVE_BF16` to BF16 although the tile case chooser instantiates **F16** without native BF16
+> tensor cores, so the whole-cache converter wrote past the node's allocation (same latent mismatch on
+> RDNA1 and pre-Ampere NVIDIA / older MUSA); (2) the decode/verify band (`Q->ne[1] <= 8`) was the only one
+> of the seven tile launch sites that omitted the `q_h2` argument, so a wide RDNA2 kernel (`DKQ <= 256`,
+> `ncols >= 16`) read Q from an unallocated `Q_h2` buffer (GQA-16 decode shapes, fault near 0x1000);
+> (3) the `ncols2 > 1` tile branch loads its last tile without out-of-bounds checks, so a 511-row guard
+> tail is now reserved after each converted F16 operand -- **gated on `GGML_CUDA_CC_IS_RDNA2`** (maintainer
+> decision; the PR applied it everywhere), so every other backend keeps its allocation sizes exactly.
+>
+> **Gates** (same delivery tree `76a17b4b` with and without the fold): gfx1201, gfx1100 and gfx1151 all
+> same-seed greedy **text identical**, prefill-logit **0.000000 / 100.000 %** (gfx1201) and
+> **-0.000000 / 100.000 %** (gfx1100, gfx1151), `FLASH_ATTN_EXT` OK on both arms; gfx1201 additionally
+> identical text with `-ctk/-ctv` f32 (the only off-RDNA2 config where the guard tail is active), bf16 and
+> q8_0 over a ~600-token prefill.  RDNA2 evidence is the reporter's (ROCm 7.2.4, V620 `FLASH_ATTN_EXT`
+> 6389/6389 + `MUL_MAT` 2444/2444, 7900 XTX the same): gfx1030 cannot be compiled on our boxes at all,
+> with or without this change (both local ROCm trees fail gfx1030 codegen with an undeclared
+> `__builtin_elementwise_exp10`, verified on the pristine tree).  Record: `../WORKLOG.md` 261019.003;
+> follow-ups `../TODO.md` #71/#72.  The PR's own `patches-rdma2/` add-on packaging is **not** taken.
+
 > **Current release `v12-097cf33d9-r84` (2026-10-18) -- issue #183: the graph allocator only reuses its layout for the graph it was computed for (block 00):**
 > canonical tip `adf90e2de`, net tree `c381b74523086cc5db90632f54e7abd2c5f2e392`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** amended, no new block, **no new

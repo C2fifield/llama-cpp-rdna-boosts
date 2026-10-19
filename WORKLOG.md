@@ -1,5 +1,79 @@
 # WORKLOG - dated delivery records
 
+## 261019.003 (r88) -- RDNA2 (gfx1030) FA gate fixes folded into block 05 (PR #181)
+
+**Release `v12-097cf33d9-r88`**: base `097cf33d9`, canonical tip `f2e884648`, net tree
+`04d37db108a01e04efa94bbdc77a2eb37eb1713d`, **12 blocks** (no new block; **block 05** amended).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).  **No new environment
+variable.**
+
+**Provenance.**  Folds `@slavap`'s PR #181 (`rdna2-fa-r81`), a three-bug fix for the
+`test-backend-ops -o FLASH_ATTN_EXT` abort on gfx1030 (Radeon Pro V620: "ROCm error: an illegal memory
+access", RC=134, with `MUL_MAT` blocked behind it).  The PR's own packaging (`patches-rdma2/`,
+`release-rdma2.json`, `scripts/apply-rdma2.sh`) is **not** taken: it is a third kind of source outside
+`patches/`, and its manifest pinned the `r82` base within a day of being written.  Folding into the
+block that owns the code is the r76 precedent (PR #165 -> blocks 05/07).
+
+**The three defects** (all in block 05's files, all verified against the r87 source before folding):
+
+1. `ggml_cuda_flash_attn_ext_get_alloc_size` (TILE branch) mapped `FATTN_KV_NATIVE_BF16` to
+   `GGML_TYPE_BF16`, so `need_f16` stayed false.  On hardware without native BF16 tensor cores the tile
+   case chooser instantiates **F16** (the BF16 instantiation is selected only under
+   `bf16_mma_hardware_available`, and gfx1030 has no `V_DOT2_F32_BF16`), so the whole-cache converter
+   wrote past the node's allocation: sentinel clobber, then an illegal access.  The allocator now maps
+   `FATTN_KV_NATIVE_BF16` to F16, matching the chooser.  The same latent mismatch existed on RDNA1 and on
+   pre-Ampere NVIDIA / older MUSA (`bf16_mma_hardware_available` false there too), so those get the fix
+   as a side effect; their behaviour with a bf16 KV cache was equally wrong before.
+2. `launch_fattn_tile_switch_ncols1`: the decode/verify band (`Q->ne[1] <= 8`) was the only one of the
+   seven `launch_fattn` sites in the tile file that stopped at the `warp_size` argument, leaving `q_h2`
+   at its default `false` while a wide RDNA2 kernel (`q_global`: `GGML_CUDA_FATTN_TILE_Q_GLOBAL`,
+   `DKQ <= 256`, `ncols >= 16`) read Q from the `Q_h2` half2 buffer that was never allocated -- a null
+   pointer and a fault near 0x1000.  Only GQA-16 decode shapes trip it (`ncols >= 16`); in the FA matrix
+   that is `hsk=192` with `nr23=[16,1]` and `n_q <= 8`.  It now passes the same condition as the other
+   six sites.
+3. `ggml_cuda_flash_attn_ext_get_f16_extra_data`: the `ncols2 > 1` tile branch runs with
+   `oob_check = false` for every tile including the last, so the last tile reads up to
+   `nbatch_fa - 1` rows past the operand.  The KV cache allocation has always had that slack, but the
+   converted F16 scratch is exact size and sits at the end of the node's allocation, so the read landed
+   in the next allocation.  A 511-row guard tail is reserved after each converted operand.
+
+**Deviation from the PR (maintainer decision).**  The PR applied the guard tail (fix 3) on every backend.
+We gate it on `GGML_CUDA_CC_IS_RDNA2` (new `guard_tail` argument, passed by both callers), so
+gfx1100/gfx1151/gfx1201 and every non-AMD backend keep their previous allocation sizes exactly.  The
+bound was also re-derived for the comment: the `nbatch_fa` config field is 9 bits wide but the config
+table `static_assert`s `<= 256`, and both the K tile (`I = nbatch_fa`) and the V chunk (`nbatch_V`, with
+`static_assert(nbatch_fa % nbatch_V == 0)`) are bounded by it, so 511 rows is a safe bound with 2x margin.
+
+**Validation (ours).**  Nothing in the change is device code: all three hunks are host functions, compiled
+in all three builds below.  A/B is the same delivery tree (`76a17b4b` = r87) with and without the fold.
+
+| box | arch | same-seed greedy text | prefill-logit KLD | `FLASH_ATTN_EXT` |
+|-----|------|-----------------------|-------------------|------------------|
+| local | gfx1201 | identical (also `-ctk/-ctv` f32, bf16, q8_0, ~600-token prefill) | 0.000000 / 100.000 % | OK (both arms) |
+| fingon | gfx1100 | identical | -0.000000 / 100.000 % | OK (both arms) |
+| halo | gfx1151 | identical | -0.000000 / 100.000 % | OK (both arms) |
+
+The f32-KV arm is the one configuration where the guard tail is active off RDNA2 (it is the only
+steady-state `need_f16 == true` path on gfx11xx/12xx now that quantized and bf16 KV are read natively):
+text is unchanged there too, so even the gated reservation is numerically inert.
+
+**RDNA2 evidence is the reporter's.**  We cannot build gfx1030 here at all -- *with or without* this
+change: both local ROCm trees (7.14.1 and 10.1.0) fail gfx1030 codegen in `amd_hip_fp16.h` with
+`use of undeclared identifier '__builtin_elementwise_exp10'` (verified identical on the pristine r87
+tree, so it is a toolchain limitation, not a regression).  @slavap's numbers stand as the RDNA2 gate:
+ROCm 7.2.4, one `gfx1030;gfx1100` build, V620 (gfx1030) `FLASH_ATTN_EXT` 6389/6389 and `MUL_MAT`
+2444/2444, RX 7900 XTX (gfx1100) the same, with the `hsk=192,hsv=128,nr23=[16,1],kv=512,bf16` repro
+aborting before the fix and passing after.
+
+**Follow-ups (reported to the reporter, PR closed as folded).**  (1) The guard tail protects the
+*converted* scratch only; a natively-read operand (f16 KV) in the same unchecked `ncols2 > 1` branch can
+still read up to `nbatch_fa - 1` rows past the KV **view**.  That stays inside the KV cache allocation for
+real models (the cache is one tensor) but not for an exact-size tensor as in `test-backend-ops`; asked
+@slavap whether to extend the guard to the native path (TODO #72).  (2) The tile K/V type is now chosen in two
+hand-kept places (`fattn-tile.cu`'s case chooser and `fattn.cu`'s alloc size); this is the third time
+they drifted (the q4_0 arm, the mixed-K/V NaNs, and now RDNA2 bf16), so a shared
+`ggml_cuda_fattn_tile_type(K, V, cc)` helper is TODO #71.
+
 ## 261019.002 (r87) -- the post-prefill drop is forced on a wide -> narrow transition (r85 regression: second request at half speed, GPU fault on the fifth)
 
 **Release `v12-097cf33d9-r87`**: base `097cf33d9`, canonical tip `441b38fbc`, net tree

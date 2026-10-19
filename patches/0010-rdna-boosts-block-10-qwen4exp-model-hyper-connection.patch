@@ -1,4 +1,4 @@
-From e2c5bfffa8347239674c78665e2072e937f7f660 Mon Sep 17 00:00:00 2001
+From 3b3b7599b12846467d1eaf167649de6c7e00b16d Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -2423,10 +2423,10 @@ index ca1d2dc8a..6451de414 100644
  
  void ggml_cuda_op_dsv4_hc_post(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index fc8d00902..13c5caf48 100644
+index 4c870e946..4d4a47652 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
-@@ -1518,27 +1518,94 @@ void launch_fattn(
+@@ -1538,32 +1538,99 @@ void launch_fattn(
          (kv_native_kernel != FATTN_KV_NATIVE_PER_OPERAND ? kv_native_kernel :
           (V_is_K_view ? kv_native_K : ggml_cuda_fattn_kv_native_type(V)));
  
@@ -2522,10 +2522,14 @@ index fc8d00902..13c5caf48 100644
      const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
          ggml_cuda_flash_attn_ext_get_f16_extra_data(KQV,
 -            need_f16_K && !use_native_K,
--            need_f16_V && !use_native_V);
+-            need_f16_V && !use_native_V,
 +            need_f16_K && !use_native_K && !stage_K,
-+            need_f16_V && !use_native_V && !stage_V);
-+
++            need_f16_V && !use_native_V && !stage_V,
+             // Same predicate as ggml_cuda_flash_attn_ext_get_alloc_size: the guard tail exists iff
+             // the node reserved it, and it is appended after both operands, so the .K/.V offsets
+             // this call returns are unaffected either way.
+             GGML_CUDA_CC_IS_RDNA2(cc));
+ 
 +    half * K_f16_stage = nullptr;
 +    half * V_f16_stage = nullptr;
 +    if (stage_K || stage_V) {
@@ -2534,10 +2538,11 @@ index fc8d00902..13c5caf48 100644
 +        K_f16_stage = (half *) stage_buf;
 +        V_f16_stage = (half *) (stage_buf + nK);
 +    }
- 
++
      // The pool buffers are freed in reverse declaration order, and the VMM pool (GGML_HIP_NO_VMM=OFF / CUDA)
      // requires that to be the reverse of the allocation order: declare them in the order they are allocated
-@@ -1564,8 +1631,13 @@ void launch_fattn(
+     // (KV_max, kq_blocks, then dst_tmp / dst_tmp_meta).  kq_blocks used to be declared last although it is
+@@ -1588,8 +1655,13 @@ void launch_fattn(
          const size_t bs = ggml_blck_size(K->type);
          const size_t ts = ggml_type_size(K->type);
  
@@ -2553,7 +2558,7 @@ index fc8d00902..13c5caf48 100644
          if (ggml_is_contiguously_allocated(K)) {
              to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
              to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
-@@ -1598,8 +1670,13 @@ void launch_fattn(
+@@ -1622,8 +1694,13 @@ void launch_fattn(
              const size_t bs = ggml_blck_size(V->type);
              const size_t ts = ggml_type_size(V->type);
  
