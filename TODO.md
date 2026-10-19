@@ -79,6 +79,17 @@ Fold into `patches/0000` when the next revision is cut, re-cut the upstream stag
 time, and run the checklist in `archive/work/issue-184-meta-r80r82/0013-meta-hot-dispatcher/README.md` (the #170 24 GiB-parity
 reproduction first).  Detail: `WORKLOG.md` 261018.010, `archive/work/issue-184-meta-r80r82/`.
 
+### 70. Harden the expert-cache re-arm / wide-aux growth against a starved arena — ROBUSTNESS (open)
+
+**Opened 2026-10-19 while fixing r87.**  r87 forces the post-prefill drop, so the r86 trigger (the wide
+layout was never released and the arena decayed) is gone.  But the failure shape was: a re-arm that had to
+shrink one layer to a partial slot count (`layer=47 ... 344 requested, only 202 fit`), a starved wide-aux
+region (thousands of `SLAB_WIDE_AUX` attempts), then a GPU page fault in `k_get_rows_float` on the next
+graph.  The re-arm is supposed to be layer-uniform and safe; make a partial/refused re-arm leave the cache
+**wholesale stood down** (the fuse-guard invariant) instead of running a mixed-slot layer, and make the
+wide-aux growth refuse once per pass instead of once per allocation.  Repro: the 10-prompt series against
+r86 in `WORKLOG.md` 261019.002; a validation arm is `MOE_EXPERT_CACHE_VALIDATE=1`.
+
 ### 68. `gemma4` dense + `-sm tensor` on 2 devices aborts with a rotated K cache (`-ctk q8_0`) — CORRECTNESS
 
 **Opened 2026-10-18 (found while setting up the issue #184 A/B).**  A plain dense `gemma4` target

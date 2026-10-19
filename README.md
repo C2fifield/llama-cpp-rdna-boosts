@@ -12,14 +12,18 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r86`**; it folds in the two
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r87`**; it fixes the r86
+second-request regression (r85's drop reference recorded the wide prefill region, so an equally-wide second
+prefill never released the wide compute layout or re-armed the expert-cache arena: decode fell to ~half
+speed from request 2 and a GPU fault followed by request 5; **block 09** now forces the drop on every
+wide -> narrow transition).  r86 folds in the two
 promotion candidates: the **slab transient absorption** (the controlled prefill transients -- H2D ring, FA
 staging, QSA3/GDN scratch, the workspace pool's large temporaries -- now live in the slab, the MTP draft is
 loaded and measured before the slab is sized, a graph capture is never started while the wide band is armed,
 and the default headroom is `640 + 128 x n_gpu` MiB) and the **Meta hot-path dispatcher restoration** (block
-00: the pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  It carries r85's
-slab narrow band, r84's graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's rope
-+ FWHT / GDN norm work.  Gate record: `WORKLOG.md` 261019.001.
+00: the pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  It also carries
+r85's slab narrow band, r84's graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's
+rope + FWHT / GDN norm work.  Gate records: `WORKLOG.md` 261019.002 and 261019.001.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single

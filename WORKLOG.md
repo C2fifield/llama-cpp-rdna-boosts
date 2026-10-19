@@ -1,5 +1,47 @@
 # WORKLOG - dated delivery records
 
+## 261019.002 (r87) -- the post-prefill drop is forced on a wide -> narrow transition (r85 regression: second request at half speed, GPU fault on the fifth)
+
+**Release `v12-097cf33d9-r87`**: base `097cf33d9`, canonical tip `441b38fbc`, net tree
+`76a17b4b059d808fa24631ea249fc1308238cad2`, **12 blocks** (no new block; **block 09** amended).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).
+
+**The regression (r85, field r86).**  On the Flash-Next IQ4_NL field config (2x R9700,
+`-sm tensor -ncmoe 46 -b/-ub 6144`, MTP adaptive n6, `--cache-idle-slots`, `--no-kv-unified`) the second
+and later chat requests decoded at **~half speed**: a 10-prompt series measured **63.3 -> 31.8 -> 36.8 ->
+38.0 t/s** and then **crashed at request 5** (`HSA_STATUS_ERROR_MEMORY_FAULT` in
+`k_get_rows_float<float,float>`, the same faulting address on both GPUs, immediately after a re-arm).  It
+reproduced on every run.  `MoE arena` decayed **33 560 -> 33 137 -> 32 835 MiB**; only one or two re-arms
+ran.
+
+**Root cause.**  r85 records `slab_narrow_boundary = max(re-reserved narrow, drop_observed)`, but at a
+prefill -> decode transition `drop_observed` is the **wide prefill** work region (6 976 MiB).  The next
+equally-wide prefill therefore compared equal (`cur >= was + 512` false), so `drop_now` stayed false: the
+wide compute layout was never released and `moe_cache_rearm` never ran.  The arena kept shrinking; by
+request 5 the re-arm hit a partial-slot table (`layer=47 ... 344 requested, only 202 fit`) with the
+wide-aux region starved, and the next graph faulted.  The classic `n_tokens_prev > 8` condition was
+dropped when the slab branch replaced it with the self-calibrating width compare.
+
+**Fix (block 09, `src/llama-context.cpp`).**  A wide -> narrow transition always drops:
+`if (n_tokens_prev > 8 || cur >= was + GGML_DROP_RESERVE_SLACK_BYTES)`.  r85's narrow -> narrow slack
+compare is kept (the MTP verify-width loop stays fixed), and the forced drop restores the arena every
+request.
+
+**Measured (tree `76a17b4b`, exact field env, 10 sequential chat prompts).**  **63.5 / 65.7 / 83.0 /
+82.1 / 80.9 / 83.6 / 87.2 / 84.2 / 63.5 / 82.5 t/s, no fault**, `MoE arena` 41 349 MiB on every request.
+The r86 build on the same series: 63.3 / 31.8 / 36.8 / 38.0, **GPU fault at request 5** (reproduced twice).
+A 20-prompt fixed run was also clean (62.7-87.0 t/s).
+
+**Release gates (tree `76a17b4b`).**  Dense `Qwen3.5-4B Q8_0` and host-expert `35B-A3B -ncmoe 40` greedy
+text byte-identical to r86; prefill-logit mean KLD **0.000707 / 98.755 %** PASS; adaptive-MTP 5 axes exactly
+equal to r86 (R 0.66461, P 0.51005, C 0.76070, K 0.96262, phase 0.62752; prose `7759fa4a7c8d`, recall
+`5ebd156073f6`); `llama-batched-bench -npl 1,4,8` TG 100.4 / 328.1 / 478.3 (r86: 99.8 / 328.8 / 481.7);
+`check-gpu-faults.sh` clean on the r87 run.
+
+**Follow-up (TODO #70).**  The crash shape (a re-arm that shrinks a layer to a partial slot count while the
+wide-aux region is starved) is unreachable now that the drop is forced, but it should be hardened so a
+future arena-starvation sequence cannot reach a fault.
+
 ## 261019.001 (r86) -- beta 12 + beta 13 folded: the slab transient absorption and the meta hot dispatcher ship
 
 **Release `v12-097cf33d9-r86`**: base `097cf33d9`, canonical tip `ab342776c`, net tree

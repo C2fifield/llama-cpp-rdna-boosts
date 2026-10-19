@@ -2,8 +2,13 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r86`** (canonical tip `ab342776c`, net tree
-`bb8258610763da19d03d375865838aac7e79ed30`).  r86 folds the two promotion candidates in: the **slab
+**`v12-097cf33d9-r87`** (canonical tip `441b38fbc`, net tree
+`76a17b4b059d808fa24631ea249fc1308238cad2`).  r87 fixes the **r86 second-request regression**: r85's
+drop reference recorded the wide prefill region, so an equally-wide second prefill never dropped the wide
+compute layout or re-armed the arena (decode ~half speed from request 2, GPU page fault by request 5).
+**Block 09** now forces the drop on every wide -> narrow transition; a 10-prompt field series runs
+63.5-87.2 t/s with the arena at 41 349 MiB and no fault.  Before it, r86 folded the two promotion
+candidates in: the **slab
 transient absorption** (**block 09** common half + derived draft reserve, **block 10** CUDA/slab half,
 **block 11** loaded-draft ownership handoff) and the **meta hot-path dispatcher** (**block 00**).
 Before it, r85 fixes the slab narrow band: it is learned from the real

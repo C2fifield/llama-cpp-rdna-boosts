@@ -5,15 +5,20 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r86`** (canonical tip `ab342776c`, net tree
-`bb8258610763da19d03d375865838aac7e79ed30`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r86 folds the two promotion candidates in: the **slab
+**`097cf33d9`**, released as **`v12-097cf33d9-r87`** (canonical tip `441b38fbc`, net tree
+`76a17b4b059d808fa24631ea249fc1308238cad2`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r87 fixes the **r86 second-request regression**: r85's
+`slab_narrow_boundary` recorded the wide prefill region, so an equally-wide second prefill never dropped
+the wide compute layout or re-armed the arena (decode ~half speed from request 2, and a GPU page fault by
+request 5).  **Block 09** now forces the drop on every wide -> narrow transition while keeping r85's
+narrow -> narrow slack compare.  Field 10-prompt series: r86 63.3 -> 31.8 -> 36.8 -> 38.0 t/s then a
+fault; r87 63.5 / 65.7 / 83.0 / 82.1 / 80.9 / 83.6 / 87.2 / 84.2 / 63.5 / 82.5 t/s, arena 41 349 MiB
+throughout.  Gates: dense and host-expert MoE greedy text identical to r86, prefill-logit 0.000707 /
+98.755 % PASS, adaptive-MTP 5 axes equal, `llama-batched-bench` TG equal.  Before it, r86 folds the two
+promotion candidates in: the **slab
 transient absorption** (**block 09** common half + derived draft reserve, **block 10** CUDA/slab half,
 **block 11** loaded-draft ownership handoff) and the **meta hot-path dispatcher** (**block 00**, the
-pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  Gates: greedy text
-byte-identical on dense and host-expert MoE, prefill-logit 0.000707 / 98.755 % PASS, adaptive-MTP 5 axes
-exactly equal, `llama-batched-bench` TG equal, issue #170 24 GiB-parity reproduction listens and a
-genuine OOM exits cleanly.  Before it, r84 fixes **issue #183** (DFlash drafting collapsed on
+pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  Before it, r84 fixes **issue #183** (DFlash drafting collapsed on
 every `--parallel` slot except the first one used; `LLAMA_DRAFT_SCHED2=0` hid it): **block 00** now
 records an FNV-1a fingerprint of the graph the allocator layout was computed for and re-reserves when it
 changes.  `ggml_gallocr_alloc_graph()` re-applies `node_allocs` positionally and invalidated them only on

@@ -36,7 +36,26 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `upstream/`; the MTP draft context has the same shape and is expected to be protected (unverified: no MTP
 > head in the local GGUF).
 
-> **Current release `v12-097cf33d9-r86` (2026-10-19) -- the two promotion candidates are folded: slab transient absorption (blocks 09, 10, 11) and the meta hot-path dispatcher (block 00):**
+> **Current release `v12-097cf33d9-r87` (2026-10-19) -- the post-prefill drop is forced on a wide -> narrow transition (block 09):**
+> canonical tip `441b38fbc`, net tree `76a17b4b059d808fa24631ea249fc1308238cad2`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 09** amended, no new block, no new env
+> var.  r85 recorded `slab_narrow_boundary = max(re-reserved narrow, drop_observed)`, but at a
+> prefill -> decode drop `drop_observed` is the **wide prefill** region, so an equally-wide second prefill
+> compared equal and never set `drop_now`: the wide compute layout stayed allocated, `moe_cache_rearm`
+> never ran and the arena decayed (r86 field: 33 560 -> 33 137 -> 32 835 MiB).  The second and later
+> requests decoded at ~half speed and the 5th request faulted (`HSA_STATUS_ERROR_MEMORY_FAULT` in
+> `k_get_rows_float`, after a partial-slot re-arm).  The drop condition now also forces the classic
+> `n_tokens_prev > 8` wide -> narrow transition, keeping r85's narrow -> narrow slack compare.
+>
+> **Gates** (tree `76a17b4b`): 10-prompt field series **63.5 / 65.7 / 83.0 / 82.1 / 80.9 / 83.6 / 87.2 /
+> 84.2 / 63.5 / 82.5 t/s, arena 41 349 MiB, no fault** (r86: 63.3 / 31.8 / 36.8 / 38.0 then a GPU fault,
+> reproduced twice; a 20-prompt fixed run was also clean).  Dense `Qwen3.5-4B Q8_0` and host-expert
+> `35B-A3B -ncmoe 40` greedy text byte-identical to r86; prefill-logit mean KLD `0.000707` / same-top-p
+> `98.755 %` PASS; adaptive-MTP 5 axes exactly equal to r86 (prose `7759fa4a7c8d`, recall
+> `5ebd156073f6`); `llama-batched-bench -npl 1,4,8` TG 100.4 / 328.1 / 478.3; `check-gpu-faults.sh` clean.
+> Record: `../WORKLOG.md` 261019.002.
+
+> **`v12-097cf33d9-r86` (2026-10-19) -- the two promotion candidates are folded: slab transient absorption (blocks 09, 10, 11) and the meta hot-path dispatcher (block 00):**
 > canonical tip `ab342776c`, net tree `bb8258610763da19d03d375865838aac7e79ed30`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** takes the former `beta/0013-meta-hot-dispatcher`
 > (the split-state dispatcher back to the exact pre-#170 shape, the #170 alias/host resolution in a
