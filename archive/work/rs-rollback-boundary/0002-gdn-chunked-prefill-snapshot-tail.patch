@@ -1,0 +1,97 @@
+From bb6257917e9fd42efb8413b4de1935a88e1dbb7d Mon Sep 17 00:00:00 2001
+From: Stew Forster <stew675@gmail.com>
+Date: Mon, 19 Oct 2026 12:15:13 -0500
+Subject: [PATCH] wip/rs-rollback-boundary: chunked GDN prefill writes its
+ rollback snapshots
+
+A rollback into a chunked prefill batch restored a state the kernel never
+computed (probe: 0.65 NMSE, maxabs up to 12).  Now, for n_seqs == 1 and
+n_tokens > D = max(K>16?K:16, n_rs_batch), the chunked kernel runs on the
+prefix n_tokens-D (existing n_tokens_limit) with the snapshot tail base
+passed explicitly, and the sequential kernel runs on the last D tokens in
+the same launch -- so slots 0..D-1 exist for every batch.  No extra
+memory, no extra graph, ubatch unchanged.
+
+Gates: probe 1.5e-3 NMSE (rounding) vs 0.65, exact on the aligned arm;
+GATED_DELTA_NET 2/2; KLD 0.002389 / 98.069% (PASS, tight); plain==MTP
+byte-identical; coherence identical; recurrent depth 153==153, rollback 0.
+Perf: pp512 within noise, pp2048 -0.45%, decode flat.
+
+GGML_CUDA_GDN_TAIL=0 restores whole-batch chunking.
+---
+ ggml/src/ggml-cuda/gated_delta_net.cu | 56 +++++++++++++++++++++++++--
+ 1 file changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
+index 613f6e790..b83ea41d4 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net.cu
+@@ -422,13 +422,61 @@ static void ggml_cuda_op_gated_delta_net_impl(
+ 
+             if (n_seqs == 1) {
+                 if (n_tokens > GDN_CHUNKED_MIN_TOKENS) {
+-                    if (launch_chunked(cache ? cache->data : nullptr, 0)) {
++                    // wip/rs-rollback-boundary: the chunked kernel computes no per-token states, so a
++                    // rollback into a batch it served restores a state that was never written (measured:
++                    // logit NMSE 0.09-0.72; a bit-exact restore needs the sequential kernel, see
++                    // wip/rs-rollback-boundary/README.md §8).  So chunk the PREFIX and run the sequential
++                    // kernel on the last `D = GDN_CHUNKED_MIN_TOKENS` tokens, in the SAME launch: the
++                    // chunked kernel takes that prefix length directly (`n_tokens_limit`), and the tail is
++                    // exactly the batch size the sequential kernel is anyway used for -- so the snapshot
++                    // slots 0..D-1 are written, and `D` covers every rollback the config can ask for
++                    // (rollback <= K-1 <= n_rs_batch <= D).   Zero extra memory, no extra graph, no
++                    // ubatch-splitting (which cost 13.7 % pp512 -- see the campaign record).
++                    // The tail is a fixed D (not K-dependent) so plain decode and MTP chunk a prefill
++                    // identically: `none == draft-mtp` needs that.
++                    static const bool tail_on = [] {
++                        const char * env = getenv("GGML_CUDA_GDN_TAIL");
++                        return env == nullptr || strcmp(env, "0") != 0;
++                    }();
++                    const int64_t D = GDN_CHUNKED_MIN_TOKENS;
++                    // the state after the prefix lands here: the fused cache slot when the GDN->cpy is
++                    // fused, else the snapshot tail of the output (computed from the FULL n_tokens, which
++                    // the chunked op would otherwise shrink to the limit)
++                    float * const tail_base = cache ? cache->data : dst_d + S_v * H * n_tokens * n_seqs;
++                    const int64_t n_head = tail_on ? n_tokens - D : 0;
++                    if (launch_chunked(tail_base, n_head)) {
++                        if (n_head > 0) {
++                            // the tail: same kernel, last D tokens.  q/k/g/beta advance by sq2 per token,
++                            // v by sv2, the attention scores by S_v*H (n_seqs == 1 here).  The input
++                            // state is the prefix's final state (slot 0 of `tail_base`); the kernel reads
++                            // the state into registers before writing any slot, so aliasing it with the
++                            // slot output is safe, and slot 0 is written last.
++                            const float * q_t = q_d + n_head * sq2;
++                            const float * k_t = k_d + n_head * sq2;
++                            const float * v_t = v_d + n_head * sv2;
++                            const float * g_t = g_d + n_head * sb2;
++                            const float * b_t = b_d + n_head * sb2;
++                            float * const dst_t = dst_d + n_head * S_v * H;
++                            const int64_t slot_stride = cache ? cache->slot_stride : S_v * S_v * H * n_seqs;
++                            if (keep_rs) {
++                                launch_gated_delta_net<false, true>(q_t, k_t, v_t, g_t, b_t, tail_base,
++                                    dst_t, tail_base, S_v, H, D, n_seqs,
++                                    sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1, rq3,
++                                    scale, slot_stride, K, beta_sigmoid, s_ids, s_row_stride, stream);
++                            } else {
++                                launch_gated_delta_net<false, false>(q_t, k_t, v_t, g_t, b_t, tail_base,
++                                    dst_t, tail_base, S_v, H, D, n_seqs,
++                                    sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1, rq3,
++                                    scale, slot_stride, K, beta_sigmoid, s_ids, s_row_stride, stream);
++                            }
++                        }
+                         static bool logged_free = false;
+                         if (!logged_free) {
+-                            GGML_LOG_INFO("%s: whole-batch chunked GDN prefill n=%ld K=%d n_seqs=%ld "
+-                                          "(> %ld: no snapshot tail needed)\n",
++                            GGML_LOG_INFO("%s: chunked GDN prefill n=%ld K=%d n_seqs=%ld (chunked %ld + "
++                                          "sequential tail %ld, snapshots written; GGML_CUDA_GDN_TAIL=0 "
++                                          "restores whole-batch chunking)\n",
+                                           __func__, (long) n_tokens, K, (long) n_seqs,
+-                                          (long) GDN_CHUNKED_MIN_TOKENS);
++                                          (long) n_head, (long) (n_head > 0 ? D : 0));
+                             logged_free = true;
+                         }
+                         return;
+-- 
+2.56.0
+

@@ -107,6 +107,24 @@ and require the same thresholds.  This is the test that would have caught issue 
 was clean, the default was not.  A change is only allowed to be a default-on approximate path if this
 A/B passes; otherwise it stays opt-in.
 
+> **The A/B must reach the candidate arm (r91).**  `--ab "K=V"` applies `K=V` to the **base** arm only,
+> and `run_ppl` inherits the caller's environment — so `GGML_CUDA_GDN_CHUNKED=0 ./gate-prefill-logits.sh
+> --ab "GGML_CUDA_GDN_CHUNKED=0" ...` forces **both** arms to the fallback and reports ~0 by
+> construction (`-0.000000 / 99.99 %`).  Set the env on the script only for arms that must apply to
+> both.  Check that the candidate really took the new path (e.g. tail/branch log line, or an A/B whose
+> result is not ~0 for a change that is not bit-exact).
+
+### 5. Self-KLD control first (r91) — the instrument is model-specific
+
+Before interpreting any number, run `--record` (base = candidate) and require it to be ~0.  On gfx1201,
+35B-A3B Q3_K_M at `--ctx 2048 --chunks 16` is **not a usable instrument**: three self-KLD runs of the
+**unpatched** r90 build (same binary, `GGML_CUDA_ASYNC_INPUT=0`) measured 0.004582 / 97.355 %,
+0.004957 / 97.318 % and 0.004639 / 97.336 % — i.e. the model's own run-to-run prefill variation
+sits *at* the 0.005 / 98.0 thresholds, so a real 0.002-0.003 regression is invisible and a clean build
+can "fail".  `Qwen3.8-27B-Q8_0` (0.000000 / 99.994 %) and `Qwen3.8-Flash-Next-IQ3_XXS` (0.000000 /
+100.000 %, 2 GPU) are clean on the same box and are the models to gate on.  A noisy self-KLD is a
+*measurement* result, not a gate result — do not tune a threshold to it.
+
 ## Scope: when the gate is required
 
 Run it before a release (and after any change to `patches/`) whenever the block set touches:

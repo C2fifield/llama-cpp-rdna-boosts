@@ -2,8 +2,11 @@
 
 Current state (V2.0): `main` is the delivery branch carrying the **12-block set** (block 00 + blocks
 01-11) generated against the fork point **llama.cpp master `097cf33d9`**; the current release is
-**`v12-097cf33d9-r90`** (canonical tip `529135aed`, net tree
-`111559e57e820ce5d7fcac511a84ba70604604a0`).  r90 fixes the async graph-input nondeterminism and flips
+**`v12-097cf33d9-r91`** (canonical tip `45f817cc3`, net tree
+`90507dfb528cbfe0c688261226d18934653b1b61`).  r91 closes the rollback-boundary campaign (blocks 03/09/10:
+the per-sequence tracker folds every ubatch in, the chunked GDN prefill writes its rollback snapshots via a
+fixed-`D` sequential tail, and the MoE expert arena is refused on a shared host/device pool) -- same fork
+point, no re-base.  r90 fixed the async graph-input nondeterminism and flipped
 `GGML_CUDA_ASYNC_INPUT` **default-on** (**block 10**, no new block): the `set_tensor_async` /
 `set_tensor_2d_async` paths copied directly from the caller's live pinned host pointer (a CPU split's
 output that the next ubatch rewrites), which corrupted a single graph whenever the host ran ahead; both now

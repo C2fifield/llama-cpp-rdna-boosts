@@ -1,4 +1,4 @@
-From eb7830c066e8061e5c05ebdb8bf16211ad905944 Mon Sep 17 00:00:00 2001
+From 7cb4e733e87e3e450992e815f8bf397099ef39fb Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -61,6 +61,19 @@ drop `drop_observed` is the WIDE prefill region, so an equally-wide second prefi
 equal and never dropped: the wide work buffer stayed allocated, the arena was not re-armed, and
 every request after the first decoded at ~half speed (Flash-Next IQ4_NL field config,
 2 GPUs -sm tensor -ncmoe 46 -ub 6144 + MTP n6: 68.5 -> 35.7 t/s; with the fix 68.1 -> 69.4).
+
+Fold (r91): never auto-size the MoE expert arena on a shared host/device memory pool.
+On an integrated GPU (gfx1151/Strix Halo) the device "VRAM" window is the same physical pool as
+host RAM, so AUTO arena sizing and the movable-boundary slab (free - reserve) both map the
+machine: measured 121 GiB resident + 13 GiB swap, and bounding the arena alone hands the same
+overcommit to the slab.  `moe_cache_preflight` now declines the cache on `prop.integrated`,
+keyed before any table registers, so the run is the documented host-expert path and the wrapper
+disarms the slab; `common/fit.cpp` stops reserving slab headroom + arena for such a device.
+Opt-in override `MOE_EXPERT_CACHE_UNIFIED=1` requires an explicit `MOE_EXPERT_CACHE_MIB` AND an
+explicit `GGML_CUDA_SLAB_RESERVE_MIB` (bounded by construction).  A discrete GPU is untouched:
+gfx1201 35B-A3B `-ncmoe 40` loads with identical preflight/SLAB_INIT/arena lines; coherence and
+the prefill-logit gate are unchanged (guard == `MOE_EXPERT_CACHE_MIB=0`).
+Record: archive/work/umem-arena-guard/.
 ---
  common/CMakeLists.txt                         |    2 +
  common/arg.cpp                                |   21 +-
@@ -68,7 +81,7 @@ every request after the first decoded at ~half speed (Flash-Next IQ4_NL field co
  common/common.h                               |   37 +-
  common/draft-reserve.cpp                      |  212 +
  common/draft-reserve.h                        |   44 +
- common/fit.cpp                                |  420 +-
+ common/fit.cpp                                |  456 +-
  common/fit.h                                  |    7 +
  common/speculative.cpp                        |   17 +
  common/speculative.h                          |   14 +-
@@ -94,7 +107,7 @@ every request after the first decoded at ~half speed (Flash-Next IQ4_NL field co
  ggml/src/ggml-cuda/ggml-cuda.cu               | 2493 +++++++-
  ggml/src/ggml-cuda/mmvq.cu                    |  275 +-
  ggml/src/ggml-cuda/mmvq.cuh                   |   12 +
- ggml/src/ggml-cuda/moe-expert-cache.cu        | 5009 +++++++++++++++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu        | 5098 +++++++++++++++++
  ggml/src/ggml-cuda/moe-expert-cache.h         |  312 +
  ggml/src/ggml-cuda/norm.cu                    |   35 +
  ggml/src/ggml-cuda/norm.cuh                   |    1 +
@@ -129,7 +142,7 @@ every request after the first decoded at ~half speed (Flash-Next IQ4_NL field co
  src/llama.cpp                                 |   16 +-
  tools/cli/cli.cpp                             |    6 +
  tools/llama-bench/llama-bench.cpp             |   65 +-
- 67 files changed, 13837 insertions(+), 395 deletions(-)
+ 67 files changed, 13962 insertions(+), 395 deletions(-)
  create mode 100644 common/draft-reserve.cpp
  create mode 100644 common/draft-reserve.h
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
@@ -785,10 +798,10 @@ index 000000000..8e65564b6
 +                                                   ggml_type type_k,
 +                                                   ggml_type type_v);
 diff --git a/common/fit.cpp b/common/fit.cpp
-index 7a0300829..110080524 100644
+index 7a0300829..abc03c26b 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
-@@ -27,6 +27,62 @@ class common_params_fit_exception : public std::runtime_error {
+@@ -27,6 +27,84 @@ class common_params_fit_exception : public std::runtime_error {
      using std::runtime_error::runtime_error;
  };
  
@@ -798,6 +811,7 @@ index 7a0300829..110080524 100644
 +
 +struct common_fit_cache_reserve {
 +    bool    cache_auto    = true;   // MOE_EXPERT_CACHE_MIB unset
++    bool    unified       = false;  // MOE_EXPERT_CACHE_UNIFIED: allow the arena on a shared host/device pool
 +    int64_t mib_bytes     = 0;      // explicit MOE_EXPERT_CACHE_MIB, in bytes
 +    int64_t min_mib_bytes = 0;      // MOE_EXPERT_CACHE_MIN_MIB, in bytes
 +    int     min_res_pct   = 18;     // MOE_EXPERT_CACHE_MIN_RES_PCT
@@ -805,6 +819,8 @@ index 7a0300829..110080524 100644
 +    static common_fit_cache_reserve from_env() {
 +        constexpr int64_t MiB = 1024 * 1024;
 +        common_fit_cache_reserve r;
++        const char * uni_env = getenv("MOE_EXPERT_CACHE_UNIFIED");
++        r.unified = uni_env != nullptr && uni_env[0] != '\0' && atoi(uni_env) != 0;
 +        const char * mib_env = getenv("MOE_EXPERT_CACHE_MIB");
 +        if (mib_env != nullptr && mib_env[0] != '\0') {
 +            r.cache_auto = false;
@@ -817,18 +833,37 @@ index 7a0300829..110080524 100644
 +        return r;
 +    }
 +
++    // wip/umem-arena-guard: mirror the backend's refusal to run the arena on a shared host/device memory
++    // pool (an integrated GPU, where "VRAM" is host RAM).  The backend declines that combination unless
++    // `MOE_EXPERT_CACHE_UNIFIED=1` *and* an explicit MIB is given, so reserving slab headroom / arena
++    // bytes here would withhold device memory from a cache that will never be created.  Keep the two
++    // predicates in lockstep (`moe_cache_shared_pool_device` / `moe_cache_preflight`).
++    static bool shared_pool(ggml_backend_dev_t dev) {
++        ggml_backend_dev_props props = {};
++        ggml_backend_dev_get_props(dev, &props);
++        return props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
++    }
++
++    bool arena_refused(ggml_backend_dev_t dev) const {
++        // Mirrors `moe_cache_preflight`: a shared pool is refused outright, and the override needs BOTH an
++        // explicit arena budget and an explicit slab reserve (the slab maps `free - reserve`).
++        const char * slab_reserve = getenv("GGML_CUDA_SLAB_RESERVE_MIB");
++        const bool   slab_bounded = slab_reserve != nullptr && slab_reserve[0] != '\0';
++        return shared_pool(dev) && !(unified && !cache_auto && slab_bounded);
++    }
++
 +    // The --fit margin for a device that owns `host_bytes` of host-resident experts, over the base
 +    // fit_params_target: max(base, slab headroom) + arena budget.  The headroom is additive-safe because
 +    // the arena lives INSIDE the slab while the headroom stays OUTSIDE it (both draw on the same free
 +    // VRAM); `max` rather than `+` avoids double-counting a large user target.
 +    int64_t margin(ggml_backend_dev_t dev, size_t host_bytes, int64_t base) const {
 +        int64_t m = base;
++        if (host_bytes == 0 || arena_refused(dev)) {
++            return m;
++        }
 +        const int64_t headroom = (int64_t) ggml_backend_dev_slab_headroom_bytes(dev);
 +        if (headroom > m) {
 +            m = headroom;
-+        }
-+        if (host_bytes == 0) {
-+            return m;
 +        }
 +        int64_t arena;
 +        if (!cache_auto) {
@@ -851,7 +886,7 @@ index 7a0300829..110080524 100644
  static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
          const char * path_model,
          const llama_model_params * mparams,
-@@ -35,7 +91,9 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
+@@ -35,7 +113,9 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
          uint32_t & hp_ngl,
          uint32_t & hp_n_ctx_train,
          uint32_t & hp_n_expert,
@@ -862,7 +897,7 @@ index 7a0300829..110080524 100644
      struct user_data_t {
          struct {
              ggml_log_callback callback;
-@@ -144,6 +202,28 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
+@@ -144,6 +224,28 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
      hp_n_ctx_train = llama_model_n_ctx_train(model);
      hp_n_expert    = llama_model_n_expert(model);
  
@@ -891,7 +926,7 @@ index 7a0300829..110080524 100644
      common_memory_breakdown_print(ctx);
  
      llama_free(ctx);
-@@ -176,13 +256,31 @@ common_device_memory_data_vec common_get_device_memory_data(
+@@ -176,13 +278,31 @@ common_device_memory_data_vec common_get_device_memory_data(
      return ret;
  }
  
@@ -926,7 +961,7 @@ index 7a0300829..110080524 100644
      constexpr int64_t MiB = 1024*1024;
      typedef std::vector<llama_device_memory_data> dmds_t;
      const llama_model_params default_mparams = llama_model_default_params();
-@@ -223,10 +321,48 @@ static void common_params_fit_impl(
+@@ -223,10 +343,48 @@ static void common_params_fit_impl(
                  measured = common_get_device_memory_data_impl(
                      extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
              } catch (const std::runtime_error & e) {
@@ -977,7 +1012,7 @@ index 7a0300829..110080524 100644
                  return;
              }
  
-@@ -261,7 +397,9 @@ static void common_params_fit_impl(
+@@ -261,7 +419,9 @@ static void common_params_fit_impl(
      // step 1: get data for default parameters and check whether any changes are necessary in the first place
  
      LOG_TRC("%s: getting device memory data for initial parameters:\n", __func__);
@@ -988,7 +1023,7 @@ index 7a0300829..110080524 100644
  
      // saturate instead of overflowing, this also preserves the UINT32_MAX sentinel of n_ctx_min:
      const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_streams, UINT32_MAX);
-@@ -290,6 +428,274 @@ static void common_params_fit_impl(
+@@ -290,6 +450,288 @@ static void common_params_fit_impl(
          }
      }
  
@@ -1015,21 +1050,35 @@ index 7a0300829..110080524 100644
 +    }
 +    if (host_total > 0) {
 +        int64_t reserve_total = 0;
++        bool    refused_shared = false;
 +        for (size_t id = 0; id < nd; id++) {
 +            const int64_t before = margins[id];
++            const bool refused = cache_reserve.arena_refused(devs[id]);
++            refused_shared = refused_shared || (refused && host_expert_bytes[id] > 0);
 +            margins[id] = cache_reserve.margin(devs[id], host_expert_bytes[id], margins[id]);
 +            reserve_total += margins[id] - before;
 +        }
-+        const char * reserve_env = getenv("MOE_EXPERT_CACHE_RESERVE_MIB");
-+        const int    reserve_mib = reserve_env ? atoi(reserve_env) : 1024;
-+        LOG_WRN("%s: host-resident MoE experts active: reserving the slab headroom plus the expert-cache arena "
-+                "(%s) in the --fit margin before fitting the context (%.0f MiB this pass over %.0f MiB of host "
-+                "experts).  --fit sizes the context around it; the arena then takes any remaining free device "
-+                "memory keeping MOE_EXPERT_CACHE_RESERVE_MIB=%d MiB per device.\n",
-+                __func__,
-+                cache_reserve.cache_auto ? "auto floor: MOE_EXPERT_CACHE_MIN_MIB / MIN_RES_PCT"
-+                                         : "explicit MOE_EXPERT_CACHE_MIB",
-+                (double) reserve_total / MiB, (double) host_total / MiB, reserve_mib);
++        if (refused_shared) {
++            // wip/umem-arena-guard: the backend declines the arena on a shared host/device pool, so do
++            // not withhold slab headroom or arena bytes from the fit budget either.
++            LOG_WRN("%s: host-resident MoE experts on a shared host/device memory pool (integrated GPU): the "
++                    "expert cache is not used there, so no slab headroom or arena is reserved in the --fit "
++                    "margin.  Re-enabling it where the platform really partitions host/device memory needs "
++                    "MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit MOE_EXPERT_CACHE_MIB and "
++                    "GGML_CUDA_SLAB_RESERVE_MIB.\n", __func__);
++        }
++        if (reserve_total > 0) {
++            const char * reserve_env = getenv("MOE_EXPERT_CACHE_RESERVE_MIB");
++            const int    reserve_mib = reserve_env ? atoi(reserve_env) : 1024;
++            LOG_WRN("%s: host-resident MoE experts active: reserving the slab headroom plus the expert-cache arena "
++                    "(%s) in the --fit margin before fitting the context (%.0f MiB this pass over %.0f MiB of host "
++                    "experts).  --fit sizes the context around it; the arena then takes any remaining free device "
++                    "memory keeping MOE_EXPERT_CACHE_RESERVE_MIB=%d MiB per device.\n",
++                    __func__,
++                    cache_reserve.cache_auto ? "auto floor: MOE_EXPERT_CACHE_MIN_MIB / MIN_RES_PCT"
++                                             : "explicit MOE_EXPERT_CACHE_MIB",
++                    (double) reserve_total / MiB, (double) host_total / MiB, reserve_mib);
++        }
 +    }
 +
 +    // ===== tensor split (-sm tensor / LLAMA_SPLIT_MODE_TENSOR) =====
@@ -9499,10 +9548,10 @@ index 4140f681a..35f625eaa 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
 new file mode 100644
-index 000000000..1bb8ebcef
+index 000000000..b1ceb30f0
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
-@@ -0,0 +1,5009 @@
+@@ -0,0 +1,5098 @@
 +// wip/moe-expert-cache — Phase 1a foundation.  See moe-expert-cache.h for the contract.
 +
 +#include "moe-expert-cache.h"
@@ -9777,6 +9826,7 @@ index 000000000..1bb8ebcef
 +int64_t                             g_period     = 32;   // LFRU decay period, decode steps
 +size_t                              g_budget     = 0;    // bytes (per device); SIZE_MAX in auto mode
 +bool                                g_auto       = false;  // MOE_EXPERT_CACHE_MIB unset: size each device from its free VRAM
++int                                 g_unified    = 0;      // MOE_EXPERT_CACHE_UNIFIED: allow the arena on a shared host/device pool
 +bool                                g_preflight_done = false; // the early auto floor decision has run
 +int64_t                             g_min_mib    = 0;      // auto: decline the arena below this many MiB/run
 +int                                 g_min_res_pct= 0;      // auto: decline the arena below this percent of the host experts
@@ -10026,6 +10076,9 @@ index 000000000..1bb8ebcef
 +}
 +
 +void parse_env() {
++    // wip/umem-arena-guard: parsed before the early returns below so the shared-pool guard in
++    // `moe_cache_preflight` sees it even when the cache itself is explicitly disabled.
++    g_unified = env_int("MOE_EXPERT_CACHE_UNIFIED", 0) != 0;
 +    const char * mib = getenv("MOE_EXPERT_CACHE_MIB");
 +    g_auto = false;
 +    if (mib != nullptr && mib[0] != '\0') {
@@ -12454,6 +12507,38 @@ index 000000000..1bb8ebcef
 +    return g_slots_hint > 0 || g_sized;
 +}
 +
++// wip/umem-arena-guard: is this device's "VRAM" the same physical pool as host RAM?
++//
++// On an integrated GPU (an APU, e.g. gfx1151 / Strix Halo) `hipDeviceProp_t::totalGlobalMem` IS the
++// shared GTT window -- this box reports "Total VRAM: 124000 MiB" on a 128 GiB machine -- so the arena's
++// AUTO sizing ("free VRAM") reads the whole host pool, and the weights, the pinned host-expert master
++// and the arena all compete for one budget.  Measured (2026-10-19, 35B-A3B Q4_K_M, `-ncmoe 40`, no
++// explicit MIB): a 123 GiB box went to 121 GiB resident + 13 GiB of swap before the load finished.
++//
++// There is also nothing to win: an expert in the host master is already device-reachable through the
++// same physical memory, so a slot in the arena would hold a copy of bytes the device can read anyway.
++// The default is therefore OFF on a shared pool; the host-expert path (`-ncmoe`/`-cmoe`) is unaffected
++// and simply runs without the arena.  `MOE_EXPERT_CACHE_UNIFIED=1` re-enables it for platforms that do
++// partition the two pools (e.g. Windows, where an APU can be capped to a fixed VRAM carve-out), but
++// AUTO cannot size a shared pool, so that arm also requires an explicit `MOE_EXPERT_CACHE_MIB`.
++static bool moe_cache_shared_pool_device(int device) {
++    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
++        return false;
++    }
++    // Query the live property rather than `ggml_cuda_info().devices[].integrated`: that flag is forced
++    // false on CUDA builds (upstream #15034) and honours `GGML_FORCE_NO_INTEGRATED` on HIP, and both
++    // concern the host-buffer/UMA weight path.  The question here is memory topology, which is always
++    // `prop.integrated` -- the same value `ggml_backend_cuda_device_get_type()` (and therefore the fit
++    // reserve's `GGML_BACKEND_DEVICE_TYPE_IGPU` check) uses.
++    device_guard dg(device);
++    cudaDeviceProp prop;
++    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
++        (void) cudaGetLastError();
++        return false;   // fail-soft: keep the previous (unguarded) behaviour
++    }
++    return prop.integrated;
++}
++
 +bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserve_bytes) {
 +    // Issue #136: `parse_env()` must not depend on `ggml_backend_cuda_init()` having run first.  With
 +    // `--fit off` the fit probe load is skipped, so this preflight runs before any backend init and
@@ -12465,6 +12550,59 @@ index 000000000..1bb8ebcef
 +    }
 +    if (!g_enabled) {
 +        return false;
++    }
++    // wip/umem-arena-guard: refuse the arena on a shared host/device memory pool (see the helper above).
++    // This runs at model load, before any table registers, so the whole cache stack (arena, pool, heat
++    // map, cache-band fusions) stays inert and the run behaves like `MOE_EXPERT_CACHE_MIB=0`; the
++    // backend wrapper then also disarms the movable-boundary slab.  Latches via `g_enabled`, so a second
++    // preflight (the `common` draft/MTP aux call) does not repeat the message.
++    if (moe_cache_shared_pool_device(device)) {
++        std::lock_guard<std::mutex> lock(g_mutex);
++        if (g_unified == 0) {
++            g_enabled = false;
++            GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: integrated GPU whose \"VRAM\" is the "
++                          "same pool as host RAM.  The arena would only copy bytes the device can already "
++                          "read through the host master, and AUTO sizing (free VRAM) would read the whole "
++                          "shared pool.  Experts that fit in host memory already fit the device here, so "
++                          "the host-expert path is used instead (-ncmoe/-cmoe still work).  Set "
++                          "MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit MOE_EXPERT_CACHE_MIB=N only if this "
++                          "platform really partitions host and device memory (e.g. a Windows APU with a "
++                          "fixed VRAM carve-out).\n", __func__, device);
++            return false;
++        }
++        if (g_auto) {
++            g_enabled = false;
++            GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 needs an "
++                          "explicit MOE_EXPERT_CACHE_MIB, because AUTO sizes from \"free VRAM\" and on a "
++                          "shared host/device pool that is host RAM (it would size the arena against the "
++                          "whole machine).  Set MOE_EXPERT_CACHE_MIB=N MiB/device to override.\n",
++                          __func__, device);
++            return false;
++        }
++        // The arena cannot exist without the movable-boundary slab, and the SLAB sizes itself as
++        // `free VRAM - reserve`: on a shared pool that maps the whole machine (measured: `SLAB_INIT ...
++        // size(VA)=98.44 GiB mapped=98.19 GiB` on a 123 GiB box, which is what over-committed it).  The
++        // only bounded arm is one where the operator asserts how much to leave OUTSIDE the slab, via the
++        // existing override.  Requiring it makes the forced path safe by construction instead of trusting
++        // a heuristic for "is this APU's VRAM aperture a real partition?" (Windows can cap an APU to a
++        // fixed carve-out, which is the one case this exists for).
++        if (getenv("GGML_CUDA_SLAB_RESERVE_MIB") == nullptr) {
++            g_enabled = false;
++            GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 also needs an "
++                          "explicit GGML_CUDA_SLAB_RESERVE_MIB.  The cache requires the movable-boundary "
++                          "slab, and the slab maps `free VRAM - reserve`; on a shared host/device pool "
++                          "\"free VRAM\" is host RAM, so an unset reserve maps the whole machine.  Set "
++                          "GGML_CUDA_SLAB_RESERVE_MIB=<MiB to keep OUTSIDE the slab> as well.\n",
++                          __func__, device);
++            return false;
++        }
++        static std::atomic<bool> unified_logged{false};
++        if (!unified_logged.exchange(true)) {
++            GGML_LOG_WARN("%s: MOE_EXPERT_CACHE_UNIFIED=1: expert cache ON with MOE_EXPERT_CACHE_MIB=%zu "
++                          "MiB/device on integrated device %d (shared host/device pool requested by the "
++                          "user); this is a copy tier over host RAM unless the platform caps VRAM\n",
++                          __func__, g_budget >> 20, device);
++        }
 +    }
 +    // WIP moe-upload-overlap: remember the per-device host-expert bytes so the deferred arena sizing can
 +    // wait until every host table has registered (see `moe_cache_tables_complete_locked`).  Recorded for

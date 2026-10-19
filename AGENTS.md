@@ -307,6 +307,22 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   `n_rs_batch = common_speculative_n_max()+1`; `GGML_CUDA_GDN_CHUNKED=0` forces the sequential kernel
   (correct, bit-identical, slow). The pure `none == draft-mtp` range is `n_max <= 7`.
   `GREEDY-PURITY.md` §27, `WORKLOG.md` 2026-09-12.
+- **The rollback bound is enforced by `n_rs_batch`, not observed — do not re-derive it.**  `common`
+  sets `cparams.n_rs_batch = common_speculative_n_max() + 1` over **every** speculator type (draft
+  simple/mtp/adaptive/eagle3/dflash/dspark *and* ngram simple/map/mod/cache, so ngram-mod's default
+  n_max 64 gives 65), `llama_context` floors it at `n_rs_seq + 1`, and `delta-net-base` passes it as
+  GDN op param 1.  The op's threshold is floored at it, so a **speculative verify batch can never take
+  the chunked path** and always restores snapshots it wrote (r91; the campaign's "ngram is an exposure"
+  claim was wrong).  The r91 sequential tail (`GGML_CUDA_GDN_TAIL`, block 10) then covers the remaining
+  source of a partial rollback: a **non-speculator** rewind into a prefill batch (server cancel /
+  `--cache-reuse`).  The per-sequence tracker is block 03's (`prepare()` folds in every ubatch;
+  `LLAMA_RS_ROLLBACK_DEBUG=1` shows `RSPREP`/`RSROLL`).  Record + probe:
+  `archive/work/rs-rollback-boundary/`.
+- **Test baselines are per box *and* per model: never compare to a number in this file.**  E.g.
+  `test-recurrent-state-depth` on Qwen3.6-35B-A3B-UD-Q3_K_M: **130** failures on gfx1201, **153** on
+  gfx1151; the gate is that the per-arm FAIL/PASS set is unchanged, not that the count is zero.  Run it
+  (and any other GPU test) **alone** — two GPU jobs at once changes the arena/band layout and invents
+  failures.
 - **Block 01 (all-reduce; old block 12):** the `GGML_CUDA_AR_PROFILE` device-list init fix; on the first NCCL runtime failure the
   comm layer warns once, disables NCCL and re-routes to the internal pipeline/butterfly.
   `GGML_CUDA_ALLREDUCE=nccl` is **NOT bit-identical** under `-sm tensor` (the internal AR BF16-round-trips).

@@ -11,6 +11,49 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r91` (2026-10-19) -- the rollback-boundary campaign closed (blocks 03/09/10; no new block):**
+> canonical tip `45f817cc3`, net tree `90507dfb528cbfe0c688261226d18934653b1b61`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  Two WIP campaigns promoted, one patch
+> deliberately **not** shipped.
+>
+> **block 03** (`src/llama-memory-recurrent.cpp`) -- *the per-sequence rollback tracker folds in every
+> ubatch*.  `prepare()` recorded each sequence's last-batch shape from `ubatches.back()` only, so a
+> sequence that ran in a non-final ubatch of a multi-ubatch call (`[seq 1 verify] [seq 2 prefill]`) kept
+> its **own earlier prefill chunk** as its "last batch".  The issue-#131 guard then compared a rejection
+> rollback against a completed prefill and warned about a batch boundary that never happened -- the
+> recorded `rollback=2 vs 4571 tokens` case reproduces exactly on gfx1201 (1 warning) and goes to **0**
+> with this fix, text bit-identical.  Every ubatch is now folded in, oldest first.  Also adds
+> `LLAMA_RS_ROLLBACK_DEBUG` (`RSPREP`/`RSROLL`), the instrument that proved the mechanism.
+>
+> **block 10** (`ggml/src/ggml-cuda/gated_delta_net.cu`) -- *the chunked GDN prefill writes its rollback
+> snapshots*.  The chunked kernel computes no per-token states, so a partial rollback into a batch it
+> served restored a slot it never wrote (`prefill-rollback` probe: logit NMSE **0.65**, maxabs 12.5).
+> A single-sequence batch above the threshold now runs the chunked kernel on its first `n_tokens - D`
+> tokens and the **sequential** kernel on the last `D = max(K>16?K:16, n_rs_batch)` in the same launch:
+> slots `0..D-1` exist for every batch, no extra memory, no extra graph, ubatch unchanged (splitting the
+> ubatch instead measured **-13.7 % pp512** and was reverted).  Probe now **exact (0.0) at P=2050** and
+> rounding-level (1e-3) at P=2048.  The comment now states the invariant the old wording only observed:
+> `cparams.n_rs_batch` is the widest verify batch of **any** enabled speculator
+> (`common_speculative_n_max() + 1`, all draft *and* ngram types -- ngram-mod n_max 64 raises it to 65)
+> and is carried into the op as param 1, so a verify batch is never chunked; the tail covers the
+> remaining source, a **non-speculator** partial rewind (server cancel / `--cache-reuse`).  Fixed `D`,
+> not K-dependent, so `--spec-type none == draft-mtp` still holds.  Kill switch `GGML_CUDA_GDN_TAIL=0`.
+> Prefill-only, so decode/verify (and the purity band) are untouched: pp512 -0.09 %, pp2048 -0.58 %,
+> tg128 flat; plain == MTP byte-identical at 64 tokens **and** `-n 3000` on all four axes.
+>
+> **block 09** (`moe-expert-cache.cu`, `common/fit.cpp`) -- *never auto-size the MoE expert arena on a
+> shared host/device pool*.  On an integrated GPU (gfx1151) the "VRAM" window is host RAM, so AUTO arena
+> sizing and the slab's `free - reserve` map the machine (measured: 121 GiB resident + 13 GiB swap).  The
+> preflight now declines the cache on `prop.integrated` before any table registers (the run takes the
+> documented host-expert path and the wrapper disarms the slab), and `fit.cpp` stops reserving slab
+> headroom + arena for such a device.  `MOE_EXPERT_CACHE_UNIFIED=1` is the opt-in and needs an explicit
+> `MOE_EXPERT_CACHE_MIB` **and** `GGML_CUDA_SLAB_RESERVE_MIB`.  A discrete GPU is untouched: gfx1201
+> 35B-A3B `-ncmoe 40` produces **identical** preflight / `SLAB_INIT` / arena lines.
+>
+> **Not shipped from the same campaign:** the trailing-ubatch splitter variant (`LLAMA_RS_TAIL_TOKENS`,
+> -13.7 % pp512) and the fixed-window / checkpoint+replay designs.  `archive/work/rs-rollback-boundary/`
+> carries the full record and the `prefill-rollback` probe.
+>
 > **Current release `v12-097cf33d9-r90` (2026-10-19) -- the async graph-input nondeterminism is fixed and `GGML_CUDA_ASYNC_INPUT` is default-on (block 10; follow-up to PR #182, `@briansp2020`):**
 > canonical tip `529135aed`, net tree `111559e57e820ce5d7fcac511a84ba70604604a0`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  **Block 10** amended, no new block.

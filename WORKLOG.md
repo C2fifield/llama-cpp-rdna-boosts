@@ -1,5 +1,106 @@
 # WORKLOG - dated delivery records
 
+## 261019.010 (r91) -- the rollback-boundary and umem-arena campaigns close; the bound is enforced by `n_rs_batch`
+
+**Release `v12-097cf33d9-r91`**: base `097cf33d9`, canonical tip `45f817cc3`, net tree
+`90507dfb528cbfe0c688261226d18934653b1b61`, **12 blocks** (blocks 03, 09 and 10 amended, no new block).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, trees match).  Both WIP campaigns are closed:
+`wip/rs-rollback-boundary/` and `wip/umem-arena-guard/` move to `archive/work/` with a `RESOLUTION.md`
+each.  Work done on the primary box (gfx1201, 3x R9700); the gfx1151 box wrote the patches.
+
+### The code question: is the rollback bound enforced, or only observed?
+
+**Enforced, by construction** -- the campaign's "an ngram-mod draft (n_max up to 64) is a future exposure"
+claim is **wrong**.  The chain is:
+
+    common: cparams.n_rs_batch = max(1, common_speculative_n_max(&params.speculative) + 1)
+      -> llama_context: n_rs_batch = max(n_rs_seq + 1, params.n_rs_batch)
+      -> delta-net-base: ggml_gated_delta_net(..., K, cparams.n_rs_batch)   (op param 1)
+      -> gated_delta_net.cu: GDN_CHUNKED_MIN_TOKENS = max(K > 16 ? K : 16, n_rs_batch)
+
+`common_speculative_n_max()` ranges over **every** enabled speculator type -- draft simple/mtp/adaptive/
+eagle3/dflash/dspark and ngram simple/map-k/map-k4v/mod/cache -- so the bound always tracks the widest
+enabled drafter.  Measured from the `llama_context` log (4B Q8_0, `-v`):
+
+| config | `n_rs_seq` | `n_rs_batch` | threshold |
+|---|---:|---:|---:|
+| `--spec-type draft-mtp --spec-draft-n-max 3` | 3 | **4** | 16 |
+| `--spec-type draft-mtp --spec-draft-n-max 20` (clamped to 15) | 15 | **16** | 16 |
+| `--spec-type ngram-mod --spec-ngram-mod-n-max 64` | 0 | **65** | 65 |
+| ngram-mod 64 + draft-mtp 3 | 3 | **65** | 65 |
+
+So a verify batch is `1 + n_draft <= n_rs_batch <= threshold` and can never take the chunked path; it
+always falls through to the sequential kernel and restores snapshots it wrote.  With ngram-mod alone
+`n_rs_seq == 0`, i.e. there is no recurrent snapshot path at all (`need_n_rs_seq()` only counts
+mtp/adaptive/eagle3/dflash/dspark).  The clamp comment in `common/common.cpp` already said this; the
+kernel comment said it was "Verified" (an observation) and the campaign treated it as an assumption.
+**Fixed by stating the invariant** in `gated_delta_net.cu` (r91).
+
+What remains is the **non-speculator** partial rollback -- a server cancel / `--cache-reuse` rewind that
+lands inside a prefill batch.  That path has never been observed (and with the tracker fixed it no longer
+fires spuriously), but it is not structurally excluded, so the sequential tail is kept as the closure.
+
+### Promoted
+
+* **block 03** -- `src/llama-memory-recurrent.cpp`: `prepare()` folds **every** ubatch of the list into
+  the per-sequence rollback tracker, oldest first (the issue-#131 **false positive**), plus
+  `LLAMA_RS_ROLLBACK_DEBUG` (`RSPREP`/`RSROLL`).  `TESTING.md` said this belonged to block 02; the code
+  (`warned_rollback_boundary`, `last_ubatch_nseq_tokens_by_seq`) is **block 03's**, so it lands there.
+* **block 10** -- `ggml/src/ggml-cuda/gated_delta_net.cu`: the chunked prefill runs the chunked kernel on
+  `n_tokens - D` and the **sequential** kernel on the last `D = max(K>16?K:16, n_rs_batch)` tokens in the
+  same launch, so snapshot slots `0..D-1` exist for every single-sequence batch.  `GGML_CUDA_GDN_TAIL=0`
+  restores whole-batch chunking.  Folded into block 10, not block 03, because block 10 owns the current
+  dispatch region (`launch_chunked`, the bf16/arch selection, the env-hygiene rewrite) and the patch's base
+  blob *is* the post-block-10 file; folding it into 03 would have been overwritten by 10's replay.
+* **block 09** -- `moe-expert-cache.cu` + `common/fit.cpp`: refuse the MoE expert arena on a shared
+  host/device memory pool (`prop.integrated`), opt back in with `MOE_EXPERT_CACHE_UNIFIED=1` + explicit
+  `MOE_EXPERT_CACHE_MIB` **and** `GGML_CUDA_SLAB_RESERVE_MIB`.
+
+Not shipped: the trailing-ubatch splitter (`LLAMA_RS_TAIL_TOKENS`, -13.7 % pp512) and the fixed-window /
+checkpoint+replay designs.  The campaign's patch set and probe are archived.
+
+### Gates (gfx1201 unless stated)
+
+| gate | result | verdict |
+|---|---|---|
+| `validate-set.sh` | strict 12/12, tree `90507dfb` | PASS |
+| `test-backend-ops -o GATED_DELTA_NET` | 2/2 backends, 48/48 | PASS |
+| `prefill-rollback` probe, tail on | P=2050 k=1,2 **exact 0.0**; P=2048 nmse 7.6e-4 / 1.1e-3 / 1.9e-3 | PASS |
+| probe, `GDN_TAIL=0` | P=2048 nmse 0.18 / 0.58 / 0.60, maxabs 12.5 (the corrupt state) | reproduced |
+| prefill-logit, **27B Q8_0** (canonical, self-KLD 0.000000 / 99.994 %) | tail vs the arm it replaces **0.002278 / 98.870 %** | **PASS** |
+| prefill-logit, 27B vs the exact sequential reference | tail 0.002060 / 98.870 %, r90 0.001929 / 98.925 % | both pass |
+| prefill-logit, **Flash-Next IQ3_XXS 2 GPU** (self-KLD 0.000000 / 100.000 %) | tail 0.021655 / 95.119 %, **r90 0.022895 / 95.039 %**, fp32 chunked 0.022062 / 95.143 % -- tail is the *closer* arm; the gap itself is pre-existing | tail improves it |
+| prefill-logit, 35B-A3B Q3_K_M ctx 2048 x 16 | **instrument unusable** (see finding 1) | n/a |
+| plain == MTP text | 35B-A3B Q3_K_M 64 tok (`0c2291183d46`) **and** `-n 3000` on all four axes (`bd1fc3e9743c` / `aa946b83117c` / `cf5e24c0cef4` / `b99f18798b64`), identical vs r90 | PASS |
+| dense coherence 4B Q8_0 seed 42 | text identical to r90 | PASS |
+| `test-recurrent-state-depth` / `-rollback` | **130 == 130**, per-arm FAIL/PASS set identical; rollback 0 FAIL | PASS |
+| 2-GPU issue-#131 reproducer (`multiseq.sh`, GSQ + MTP n3) | **0 warnings** (r90: 1, the exact `rollback=2 vs 4571 tokens` case); text identical to r90 | PASS |
+| `llama-bench -p 512,2048 -n 128 -r 3`, tail off -> on | pp512 **-0.09 %**, pp2048 **-0.58 %**, tg128 **+0.02 %** (2x2 interleaved) | PASS |
+| umem no-op, 35B-A3B `-ncmoe 40`, MIB unset | preflight / `SLAB_INIT` / arena lines **identical** to r90 | PASS |
+
+gfx1151 numbers from the campaign (same patches): 0 warnings / 95 rollbacks, depth 153 == 153, rollback 0,
+tail vs the arm it replaces 0.002389 / 98.069 %, pp2048 -0.45 %.
+
+### Findings recorded, not fixed (all pre-existing in r90)
+
+1. **The prefill-logit KLD instrument is unusable on 35B-A3B at `--ctx 2048 --chunks 16` on this box.**
+   Three self-KLD runs (same binary, same config, `GGML_CUDA_ASYNC_INPUT=0`) on the **unpatched r90**
+   build: 0.004582 / 97.355 %, 0.004957 / 97.318 %, 0.004639 / 97.336 %.  The 27B Q8_0 (0.000000 /
+   99.994 %) and Flash-Next IQ3_XXS (0.000000 / 100.000 %) are clean, so it is model-specific, not the
+   async path and not this change.  Consequence: the absolute 0.005 / 98.0 limits cannot be applied to
+   35B-A3B on gfx1201, and the gate **must** run a `--record` self-KLD control first.  Protocol note added
+   to `benchmarks/prefill-logit-methodology.md`.
+2. **Flash-Next IQ3_XXS has a large pre-existing chunked-GDN prefill gap** vs the sequential kernel:
+   0.022895 / 95.039 % in r90 (and 0.022062 / 95.143 % with `GGML_CUDA_GDN_CHUNKED_BF16=0`, so **not** the
+   bf16 kernel), unchanged by `-sm layer` vs `-sm tensor` (0.023785 / 94.966 %).  That is 4.4x the KLD
+   limit on a headline model, independent of this release.  **Needs its own campaign; maintainer decision
+   pending.**
+3. **The 2-GPU `multiseq.sh` config faults on rep 2** with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`
+   in `k_set_rows<float, long, __half>` (the q8_0 KV store), identically in r90, tail-on and tail-off
+   (`check-gpu-faults.sh` flags it in all three).  The #131 gate still reads because rep 1 completes.
+4. `test-recurrent-state-depth` and any other GPU test must run **alone**: running two on one card changes
+   the arena/band layout and invented 15 extra "failures" in one run here.
+
 ## 261019.009 (r90) -- the full Protocol A four-axis MTP gate on r90 (PASS)
 
 Follow-up to 261019.007, which recorded an end-to-end **spot check** (400 tokens, 27B MTP n3) rather than

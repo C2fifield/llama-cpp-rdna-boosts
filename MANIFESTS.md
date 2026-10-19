@@ -5,9 +5,19 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r90`** (canonical tip `529135aed`, net tree
-`111559e57e820ce5d7fcac511a84ba70604604a0`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r90 **fixes the async graph-input nondeterminism** that kept
+**`097cf33d9`**, released as **`v12-097cf33d9-r91`** (canonical tip `45f817cc3`, net tree
+`90507dfb528cbfe0c688261226d18934653b1b61`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r91 **closes the rollback-boundary campaign** (blocks 03/09/10,
+no new block): the per-sequence recurrent rollback tracker now folds **every** ubatch of a prepare list in
+(block 03 -- the issue-#131 warning was a stale entry, reproduced on gfx1201 as 1 warning and gone with the
+fix, text identical), the chunked GDN prefill writes its rollback snapshots via a fixed-`D` sequential tail
+inside the same launch (block 10, `GGML_CUDA_GDN_TAIL=0` to disable; probe NMSE 0.65 -> 1e-3, exact at
+P=2050; pp2048 -0.58 %, decode flat), and the MoE expert arena is refused on a shared host/device memory
+pool (block 09, `MOE_EXPERT_CACHE_UNIFIED` opt-in; no-op on a discrete GPU).  The rollback bound is
+**enforced** by `cparams.n_rs_batch` (the widest verify batch of any enabled speculator), so a verify batch
+is never chunked.  Prefill-logit: 27B Q8_0 0.002278 / 98.870 % vs the arm it replaces; 35B-A3B at
+`--ctx 2048` is instrument-limited (see the methodology §5 self-KLD control).  r90 **fixed the async
+graph-input nondeterminism** that kept
 `GGML_CUDA_ASYNC_INPUT` opt-in since r69, and flips it **default-on**: the two
 `set_tensor_async`/`set_tensor_2d_async` paths copied out of the caller's live pinned host buffer (a CPU
 split's output the next ubatch rewrites), so with the host running ahead a rare single-graph corruption in

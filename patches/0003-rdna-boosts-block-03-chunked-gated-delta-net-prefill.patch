@@ -1,9 +1,18 @@
-From 216faf55746ef44f1eb892cd24da572e2c5cff9d Mon Sep 17 00:00:00 2001
+From 0cab321b935e0c7a6a299a11dba661d6d67b45f0 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:48 -0500
 Subject: [PATCH 03/11] rdna-boosts: block 03: chunked gated-delta-net prefill
 
 Sources: old 02 (whole block).
+
+Fold (r91): fold every ubatch into the per-sequence rollback tracker (issue #131).
+`prepare()` recorded each sequence's last-batch shape from `ubatches.back()` only, so a
+sequence that ran in a non-final ubatch of a multi-ubatch call kept an older count -- typically
+its own prefill chunk.  The guard then compared a rejection rollback against a completed
+prefill and warned about a batch boundary that never happened (observed 4571-token case,
+reproduced on gfx1201: 1 warning -> 0 with this fix).  Every ubatch is now folded in, oldest
+first.  Also adds the `LLAMA_RS_ROLLBACK_DEBUG` RSPREP/RSROLL instrumentation that proved it.
+Text-identical pre/post on gfx1151 and gfx1201.  Record: archive/work/rs-rollback-boundary/.
 ---
  common/common.cpp                             |    3 +
  common/speculative.cpp                        |    1 +
@@ -22,12 +31,12 @@ Sources: old 02 (whole block).
  src/llama-memory-hybrid-iswa.h                |    1 +
  src/llama-memory-hybrid.cpp                   |    2 +
  src/llama-memory-hybrid.h                     |    1 +
- src/llama-memory-recurrent.cpp                |   63 +-
+ src/llama-memory-recurrent.cpp                |  104 +-
  src/llama-memory-recurrent.h                  |   19 +
  src/llama-model.cpp                           |    5 +
  src/models/delta-net-base.cpp                 |   29 +-
  tests/test-backend-ops.cpp                    |  132 ++-
- 22 files changed, 3141 insertions(+), 15 deletions(-)
+ 22 files changed, 3182 insertions(+), 15 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/gated_delta_net_chunked.cu
  create mode 100644 ggml/src/ggml-cuda/gated_delta_net_chunked.cuh
  create mode 100644 ggml/src/ggml-cuda/gated_delta_net_chunked_bf16.cu
@@ -3157,10 +3166,19 @@ index 484eafb74..fb8164664 100644
                       bool   unified,
                              /* layer filters */
 diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
-index a54e91ebe..bd78eb88a 100644
+index a54e91ebe..9a53aaef1 100644
 --- a/src/llama-memory-recurrent.cpp
 +++ b/src/llama-memory-recurrent.cpp
-@@ -25,6 +25,7 @@ llama_memory_recurrent::llama_memory_recurrent(
+@@ -8,6 +8,8 @@
+ 
+ #include <algorithm>
+ #include <cassert>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ #include <map>
+@@ -25,6 +27,7 @@ llama_memory_recurrent::llama_memory_recurrent(
                   uint32_t   mem_size,
                   uint32_t   n_seq_max,
                   uint32_t   n_rs_seq,
@@ -3168,7 +3186,7 @@ index a54e91ebe..bd78eb88a 100644
      const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max) {
      const int32_t n_layer = hparams.n_layer();
  
-@@ -32,8 +33,11 @@ llama_memory_recurrent::llama_memory_recurrent(
+@@ -32,8 +35,11 @@ llama_memory_recurrent::llama_memory_recurrent(
      size = mem_size;
      used = 0;
  
@@ -3181,7 +3199,7 @@ index a54e91ebe..bd78eb88a 100644
  
      cells.clear();
      cells.resize(mem_size);
-@@ -184,6 +188,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+@@ -184,6 +190,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
      const bool rm_all = p0 == 0 && p1 == std::numeric_limits<llama_pos>::max();
      if (rm_all) {
          set_rs_idx(seq_id, 0);
@@ -3196,7 +3214,7 @@ index a54e91ebe..bd78eb88a 100644
      }
  
      // models like Mamba or RWKV can't have a state partially erased at the end
-@@ -211,7 +223,31 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+@@ -211,7 +225,38 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                  const llama_pos rollback = cell.pos - (p0 - 1);
                  // pending rollback is single-use
                  const bool pending = rs_idx[seq_id] != 0;
@@ -3206,6 +3224,13 @@ index a54e91ebe..bd78eb88a 100644
 +                const llama_pos last_seq_pos  = ((size_t) seq_id < last_ubatch_pos_last_by_seq.size())
 +                        ? last_ubatch_pos_last_by_seq[seq_id] : -1;
                  if (!pending && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
++                    if (getenv("LLAMA_RS_ROLLBACK_DEBUG") != nullptr) {
++                        LLAMA_LOG_WARN("%s: RSROLL seq=%d rollback=%d p0=%d last_global_nseq=%u last_global_pos=%d "
++                                       "last_seq_nseq=%u last_seq_pos=%d n_rs_seq=%u n_rs_batch=%u\n",
++                                       __func__, (int) seq_id, (int) rollback, (int) p0,
++                                       last_ubatch_nseq_tokens, (int) last_ubatch_pos_last,
++                                       last_seq_nseq, (int) last_seq_pos, n_rs_seq, n_rs_batch);
++                    }
 +                    // Guard: the snapshot path assumes a rollback only removes tokens the last
 +                    // batch decoded, i.e. that only batches at or below n_rs_batch -- speculative
 +                    // verify batches -- are rolled back into.  A larger batch is not a verify
@@ -3228,30 +3253,62 @@ index a54e91ebe..bd78eb88a 100644
                      set_rs_idx(seq_id, (uint32_t) rollback);
                      cell.pos = p0 - 1;
                      return true;
-@@ -515,6 +551,31 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
+@@ -515,6 +560,63 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
      used = org_used;
      head = org_head;
  
 +    // remember the shape of the batch that is about to run, for the rollback guard in seq_rm()
 +    if (!ubatches.empty()) {
++        // wip/rs-rollback-boundary instrumentation (`LLAMA_RS_ROLLBACK_DEBUG=1`): one line per prepared
++        // ubatch, so a server log shows the prepare order that leads into a partial rollback.  Used to
++        // answer open question 1 ("whose prepare is the large one, and does the MTP verify batch go
++        // through this path at all?").
++        const bool rs_debug = getenv("LLAMA_RS_ROLLBACK_DEBUG") != nullptr;
++        if (rs_debug) {
++            for (size_t u = 0; u < ubatches.size(); ++u) {
++                const llama_ubatch & ub = ubatches[u];
++                char ids[128] = {0};
++                size_t o = 0;
++                for (uint32_t s = 0; s < ub.n_seqs_unq && o + 12 < sizeof(ids); ++s) {
++                    o += (size_t) snprintf(ids + o, sizeof(ids) - o, "%s%d", s ? "," : "", (int) ub.seq_id_unq[s]);
++                }
++                const llama_pos p_first = (ub.n_tokens > 0 && ub.pos) ? ub.pos[0] : -1;
++                const llama_pos p_last  = (ub.n_tokens > 0 && ub.pos) ? ub.pos[ub.n_tokens - 1] : -1;
++                const llama_pos p_1     = (ub.n_tokens > 1 && ub.pos) ? ub.pos[1] : -1;
++                LLAMA_LOG_WARN("%s: RSPREP prep=%zu/%zu n_tokens=%u n_seq_tokens=%u n_seqs=%u n_seqs_unq=%u "
++                               "n_pos=%u pos=[%d..%d] pos0=%d pos1=%d seq_ids=[%s]\n",
++                               __func__, u + 1, ubatches.size(), ub.n_tokens, ub.n_seq_tokens, ub.n_seqs,
++                               ub.n_seqs_unq, ub.n_pos, (int) p_first, (int) p_last, (int) p_first, (int) p_1, ids);
++            }
++        }
 +        const llama_ubatch & ub = ubatches.back();
 +        last_ubatch_nseq_tokens = ub.n_seq_tokens;
 +        last_ubatch_pos_last    = ub.n_tokens > 0 ? ub.pos[ub.n_tokens - 1] : -1;
-+        // issue #131: per-sequence last-batch shape.  Only the sequences present in this ubatch are
-+        // updated; the others keep the count from the last batch they ran in.
-+        for (uint32_t s = 0; s < ub.n_seqs_unq; ++s) {
-+            const llama_seq_id sid = ub.seq_id_unq[s];
-+            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
-+                last_ubatch_nseq_tokens_by_seq[sid] = 0;
-+                last_ubatch_pos_last_by_seq[sid]    = -1;
++        // issue #131: per-sequence last-batch shape.  A sequence's entry is its own most recent batch, so
++        // EVERY ubatch in this prepare list is folded in, oldest first -- not just `ubatches.back()`.
++        // Why (wip/rs-rollback-boundary, 2026-10-19): one decode call can carry several ubatches (a
++        // two-slot server under `--kv-unified` builds one per distinct graph shape), e.g. `[seq 1 verify
++        // (4 tokens)] [seq 2 prefill (6136 tokens)]`.  Reading only the back ubatch left seq 1's entry at
++        // whatever it was the last time seq 1 happened to BE the back ubatch -- typically its own prefill
++        // chunk -- so the next rejection rollback for seq 1 was compared against a 4571-token prefill it
++        // had already finished, and the guard warned about a batch boundary that never happened.  That is
++        // the whole of the "large prefill as the last prepared batch before a rollback" ordering: a stale
++        // tracker entry, not a real scheduling order.
++        for (const llama_ubatch & u : ubatches) {
++            for (uint32_t s = 0; s < u.n_seqs_unq; ++s) {
++                const llama_seq_id sid = u.seq_id_unq[s];
++                if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                    last_ubatch_nseq_tokens_by_seq[sid] = 0;
++                    last_ubatch_pos_last_by_seq[sid]    = -1;
++                }
 +            }
-+        }
-+        for (uint32_t i = 0; i < ub.n_tokens; ++i) {
-+            const llama_seq_id sid = ub.seq_id[i][0];
-+            if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
-+                last_ubatch_nseq_tokens_by_seq[sid]++;
-+                if (ub.pos != nullptr) {
-+                    last_ubatch_pos_last_by_seq[sid] = ub.pos[i * ub.n_pos];
++            for (uint32_t i = 0; i < u.n_tokens; ++i) {
++                const llama_seq_id sid = u.seq_id[i][0];
++                if (sid >= 0 && (size_t) sid < last_ubatch_nseq_tokens_by_seq.size()) {
++                    last_ubatch_nseq_tokens_by_seq[sid]++;
++                    if (u.pos != nullptr) {
++                        last_ubatch_pos_last_by_seq[sid] = u.pos[i * u.n_pos];
++                    }
 +                }
 +            }
 +        }

@@ -67,6 +67,21 @@ movable-boundary slab, r21's `llama-cli` drop, r20's compute-buffer slack, r19/r
 
 ## Active (kept compact: only what this repo will work on next)
 
+### 74. Never AUTO-size the MoE expert arena (or map the slab) on a shared host/device memory pool — ROBUSTNESS (**CLOSED 2026-10-19, r91**; block 09)
+
+On an APU the device "VRAM" window is the same physical pool as host RAM, so `MOE_EXPERT_CACHE_MIB`
+unset (AUTO = "size from free VRAM") and the slab's `free - reserve` both map the machine: measured
+gfx1151 35B-A3B `-ncmoe 40` **121 GiB resident + 13 GiB swap**, and even with the arena explicitly bounded
+(`MOE_EXPERT_CACHE_MIB=4096`) the slab still mapped **98.19 GiB** -- the arena cannot be bounded
+separately.  `moe_cache_preflight` now declines the cache on `prop.integrated` before any table registers
+(so the cache stack is inert and the run is the documented host-expert path), `common/fit.cpp` stops
+reserving slab headroom + arena there, and `MOE_EXPERT_CACHE_UNIFIED=1` is the only way back in -- it
+requires **both** an explicit `MOE_EXPERT_CACHE_MIB` and an explicit `GGML_CUDA_SLAB_RESERVE_MIB` (the
+Windows fixed-carve-out case), bounding `mapped = free - reserve` by construction.  A discrete GPU is
+untouched (gfx1201 no-op check: identical preflight / `SLAB_INIT` / arena lines).  Four documented
+follow-ups (the root cause is HIP's UMA-blind `device_get_memory`) are in
+[`archive/work/umem-arena-guard/RESOLUTION.md`](archive/work/umem-arena-guard/RESOLUTION.md).
+
 ### 73. `GGML_CUDA_ASYNC_INPUT` was nondeterministic when the consumer is a captured HIP graph — CORRECTNESS (**CLOSED 2026-10-19, r90**; the async path is now default-on)
 
 **Opened 2026-10-19 while folding PR #182 (r89).**  The async graph-input ring (block 10) is run-to-run
@@ -518,9 +533,17 @@ recurrent rollback. The `seq_rm` boundary warning
 (Issue #131) is a false positive in the cross-sequence case: the probe is bit-exact at the production
 verify width, and **r44 block 02** now tracks the last-batch shape **per sequence** so the diagnostic
 reports the right sequence. The deeper "large prefill as the last prepared batch before a rollback"
-ordering is **OPEN and being resumed** in `wip/rs-rollback-boundary/` (seeded, not parked: see
-`wip/CAMPAIGNS.md`). The predecessor record is
-`archive/work/moe-verify-fusions/`. The text below is the original finding.
+ordering is **CLOSED (r91, 2026-10-19)**: it is a **stale per-sequence tracker entry** -- `prepare()`
+folded the per-sequence shape in from `ubatches.back()` only, so a sequence that ran in a non-final ubatch
+kept its own earlier prefill chunk (block 03 now folds every ubatch in; gfx1201 1 warning -> 0, text
+identical).  The latent case -- a partial rollback that *does* land in a chunked-GDN prefill batch -- is
+closed structurally: the chunked prefill now runs a sequential tail of
+`D = max(K>16?K:16, n_rs_batch)` tokens in the same launch, so every batch writes its snapshots (block 10;
+`GGML_CUDA_GDN_TAIL=0` is the A/B, probe NMSE 0.65 -> 1e-3).  **The rollback bound is enforced, not
+observed:** `cparams.n_rs_batch` is the widest verify batch of *any* enabled speculator (all draft and
+ngram types), so the campaign's ngram exposure claim was wrong.  Record:
+[`archive/work/rs-rollback-boundary/RESOLUTION.md`](archive/work/rs-rollback-boundary/RESOLUTION.md).  The
+predecessor record is `archive/work/moe-verify-fusions/`. The text below is the original finding.
 
 **Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-10 while investigating the single-sequence
 divergence — see [`HANDOVER-single-seq-rollback.md`](archive/work/moe-verify-fusions/HANDOVER-single-seq-rollback.md)).

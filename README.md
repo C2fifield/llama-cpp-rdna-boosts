@@ -12,8 +12,17 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r90`**; it **fixes the
-run-to-run nondeterminism of `GGML_CUDA_ASYNC_INPUT` and turns it on by default** (**block 10**, no new
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r91`**; it **closes the
+recurrent rollback-boundary campaign** -- the issue-#131 warning was a **stale per-sequence tracker entry**
+(**block 03**: every ubatch is now folded in, so a sequence that verified in a non-final ubatch keeps its
+own shape; gfx1201 1 warning -> 0, text identical), and the chunked GDN prefill now **writes its rollback
+snapshots** (**block 10**: the last `D = max(K>16?K:16, n_rs_batch)` tokens of a single-sequence prefill
+batch run the sequential kernel in the same launch -- `GGML_CUDA_GDN_TAIL=0` restores the old behaviour;
+prefill-only, no extra memory, pp2048 -0.58 %, decode flat).  r91 also **refuses the MoE expert arena on a
+shared host/device memory pool** (**block 09**: an APU no longer AUTO-sizes an arena/slab over host RAM;
+`MOE_EXPERT_CACHE_UNIFIED=1` + explicit MIB + explicit slab reserve is the opt-in), a no-op on a discrete
+GPU.  The previous release, `v12-097cf33d9-r90`, **fixed the
+run-to-run nondeterminism of `GGML_CUDA_ASYNC_INPUT` and turned it on by default** (**block 10**, no new
 block; follow-up to **PR #182**, `@briansp2020`).  The two `set_tensor_async` / `set_tensor_2d_async` paths
 copied out of the caller's *live* pinned host buffer, and the scheduler uses them for a CPU split's output,
 which the next ubatch rewrites; with the host running ahead the copy could read the next ubatch's bytes, a
@@ -172,14 +181,14 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0000` | **foundation** — band-uniformity, Meta-wrapper, allocator fixes | old-00 + old-05 + old-07 + old-09a + the multi-ubatch logits readback + the `ggml-alloc` view release; + the meta hot-path dispatcher restoration (r86) |
 | `0001` | **hybrid HIP all-reduce** (RDNA4-gated) | the old block 12; + no per-AR `ev.ker` and the opt-in P2P-large path (r52) |
 | `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01; + opt-in MTP prompt-tail ingest and the last-row prompt copy (r52) |
-| `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02 |
+| `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02; + the per-sequence rollback tracker folds in every ubatch and `LLAMA_RS_ROLLBACK_DEBUG` (r91) |
 | `0004` | **BF16 KV cache + native-BF16 flash attention** | old-03 |
 | `0005` | **flash-attention band / native quantized K-V / derived kq mask** | old-04 FA + the old-15 FA work |
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
 | `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
 | `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85); + the slab transient absorption common half and the derived draft reserve (r86) |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86); + the async graph-input ring and its r90 split-input snapshot fix (default-on) |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86); + the async graph-input ring and its r90 split-input snapshot fix (default-on); + the fixed-D sequential GDN snapshot tail (r91, `GGML_CUDA_GDN_TAIL=0`) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16; + the pre-loaded draft-model ownership handoff (r86) |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the
