@@ -1,13 +1,16 @@
 # issue #184 — the r80 -> r82 `ggml-backend-meta.cpp` change is not a 4-stream regression here
 
-**Status: investigated 2026-10-18 (r86-candidate tree).  No delivery change; no release.**  `@briansp2020`
+**Status: investigated 2026-10-18 (r86-candidate tree).  No delivery change; no release.  Reply posted to
+the issue ([#issuecomment-6259247216](https://github.com/stew675/llama-cpp-rdna-boosts/issues/184#issuecomment-6259247216),
+label `needs more info`); awaiting the reporter's diagnostics (dispatcher `nm` sizes, the per-request
+`graph reallocs` counters, a layout-control arm, 16 pairs, `-sm layer`).**  `@briansp2020`
 reports that on his 2x R9700 box the r82 Meta change (the `[TAG_META_UNALLOC_ALIAS]` /
 `[TAG_META_ALLOC_FAIL]` hunks of issue #170) costs **-3.48 % [-5.60, -1.37] at 4 concurrent greedy
 decode streams**, with a host profile pointing at `ggml_backend_meta_get_split_state` on the graph
 allocation path.  On this box the same pair of builds is **equal within noise** (<= 0.4 %, sign not
 stable), and the compiled-code difference is **224 bytes** of `.text` in an 83 KB object with no
 inlining change.  Reported back with the diagnostics that would settle it on his side
-(`COMMENT-2026-10-18.md`).
+(`COMMENT-2026-10-18.md`, posted).
 
 ## 1. What the two arms actually differ by
 
@@ -92,8 +95,9 @@ Control arms (same session discipline):
 * **"The verify graphs are re-allocated each step."**  The delivery already prints a per-request
   `graphs reused` / `graph reallocs = N / M (same size) / (changed size)` pair
   (`llama_context::sched_graph_realloc`, block 09/11), which is the instrument for this.  Pre-warmed,
-  a 4-stream request reports **1 same-size + 1 changed-size reallocation** (not one per step); with
-  the raw 512-token-ubatch harness (varying prefill batches) it is 10-12 same-size per request.  The
+  a 4-stream 192-token request reports **2 same-size + 2 changed-size reallocations against 72 reused
+  graphs** (not one per step); with the raw 512-token-ubatch harness (varying prefill batches) it is
+  10-12 same-size per request.  The
   `probe4.py` probe + `-v` also shows the `ggml_gallocr_needs_realloc` reason lines
   (`graph topology changed (fingerprint mismatch)` etc., `NDEBUG`-guarded, so debug logs only).
 * **"Does the r84 graph-identity fingerprint make that worse?"**  No, here: disabling the fingerprint
@@ -141,13 +145,13 @@ and A/B'd the same way:
 | +100 volatile iterations per `get_split_state` call | ~120 ns/call | +0.23 % |
 | +1000 volatile iterations per call | ~1.2 us/call | **+1.17 %** |
 
-Linear, ~0.0012 % per iteration, so the harness resolves host-path cost to ~0.2 % and would show a 3.5 %
-effect as ~3000 iterations per call (~350 ns on every one of the ~10k lookups a decode step performs).
-The r82 delta adds **one null test** per call (~1-2 ns) — two orders of magnitude below the resolution
-limit, and ~50x below what the 3.5 % claim would require.  Our per-step time is also 1.5x the reporter's
-(102 ms vs ~70 ms at mean draft length 2.8), which makes host cost weigh *more* here, not less.  So the
-null result is informative: on this compiler the r82 change cannot account for 3.5 % by instruction
-count; if it is real on his box it is a layout/inlining effect (the `nm` ask in the reply settles that).
+Linear enough to calibrate with: 3.5 % is roughly **3x the 1000-increment arm** and 15x the 100-increment
+arm, while the r82 delta is **one branch per call** — ~1 % of the work the 100-increment arm adds per
+call, i.e. two orders of magnitude below the ~0.2 % floor.  Our per-token decode is also 1.4x the
+reporter's (36.9 ms/token/stream vs ~25.8 ms from his 4 x 155 t/s), so host cost weighs *more* here, not
+less.  The null result is therefore informative: on this compiler the r82 change cannot account for
+3.5 % by instruction count; if it is real on his box it is a layout or inlining effect (the `nm` ask in
+the reply settles that).
 
 ## 8. Repro
 

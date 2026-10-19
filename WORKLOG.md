@@ -39,22 +39,25 @@ across sessions is 0.8 %, so only same-session pairs are used.
 
 **Sensitivity calibration (a null is only worth something if the instrument could see the effect).**  The
 hot dispatcher was pessimised deliberately (a `volatile` add-loop at the top of every call): +100
-iterations ~= 120 ns/call measured **+0.23 %**, +1000 iterations ~= 1.2 us/call measured **+1.17 %** --
-linear, so the harness resolves host-path cost to ~0.2 % and a 3.5 % effect would look like ~3000
-iterations per call (~350 ns on each of the ~10k lookups a decode step performs).  The whole r82 delta is
-**one null test** (~1-2 ns/call), two orders of magnitude under the resolution limit and ~50x under what
-3.5 % would need; our per-step time is also 1.5x the reporter's (102 vs ~70 ms at mean draft length 2.8),
-so host cost weighs more here, not less.  The r82 hunks cannot produce the reported figure by instruction
-count -- if it is real on his box it is layout or inlining, which the `nm` ask settles.
+iterations measured **+0.23 %**, +1000 iterations measured **+1.17 %** -- so the harness resolves host-path
+cost to ~0.2 %, 3.5 % is ~3x the 1000-increment arm, and the whole r82 delta is **one branch per call**
+(~1 % of what the 100-increment arm adds per call, two orders of magnitude under the floor).  Our
+per-token decode is also 1.4x the reporter's (36.9 ms/token/stream vs ~25.8 from his 4 x 155 t/s), so host
+cost weighs more here, not less.  The r82 hunks cannot produce the reported figure by instruction count --
+if it is real on his box it is layout or inlining, which the `nm` ask settles.
 
 **Measurement pitfall (recorded because it produced a 2.2x false bimodality).**  With the four prefills
 left in the window the decode streams do not overlap for the whole window (a slot starts decoding as
 soon as its prefill ends), and the same build then measured 63.8 / 63.8 / 63.8 / **139.2** t/s.  The
 harness here caches every slot's prompt first (`cache_prompt`, one `n_predict: 1` request per slot), which
-reproduces to 0.1-0.3 % within an arm.  Also checked: a pre-warmed 4-stream request reports `graph
-reallocs = 1 / 1 (same size) / (changed size)` -- the verify graphs are **not** re-allocated each step,
+reproduces to 0.1-0.3 % within an arm.  Also checked: a pre-warmed 4-stream 192-token request reports `graph
+reallocs = 2 / 2 (same size) / (changed size)` against `graphs reused = 72` -- the verify graphs are
+**not** re-allocated each step,
 and the r84 fingerprint is not adding re-reserves, so "graph identity for parallel sessions" is not
 paying on this workload either.
+
+**Issue reply**: posted 2026-10-18 ([#issuecomment-6259247216](https://github.com/stew675/llama-cpp-rdna-boosts/issues/184#issuecomment-6259247216)),
+label `needs more info` added; draft kept in `archive/work/issue-184-meta-r80r82/COMMENT-2026-10-18.md`.
 
 **No fix shipped.**  The candidate shape (hot dispatcher exactly as pre-#170, all alias/host resolution in
 a `noinline, cold` helper) is semantically identical, measured at zero, and would force a re-cut of
