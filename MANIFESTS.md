@@ -5,11 +5,15 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r84`** (canonical tip `adf90e2de`, net tree
-`c381b74523086cc5db90632f54e7abd2c5f2e392`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.
-`main` also carries the **untagged r86 candidate** (block 10: the band test is `ring_armed`;
-tree `f6f55ffc…`, `validate-set.sh` green, no tag).  r84 fixes **issue #183** (DFlash drafting collapsed on
+**`097cf33d9`**, released as **`v12-097cf33d9-r86`** (canonical tip `ab342776c`, net tree
+`bb8258610763da19d03d375865838aac7e79ed30`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r86 folds the two promotion candidates in: the **slab
+transient absorption** (**block 09** common half + derived draft reserve, **block 10** CUDA/slab half,
+**block 11** loaded-draft ownership handoff) and the **meta hot-path dispatcher** (**block 00**, the
+pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  Gates: greedy text
+byte-identical on dense and host-expert MoE, prefill-logit 0.000707 / 98.755 % PASS, adaptive-MTP 5 axes
+exactly equal, `llama-batched-bench` TG equal, issue #170 24 GiB-parity reproduction listens and a
+genuine OOM exits cleanly.  Before it, r84 fixes **issue #183** (DFlash drafting collapsed on
 every `--parallel` slot except the first one used; `LLAMA_DRAFT_SCHED2=0` hid it): **block 00** now
 records an FNV-1a fingerprint of the graph the allocator layout was computed for and re-reserves when it
 changes.  `ggml_gallocr_alloc_graph()` re-applies `node_allocs` positionally and invalidated them only on

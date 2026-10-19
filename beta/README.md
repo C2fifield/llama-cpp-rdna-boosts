@@ -35,33 +35,26 @@ move happens with a "refuted" status.  A finished candidate leaves `beta/`; no s
 
 ## Current candidates
 
-* **`0012-slab-transient-absorption`** — **BETA 2, 2026-10-18.**  Absorbs the slab's outside transients
-  into the slab, loads the MTP **draft model before** the target context so the outside reserve is
-  *measured* instead of predicted, makes a graph capture impossible while the wide band is armed, and
-  raises the default headroom to `640 + 128 x n_gpu` (768 / 896 / 1024 MiB).  Validated on 2× R9700
-  gfx1201 (`Qwen3.8-Flash-Next` IQ4_NL, `-ncmoe 48`, 131k ctx, MTP, 73k-token prefill) and gate-validated on
-  that box: coherence identical, prefill-logit KLD 0.000000, adaptive-MTP 4 axes + phase-switching exactly
-  equal on both arms.  See
-  `beta/0012-slab-transient-absorption/README.md`; record in `wip/slab-transient-absorption/README.md`
-  §10.16 and `WORKLOG.md` 261018.002.
+_None — both candidates held here were promoted in `v12-097cf33d9-r86` (2026-10-19)._
 
-* **`0013-meta-hot-dispatcher`** — **decided 2026-10-18, fold into block 00 at the next revision** (no
-  standalone release).  Pure code motion in `ggml-backend-meta.cpp`: the split-state dispatcher goes back
-  to the exact pre-#170 shape and the issue #170 resolution (view-chain buffer, host test, host-view
-  assert) moves into a `noinline, cold` helper.  Reason: `ggml_backend_meta_get_split_state` is a ~10k
-  lookups/decode-step hot path, and the r82 #170 fix put a null test plus an `is_host()` sub-buft walk in
-  front of the classification (issue #184).  Measured on 2x R9700, 4 concurrent streams, only
-  `libggml-base.so` swapped: **-0.06 %** vs the delivery tree (nothing), greedy text identical; the
-  dispatcher drops 454 -> 287 B.  It edits a file block 00 owns, so it waits here rather than in `wip/`.
-  See `beta/0013-meta-hot-dispatcher/README.md`; record in `WORKLOG.md` 261018.010 and
-  `archive/work/issue-184-meta-r80r82/`.
+## Recently promoted
 
-_`rdna2` (issue #158) was folded into r70 blocks 06/10 and moved to `archive/work/rdna2/`
-(record: `WORKLOG.md` 261016.002)._
+* **`0012-slab-transient-absorption`** — promoted into **r86**, folded per owning block: **block 09**
+  (derived draft reserve, draft model loaded before the target context, slab-served common/all-reduce
+  transients), **block 10** (wide-phase auxiliary region, workspace-pool redirect, capture safety,
+  per-device diagnostics, headroom `640 + 128 x n_gpu`) and **block 11** (loaded-draft ownership handoff).
+  Record: `archive/work/slab-transient-absorption/RESOLUTION.md`; `WORKLOG.md` 261019.001.
 
-_`fa-stage-prealloc` (issue #138) was promoted into r53 blocks 09/10 and moved to
-`archive/work/fa-stage-prealloc/` (record: `WORKLOG.md` 261013.003)._
+* **`0013-meta-hot-dispatcher`** — promoted into **r86**, folded into **block 00** (issue #184).  The
+  split-state dispatcher is the exact pre-#170 shape; the #170 alias/host resolution is a `noinline, cold`
+  helper.  Record: `archive/work/issue-184-meta-r80r82/0013-meta-hot-dispatcher/RESOLUTION.md`;
+  `WORKLOG.md` 261019.001.
 
-**Recently promoted.**  `fa-stage-prealloc/` (issue #138): the FA prefill staging arena is allocated
-once at its eventual size, folded into blocks 09/10, default-on with `GGML_CUDA_FA_STAGE_PREALLOC=0` as
-the kill switch.
+* **`slab-narrow-floor`** — promoted into **r85**, blocks 09/10 (the slab narrow band is learned from the
+  real decode graph).  Record: `archive/work/slab-narrow-floor/`; `WORKLOG.md` 261018.007.
+
+* **`fa-stage-prealloc`** (issue #138) — promoted into **r53**, blocks 09/10: the FA prefill staging arena
+  is allocated once at its eventual size; default-on with `GGML_CUDA_FA_STAGE_PREALLOC=0` as the kill
+  switch.  Record: `archive/work/fa-stage-prealloc/`; `WORKLOG.md` 261013.003.
+
+* **`rdna2`** (issue #158) — folded into **r70**, blocks 06/10; record `archive/work/rdna2/`.

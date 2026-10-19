@@ -1,11 +1,9 @@
-# `0012-slab-transient-absorption` — BETA candidate (NOT part of the delivery)
+# `0012-slab-transient-absorption` — BETA candidate (PROMOTED in `v12-097cf33d9-r86`)
 
-**Status: BETA 2 — 2026-10-18.  Gate-validated on the 2x R9700 development box (see "BETA 2 gate
-results"); awaiting independent validation on other hardware; nothing here is promoted.**
-BETA 1 was 2026-10-17.  BETA 2 adds the step-4 *measurement* fix (the draft model is loaded before the
-slab), the graph-capture safety fix, the 896 MiB 2-GPU headroom default and the new diagnostics — see
-"BETA 2" below.  Nothing in this directory is applied by `scripts/apply-all.sh` unless `--include-beta`
-is given.
+**Status: PROMOTED — folded into `v12-097cf33d9-r86` (2026-10-19), blocks 09/10/11; see
+`RESOLUTION.md`.**  BETA 2 (2026-10-18) was gate-validated on the 2x R9700 development box (see "BETA 2
+gate results"); BETA 1 was 2026-10-17.  This directory is the historical promotion record — nothing here
+is applied by `scripts/apply-all.sh`, and the `beta/` candidate itself has been removed.
 
 | | |
 |---|---|
@@ -15,7 +13,7 @@ is given.
 | applies on | a fresh `scripts/apply-all.sh` checkout (blocks 0000-0011), one commit |
 | applied tree (this box, gfx1201) | `591528bd69930ff8a38c25ccab971dcae011e131` |
 | apply | `scripts/apply-all.sh --include-beta .` (or `git am -3 <patch>` on a clean release tree) |
-| campaign record | [`../../wip/slab-transient-absorption/README.md`](../../wip/slab-transient-absorption/README.md) §8-§10.16 |
+| campaign record | [`README.md`](README.md) §8-§10.16 |
 | announcement | https://github.com/stew675/llama-cpp-rdna-boosts/discussions/180 |
 | BETA 2 validation | 2x R9700 gfx1201, `Qwen3.8-Flash-Next` IQ4_NL `-ncmoe 48`, 131k ctx, MTP draft, 73k-token prefill |
 

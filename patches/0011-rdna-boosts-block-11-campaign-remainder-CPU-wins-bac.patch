@@ -1,4 +1,4 @@
-From 0190f6d969b63d6cf172b0233c0bb127fe4b5c2c Mon Sep 17 00:00:00 2001
+From ab342776c6d5522028d159f3f507d41e027d5f67 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -15,9 +15,14 @@ reference tip af0595360 (release.json.tree) exactly.
 Also fill the newly appended slab_compute_plain device-iface entry (NULL) in the CPU and RPC device
 interfaces, matching the other optional slab_* fills: the field was appended by block 09 after these
 fills were written, which left a -Wmissing-field-initializers warning.
+
+Fold (r86): beta 12, slab-transient-absorption (draft ownership).  The speculative
+init accepts the pre-loaded draft model from common_init_result, so the slab has
+already measured the draft's per-device weights when it sizes itself; the
+fallback load keeps other callers unchanged.
 ---
  common/sampling.cpp                           | 224 +++++++++++++++++-
- common/speculative.cpp                        |  97 ++++++++
+ common/speculative.cpp                        | 140 ++++++++++-
  ggml/include/ggml-alloc.h                     |   7 +-
  ggml/src/ggml-alloc.c                         |  82 ++++---
  ggml/src/ggml-blas/ggml-blas.cpp              |   1 +
@@ -46,7 +51,7 @@ fills were written, which left a -Wmissing-field-initializers warning.
  src/llama-model.h                             |  16 +-
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 30 files changed, 848 insertions(+), 90 deletions(-)
+ 30 files changed, 881 insertions(+), 100 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -337,7 +342,7 @@ index 564fa9c4d..da77044b7 100644
      // Check if a backend sampler has already sampled a token in which case we
      // return that token id directly.
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 5c0924823..b3f40f2ce 100644
+index 5c0924823..f2a642ac7 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -996,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
@@ -464,7 +469,34 @@ index 5c0924823..b3f40f2ce 100644
          return true;
      }
  
-@@ -2796,6 +2879,20 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2765,10 +2848,25 @@ struct common_speculative_init_result::impl {
+     llama_context_ptr context;
+ };
+ 
++llama_model_ptr common_speculative_load_model(common_params & params) {
++    if (!params.speculative.has_dft()) {
++        return nullptr;   // MTP runs on the target model's weights
++    }
++    auto mparams = common_model_params_to_llama(params);
++    // The draft model's own host-expert placement (`--spec-draft-n-cpu-moe`), not the target's `-ncmoe`.
++    mparams.n_cpu_moe_from_end = params.speculative.draft.n_cpu_moe;
++    mparams.allow_nextn_cpu_offload = true;
++
++    const std::string model_path = params.speculative.draft.mparams.path;
++    LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
++    return llama_model_ptr(llama_model_load_from_file(model_path.c_str(), mparams));
++}
++
+ common_speculative_init_result::common_speculative_init_result(
+     common_params & params,
+       llama_model * model_tgt,
+-    llama_context * ctx_tgt) :
++    llama_context * ctx_tgt,
++    llama_model * model_dft_pre) :
+     pimpl(new impl{}) {
+     const bool has_draft = params.speculative.has_dft();
+     const bool spec_mtp = params.speculative.has_mtp();
+@@ -2796,6 +2894,20 @@ common_speculative_init_result::common_speculative_init_result(
      // the draft context holds as many tokens per sequence as the target context
      cparams.n_ctx = llama_n_ctx(ctx_tgt);
  
@@ -485,6 +517,48 @@ index 5c0924823..b3f40f2ce 100644
      // note: for small models maybe we can set this to the maximum possible draft from all speculative types
      //       the extra memory for small models is likely negligible?
      cparams.n_rs_seq  = 0;
+@@ -2805,15 +2917,22 @@ common_speculative_init_result::common_speculative_init_result(
+     std::string model_path;
+     if (has_draft) {
+         model_path = params.speculative.draft.mparams.path;
+-        LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
+ 
+-        // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
+-        // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
+-        // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
+-        // the draft's -- but this makes the intent explicit.)
+-        mparams.allow_nextn_cpu_offload = true;
++        // wip/slab-transient-absorption (step 4): `common_init_result` normally loads the draft model
++        // before the target context, so the slab is sized from the free VRAM measured with it resident.
++        // The fallback load below keeps other callers working unchanged.
++        llama_model * model_dft = model_dft_pre;
++        if (model_dft == nullptr) {
++            LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
+ 
+-        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
++            // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
++            // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
++            // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
++            // the draft's -- but this makes the intent explicit.)
++            mparams.allow_nextn_cpu_offload = true;
++
++            model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
++        }
+         if (model_dft == NULL) {
+             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
+             return;
+@@ -2862,8 +2981,9 @@ llama_context * common_speculative_init_result::context() {
+     return pimpl->context.get();
+ }
+ 
+-common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt) {
+-    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt);
++common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt,
++                                                                       llama_model * model_dft) {
++    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt, model_dft);
+ }
+ 
+ common_speculative_output_limits common_speculative_get_output_limits(
 diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
 index 4a498b0c1..b7ec31448 100644
 --- a/ggml/include/ggml-alloc.h

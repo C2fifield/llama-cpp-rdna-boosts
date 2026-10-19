@@ -12,13 +12,14 @@ whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning va
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
 **`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r85`**; it lets a prefill
-re-use the MoE expert cache (a staging copy uploads only the experts not already resident, +30-44 % prefill
-on a `-ncmoe` host-expert model), fixes the slab's always-resident narrow band so an MTP decode no longer
-re-evicts the expert-cache arena every step (decode 23 -> 46 t/s on the reported config), and carries r84's
-graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's rope + FWHT / GDN norm work.
-`main` additionally carries the **untagged r86 candidate** (block 10: the slab band test is `ring_armed`,
-which learns the band on single-device RDNA3 too); see `WORKLOG.md` 261018.009.
+whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r86`**; it folds in the two
+promotion candidates: the **slab transient absorption** (the controlled prefill transients -- H2D ring, FA
+staging, QSA3/GDN scratch, the workspace pool's large temporaries -- now live in the slab, the MTP draft is
+loaded and measured before the slab is sized, a graph capture is never started while the wide band is armed,
+and the default headroom is `640 + 128 x n_gpu` MiB) and the **Meta hot-path dispatcher restoration** (block
+00: the pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  It carries r85's
+slab narrow band, r84's graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's rope
++ FWHT / GDN norm work.  Gate record: `WORKLOG.md` 261019.001.
 
 The dated release history — every block amendment, issue fix and measurement, r1 through the
 current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
@@ -133,7 +134,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ├── wiki/                  # source for the GitHub wiki (Home, MTP & Adaptive MTP, Quick Reference); see wiki/README.md
 ├── wip/                   # ACTIVE exploration docs / handoffs (currently only: nwarps/)
 ├── beta/                  # promotion-candidate patches pending a beta test (NOT part of the delivery;
-│                          #   apply with `apply-all.sh --include-beta`; see beta/0012-slab-transient-absorption/)
+│                          #   apply with `apply-all.sh --include-beta`; currently empty, see beta/README.md)
 ├── upstream/              # upstream-PR candidates (UPSTREAM-PR-*.md + .patch) + their index
 └── archive/               # the rest: archive/work/ (closed experiments + the archived wip/ trees) + archive/docs/ (history)
 ```
@@ -149,7 +150,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 
 | patch | subject | concern |
 |-------|---------|---------|
-| `0000` | **foundation** — band-uniformity, Meta-wrapper, allocator fixes | old-00 + old-05 + old-07 + old-09a + the multi-ubatch logits readback + the `ggml-alloc` view release |
+| `0000` | **foundation** — band-uniformity, Meta-wrapper, allocator fixes | old-00 + old-05 + old-07 + old-09a + the multi-ubatch logits readback + the `ggml-alloc` view release; + the meta hot-path dispatcher restoration (r86) |
 | `0001` | **hybrid HIP all-reduce** (RDNA4-gated) | the old block 12; + no per-AR `ev.ker` and the opt-in P2P-large path (r52) |
 | `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01; + opt-in MTP prompt-tail ingest and the last-row prompt copy (r52) |
 | `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02 |
@@ -158,9 +159,9 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
 | `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
 | `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
-| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85) |
-| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85) |
-| `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16 |
+| `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85); + the slab transient absorption common half and the derived draft reserve (r86) |
+| `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86) |
+| `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16; + the pre-loaded draft-model ownership handoff (r86) |
 
 Phase-2 additionally moved each concern into a self-contained file: the `ggml_cuda_try_fuse` arms, the
 MMVQ vec-dot/VDR selectors + MoE kernel (`mmvq-vecdot.cuh`, `mmvq-moe.cu`), the FA native-KV/band

@@ -1,4 +1,4 @@
-From 3855776aa928755c63743f63704053847f702bb1 Mon Sep 17 00:00:00 2001
+From f3f19b6e347251cc18d9f2399dcee4e420e7ef2b Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:38 -0500
 Subject: [PATCH 00/11] rdna-boosts: block 00: foundation - band-uniformity,
@@ -47,10 +47,15 @@ Also extend the -Wshadow sweep to the remaining upstream shadowing declarations 
 build reports (all present at the fork point): step35.cpp per-layer n_embd_k_gqa/n_embd_v_gqa,
 llama-moe-cache.cpp init_ctx, llama-vocab.cpp _try_copy, llama-quant.cpp layer_info, and
 llama-model.cpp make_gpu_buft_list / get_tensor.
+
+Fold (r86): beta 13, meta-hot-dispatcher (issue #184).  The split-state dispatcher is back to
+the exact pre-#170 shape and the #170 alias/host resolution lives in a noinline,
+cold helper.  Measured zero (-0.06 %, greedy text identical, 4 concurrent
+streams on 2x R9700); the dispatcher drops 454 -> 287 B.
 ---
  common/speculative.cpp                        |  10 +-
  ggml/src/ggml-alloc.c                         |  88 ++++
- ggml/src/ggml-backend-meta.cpp                |  76 +++-
+ ggml/src/ggml-backend-meta.cpp                | 105 ++++-
  ggml/src/ggml-cpu/llamafile/sgemm.cpp         |   8 +-
  ggml/src/ggml-cuda/fattn-common.cuh           |  10 +-
  ggml/src/ggml-cuda/ggml-cuda.cu               |  36 +-
@@ -96,7 +101,7 @@ llama-model.cpp make_gpu_buft_list / get_tensor.
  src/models/step35.cpp                         |  16 +-
  src/models/vllm-decision2.cpp                 |   8 +-
  src/models/wavtokenizer-dec.cpp               |  64 +--
- 48 files changed, 1227 insertions(+), 984 deletions(-)
+ 48 files changed, 1250 insertions(+), 990 deletions(-)
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
 index c5043a4a8..226473421 100644
@@ -247,7 +252,7 @@ index b0c067b49..022ff710e 100644
          struct ggml_tensor * node = graph->nodes[i];
          struct node_alloc * node_alloc = &galloc->node_allocs[i];
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index 86748b689..a21e43bd2 100644
+index 86748b689..8ad9cacb2 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
 @@ -491,13 +491,43 @@ static struct ggml_tensor * ggml_backend_meta_buffer_simple_tensor(const struct
@@ -305,10 +310,24 @@ index 86748b689..a21e43bd2 100644
  
              for (size_t i = 0; i < GGML_MAX_SRC; i++) {
                  if (tensor->src[i] == nullptr || src_ss[i].axis < 0 || src_ss[i].axis >= GGML_MAX_DIMS) {
-@@ -1181,18 +1211,30 @@ static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
+@@ -1180,20 +1210,49 @@ static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
+     return ggml_is_view(tensor) && ggml_backend_buffer_is_host(tensor->view_src->buffer);
  }
  
- static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
+-static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
++// [TAG_META_UNALLOC_ALIAS] cold path of the split-state lookup -- a tensor that is *not* in a meta
++// buffer: a host tensor/view, another device's buffer, or (issue #170) a nested alias that the
++// allocator has not given its inherited buffer yet.  Out of line on purpose: the hot dispatcher below
++// runs on every tensor of every graph allocation (~10k lookups per decode step under `-sm tensor`), so
++// it keeps the exact pre-#170 two-test shape and this path -- which only the #170 alias case and host
++// tensors take -- is kept out of it (issue #184).
++#if defined(__GNUC__)
++#  define GGML_META_COLD __attribute__((noinline, cold))
++#else
++#  define GGML_META_COLD
++#endif
++static GGML_META_COLD struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state_cold(
++        const struct ggml_tensor * tensor, bool assume_sync) {
 +    // [TAG_META_UNALLOC_ALIAS] a nested alias may not have its inherited buffer yet: resolve the chain
 +    // to the buffer the allocator will give it, so it is classified like the tensor it aliases
 +    ggml_backend_buffer_t buffer = tensor->buffer;
@@ -326,19 +345,30 @@ index 86748b689..a21e43bd2 100644
      //       such host-buffer views to the meta backend. figure out how to update the scheduler logic to achieve that
      //       ref: https://github.com/ggml-org/llama.cpp/pull/30217
 -    if (!ggml_backend_buffer_is_meta(tensor->buffer)) {
-+    if (!ggml_backend_buffer_is_meta(buffer)) {
-         GGML_ASSERT(ggml_backend_meta_is_host_view(tensor));
+-        GGML_ASSERT(ggml_backend_meta_is_host_view(tensor));
++    GGML_ASSERT(tensor->buffer == nullptr || ggml_backend_meta_is_host_view(tensor));
  
-         // the view is not allocated in the meta buffer, it is not split across the sub-devices
-         return { GGML_BACKEND_SPLIT_AXIS_NONE, {0}, {1}, 1 };
-     }
+-        // the view is not allocated in the meta buffer, it is not split across the sub-devices
+-        return { GGML_BACKEND_SPLIT_AXIS_NONE, {0}, {1}, 1 };
+-    }
++    // the view is not allocated in the meta buffer, it is not split across the sub-devices
++    return { GGML_BACKEND_SPLIT_AXIS_NONE, {0}, {1}, 1 };
++}
++#undef GGML_META_COLD
  
 -    ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
-+    ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) buffer->context;
-     return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
+-    return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
++static inline struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
++    // hot path: a tensor in a meta buffer -- unchanged from the pre-#170 dispatcher
++    if (ggml_backend_buffer_is_meta(tensor->buffer)) {
++        ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
++        return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
++    }
++    return ggml_backend_meta_get_split_state_cold(tensor, assume_sync);
  }
  
-@@ -1742,7 +1784,12 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
+ static void * ggml_backend_meta_buffer_get_base(ggml_backend_buffer_t buffer) {
+@@ -1742,7 +1801,12 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
  static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_backend_buffer_type_t buft, ggml_tensor ** tensors, int n_tensors) {
      const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
  
@@ -352,7 +382,7 @@ index 86748b689..a21e43bd2 100644
      const ggml_init_params params_static = {
          /*.mem_size   =*/ n_tensors * ggml_tensor_overhead(),
          /*.mem_buffer =*/ nullptr,
-@@ -1788,7 +1835,22 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_b
+@@ -1788,7 +1852,22 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer_n(ggml_b
                  t->buffer = meta_buf_ctx->bufs[i].get();
              }
          }

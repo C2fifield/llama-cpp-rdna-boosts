@@ -1,9 +1,9 @@
-# `0013-meta-hot-dispatcher` — BETA candidate: pre-#170 hot path with a cold alias path
+# `0013-meta-hot-dispatcher` — PROMOTED: pre-#170 hot path with a cold alias path
 
-**Status: STAGED AND DECIDED (2026-10-18).**  Maintainer decision: **fold into block 00 at the next
-revision** (no standalone release; the promotion gates run with that revision).  This is a pure code
-motion in the block-00 `ggml/src/ggml-backend-meta.cpp` hunk — no behaviour change — so it needs no
-external beta test; it is here because it edits a file block 00 owns and must not sit in `wip/`.
+**Status: PROMOTED into `v12-097cf33d9-r86` (2026-10-19), block 00; see `RESOLUTION.md`.**  Decided
+2026-10-18 to fold into block 00 at the next revision (no standalone release).  This is a pure code
+motion in the block-00 `ggml/src/ggml-backend-meta.cpp` hunk — no behaviour change — so it needed no
+external beta test.
 
 | | |
 |---|---|

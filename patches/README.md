@@ -36,15 +36,25 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > `upstream/`; the MTP draft context has the same shape and is expected to be protected (unverified: no MTP
 > head in the local GGUF).
 
-> **Untagged r86 candidate on `main` (2026-10-18) -- block 10: the slab band test is `ring_armed`:**
-> **not a release.**  `patches/`, `rdna-boosts-all.patch` and `release.json` are regenerated for
-> `tip 0190f6d96` / tree `f6f55ffc…` (`validate-set.sh` green, strict 12/12) and no tag is cut; the tag comes
-> with the maintainer's next merge.  One hunk: r85 gated the band learning on `boundary > narrow_floor ||
-> ring_armed`, which is too strict -- the boundary can sit one chunk above the floor for an unrelated narrow
-> view (gfx1100: floor 1280 MiB, boundary 1536 MiB), so a 1536 MiB decode view was still pushed above the
-> ring.  `ring_armed` alone is the correct test (it is set exactly when a live wide view owns the ring
-> region).  gfx1100: the band is now learned (1280 -> 1536), no post-drop evictions, greedy text unchanged;
-> gfx1201 loop config unchanged (1 re-arm, 43.8 t/s).  See `../WORKLOG.md` 261018.009.
+> **Current release `v12-097cf33d9-r86` (2026-10-19) -- the two promotion candidates are folded: slab transient absorption (blocks 09, 10, 11) and the meta hot-path dispatcher (block 00):**
+> canonical tip `ab342776c`, net tree `bb8258610763da19d03d375865838aac7e79ed30`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).  **Block 00** takes the former `beta/0013-meta-hot-dispatcher`
+> (the split-state dispatcher back to the exact pre-#170 shape, the #170 alias/host resolution in a
+> `noinline, cold` helper; -0.06 %, greedy text identical).  **Block 09** takes the beta-12 common half
+> (derived draft reserve, the draft model loaded before the target context, the slab serving the
+> common-layer and all-reduce transients), **block 10** the CUDA/slab half (wide-phase auxiliary region,
+> workspace-pool redirect, capture safety, per-device diagnostics, headroom `640 + 128 x n_gpu`), and
+> **block 11** the loaded-draft ownership handoff.  No new block.
+>
+> **Gates** (tree `bb825861`): validate-set strict 12/12; dense `Qwen3.5-4B Q8_0` and host-expert
+> `35B-A3B -ncmoe 40` greedy text byte-identical to the r86-candidate build; prefill-logit mean KLD
+> `0.000707` / same-top-p `98.755 %` PASS; adaptive-MTP 4 axes + phase-switching exactly equal on both arms
+> (R 0.66461, P 0.51005, C 0.76070, K 0.96262, phase 0.62752; mean len 4.80 / 2.62 / 5.88 / 6.57 / 2.93)
+> with prose `7759fa4a7c8d` / recall `5ebd156073f6`; `llama-batched-bench -npl 1,4,8` TG equal; the issue
+> #170 24 GiB-parity reproduction listens and a genuine weight OOM exits cleanly (no assert).  The previous
+> candidate's `ring_armed` band test (r85 follow-up, gfx1100 floor 1280 -> 1536) is in block 10.
+> Records: `../archive/work/slab-transient-absorption/RESOLUTION.md` and
+> `../archive/work/issue-184-meta-r80r82/0013-meta-hot-dispatcher/RESOLUTION.md`.
 
 > **Current release `v12-097cf33d9-r85` (2026-10-18) -- the slab narrow band is learned from the real decode graph (blocks 09, 10):**
 > canonical tip `a3e721ac3`, net tree `a121eb0fb443a928d42773b2035fda89ccbdcf36`; strict **12/12**

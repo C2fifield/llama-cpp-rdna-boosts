@@ -1,5 +1,52 @@
 # WORKLOG - dated delivery records
 
+## 261019.001 (r86) -- beta 12 + beta 13 folded: the slab transient absorption and the meta hot dispatcher ship
+
+**Release `v12-097cf33d9-r86`**: base `097cf33d9`, canonical tip `ab342776c`, net tree
+`bb8258610763da19d03d375865838aac7e79ed30`, **12 blocks** (no new block).  `validate-set.sh` green
+(checksums OK, strict 12/12 `git am` on a fresh tarball, applied tree == recorded tree).
+
+**What was folded, and where.**  Both `beta/` candidates are promoted:
+
+- `beta/0013-meta-hot-dispatcher` -> **block 00** (as decided): `ggml_backend_meta_get_split_state` is the
+  exact pre-#170 shape and the #170 alias/host resolution sits in a `noinline, cold` helper.  Pure code
+  motion; measured -0.06 %, greedy text identical.
+- `beta/0012-slab-transient-absorption` -> **block 09** (common half: the draft reserve derived from the
+  draft GGUF, the draft model loaded before the target context, slab-served common-layer and all-reduce
+  transients), **block 10** (CUDA/slab half: the wide-phase auxiliary region, the workspace-pool redirect,
+  capture safety, per-device diagnostics, headroom default `640 + 128 x n_gpu` MiB), and **block 11** (the
+  loaded-draft ownership handoff in `common/speculative.cpp`).  The candidate spans the whole tree, so it is
+  folded per owning block rather than as one commit; every hunk applies at the block that last owns the
+  file, so the intermediate commits stay self-consistent.
+
+**Fold method.**  Canonical chain rebuilt from `release.json.base` with `scripts/apply-all.sh`, both betas
+applied strictly (applied tree `bb825861`, matching the recorded beta-pair tree), then per-block deltas
+folded in with `git apply --index` and the block commits amended.  Final tree re-checked against the beta
+tree, then `make-patches.sh` + `make-release.sh`; the 12 regenerated patches apply strictly from the
+tarball.
+
+**Gates (tree `bb825861`).**  Dense `Qwen3.5-4B Q8_0` (1 GPU, seed 42) and host-expert
+`Qwen3.6-35B-A3B Q4_K_M -ncmoe 40` (2 GPUs, `-sm tensor`, cache budget pinned with
+`GGML_OP_OFFLOAD_MIN_BATCH=1`) greedy text **byte-identical to the r86-candidate build** (tree
+`f6f55ffc`) -- only the build id, spinner and t/s line differ.  Prefill-logit (`gate-prefill-logits.sh`,
+base PPL 5.9329): **mean KLD 0.000707, same-top-p 98.755 %** PASS.  Adaptive-MTP 5 axes
+(`Gemma4-26B-A4B-QAT` Q4_K_XL + Q4_0 MTP draft, 2 GPUs `-sm layer -ncmoe 20`,
+`GGML_OP_OFFLOAD_MIN_BATCH=1`, `-n 3000`, reasoning pinned, adaptive n7): the new build and the
+r86-candidate **exactly equal** (R 0.66461 / P 0.51005 / C 0.76070 / K 0.96262 / phase 0.62752; mean len
+4.80 / 2.62 / 5.88 / 6.57 / 2.93), prose text `7759fa4a7c8d` and recall `5ebd156073f6` on both arms
+(and equal to the BETA 2 record).  `llama-batched-bench -npl 1,4,8` TG 99.81 / 328.84 / 481.74 vs
+99.81 / 329.75 / 480.95 (equal; PP within noise).  Issue #170 regression: the 24 GiB-parity
+reproduction (8 GiB held per card) **LISTENING**; a genuine weight OOM (20 GiB held, `--fit off -ngl 99`)
+**exits rc=1 cleanly** with no `GGML_ASSERT`.  `check-gpu-faults.sh` clean on the MTP logs.
+
+**Housekeeping.**  `wip/slab-transient-absorption/` moved to `archive/work/slab-transient-absorption/`
+(promoted; no stub) with `RESOLUTION.md`; the `beta/0012` files moved beside it as `BETA-README.md` /
+`BETA-TESTING.md` / the patch.  `beta/0013` moved to
+`archive/work/issue-184-meta-r80r82/0013-meta-hot-dispatcher/` with a `RESOLUTION.md`.  `beta/` has no
+remaining candidates.  TODO #69 closed and #62 resolved.  `ENVIRONMENT.md` documents the headroom default
+change, the new `MOE_EXPERT_CACHE_AUX_RESERVE_MIB` semantics and the new
+`GGML_CUDA_POOL_WIDE` / `GGML_CUDA_GRAPH_TRACE` diagnostics.
+
 ## 261018.010 (no release) -- issue #184: the r80 -> r82 Meta change is not a 4-stream regression here
 
 **No delivery change** (`patches/`, `release.json` and the r86-candidate chain are untouched).  Issue
@@ -555,7 +602,7 @@ text hashes (recall `5ebd156073f6`, prose `7759fa4a7c8d`).  `validate-set.sh` gr
 unchanged).  Not run: stock-relative `llama-batched-bench -npl 1,4,8` (no decode/mmvq kernel changed),
 ROCm 7.14, 3-GPU, gfx1100/gfx1151.  Published as BETA 2 on the delivery repo `main` and announced to
 testers in https://github.com/stew675/llama-cpp-rdna-boosts/discussions/180 (no tag, no `release.json`
-change, no fork-branch refresh: the beta is not a block).  Records: `wip/slab-transient-absorption/README.md`
+change, no fork-branch refresh: the beta is not a block).  Records: `archive/work/slab-transient-absorption/README.md`
 §10.16, the beta README/BETA-TESTING.
 
 ## 261018.001 (r82) -- issue #170: `-sm tensor` no longer aborts when the model has to leave layers on the host (block 00 + block 09)
@@ -802,7 +849,7 @@ absorption/` (candidate patch + `README.md` + `BETA-TESTING.md`) and an **opt-in
 `scripts/apply-all.sh`.
 
 **Why a beta and not a block.**  The candidate (the WIP campaign summarised in
-`wip/slab-transient-absorption/README.md` §8-§10.14) moves *where the ROCm transients live*: the H2D ring,
+`archive/work/slab-transient-absorption/README.md` §8-§10.14) moves *where the ROCm transients live*: the H2D ring,
 the FA prefill staging arena, the QSA3 and chunked-GDN prefill scratch and the workspace pool's large prefill
 temporaries now come out of the slab's wide band, the per-graph caches (MMB activation + producer slots, BF16
 src1) are released at the end of a compute, the MTP draft reserve is derived from the draft's own GGUF instead
@@ -870,14 +917,14 @@ their *decode-time* buffers are tiny.
 window streaming (Strata's `--kv-resident 32768`) returns ~1.3 GiB more and is an engine campaign of its
 own (llama.cpp has no equivalent; `--cache-ram` is idle-slot offload, not residency).
 
-**Housekeeping for the next session.**  `wip/slab-transient-absorption/` (r60-era) was re-verified
+**Housekeeping for the next session.**  `archive/work/slab-transient-absorption/` (r60-era) was re-verified
 against r80: new §1a table (current line numbers, measured sizes, and three rows it was missing -- the
 cuBLAS workspace, the `ggml_cuda_pool_leg` high-water, and the 512 MiB H2D calibration peak), and §1b
 corrects F1 -- `ggml_cuda_slab_extend` is **not** dead when an MTP draft is present (`reserve = headroom +
 aux`, so the field log shows `va_spare = 4.00 GiB`); it is dead only with `aux == 0`.
 
 **Records.** `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` §6.1, `ENVIRONMENT.md`
-(`GGML_CUDA_SLAB_HEADROOM_MIB`), `wip/slab-transient-absorption/README.md` §1a/§1b.
+(`GGML_CUDA_SLAB_HEADROOM_MIB`), `archive/work/slab-transient-absorption/README.md` §1a/§1b.
 
 ## 261017.005 (r80) -- the MoE heat map doubled itself into saturation; the campaign retargets to "coverage" and the heat map is re-recorded (block 09)
 
@@ -926,7 +973,7 @@ Flash-Next map re-recorded on this build (5 669-token prompt, 0 saturated, `H(0.
 `H(38.3 %) = 88.7 %` -- **our 90.56 % is +1.8 pts above the static top-f bound**, and Strata's 98.4 % at
 63.7 % is 98.7 % on the same curve.  Also corrected: per-layer capacity allocation is worth **0.3-0.5
 pts**, not 1.5-1.9 (the 35B-A3B spread was a decode-identity tally-gap artifact).  Next phases: an offline
-routing-trace replayer, then metric parity; the arena-size lever is `wip/slab-transient-absorption/`.
+routing-trace replayer, then metric parity; the arena-size lever is `archive/work/slab-transient-absorption/`.
 
 **Records.**  `wip/moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md` (the full review,
 including the Strata metric forensics), `tools/heatmap-audit.py`, `tools/heat-growth-test.sh`,

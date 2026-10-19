@@ -1,8 +1,9 @@
 # `slab-transient-absorption` — move the optional device transients inside the slab so the headroom (and the arena) can grow
 
-**Status: OPEN, re-verified at r80 (2026-10-17) — step 0 + the first two absorptions are implemented and
-measured, see §8.**  Not part of the delivery; nothing here may be applied to the fork without the
-maintainer's go-ahead (see `AGENTS.md`).
+**Status: PROMOTED into `v12-097cf33d9-r86` (2026-10-19) — blocks 09/10/11; see `RESOLUTION.md`.**  This
+is the campaign record (kept for reference; the promotion summary and gates are in `RESOLUTION.md` and
+`WORKLOG.md` 261019.001).  The §8-§10.16 history below is the work as it was measured, including the
+BETA 2 state (`BETA-README.md`).
 Seeded from a code review of the movable-boundary slab and the CUDA backend's raw device allocations
 (`ggml/src/ggml-cuda/ggml-cuda-slab.cu`, `ggml/src/ggml-cuda/common.cuh`,
 `ggml/src/ggml-cuda/ggml-cuda.cu`, `ggml/src/ggml-cuda/allreduce.cu`, `ggml/src/ggml-cuda/mmb.cu`).
@@ -1387,7 +1388,7 @@ With the offload decision made independent of cache residency the two arms agree
 ## 10.16 2026-10-18 — step 4: measure the draft, don't predict it (+ the capture abort)
 
 **Status: implemented, validated on 2× R9700 (gfx1201) with `Qwen3.8-Flash-Next` IQ4_NL `-ncmoe 48`,
-131k ctx and the MTP draft; folded into `beta/0012-slab-transient-absorption` as BETA 2.**
+131k ctx and the MTP draft; folded into the beta candidate (now `BETA-README.md`) as BETA 2.**
 
 ### The failure the maintainer hit
 
@@ -1476,4 +1477,4 @@ symmetric cushion.  The headroom bump costs a further 128 MiB/device.
   loaded before the target context, but fit runs before both).
 * **Done 2026-10-18.**  Coherence (dense + 2-GPU host-expert) identical, prefill-logit mean KLD 0.000000 /
   same-top-p 100 %, adaptive-MTP 4 axes + phase-switching exactly equal on both arms.  Results in
-  `beta/0012-slab-transient-absorption/README.md` ("BETA 2 gate results") and `WORKLOG.md` 261018.002.
+  `BETA-README.md` ("BETA 2 gate results") and `WORKLOG.md` 261018.002.
