@@ -97,69 +97,95 @@ Arms run in this session, same binary, same session (each arm = 2 passes):
    floor), while **9-12 tiny kernels inside the graph do not** (97.1-98.7).  So the exposure is a
    narrow window *before* the launch, not inside the replay.
 
-## Revised hypothesis
+## ROOT CAUSE (found, fixed, validated this session)
 
-The upload ring, the split hand-off, the host-resident-tensor paths and the per-graph scratch lifetimes
-are all excluded.  The difference is produced **inside the last layer's output path** (row-pruned FFN +
-final norm + output projection), it is **large**, it is **per-run** (not per-process), and the only thing
-the async path changes is *how far ahead the host is when the graph runs*.  Two candidates remain:
+`ggml_backend_cuda_set_tensor_async()` issued a **pinned-source `cudaMemcpyAsync` straight from the
+caller's host pointer on the compute stream**.  A pinned-source async copy is read by the copy engine
+*when the stream reaches it*, so the caller must not modify the source until the copy completes — and the
+one caller that matters here cannot promise that: the scheduler's `host_src && dev_dst` branch uses
+`set_tensor_async` for a host-resident **split** input, which for this graph is exactly the CPU split's
+two outputs (`node_1`, `model.input_embed`, both in a `ROCm_Host` buffer — see `AIN_SPLIT_COPY`).  The next
+ubatch's CPU split rewrites that buffer in place, so with `GGML_CUDA_ASYNC_INPUT=1` (host runs ahead) the
+copy can read the *next* ubatch's bytes, or a torn mix.
 
-- **H-D (top):** the verify-band (<= 8 row) kernels used only by that tail are themselves
-  timing-sensitive — `mul_mat_vec_q_ksplit` (the dense-rows K-split mmvq: `attn_output-31`'s and the
-  gate's MUL_MAT are the probes that first differ) and/or `GET_ROWS` at 8 rows.  The reading "identical
-  fp32 input -> different fp32 output" is what a K-split reduction with a shared-memory/`lf_reduce`
-  hazard, or a K-split scratch block that collides with a *different* pool block, would look like.
-- **H-E:** something in the tail reads a *pool block* that a later host step has already recycled (the
-  generic `ggml_cuda_pool` scratch, not the `mmb`/BF16 caches that `AIN_NO_FREE` covers).  The pool
-  alloc/free calls are host-time, so with the host ahead a block can be handed out while an earlier
-  graph's kernel still holds its address; on a single stream that is safe *in theory*, which is why this
-  needs the direct test in "next experiments" 2 rather than more argument.
+That explains every observation in one mechanism:
 
-## Next experiments (in order)
+- **rare and single-graph** — it needs the host to be far enough ahead that the copy has not executed when
+  the next split-0 rewrites the source;
+- **propagates** — the wrong embedding row enters layer 0 and every later graph in the chunk inherits it;
+  the perplexity tool clears the cache per chunk, so the difference **re-converges at the next chunk**
+  (that is why the runs looked "bounded and re-converging");
+- **host-speed dependent** — any host delay (or a pre-launch device op that costs host time) lets the copy
+  execute first;
+- **graphs only** — without graph capture the host is the bottleneck (it must issue 2000+ kernels per
+  graph), so it never gets ahead, which is why `GGML_CUDA_DISABLE_GRAPHS=1` is deterministic;
+- **not the ring** — the ring path snapshots the source with a host `memcpy` into a pinned slot; only this
+  one path copies *directly* from live host memory.
 
-1. **Make the per-node hash immune to fusion/aliasing** (the instrument gap above).  Hash *every* node
-   output with a device kernel inserted in the node loop for all nodes (not a name list), and store the
-   per-node hash for the 2-3 graphs around the first divergence (the differential is `AIN_HK` with the
-   list replaced by "all nodes", 2023 hashes/graph for ~5 graphs only).  That gives the true first
-   differing node in the last-layer path without a name/aliasing artefact — or shows the difference is
-   already there at `attn_gated-31`'s inputs.
-2. **Test H-E by poisoning the pool**: add a diagnostic that fills every `ggml_cuda_pool` block with a
-   NaN/poison pattern on free (or hands out blocks only after a `cudaStreamSynchronize`) and see whether
-   the divergence disappears.  If it does, the fix is a real device-side dependency on pool reuse.
-3. **Test H-D by taking the verify-band matmuls off the ksplit path** (a diagnostic `GGML_CUDA_MMVQ_...`
-   switch forcing the pre-block-13 path for `ncols_dst 2..8`).  Deterministic => the ksplit kernel; still
-   divergent => the divergence is upstream of the matmul.
-4. **Then narrow the tail**: hash `attn_gated-31`'s two inputs (`attn_pregate-31`, `gate_sigmoid-31`,
-   already stable) *and* the Q8_1 buffer mmvq actually reads, in the same graph, to separate "wrong
-   activation" from "wrong matmul".
-5. Re-run the two controls in every arm (`ASYNC_INPUT=1 BATCH=0` must land in the band, `+AIN_SLEEP_US=20`
-   on the floor) and only then read a "fix" as a fix.  Any "fix" must still be deterministic with the
-   `AIN_*` switches off and must survive `AIN_SLEEP_LAUNCH_US=300` (design constraint from session 1).
+The onset probe agrees: with real (non-fused) node hashes, `node_15` (layer 0's qkv `MUL_MAT` output)
+differs in exactly **5 of 769 graphs**, and `ffn_gate-0`/`ffn_out-0`/`ffn_out-30`/`result_output` differ
+from each of those graphs to the end of its chunk (runs `(140,192) (207,256) (286,320) (457,512)`).
 
-## Tooling (this session's additions)
+### Fix
 
-`tools/DEBUGBUILD2.patch` (applies on top of `tools/DEBUGBUILD.patch`, i.e. `dcf22dfce` on `ain-debug`)
-adds, all `AIN_*`-gated and diagnostic only:
+Snapshot through the pinned upload ring instead of copying from live host memory (candidate patch:
+[`r90-set-tensor-async-snapshot.patch`](r90-set-tensor-async-snapshot.patch), 19 lines, block 10 only):
 
-| switch | what it does |
-|---|---|
-| `AIN_SPLITS=N` | prints each schedule's splits: backend, node range, inputs (name/size/buffer/backend) — the `GGML_SCHED_DEBUG` print path, without the log-level dependency |
-| `AIN_SPLIT_COPY=N` | prints every split-input copy: which of `sync_graph_input` / `set_async` / `cpy_async` / `copy_sync` ran, with src/dst buffer+host flags |
-| `AIN_SPLITS_GRAPH=N`, `AIN_GRAPH_TAIL=1`, `AIN_HOSTTENS=1` | prints the first nodes / last 15 nodes of a split graph, and scans the whole split for host tensors |
-| `AIN_TL=1` | per-graph timeline (tokens, `nodes[0]`, instance, used/upd, uploads, bytes, ring wraps), printed from `atexit` |
-| `AIN_HK=a,b,c` (+`AIN_HK_FLOAT=1`) | per-node device hashes of named nodes *or their srcs*, at the point of production, into per-graph slots (device counter, tick kernel per graph) |
-| `AIN_VK=1` | one device kernel hashing every upload destination right after the input wait, compared with the host hash of the uploaded bytes |
-| `AIN_MAIN_COPY=1` | issues the ring uploads on the compute stream instead of the upload stream (no event pair) |
-| `AIN_CAP_WAIT=1` | enqueues the wait-on-upload-event *inside* the capture, so the graph itself carries the dependency |
-| `AIN_NO_FREE=1` | skips the per-graph `mmb`/BF16 cache frees (leak) |
-| `AIN_Q81_NOCACHE=1` | forces a Q8_1 cache miss (fresh quantization for every mmvq) |
+```c
+if (g_async_input_on && size > 0 && size <= GGML_CUDA_ASYNC_INPUT_MAX &&
+    ggml_backend_buffer_get_usage(buf) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
+    ggml_cuda_set_device(cuda_ctx->device);   // the meta backend forwards this per child device
+    if (ggml_cuda_async_input_set(cuda_ctx->device, (char *) tensor->data + offset, data, size)) {
+        return;
+    }
+}
+```
 
-Note the instrument sensitivity above: `AIN_VK` and any pre-launch kernel make the run deterministic, so
-`AIN_VK` can verify the uploads but cannot be used to observe a divergent run; `AIN_HK` (inside the
-graph) and `AIN_TL` (host-only) do not perturb it.
+Ring slots are not reused until the ring wraps, and the wrap is guarded by `cudaStreamSynchronize(upload
+stream)`, so the snapshot lifetime is already safe.  `GGML_CUDA_ASYNC_INPUT=0` keeps the direct copy
+(the delivery's current default) — see the open question below.
 
-## Reporting status
+### Validation (same session, same binary; `AIN_SET_DIRECT=1` is the pre-fix control)
 
-Review findings / open questions reported to the maintainer before any delivery-affecting change.  The
-r90 comment-only fix (block 10, the withdrawn `done_ev` wording) and the default-on flip are **not**
-done; nothing from this campaign is in `patches/`.
+| arm | control (direct copy) | fix |
+|---|---|---|
+| 4B Q8_0, 12 chunks, `-ub 8 -b 8` | **91.0 / 90.8** | **99.967** (x5) |
+| 4B, 24 chunks | **92.5** | **99.984** |
+| 4B, `-ub 1 -b 1` | **95.1** | **99.967** |
+| 4B, `BATCH=1` (default inside async) | **91.3** | **99.967** |
+| 27B `UD-Q4_K_M`, 8 chunks | **91.6** | **100.000** |
+| 35B-A3B `UD-Q4_K_M`, 2 GPU tensor, 6 chunks | 100.000 (does not reproduce here) | 100.000 |
+| 4B, `-ub 512` (prefill, no capture) | 100.000 | 100.000 |
+| 4B greedy `-n 64` seed 42 (off / fix / control, and `-ub 8`) | — | all **`7386359e5dac`** |
+| 27B greedy `-n 48` (off vs fix) | — | both **`ad1333a99867`** |
+| `test-logits-width-probe` W=1..8 (off / fix / control) | — | identical hashes, **`width_purity=PASS`** |
+| `scripts/check-gpu-faults.sh` | — | clean |
+
+The fix also holds with `AIN_SLEEP_LAUNCH_US=300` (the session-1 "must not be a delay" constraint) and is
+deterministic with every `AIN_*` switch off.
+
+### Instrument lesson (do not repeat)
+
+A **fused** node's output is never materialised, so hashing it "via its consumer's src" reads a *stale*
+buffer.  Always probe with `AIN_HK_NOSRC=1` first and keep only the names that come back non-sentinel.
+Session 1's and this session's first "the tail is the only site" readings were that artefact: with real
+node hashes the difference is in **layer 0** already.
+
+## Remaining work (r90)
+
+1. **Block ownership**: the fix is one hunk in `ggml/src/ggml-cuda/ggml-cuda.cu` = **block 10**, so no
+   scheduler/block-09 change is needed.  Add the r90 stale-comment fix in the same amendment.
+2. **Default flip** (the payoff): `g_async_input_on` becomes on-unless-`GGML_CUDA_ASYNC_INPUT=0`, then
+   re-measure the PR #182 table (35B-A3B 2 GPU tensor 109.5 -> 115.8, 27B MTP 83.2 -> 86.2) and run the
+   MTP four-axis gate.  Only after this session's fix.
+3. **Full gate set** on the amended tree (build-rocm): the two per-arm greedy checks, `test-backend-ops`
+   `ADD`/`GET_ROWS`/`CPY`/`MUL_MAT`, `scripts/gate-prefill-logits.sh` (and with `-ub 8` explicitly),
+   `check-gpu-faults.sh`, `scripts/validate-set.sh`.
+4. **Open question 1**: `ggml_backend_cuda_set_tensor_2d_async` (the meta/split splice path) has the same
+   "copy straight from the caller's pointer" shape.  It is not reached by this reproducer (single GPU);
+   decide whether to snapshot it in the same amendment or file it.
+5. **Open question 2**: with `GGML_CUDA_ASYNC_INPUT=0` the same direct copy is used, so the latent race
+   exists in principle on the shipping default too (unobserved: the host blocks repeatedly on the other
+   copies).  Options: snapshot unconditionally (cost: one host memcpy per such copy) or keep it gated and
+   document it.  Recommendation: gate on the async path for r90 (minimal change), and file the
+   unconditional variant as a follow-up with its own measurement.

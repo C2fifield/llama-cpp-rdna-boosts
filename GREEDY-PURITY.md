@@ -1118,7 +1118,8 @@ the moved op itself is bit-exact against the CPU at every width.
 
 **Instrument that localised it:** `GGML_SCHED_DEBUG=1` prints the per-graph split count (`iq4_nl` 142 vs
 `q4_0` 22) and `=2` prints the per-node backend (`node #611 (GET_ROWS) ... CPU#cache_idx_k_l3`) - cheaper
-and more direct than a profiler for "which op left the GPU".
+and more direct than a profiler for "which op left the GPU".  Both need **`-lv 5`** (the dump is
+`GGML_LOG_DEBUG`; `-lv 4` prints nothing, which has cost a debugging session).
 
 ## 31. An address-selected fusion must be bit-identical to the path it replaces (2026-09-13, block-08 amendment (seventh))
 

@@ -16,14 +16,21 @@ folded into `patches/` without the maintainer's explicit go-ahead.
 
 Do not start with a re-derivation.  The facts below cost a full session.
 
-> **Session 2 (same day) is recorded in [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md).**  It kills
-> H-A below (the cross-backend hand-over is at the *front* of the graph — split 0 is the CPU producing the
-> graph's inputs — and forcing every upload onto the compute stream, so stream order alone orders them,
-> still diverges), closes the "first 1024 snapshots" gap in the upload verification (769 graphs x 9-10
-> uploads, 0 mismatches), and relocates the difference to the **last-layer output path** (deep layers,
-> `norm-31`, the gate and `attn_pregate-31` are identical; `attn_gated-31`/`attn_output-31`/`result_output`
-> differ by 5-20 % relative).  The current candidates are H-D/H-E in that file, not H-A/H-B/H-C here.
-> `GGML_SCHED_DEBUG=1` works but needs `-lv 5`, not `-lv 4`.
+> **ROOT CAUSE FOUND AND FIXED (session 2, [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md)).**
+> `ggml_backend_cuda_set_tensor_async()` issued a pinned-source `cudaMemcpyAsync` **directly from the
+> caller's live host pointer**; the scheduler uses that path for a host-resident *split* input, which here
+> is the **CPU split's** output (`node_1` / `model.input_embed` in a `ROCm_Host` buffer) that the next
+> ubatch rewrites.  With `ASYNC_INPUT=1` the host runs ahead, so the copy could read the next ubatch's
+> bytes (or a torn mix): a rare single-graph corruption in **layer 0** that propagates to the end of the
+> chunk and re-converges at the next chunk (the perplexity tool clears the cache per chunk).  Candidate
+> fix: [`r90-set-tensor-async-snapshot.patch`](r90-set-tensor-async-snapshot.patch) — snapshot through the
+> pinned upload ring (19 lines, block 10).  Self-KLD: control **91.0 / 90.8 / 92.5 / 95.1** -> fix
+> **99.967-100.000** (4B `-ub 8`/`-ub 1`/24 chunks/BATCH=1, 27B, 35B 2-GPU tensor); greedy text and
+> `width_purity` unchanged.  Everything below in this file is the *pre-fix* record; H-A/H-B/H-C are dead
+> (the split hand-over is at the front of the graph and forcing the uploads onto the compute stream still
+> diverged).  `GGML_SCHED_DEBUG=1` works but needs `-lv 5`, not `-lv 4`.  Remaining work for r90 is the
+> "Remaining work" section of the findings file (block-10 amendment, default flip + MTP gates, the two
+> open questions).
 
 ## Where things stand
 

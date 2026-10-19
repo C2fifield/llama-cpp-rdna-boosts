@@ -96,9 +96,19 @@ between copies and replay can explain it.  The difference is produced in the **l
 (row-pruned FFN + final norm + output MUL_MAT): deep layers, `norm-31`, the gate and `attn_pregate-31`
 are identical, while `attn_gated-31`/`attn_output-31`/`result_output` differ by 5-20 % relative, and only
 graphs whose row-pruned tail is real can show it at all (the graph alternates a "no-tail" and a "tail"
-shape in aligned 32-graph blocks).  Live candidates (H-D: the verify-band ksplit mmvq / 8-row kernels
-are themselves timing-sensitive; H-E: generic pool scratch recycled while the replay still holds its
-address) and the next experiments are in `FINDINGS-2026-10-19b.md`.  Also pending: the r89
+shape in aligned 32-graph blocks).  **Session 2b found and fixed the root cause**: `ggml_backend_cuda_set_tensor_async()` issued a
+pinned-source `cudaMemcpyAsync` **directly from the caller's live host pointer**, and the scheduler uses
+that path for a host-resident split input -- here the CPU split's output (`node_1` / `model.input_embed` in
+a `ROCm_Host` buffer), which the next ubatch's CPU split rewrites.  With `ASYNC_INPUT=1` the host runs
+ahead, so the copy can read the next ubatch's bytes (or a torn mix): a rare single-graph corruption in
+layer 0 that propagates to the end of the chunk and re-converges at the next chunk.  Fix (candidate:
+`wip/.../r90-set-tensor-async-snapshot.patch`, 19 lines, **block 10**): snapshot through the pinned upload
+ring.  Self-KLD control **91.0 / 90.8 / 92.5 / 95.1** -> fix **99.967-100.000** (4B `-ub 8`, `-ub 1`,
+24 chunks, `BATCH=1`; 27B; 35B-A3B 2-GPU tensor), greedy text `7386359e5dac` and `width_purity=PASS`
+unchanged, GPU-fault check clean.  Remaining: block-10 amendment (+ the stale comment), the default flip
+with the MTP four-axis + PR #182 A/B, the full gate set, and 2 open questions (the `set_tensor_2d_async`
+sibling path; whether to snapshot when async is off).  See `FINDINGS-2026-10-19b.md` "Remaining work".
+Also pending: the r89
 block-10 code comment still carries the withdrawn wording (comment only; fix in the next block-10
 amendment).  Note that 35B-A3B (1 GPU and 2 GPU
 tensor) already produces 2-3 different greedy texts run-to-run **with async off**; that separate
