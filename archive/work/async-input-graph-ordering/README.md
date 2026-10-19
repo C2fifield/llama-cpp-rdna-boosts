@@ -9,20 +9,20 @@ it is what makes it (and PR #182's batched uploads, r89) default-on.
 > tooling and the r90 checklist).  The detailed record is
 > [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md).
 
-Status: **ROOT CAUSE FOUND (2026-10-19, session 2) — fix validated, awaiting the delivery go-ahead.**
-`ggml_backend_cuda_set_tensor_async()` issued a pinned-source `cudaMemcpyAsync` directly from the caller's
-live host pointer, and the scheduler uses that path for a host-resident *split* input — here the CPU
-split's output (`node_1` / `model.input_embed`, a `ROCm_Host` buffer) that the next ubatch rewrites.  With
-`GGML_CUDA_ASYNC_INPUT=1` the host runs ahead, so the copy can read the next ubatch's bytes or a torn mix:
-a rare single-graph corruption in layer 0 that propagates to the end of the chunk and re-converges at the
-next chunk.  The fix ([`r90-set-tensor-async-snapshot.patch`](r90-set-tensor-async-snapshot.patch), 19
-lines, block 10) snapshots through the pinned upload ring: self-KLD control **91.0-95.1** -> fix
-**99.967-100.000** (4B `-ub 8`/`-ub 1`/24 chunks/`BATCH=1`, 27B, 35B-A3B 2-GPU tensor), greedy text and
-`width_purity` unchanged.  Session 1 withdrew the original upload-ordering reading; session 2 killed the
-cross-backend split theory.  Full data, the eliminated list and the tooling:
-[`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md) (session 2), [`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md)
-(session 1), [`HANDOVER.md`](HANDOVER.md), [`tools/`](tools/).  Nothing here is part of the delivery yet:
-`patches/` is untouched and the `GGML_CUDA_ASYNC_INPUT` default flip waits on the maintainer's go-ahead.
+Status: **RESOLVED (2026-10-19, r90)**.  The root cause was found, fixed and shipped, and
+`GGML_CUDA_ASYNC_INPUT` is **default-on** (`=0` is the kill-switch).  `ggml_backend_cuda_set_tensor_async`
+issued a pinned-source `cudaMemcpyAsync` straight from the caller's live host pointer, and the scheduler
+uses that path for a host-resident split input, here the CPU split's output (`node_1` /
+`model.input_embed`, a `ROCm_Host` buffer) that the next ubatch rewrites.  With the host running ahead, the
+copy could read the next ubatch's bytes or a torn mix: a rare single-graph corruption in layer 0 that
+propagated to the end of the chunk.  Both async set paths now snapshot through the pinned upload ring,
+unconditionally, and the ring's wait/done guard is unconditional.  Self-KLD control **91.0-95.1** -> fix
+**99.967-100.000** (4B `-ub 8`/`-ub 1`/24 chunks/`BATCH=1`, 27B, 35B-A3B 2-GPU tensor), greedy text, width
+purity and prefill logits unchanged, decode **+9.3 %** (35B-A3B 2 GPU tensor tg400) and **+5.2 %** (27B MTP
+n3 end-to-end).  Release records: `RESOLUTION.md` (this directory), `../../WORKLOG.md` 261019.007,
+`TODO.md` #73 (closed).  Session data and tooling:
+[`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md) (session 2, root cause),
+[`FINDINGS-2026-10-19.md`](FINDINGS-2026-10-19.md) (session 1, eliminated hypotheses), [`HANDOVER.md`](HANDOVER.md).
 
 ## Payoff if fixed
 

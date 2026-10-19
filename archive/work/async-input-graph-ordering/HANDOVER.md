@@ -16,7 +16,7 @@ folded into `patches/` without the maintainer's explicit go-ahead.
 
 Do not start with a re-derivation.  The facts below cost a full session.
 
-> **ROOT CAUSE FOUND AND FIXED (session 2, [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md)).**
+> **RESOLVED IN r90** (released; `GGML_CUDA_ASYNC_INPUT` is default-on).  Root cause, session 2, [`FINDINGS-2026-10-19b.md`](FINDINGS-2026-10-19b.md)).**
 > `ggml_backend_cuda_set_tensor_async()` issued a pinned-source `cudaMemcpyAsync` **directly from the
 > caller's live host pointer**; the scheduler uses that path for a host-resident *split* input, which here
 > is the **CPU split's** output (`node_1` / `model.input_embed` in a `ROCm_Host` buffer) that the next

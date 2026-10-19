@@ -1,5 +1,23 @@
 # WORKLOG - dated delivery records
 
+## 261019.008 (r90) -- publication record (tag, push, fork refresh, PR #182 reply)
+
+`v12-097cf33d9-r90` is **published**.  Delivery commit `ebf3900`, annotated tag
+`v12-097cf33d9-r90`, `origin/main` and the tag pushed to
+`github.com:stew675/llama-cpp-rdna-boosts`; the fork's `rdna-boosts` branch was force-pushed with
+`--force-with-lease` to tip **`529135aed`** (tree `111559e5…`, matching `release.json`), so a consumer can
+clone the personal fork and check the branch out instead of applying the patch set.  The tag push is what
+the `radiance` worker watcher polls, so the ROCm 7.14.1 / 10.1 container images are built and pushed
+off-host (nothing to run on the primary box).  `release.yml` publishes the release assets
+(`rdna-boosts-all.patch`, `patches.tar.gz`, `release.json`, `SHA256SUMS`).
+
+The r90 commit message and the tag body both name **PR #182** as the follow-up this release closes out,
+and a detailed reply was posted on the PR itself (`@briansp2020`), because that PR is what made the defect
+cheap to isolate: its batched uploads widened the window (same-instrument self-KLD from ~4 % to ~9-16 % of
+tokens differing) and its lazy done event removed a cue that had been masking it.  Note: the r89 record
+said PR #182 was "closed as folded", but GitHub still shows it **open**; the r90 reply is on it and the
+close is left to the maintainer.
+
 ## 261019.007 (r90) -- the async graph-input nondeterminism is FIXED (split-input uploads snapshotted); `GGML_CUDA_ASYNC_INPUT` default-on
 
 **Release `v12-097cf33d9-r90`**: base `097cf33d9`, canonical tip `529135aed`, net tree
