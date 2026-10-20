@@ -136,7 +136,9 @@ shipped one (`delta = n_accepted - depth`, `climb_budget(d) = 20 + 6*(d-1)`,
 (`LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0` escapes it; purity is promised only to 7 — see
 `GREEDY-PURITY.md` §11); an opt-in MTP prompt-tail ingest and a last-row prompt copy; a `--fit` SIGSEGV
 fix with `draft-mtp-adaptive` (issue #38); `tests/test-speculative-adaptive.cpp` and
-`tests/test-recurrent-state-depth.cpp`.
+`tests/test-recurrent-state-depth.cpp`; and the **embeddings-layer-input preset API**
+(`llama_model_set_embeddings_layer_inp_preset`) that the draft setup calls before the target context
+reserves its compute buffers (r94 moved it here, the block that calls it).
 
 **Knobs.**  `--spec-draft-n-max`, `--spec-draft-n-start`, `--spec-draft-p-min`,
 `LLAMA_SPEC_DRAFT_N_MAX_CLAMP`, `LLAMA_MTP_INGEST_TAIL`, `LLAMA_MTP_DRAFT_OP_OFFLOAD`.
@@ -350,6 +352,16 @@ whatever VRAM is left.
 * Host-side: mmap reclaim (`LLAMA_LOAD_RELEASE_MMAP`), rear-fill host layers
   (`LLAMA_HOST_EXPERTS_FROM_END`), `--host-experts pool` (`MOE_HOST_POOL_MIB`), a second draft scheduler
   (`LLAMA_DRAFT_SCHED2`), compute-buffer drop/re-reserve, and the CPU MoE-offload thread cap.
+* **The appended device-iface fills.**  Every `ggml_backend_device_i` / `ggml_backend_i` entry this set adds
+  (`stage_gather`, `slab_ring_set`, `slab_narrow_floor`, `slab_reserve_wide`, `slab_narrow2_floor`,
+  `slab_compute_narrow2`, `slab_compute_plain`, the slab-ring hooks, `moe_cache_*`) is wired here as a real
+  hook (CUDA/Meta) or NULL/no-op (CPU, RPC, every other backend).  The list is **positional**: the block
+  that declares a field must also fill it in every backend, or the initializer silently shifts (r94
+  block-boundary repair; previously deferred to block 11, which does not build on its own).
+* **The pre-loaded draft-model handoff** (r86; ownership completed in r94):
+  `common_speculative_load_model`, the 4-argument `common_speculative_init_result` / `init_from_params`,
+  and `common_init_result::take_draft_model` live in this block together, so the draft model is resident
+  before the target context sizes the slab.  A caller and its definition must not be split across blocks.
 
 **Knobs.**  `MOE_EXPERT_CACHE_MIB` (auto default; `0` disables), `_MIN_MIB`, `_MIN_RES_PCT`,
 `_RESERVE_MIB`, `_AUX_RESERVE_MIB`, `_UNIFIED` (APU opt-in), `_VALIDATE*`, `MOE_EXPERT_HEATMAP[+_DIR]`,
@@ -396,7 +408,10 @@ fusions.
 * **`GGML_CUDA_GDN_TAIL`**: the fixed-`D` sequential tail that makes a chunked-GDN prefill batch write its
   rollback snapshots (r91; `GREEDY-PURITY.md` §27).
 * Graph-memory generations (`GGML_CUDA_GRAPH_MEM_GEN`) so a graph is recaptured when the pool / FA staging /
-  H2D ring memory it captured is freed.
+  H2D ring memory it captured is freed, **and when `ggml_cuda_slab_work_alloc` shrinks the work boundary**
+  (the post-prefill drop hands the wide region back to the arena; a captured graph baked its addresses).
+  Issue #187: without that invalidation a 4-stream MTP decode replayed a stale `set_rows` source and
+  faulted with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`.
 
 **Knobs.**  The slab/cache set listed under block 09, plus `GGML_CUDA_POOL_WIDE[_MIN_MIB]`,
 `GGML_CUDA_SLAB_STATS` / `_GRAPH_TRACE`, `GGML_CUDA_ASYNC_INPUT_BATCH` / `_LAZY_DONE`,
@@ -430,12 +445,10 @@ had no other home.
 * **DFlash**: the F1 device-resident layer-input path made default-on with a warn-once fallback
   (`GGML_LF_DFLASH_DEV=0` disables), `GGML_LF_FAST_TOPK`, and the clean `-sm tensor` rejection for a
   DFlash2 selector (a Meta distributed top-k is unstarted — TODO #78).
-* **Backend iface fills**: the new device-iface entries (`stage_gather`, slab reserve/floor hooks, compute
-  margin/chunk, host-pool, `moe_cache_*`) as NULL/no-op in every backend so the shared headers stay
-  consistent — this is the cross-backend-consistency requirement, not scope creep.
 * **Allocator/model**: `ggml_gallocr_drop_buffers` (free compute buffers and invalidate the layout so the
   next reserve sizes from the current graph), the per-device `max_host_expert_slice_bytes` split rule, the
-  embeddings-layer-input preset, and the `-sm tensor` H2D-ring auto-size + narrow-band pin.
+  application of the embeddings-layer-input preset, and the `-sm tensor` H2D-ring auto-size + narrow-band
+  pin.
 * **Build time**: one FA template instantiation TU per `(ncols1, ncols2, head size)` instead of per
   `(ncols1, ncols2)` — same instantiations, grouped so the backend build is no longer one-file-bound.
 

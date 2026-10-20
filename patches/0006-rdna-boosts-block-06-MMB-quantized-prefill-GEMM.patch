@@ -1,4 +1,4 @@
-From 5ef2f0e8923ef8bdfdb6045ebc2dd19964b3bf7c Mon Sep 17 00:00:00 2001
+From c8d7e6ac957c9a205f4b9dc36d309feefae7f79e Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 16:59:02 -0500
 Subject: [PATCH 06/11] rdna-boosts: block 06: MMB quantized prefill GEMM
@@ -13,11 +13,11 @@ Ships tests/test-logits-width-probe.cpp (the width/purity oracle) and the
 MMVF-vs-MMF verify-batch dispatch uniformity for n_q <= 8.
 ---
  ggml/src/ggml-cuda/ggml-cuda.cu   |   36 +-
- ggml/src/ggml-cuda/mmb.cu         | 2368 +++++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/mmb.cu         | 2366 +++++++++++++++++++++++++++++
  ggml/src/ggml-cuda/mmb.cuh        |   33 +
  tests/CMakeLists.txt              |    1 +
  tests/test-logits-width-probe.cpp |  185 +++
- 5 files changed, 2620 insertions(+), 3 deletions(-)
+ 5 files changed, 2618 insertions(+), 3 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/mmb.cu
  create mode 100644 ggml/src/ggml-cuda/mmb.cuh
  create mode 100644 tests/test-logits-width-probe.cpp
@@ -110,10 +110,10 @@ index cda66f1bf..b55bda2b7 100644
      const void * graph_key = nullptr;
 diff --git a/ggml/src/ggml-cuda/mmb.cu b/ggml/src/ggml-cuda/mmb.cu
 new file mode 100644
-index 000000000..5e6e6c5e7
+index 000000000..4fb5a11e3
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmb.cu
-@@ -0,0 +1,2368 @@
+@@ -0,0 +1,2366 @@
 +#include "mmb.cuh"
 +#include "unary.cuh"
 +#include <unordered_map>
@@ -1610,7 +1610,6 @@ index 000000000..5e6e6c5e7
 +        // keeps its default.  NOTE: gfx1100 was only measured to pp32768 -- re-check pp65536+
 +        // before finalising (see gfx1100-porting.md 14.5).
 +        c.f32split_mode = 0;
-+        c.f32split_mode = 0;
 +        // The 128x256 dense tile spills to scratch on gfx1100 for most weight types (Q6_K 148 B,
 +        // Q5_K 104, Q3_K 56, BF16 48 per thread; Q4_K does not), and under WSL a spilling MMB prefill
 +        // kernel together with the spilling head-256 WMMA FA kernel faults the queue with
@@ -1620,7 +1619,6 @@ index 000000000..5e6e6c5e7
 +        // does not spill; keeping Q4_K on 128x256 is +4.5 % / +3.8 % pp2048 at d0 / d16384 over
 +        // 128x128 for every type (Qwen3.8-27B Q4_K_M).
 +        c.big_q4k_only  = 1;
-+    }
 +    }
 +    // TODO(S12): the routed/GLU thresholds, `tall_mode`, `tiny_m*`, `f32split_*` and `cache_max` are
 +    // still the gfx1151 values on every arch.  Give RDNA4 its own once they are measured per arch.

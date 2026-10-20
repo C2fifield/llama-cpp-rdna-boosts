@@ -343,6 +343,14 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   per-device allocations vary between otherwise-identical calls, so the extra key invalidates warm graphs
   and recaptures (measured -19 % `-sm tensor` MTP at `--spec-draft-p-min 0.5`, with identical text and
   acceptance).  Re-cut it against the slab before revisiting.  `TODO.md` #46, `WORKLOG.md` 2026-10-07 (r25).
+- **A captured graph is only valid while the slab work region's layout is unchanged.**  The work region is a
+  movable boundary: at the post-prefill drop the narrow re-reserve shrinks it and the bytes above the new
+  boundary go back to the MoE arena.  A captured CUDA/HIP graph bakes the work-region addresses into its
+  executable graph, so the shrink **must** bump `ggml_cuda_graph_mem_freed(device)` (block 10,
+  `ggml_cuda_slab_work_alloc`) — otherwise a later replay reads released memory.  Issue #187: a 4-stream MTP
+  decode replayed a graph whose KV `set_rows` source indices pointed into the released wide region and
+  faulted with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`; `GGML_CUDA_DISABLE_GRAPHS=1` hid it.  Every
+  shrink path taken at a drop still needs this; add it wherever a new one is introduced.
 - **Dense greedy purity:** `plain == draft-mtp` greedy text is kept for **f16/bf16/q8_0**; the coarse
   quants (q4_0/q4_1/q5_0/q5_1/iq4_nl) are relaxed to the **logits level** (argmax preserved, top-2
   margin >= 2.2). The FA chooser is TILE across the whole band. Re-run the 8-type x 5-length grid when

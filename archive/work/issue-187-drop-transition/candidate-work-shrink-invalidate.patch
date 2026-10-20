@@ -1,0 +1,26 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index 26c888b8c..27a1cc605 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -1132,6 +1132,21 @@ void * ggml_cuda_slab_work_alloc(int device, size_t need) {
+             if (target < s.boundary) {
+                 const size_t old = s.boundary;
+                 s.boundary = target;
++                // ISSUE #187: a captured CUDA/HIP graph bakes the addresses of the work region's tensors
++                // into the executable graph.  The bytes above `target` have just gone back to the arena,
++                // so any graph captured against the old boundary must be recaptured before its next
++                // replay -- `mem_gen` is the existing invalidation for exactly this ("recapture a graph
++                // whose pool temporaries or scratch buffers were freed since its capture").  This is the
++                // prefill -> decode drop: `ggml_backend_sched_drop_buffers` releases the wide compute
++                // view and the narrow re-reserve shrinks the boundary here.  Without the bump a
++                // 4-stream MTP decode replayed a graph whose KV `set_rows` source indices pointed into
++                // the released wide region and faulted with
++                // HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION.
++                ggml_cuda_graph_mem_freed(device);
++                if (ggml_cuda_work_alloc_debug()) {
++                    GGML_LOG_WARN("WORK_SHRINK dev=%d old=%.1f MiB new=%.1f MiB (captured graphs invalidated)\n",
++                            device, (double) old/1048576.0, (double) target/1048576.0);
++                }
+                 // return [target, old) to the arena free list (coalescing)
+                 size_t lo2 = target, hi2 = old;
+                 auto next = s.arena_free.lower_bound(target);

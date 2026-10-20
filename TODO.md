@@ -12,7 +12,7 @@ Details never live here: they live in `AGENTS.md`, `patches/README.md`, `MANIFES
 still means the same subject after that item is closed and removed from this file.  New items append.
 
 **Current state:** the **12-block V2.0 set** (block 00 + blocks 01-11) at fork point **`097cf33d9`**,
-release **`v12-097cf33d9-r93`**.  `release.json` is the source of truth for the tip/tree and hashes; the
+release **`v12-097cf33d9-r94`**.  `release.json` is the source of truth for the tip/tree and hashes; the
 top of `WORKLOG.md` is the newest record.
 
 | # | subject | kind | status |
@@ -114,6 +114,11 @@ The re-arm is supposed to be layer-uniform and safe; make a partial/refused re-a
 **wholesale stood down** (the fuse-guard invariant) instead of running a mixed-slot layer, and make the
 wide-aux growth refuse once per pass instead of once per allocation.  Repro: the 10-prompt series against
 r86 in `WORKLOG.md` 261019.002; validation arm `MOE_EXPERT_CACHE_VALIDATE=1`.
+
+**r94 note:** the issue #187 fix adds the missing *graph* half of this stale-pointer family — a captured
+graph is now invalidated when the slab work boundary shrinks (block 10, `WORKLOG.md` 261020.004).  That
+covers the observed #187 fault; it does **not** discharge this item, because a re-arm can still change a
+table's arena placement under a graph that is not being dropped.  Keep #70 open.
 
 ## 68. `gemma4` dense + `-sm tensor` on 2 devices aborts with a rotated K cache (`-ctk q8_0`) — CORRECTNESS
 

@@ -232,7 +232,7 @@ git tag -a v<blocks>-<base-sha>-r<N> -m "rdna-boosts v<blocks>-<base-sha>-r<N>"
 git push origin main v<blocks>-<base-sha>-r<N>
 ```
 
-**Release naming.**  One tag per release, `v<blocks>-<base-sha>-r<N>` (e.g. `v12-097cf33d9-r93`), where `N` is
+**Release naming.**  One tag per release, `v<blocks>-<base-sha>-r<N>` (e.g. `v12-097cf33d9-r94`), where `N` is
 that base's revision: `r1` is the release that lands the re-base and `r2`,
 `r3`, ... each later release on the same base.  `release.json.release` must be
 exactly the tag — `validate.yml` checks the manifest, and

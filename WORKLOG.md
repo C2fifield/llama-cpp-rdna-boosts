@@ -1,5 +1,68 @@
 # WORKLOG - dated delivery records
 
+## 261020.004 (r94) -- issue #187 (captured graph replayed over a released slab work region) + the per-block boundary repair
+
+**Release `v12-097cf33d9-r94`**: base `097cf33d9`, canonical tip `c6b8107a3`, net tree
+`40d43e3044051ea8168c02cd1a899877b5d8574d`, **12 blocks**.  Blocks 02/06/09/10/11 amended, no new block,
+no new environment variable.  Campaign record: `archive/work/issue-187-drop-transition/` (moved out of
+`wip/` with this release).
+
+**Issue #187 (`@briansp2020`) -- the fault.**  `Qwen3.8-Flash-Next-GSQ-IQ3_XXS` + the shared Q8_0 MTP head,
+2x R9700, `-sm tensor -ncmoe 10`, MTP n-max 3, 4 concurrent streams: after the first slot of the second
+round is released the server aborts with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION` in
+`k_set_rows_q8_0_group`.  Reproduced **2/2** on r93.  The reporter's r87-hunk revert does hide it, but it
+restores the r85 regression (the second request keeps the wide compute layout and a small arena).
+
+**Root cause.**  Not the r87 drop condition: the r87 forced drop only un-suppresses a **legitimate**
+prefill -> decode drop (`cur = 5568 MiB` vs the recorded narrow `was = 1792 MiB`).  The drop frees the wide
+compute view and the narrow re-reserve **shrinks the slab work boundary**, handing the bytes above it back
+to the MoE arena.  `ggml_cuda_slab_work_alloc`'s shrink path never bumped `ggml_cuda_graph_mem_gen`, so a
+captured HIP graph was replayed with addresses in the released region (here the KV `set_rows` source
+indices) and faulted.  Evidence: `GGML_CUDA_DISABLE_GRAPHS=1` on the unfixed tree is clean 3/3 with the same
+drops/re-arms; the instrumented decision log shows the drop -> `re-armed 54` -> two decode steps -> fault.
+
+**Fix (block 10, `ggml/src/ggml-cuda/ggml-cuda-slab.cu`).**  The work-boundary shrink now calls
+`ggml_cuda_graph_mem_freed(device)` (the existing "recapture a graph whose captured memory was freed"
+mechanism) before returning the bytes to the arena; a `GGML_CUDA_WORK_ALLOC_DEBUG` line reports it.  The
+drop condition and `slab_narrow_boundary` bookkeeping are untouched, so r87's second-prefill repair stands.
+The invalidation fires only on real shrinks (6 events / 5 drops over a 3-round run), never per token.
+
+**Per-block build gate -- a pre-existing failure, repaired.**  Running the gate for this release exposed
+that the 12-block set had not satisfied its own "every block builds the `all` target" contract since
+r58/r86.  Each defect was a block split that the *tip* hides (the tree is unchanged by the repair):
+
+1. **block 02** calls `llama_model_set_embeddings_layer_inp_preset`, whose declaration/definition/field
+   lived in block 11 (r58 split) -> the API moved to block 02.
+2. **block 06**'s `mmb.cu` carried a stray `}` and a duplicated `c.f32split_mode = 0;` (a re-cut artifact)
+   that block 10 removed -> the removal moved to block 06, where the defect was introduced.
+3. **block 09** declared the whole appended device-iface surface but its positional initializers were only
+   filled in block 11 -> the fills moved to block 09 (the CUDA/Meta callbacks whose definitions are block
+   10 stay `nullptr` at block 09 and are wired by block 10).
+4. **block 09** used `ggml_cuda_pool_wide_pin` and `ggml_cuda_slab_seed_floor`, both defined in block 10
+   (r86 split) -> those uses moved to block 10, where the definitions and the pool-wide routing live.
+5. **block 09** used the 4-argument `common_speculative_init_result` / `init_from_params` and
+   `common_speculative_load_model`, but the definitions were in block 11 (r86 loaded-draft handoff split)
+   -> the whole handoff moved into block 09, together with `common_init_result::take_draft_model`.
+
+The repair is **tree-identical** (`git diff` between the pre- and post-repair tips is empty; the net tree
+is still `40d43e30`).  Per-block evidence (each block's tree is unchanged since the run that passed it):
+blocks 00-05 pass; 06-08 pass after the block-06 repair; 09-11 pass after the block-09 repairs.  The
+`--changed-from` shortcut is **not** valid for a boundary repair (it compares each commit's own delta, so
+it skips blocks whose tree changed but whose delta did not).
+
+**Release gates.**  `validate-set.sh` green (checksums + a strict 12/12 apply on a fresh tarball, applied
+tree `40d43e30`).  Coherence (4B Q8_0, 3 GPU, seed 42) `sha=1c5d32ac537d`, identical to r93.  Prefill-logit
+mean KLD **0.000707** / same-top-p **98.755 %** against the recorded base (measured on the identical tree,
+PASS).  Issue #187 reproduction on the release binary: **3/3 rounds clean**, `check-gpu-faults.sh` and the
+kernel journal clean.  `-sm layer`, one stream, 6-turn x 2-cycle multi-turn with `cache_prompt`: clean on
+both stock and fixed r93 (the report's `-sm layer` arm did not reproduce here; r90's `set_tensor_async` UAF
+fix landed after r89, so the reporter should retest that arm on r94).  `.github` workflows unchanged.
+
+**Review notes for the reporter.**  PR #189 (`wip/state-read-batch`) is orthogonal to this fault; it does
+not compile on the r93 tree as submitted (`std::find` needs `#include <algorithm>` in
+`src/llama-context.cpp`).  With that line added, r94 + #189 + #186 build and the #187 repro is clean —
+reported on the issue after publication.
+
 ## 261020.003 (no release) -- top-level documentation audit: contracts at the top, history in `archive/docs/`
 
 **Docs only; no delivery change** (`patches/`, `release.json` and the scripts are untouched).  The

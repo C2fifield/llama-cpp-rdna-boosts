@@ -1,4 +1,4 @@
-From 982cbf1047e6e966a02b4148c25188f4ca14546a Mon Sep 17 00:00:00 2001
+From c6b8107a37c4350cb283e9ae4f1fdb2d7a3046c1 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -22,36 +22,22 @@ already measured the draft's per-device weights when it sizes itself; the
 fallback load keeps other callers unchanged.
 ---
  common/sampling.cpp                           | 224 +++++++++++++++++-
- common/speculative.cpp                        | 140 ++++++++++-
+ common/speculative.cpp                        |  97 ++++++++
  ggml/include/ggml-alloc.h                     |   7 +-
  ggml/src/ggml-alloc.c                         |  82 ++++---
- ggml/src/ggml-blas/ggml-blas.cpp              |   1 +
- ggml/src/ggml-cann/ggml-cann.cpp              |   1 +
  ggml/src/ggml-cpu/arch-fallback.h             |   1 -
  ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++++
- ggml/src/ggml-cpu/ggml-cpu.cpp                |  13 +-
+ ggml/src/ggml-cpu/ggml-cpu.cpp                |   2 +-
  ggml/src/ggml-cpu/repack.cpp                  |   3 +
  .../template-instances/generate_cu_files.py   |  46 ++--
- ggml/src/ggml-et/ggml-et.cpp                  |   1 +
- ggml/src/ggml-hexagon/ggml-hexagon.cpp        |   1 +
- ggml/src/ggml-metal/ggml-metal.cpp            |   1 +
- ggml/src/ggml-opencl/ggml-opencl.cpp          |   1 +
- ggml/src/ggml-openvino/ggml-openvino.cpp      |   1 +
- ggml/src/ggml-rpc/ggml-rpc.cpp                |  14 ++
- ggml/src/ggml-sycl/ggml-sycl.cpp              |   1 +
- ggml/src/ggml-virtgpu/ggml-backend.cpp        |   1 +
- ggml/src/ggml-vulkan/ggml-vulkan.cpp          |   1 +
- ggml/src/ggml-webgpu/ggml-webgpu.cpp          |   1 +
- ggml/src/ggml-zdnn/ggml-zdnn.cpp              |   1 +
- ggml/src/ggml-zendnn/ggml-zendnn.cpp          |   1 +
+ ggml/src/ggml-rpc/ggml-rpc.cpp                |   3 +
  src/llama-context.cpp                         | 221 ++++++++++++++++-
  src/llama-context.h                           |   4 +
- src/llama-ext.h                               |   6 +
- src/llama-model.cpp                           |  44 ++++
- src/llama-model.h                             |  16 +-
+ src/llama-model.cpp                           |  36 +++
+ src/llama-model.h                             |  13 +-
  src/llama.cpp                                 |  11 +
  src/models/dflash.cpp                         |  68 ++++--
- 30 files changed, 881 insertions(+), 100 deletions(-)
+ 16 files changed, 796 insertions(+), 90 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -342,7 +328,7 @@ index 564fa9c4d..da77044b7 100644
      // Check if a backend sampler has already sampled a token in which case we
      // return that token id directly.
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 5c0924823..f2a642ac7 100644
+index b2e5afc80..f2a642ac7 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -996,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
@@ -469,34 +455,7 @@ index 5c0924823..f2a642ac7 100644
          return true;
      }
  
-@@ -2765,10 +2848,25 @@ struct common_speculative_init_result::impl {
-     llama_context_ptr context;
- };
- 
-+llama_model_ptr common_speculative_load_model(common_params & params) {
-+    if (!params.speculative.has_dft()) {
-+        return nullptr;   // MTP runs on the target model's weights
-+    }
-+    auto mparams = common_model_params_to_llama(params);
-+    // The draft model's own host-expert placement (`--spec-draft-n-cpu-moe`), not the target's `-ncmoe`.
-+    mparams.n_cpu_moe_from_end = params.speculative.draft.n_cpu_moe;
-+    mparams.allow_nextn_cpu_offload = true;
-+
-+    const std::string model_path = params.speculative.draft.mparams.path;
-+    LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
-+    return llama_model_ptr(llama_model_load_from_file(model_path.c_str(), mparams));
-+}
-+
- common_speculative_init_result::common_speculative_init_result(
-     common_params & params,
-       llama_model * model_tgt,
--    llama_context * ctx_tgt) :
-+    llama_context * ctx_tgt,
-+    llama_model * model_dft_pre) :
-     pimpl(new impl{}) {
-     const bool has_draft = params.speculative.has_dft();
-     const bool spec_mtp = params.speculative.has_mtp();
-@@ -2796,6 +2894,20 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2811,6 +2894,20 @@ common_speculative_init_result::common_speculative_init_result(
      // the draft context holds as many tokens per sequence as the target context
      cparams.n_ctx = llama_n_ctx(ctx_tgt);
  
@@ -517,48 +476,6 @@ index 5c0924823..f2a642ac7 100644
      // note: for small models maybe we can set this to the maximum possible draft from all speculative types
      //       the extra memory for small models is likely negligible?
      cparams.n_rs_seq  = 0;
-@@ -2805,15 +2917,22 @@ common_speculative_init_result::common_speculative_init_result(
-     std::string model_path;
-     if (has_draft) {
-         model_path = params.speculative.draft.mparams.path;
--        LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
- 
--        // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
--        // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
--        // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
--        // the draft's -- but this makes the intent explicit.)
--        mparams.allow_nextn_cpu_offload = true;
-+        // wip/slab-transient-absorption (step 4): `common_init_result` normally loads the draft model
-+        // before the target context, so the slab is sized from the free VRAM measured with it resident.
-+        // The fallback load below keeps other callers working unchanged.
-+        llama_model * model_dft = model_dft_pre;
-+        if (model_dft == nullptr) {
-+            LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
- 
--        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
-+            // The separate draft model's own `--spec-draft-n-cpu-moe` / `--spec-draft-cpu-moe` must be
-+            // honoured: allow its CPU overrides to match its nextn/MTP head layer.  (The main model's
-+            // `-ncmoe` never lands here -- `common_base_params_to_speculative` replaced the overrides with
-+            // the draft's -- but this makes the intent explicit.)
-+            mparams.allow_nextn_cpu_offload = true;
-+
-+            model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
-+        }
-         if (model_dft == NULL) {
-             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
-             return;
-@@ -2862,8 +2981,9 @@ llama_context * common_speculative_init_result::context() {
-     return pimpl->context.get();
- }
- 
--common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt) {
--    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt);
-+common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt,
-+                                                                       llama_model * model_dft) {
-+    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt, model_dft);
- }
- 
- common_speculative_output_limits common_speculative_get_output_limits(
 diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
 index 4a498b0c1..b7ec31448 100644
 --- a/ggml/include/ggml-alloc.h
@@ -709,30 +626,6 @@ index b47a1423e..89b85fbce 100644
 -    // force the next ggml_gallocr_alloc_graph() to re-reserve from the current graph
 -    galloc->layout_valid = false;
 -}
-diff --git a/ggml/src/ggml-blas/ggml-blas.cpp b/ggml/src/ggml-blas/ggml-blas.cpp
-index 296f11b0c..39f67ed99 100644
---- a/ggml/src/ggml-blas/ggml-blas.cpp
-+++ b/ggml/src/ggml-blas/ggml-blas.cpp
-@@ -277,6 +277,7 @@ static struct ggml_backend_i blas_backend_i = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-cann/ggml-cann.cpp b/ggml/src/ggml-cann/ggml-cann.cpp
-index a5eb40581..7eb07d4f8 100644
---- a/ggml/src/ggml-cann/ggml-cann.cpp
-+++ b/ggml/src/ggml-cann/ggml-cann.cpp
-@@ -2770,6 +2770,7 @@ static const ggml_backend_i ggml_backend_cann_interface = {
-     /* .event_wait              = */ ggml_backend_cann_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
 diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
 index e4882984a..486e22c7e 100644
 --- a/ggml/src/ggml-cpu/arch-fallback.h
@@ -825,7 +718,7 @@ index ea54cfe44..a7d8182c3 100644
      const int qk = QK8_0;
      const int nb = n / qk;
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 05f74e0fa..f7840ee7c 100644
+index e26fd5095..f7840ee7c 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
@@ -837,31 +730,6 @@ index 05f74e0fa..f7840ee7c 100644
      if (env != nullptr) {
          const int v = atoi(env);
          if (v <= 0) {
-@@ -382,6 +382,7 @@ static const struct ggml_backend_i ggml_backend_cpu_i = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-@@ -699,6 +700,16 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
-     /* .slab_headroom_bytes  = */ nullptr,
-     /* .slab_ring_set        = */ nullptr,
-     /* .slab_narrow_floor    = */ nullptr,
-+    /* .slab_reserve_wide    = */ nullptr,
-+    /* .slab_narrow2_floor   = */ nullptr,
-+    /* .slab_compute_narrow2 = */ nullptr,
-+    /* .moe_cache_set_host_pool   = */ nullptr,
-+    /* .moe_cache_set_host_source = */ nullptr,
-+    /* .slab_compute_plain   = */ nullptr,
-+    /* .slab_ring_region     = */ nullptr,
-+    /* .slab_set_ring_cap    = */ nullptr,
-+    /* .slab_enabled         = */ nullptr,
-+    /* .slab_ring_slots      = */ nullptr,
- };
- 
- // CPU backend - backend (reg)
 diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
 index 2632ae3a0..b935bf150 100644
 --- a/ggml/src/ggml-cpu/repack.cpp
@@ -933,68 +801,8 @@ index 8850c796e..5b2dc1e22 100755
                  f.write(SOURCE_FATTN_MMA_CASE.format(ncols1=ncols1, ncols2=ncols2, head_size_kq=head_size_kq, head_size_v=head_size_v))
  
  for type in TYPES_MMQ:
-diff --git a/ggml/src/ggml-et/ggml-et.cpp b/ggml/src/ggml-et/ggml-et.cpp
-index ef5ba7a2d..e11e700cb 100644
---- a/ggml/src/ggml-et/ggml-et.cpp
-+++ b/ggml/src/ggml-et/ggml-et.cpp
-@@ -1614,6 +1614,7 @@ static const struct ggml_backend_i ggml_backend_et_i = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
-index 886793f1b..177416046 100644
---- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
-+++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
-@@ -9078,6 +9078,7 @@ static struct ggml_backend_i hexagon_backend_i = {
-     /* .event_wait              = */ ggml_backend_hexagon_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 554713a04..e9878b9e4 100644
---- a/ggml/src/ggml-metal/ggml-metal.cpp
-+++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -605,6 +605,7 @@ static ggml_backend_i ggml_backend_metal_i = {
-     /* .event_wait              = */ ggml_backend_metal_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-opencl/ggml-opencl.cpp b/ggml/src/ggml-opencl/ggml-opencl.cpp
-index 55ad8dd96..5d913394a 100644
---- a/ggml/src/ggml-opencl/ggml-opencl.cpp
-+++ b/ggml/src/ggml-opencl/ggml-opencl.cpp
-@@ -9536,6 +9536,7 @@ static ggml_backend_i ggml_backend_opencl_i = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-openvino/ggml-openvino.cpp b/ggml/src/ggml-openvino/ggml-openvino.cpp
-index d5106a568..7f8e826f9 100644
---- a/ggml/src/ggml-openvino/ggml-openvino.cpp
-+++ b/ggml/src/ggml-openvino/ggml-openvino.cpp
-@@ -897,6 +897,7 @@ static const ggml_backend_i ggml_backend_openvino_interface = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index 80f094dab..8798940c0 100644
+index b4d3e470c..8798940c0 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -1114,6 +1114,9 @@ static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
@@ -1007,103 +815,6 @@ index 80f094dab..8798940c0 100644
  };
  
  static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
-@@ -1293,6 +1296,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
-     /* .event_wait              = */ ggml_backend_rpc_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-@@ -2918,6 +2922,16 @@ static const struct ggml_backend_device_i ggml_backend_rpc_device_i = {
-     /* .slab_headroom_bytes  = */ nullptr,
-     /* .slab_ring_set        = */ nullptr,
-     /* .slab_narrow_floor    = */ nullptr,
-+    /* .slab_reserve_wide    = */ nullptr,
-+    /* .slab_narrow2_floor   = */ nullptr,
-+    /* .slab_compute_narrow2 = */ nullptr,
-+    /* .moe_cache_set_host_pool   = */ nullptr,
-+    /* .moe_cache_set_host_source = */ nullptr,
-+    /* .slab_compute_plain   = */ nullptr,
-+    /* .slab_ring_region     = */ nullptr,
-+    /* .slab_set_ring_cap    = */ nullptr,
-+    /* .slab_enabled         = */ nullptr,
-+    /* .slab_ring_slots      = */ nullptr,
- };
- 
- // backend reg interface
-diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 1ed97e296..f476ab395 100644
---- a/ggml/src/ggml-sycl/ggml-sycl.cpp
-+++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
-@@ -6578,6 +6578,7 @@ static ggml_backend_i ggml_backend_sycl_interface = {
-     /* .event_wait              = */ ggml_backend_sycl_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-virtgpu/ggml-backend.cpp b/ggml/src/ggml-virtgpu/ggml-backend.cpp
-index 50f83ef97..6b509fb1d 100644
---- a/ggml/src/ggml-virtgpu/ggml-backend.cpp
-+++ b/ggml/src/ggml-virtgpu/ggml-backend.cpp
-@@ -48,6 +48,7 @@ static ggml_backend_i ggml_backend_remoting_interface = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 370631aac..ea7d93c77 100644
---- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-+++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -15154,6 +15154,7 @@ static ggml_backend_i ggml_backend_vk_interface = {
-     /* .event_wait              = */ ggml_backend_vk_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-webgpu/ggml-webgpu.cpp b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
-index 5387264e1..85fb45941 100644
---- a/ggml/src/ggml-webgpu/ggml-webgpu.cpp
-+++ b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
-@@ -3757,6 +3757,7 @@ static ggml_backend_i ggml_backend_webgpu_i = {
-     /* .event_wait              = */ ggml_backend_webgpu_event_wait,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-zdnn/ggml-zdnn.cpp b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
-index a1645a023..552059f7e 100644
---- a/ggml/src/ggml-zdnn/ggml-zdnn.cpp
-+++ b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
-@@ -469,6 +469,7 @@ static ggml_backend_i ggml_backend_zdnn_i = {
-     /* .event_wait             = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
-diff --git a/ggml/src/ggml-zendnn/ggml-zendnn.cpp b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
-index fe0eba002..a3d9f00da 100644
---- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
-+++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
-@@ -584,6 +584,7 @@ static struct ggml_backend_i ggml_backend_zendnn_i = {
-     /* .event_wait              = */ NULL,
-     /* .stage_buffer            = */ NULL,
-     /* .stage_upload            = */ NULL,
-+    /* .stage_gather            = */ NULL,
-     /* .stage_wait              = */ NULL,
-     /* .stage_d2d               = */ NULL,
-     /* .stage_h2d_gbps          = */ NULL,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
 index f2abdc634..6848daa23 100644
 --- a/src/llama-context.cpp
@@ -1396,25 +1107,8 @@ index c5287b533..d7176b7ec 100644
  
      // env: LLAMA_GRAPH_REUSE_DISABLE
      bool graph_reuse_disable = false;
-diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 9ac8eff63..170efb75a 100644
---- a/src/llama-ext.h
-+++ b/src/llama-ext.h
-@@ -164,6 +164,12 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
- // returns the number of extracted layers from target model
- LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
- 
-+// layers whose input embeddings contexts created from this model extract from the start (as if
-+// llama_set_embeddings_layer_inp(ctx, lid, true) had been called before the context's first graph reserve).
-+// For a target whose draft will turn the extraction on (DFlash): the compute buffers are then sized for it once,
-+// instead of being freed and allocated again, larger, at the first decode after the draft attaches.
-+LLAMA_API void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n);
-+
- // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
- // returns total number of elements or 0 on error
- // if out is nullptr, returns the number of tokens without writing to out
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 2f4b0d2a4..b72762156 100644
+index aa0dfeb3d..b72762156 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -2508,6 +2508,42 @@ size_t llama_model::max_host_weight_tensor_bytes() const {
@@ -1460,23 +1154,8 @@ index 2f4b0d2a4..b72762156 100644
  uint64_t llama_model::n_elements() const {
      return pimpl->n_elements;
  }
-@@ -4090,6 +4126,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
-     return (uint32_t) model->target_layer_ids.size();
- }
- 
-+void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n) {
-+    if (n == 0) {
-+        model->embeddings_layer_inp_preset.clear();
-+    } else {
-+        model->embeddings_layer_inp_preset.assign(lids, lids + n);
-+    }
-+}
-+
- uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
-     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
-         return 0;
 diff --git a/src/llama-model.h b/src/llama-model.h
-index 50731dfce..b56921b28 100644
+index c345789c3..b56921b28 100644
 --- a/src/llama-model.h
 +++ b/src/llama-model.h
 @@ -619,8 +619,12 @@ struct llama_device {
@@ -1494,17 +1173,7 @@ index 50731dfce..b56921b28 100644
  };
  
  struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const struct ggml_tensor * tensor, void * userdata);
-@@ -764,6 +768,9 @@ struct llama_model {
-     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
-     std::vector<int32_t> target_layer_ids;
- 
-+    // layers whose input embeddings new contexts extract from the start (llama_model_set_embeddings_layer_inp_preset)
-+    std::vector<int32_t> embeddings_layer_inp_preset;
-+
-     std::vector<llama_layer> layers;
- 
-     //Dense linear projections for SentenceTransformers models like embeddinggemma
-@@ -823,6 +830,11 @@ struct llama_model {
+@@ -826,6 +830,11 @@ struct llama_model {
      // `slots x this`.
      size_t max_host_weight_tensor_bytes() const;
  

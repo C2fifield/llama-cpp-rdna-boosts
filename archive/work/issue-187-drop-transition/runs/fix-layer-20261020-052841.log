@@ -1,0 +1,141 @@
+0.00.018.129 I srv  llama_server: initializing ...
+0.00.018.136 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.018.327 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.019.810 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.048.097 I common_draft_reserve_estimate: draft reserve estimate for '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': weights 2647 + kv 862 (1 x 1 layers, 2 kv heads, 256/256 head dims, indexer yes) + compute 512 + slack 192 = 4213 MiB (n_ctx 262144)
+0.00.452.424 E llama_init_from_model: failed to initialize the context: qwen4exp requires ctx_other to be set (this warning is normal during memory fitting)
+0.00.467.024 W operator(): the extra model cannot be measured during fitting (failed to create llama_context from model); reserving the DERIVED 4213 MiB as a per-device-split reserve instead -- this is the MTP case, which needs ctx_other while fitting has no target context yet
+0.00.467.038 W common_params_fit_impl: host-resident MoE experts active: reserving the slab headroom plus the expert-cache arena (auto floor: MOE_EXPERT_CACHE_MIN_MIB / MIN_RES_PCT) in the --fit margin before fitting the context (1706 MiB this pass over 9475 MiB of host experts).  --fit sizes the context around it; the arena then takes any remaining free device memory keeping MOE_EXPERT_CACHE_RESERVE_MIB=1024 MiB per device.
+0.46.608.473 W common_init_result: slab draft reserve derived from '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': draft CONTEXT 1566 MiB (kv 862 + compute 512 + slack 192); the draft's 2647 MiB of weights are loaded BEFORE this slab and are measured from the free VRAM instead of reserved.  The reserve is headroom + this.
+0.46.608.489 I common_speculative_load_model: loading draft model '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+0.48.288.875 E ggml_cuda_slab_init_locked: device 0: the movable-boundary slab does NOT fit the MoE expert cache here: it needs the estimated work buffer (1792 MiB) plus a 2048 MiB cache floor plus the H2D-ring hole, but only 7104 MiB is available after the 2462 MiB reserve (free 9594 MiB of 32624 MiB total).  Not using the slab; the experts will STREAM from the host (the stock -ncmoe path).  Lower GGML_CUDA_SLAB_RESERVE_MIB if the reserve is larger than the weights/KV need.
+0.48.288.878 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 1792.00 MiB on device 0; falling back
+0.48.288.881 E moe_cache_disable_streaming: disabling the MoE expert cache and STREAMING the experts from the host (stock -ncmoe behaviour): the movable-boundary slab cannot hold the work buffers plus the minimum MoE cache on this device (GGML_CUDA_SLAB_MIN_ARENA_MIB); lower GGML_CUDA_SLAB_RESERVE_MIB if the reserve is too large
+0.48.293.491 W SLAB_INIT dev=1 free=12.99 GiB reserve=2.40 GiB headroom=0.88 GiB aux=1.53 GiB size(VA)=12.06 GiB mapped=10.56 GiB boundary=2.25 GiB va_spare=1.50 GiB chunk=64.0 MiB ring_req=3.52 GiB
+0.48.293.495 W ggml_cuda_slab_init_locked: device 1: slab 10.56 GiB (chunk 64.0 MiB): work 2.25 GiB + arena 8.31 GiB (2.40 GiB reserve, 1.50 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+0.48.310.349 I cmn          init: llama threadpool init, n_threads = 8
+0.49.875.681 W ggml_cuda_slab_narrow2_floor_locked: device 1: narrow-2 (MTP draft compute) pinned at [10.56, 12.06] GiB (1.50 GiB); the arena now tops out at 8.31 GiB
+0.50.041.852 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 262144, kv_unified = 'false'
+0.50.202.341 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.50.202.367 I srv  llama_server: model loaded
+0.50.202.372 I srv  llama_server: listening on http://127.0.0.1:18087
+0.50.482.424 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.50.482.492 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.50.495.036 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 1792.00 MiB on device 0; falling back
+0.50.696.319 W optional device allocation refused: 512 MiB total against 454 MiB free (the movable-boundary slab is active; the cap is 50%).  The caller falls back.  Raise GGML_CUDA_OPTIONAL_ALLOC_MAX_FREE_PCT to allow.
+0.51.041.065 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+0.54.142.474 I slot print_timing: id  0 | task 0 | prompt eval time =     616.52 ms /    45 tokens (   13.70 ms per token,    72.99 tokens per second)
+0.54.142.479 I slot print_timing: id  0 | task 0 |        eval time =    3043.43 ms /   187 tokens (   16.36 ms per token,    61.12 tokens per second)
+0.54.142.479 I slot print_timing: id  0 | task 0 |       total time =    3659.94 ms /   232 tokens
+0.54.142.481 I slot print_timing: id  0 | task 0 |    graphs reused =         59
+0.54.142.482 I slot print_timing: id  0 | task 0 |   graph reallocs =          0    /     1        (same size) / (changed size)
+0.54.142.485 I slot print_timing: id  0 | task 0 | draft acceptance = 0.70000 (  126 accepted /   180 generated), mean len =  3.10
+0.54.142.527 I slot      release: id  0 | task 0 | stop processing: n_tokens = 231, truncated = 0
+0.54.144.888 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.346 (> 0.100 thold), f_keep = 0.190
+0.54.217.834 I slot launch_slot_: id  0 | task 64 | processing task, is_child = 0
+0.55.291.376 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+0.56.153.306 I slot print_timing: id  0 | task 64 | prompt eval time =    1130.29 ms /    86 tokens (   13.14 ms per token,    76.09 tokens per second)
+0.56.153.308 I slot print_timing: id  0 | task 64 |        eval time =     805.16 ms /    56 tokens (   14.64 ms per token,    68.31 tokens per second)
+0.56.153.309 I slot print_timing: id  0 | task 64 |       total time =    1935.45 ms /   142 tokens
+0.56.153.309 I slot print_timing: id  0 | task 64 |    graphs reused =         74
+0.56.153.310 I slot print_timing: id  0 | task 64 |   graph reallocs =          0    /     2        (same size) / (changed size)
+0.56.153.313 I slot print_timing: id  0 | task 64 | draft acceptance = 0.81250 (   39 accepted /    48 generated), mean len =  3.44
+0.56.153.592 I slot      release: id  0 | task 64 | stop processing: n_tokens = 182, truncated = 0
+0.56.155.818 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.759 (> 0.100 thold), f_keep = 0.692
+0.56.155.838 I slot launch_slot_: id  0 | task 84 | processing task, is_child = 0
+0.56.573.375 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+0.58.038.117 I slot print_timing: id  0 | task 84 | prompt eval time =     469.72 ms /    43 tokens (   10.92 ms per token,    91.54 tokens per second)
+0.58.038.119 I slot print_timing: id  0 | task 84 |        eval time =    1412.53 ms /    94 tokens (   15.19 ms per token,    65.84 tokens per second)
+0.58.038.120 I slot print_timing: id  0 | task 84 |       total time =    1882.25 ms /   137 tokens
+0.58.038.120 I slot print_timing: id  0 | task 84 |    graphs reused =        100
+0.58.038.121 I slot print_timing: id  0 | task 84 |   graph reallocs =          2    /     3        (same size) / (changed size)
+0.58.038.124 I slot print_timing: id  0 | task 84 | draft acceptance = 0.77381 (   65 accepted /    84 generated), mean len =  3.32
+0.58.038.154 I slot      release: id  0 | task 84 | stop processing: n_tokens = 259, truncated = 0
+0.58.041.239 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.711 (> 0.100 thold), f_keep = 0.637
+0.58.041.256 I slot launch_slot_: id  0 | task 116 | processing task, is_child = 0
+0.58.571.248 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.00.090.211 I slot print_timing: id  0 | task 116 | prompt eval time =     581.20 ms /    70 tokens (    8.30 ms per token,   120.44 tokens per second)
+1.00.090.214 I slot print_timing: id  0 | task 116 |        eval time =    1467.73 ms /    97 tokens (   15.29 ms per token,    65.41 tokens per second)
+1.00.090.214 I slot print_timing: id  0 | task 116 |       total time =    2048.93 ms /   167 tokens
+1.00.090.215 I slot print_timing: id  0 | task 116 |    graphs reused =        127
+1.00.090.216 I slot print_timing: id  0 | task 116 |   graph reallocs =          3    /     4        (same size) / (changed size)
+1.00.090.219 I slot print_timing: id  0 | task 116 | draft acceptance = 0.77011 (   67 accepted /    87 generated), mean len =  3.31
+1.00.090.253 I slot      release: id  0 | task 116 | stop processing: n_tokens = 328, truncated = 0
+1.00.093.855 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.748 (> 0.100 thold), f_keep = 0.704
+1.00.093.874 I slot launch_slot_: id  0 | task 149 | processing task, is_child = 0
+1.00.692.424 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.01.152.936 I slot print_timing: id  0 | task 149 | prompt eval time =     650.46 ms /    81 tokens (    8.03 ms per token,   124.53 tokens per second)
+1.01.152.939 I slot print_timing: id  0 | task 149 |        eval time =     408.59 ms /    29 tokens (   14.59 ms per token,    68.53 tokens per second)
+1.01.152.940 I slot print_timing: id  0 | task 149 |       total time =    1059.04 ms /   110 tokens
+1.01.152.940 I slot print_timing: id  0 | task 149 |    graphs reused =        134
+1.01.152.941 I slot print_timing: id  0 | task 149 |   graph reallocs =          3    /     5        (same size) / (changed size)
+1.01.152.945 I slot print_timing: id  0 | task 149 | draft acceptance = 0.83333 (   20 accepted /    24 generated), mean len =  3.50
+1.01.153.241 I slot      release: id  0 | task 149 | stop processing: n_tokens = 337, truncated = 0
+1.01.156.733 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.914 (> 0.100 thold), f_keep = 0.914
+1.01.156.754 I slot launch_slot_: id  0 | task 161 | processing task, is_child = 0
+1.01.503.417 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.02.564.755 I slot print_timing: id  0 | task 161 | prompt eval time =     398.52 ms /    32 tokens (   12.45 ms per token,    80.30 tokens per second)
+1.02.564.758 I slot print_timing: id  0 | task 161 |        eval time =    1009.46 ms /    64 tokens (   16.02 ms per token,    62.41 tokens per second)
+1.02.564.759 I slot print_timing: id  0 | task 161 |       total time =    1407.97 ms /    96 tokens
+1.02.564.760 I slot print_timing: id  0 | task 161 |    graphs reused =        153
+1.02.564.761 I slot print_timing: id  0 | task 161 |   graph reallocs =          3    /     6        (same size) / (changed size)
+1.02.564.766 I slot print_timing: id  0 | task 161 | draft acceptance = 0.73333 (   44 accepted /    60 generated), mean len =  3.20
+1.02.565.113 I slot      release: id  0 | task 161 | stop processing: n_tokens = 401, truncated = 0
+1.02.566.465 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.978 (> 0.100 thold), f_keep = 0.110
+1.02.838.772 I slot launch_slot_: id  0 | task 185 | processing task, is_child = 0
+1.05.971.355 I slot print_timing: id  0 | task 185 | prompt eval time =     124.97 ms /     4 tokens (   31.24 ms per token,    32.01 tokens per second)
+1.05.971.357 I slot print_timing: id  0 | task 185 |        eval time =    3007.59 ms /   187 tokens (   16.17 ms per token,    61.84 tokens per second)
+1.05.971.358 I slot print_timing: id  0 | task 185 |       total time =    3132.56 ms /   191 tokens
+1.05.971.358 I slot print_timing: id  0 | task 185 |    graphs reused =        212
+1.05.971.359 I slot print_timing: id  0 | task 185 |   graph reallocs =          3    /     7        (same size) / (changed size)
+1.05.971.362 I slot print_timing: id  0 | task 185 | draft acceptance = 0.70000 (  126 accepted /   180 generated), mean len =  3.10
+1.05.971.385 I slot      release: id  0 | task 185 | stop processing: n_tokens = 231, truncated = 0
+1.05.973.455 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.346 (> 0.100 thold), f_keep = 0.190
+1.05.994.101 I slot launch_slot_: id  0 | task 247 | processing task, is_child = 0
+1.06.963.274 I slot print_timing: id  0 | task 247 | prompt eval time =     117.41 ms /     4 tokens (   29.35 ms per token,    34.07 tokens per second)
+1.06.963.276 I slot print_timing: id  0 | task 247 |        eval time =     851.74 ms /    56 tokens (   15.49 ms per token,    64.57 tokens per second)
+1.06.963.276 I slot print_timing: id  0 | task 247 |       total time =     969.15 ms /    60 tokens
+1.06.963.277 I slot print_timing: id  0 | task 247 |    graphs reused =        228
+1.06.963.278 I slot print_timing: id  0 | task 247 |   graph reallocs =          3    /     8        (same size) / (changed size)
+1.06.963.281 I slot print_timing: id  0 | task 247 | draft acceptance = 0.74510 (   38 accepted /    51 generated), mean len =  3.24
+1.06.963.313 I slot      release: id  0 | task 247 | stop processing: n_tokens = 182, truncated = 0
+1.06.965.639 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.759 (> 0.100 thold), f_keep = 0.692
+1.06.965.691 I slot launch_slot_: id  0 | task 266 | processing task, is_child = 0
+1.07.386.191 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.08.858.863 I slot print_timing: id  0 | task 266 | prompt eval time =     473.34 ms /    43 tokens (   11.01 ms per token,    90.84 tokens per second)
+1.08.858.866 I slot print_timing: id  0 | task 266 |        eval time =    1419.81 ms /    94 tokens (   15.27 ms per token,    65.50 tokens per second)
+1.08.858.866 I slot print_timing: id  0 | task 266 |       total time =    1893.14 ms /   137 tokens
+1.08.858.867 I slot print_timing: id  0 | task 266 |    graphs reused =        254
+1.08.858.867 I slot print_timing: id  0 | task 266 |   graph reallocs =          5    /     9        (same size) / (changed size)
+1.08.858.870 I slot print_timing: id  0 | task 266 | draft acceptance = 0.77381 (   65 accepted /    84 generated), mean len =  3.32
+1.08.858.898 I slot      release: id  0 | task 266 | stop processing: n_tokens = 259, truncated = 0
+1.08.861.897 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.711 (> 0.100 thold), f_keep = 0.637
+1.08.861.939 I slot launch_slot_: id  0 | task 298 | processing task, is_child = 0
+1.09.389.545 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.10.911.776 I slot print_timing: id  0 | task 298 | prompt eval time =     579.20 ms /    70 tokens (    8.27 ms per token,   120.86 tokens per second)
+1.10.911.779 I slot print_timing: id  0 | task 298 |        eval time =    1470.61 ms /    97 tokens (   15.32 ms per token,    65.28 tokens per second)
+1.10.911.779 I slot print_timing: id  0 | task 298 |       total time =    2049.81 ms /   167 tokens
+1.10.911.780 I slot print_timing: id  0 | task 298 |    graphs reused =        281
+1.10.911.780 I slot print_timing: id  0 | task 298 |   graph reallocs =          6    /    10        (same size) / (changed size)
+1.10.911.784 I slot print_timing: id  0 | task 298 | draft acceptance = 0.77011 (   67 accepted /    87 generated), mean len =  3.31
+1.10.911.816 I slot      release: id  0 | task 298 | stop processing: n_tokens = 328, truncated = 0
+1.10.915.257 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.748 (> 0.100 thold), f_keep = 0.704
+1.10.915.277 I slot launch_slot_: id  0 | task 331 | processing task, is_child = 0
+1.11.513.042 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.11.974.792 I slot print_timing: id  0 | task 331 | prompt eval time =     649.64 ms /    81 tokens (    8.02 ms per token,   124.69 tokens per second)
+1.11.974.795 I slot print_timing: id  0 | task 331 |        eval time =     409.86 ms /    29 tokens (   14.64 ms per token,    68.32 tokens per second)
+1.11.974.795 I slot print_timing: id  0 | task 331 |       total time =    1059.50 ms /   110 tokens
+1.11.974.796 I slot print_timing: id  0 | task 331 |    graphs reused =        288
+1.11.974.797 I slot print_timing: id  0 | task 331 |   graph reallocs =          6    /    11        (same size) / (changed size)
+1.11.974.800 I slot print_timing: id  0 | task 331 | draft acceptance = 0.83333 (   20 accepted /    24 generated), mean len =  3.50
+1.11.974.835 I slot      release: id  0 | task 331 | stop processing: n_tokens = 337, truncated = 0
+1.11.978.466 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.914 (> 0.100 thold), f_keep = 0.914
+1.11.978.501 I slot launch_slot_: id  0 | task 343 | processing task, is_child = 0
+1.12.328.309 W ggml_backend_cuda_buffer_type_alloc_buffer_usage: slab work region has no room for 512.00 MiB on device 0; falling back
+1.13.386.146 I slot print_timing: id  0 | task 343 | prompt eval time =     402.12 ms /    32 tokens (   12.57 ms per token,    79.58 tokens per second)
+1.13.386.149 I slot print_timing: id  0 | task 343 |        eval time =    1005.50 ms /    64 tokens (   15.96 ms per token,    62.66 tokens per second)
+1.13.386.149 I slot print_timing: id  0 | task 343 |       total time =    1407.62 ms /    96 tokens
+1.13.386.150 I slot print_timing: id  0 | task 343 |    graphs reused =        307
+1.13.386.150 I slot print_timing: id  0 | task 343 |   graph reallocs =          6    /    12        (same size) / (changed size)
+1.13.386.154 I slot print_timing: id  0 | task 343 | draft acceptance = 0.73333 (   44 accepted /    60 generated), mean len =  3.20
+1.13.386.192 I slot      release: id  0 | task 343 | stop processing: n_tokens = 401, truncated = 0

@@ -1,0 +1,243 @@
+0.00.018.325 I srv  llama_server: initializing ...
+0.00.018.332 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.018.516 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.020.003 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.048.798 I common_draft_reserve_estimate: draft reserve estimate for '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': weights 2647 + kv 862 (1 x 1 layers, 2 kv heads, 256/256 head dims, indexer yes) + compute 512 + slack 192 = 4213 MiB (n_ctx 262144)
+0.01.239.673 E llama_init_from_model: failed to initialize the context: qwen4exp requires ctx_other to be set (this warning is normal during memory fitting)
+0.01.254.443 W operator(): the extra model cannot be measured during fitting (failed to create llama_context from model); reserving the DERIVED 4213 MiB as a per-device-split reserve instead -- this is the MTP case, which needs ctx_other while fitting has no target context yet
+0.01.254.471 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.59.999.494 W common_init_result: slab draft reserve derived from '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': draft CONTEXT 1566 MiB (kv 862 + compute 512 + slack 192); the draft's 2647 MiB of weights are loaded BEFORE this slab and are measured from the free VRAM instead of reserved.  The reserve is headroom + this.
+0.59.999.514 I common_speculative_load_model: loading draft model '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+1.03.085.153 W SLAB_INIT dev=0 free=9.81 GiB reserve=2.40 GiB headroom=0.88 GiB aux=1.53 GiB size(VA)=8.88 GiB mapped=7.38 GiB boundary=1.50 GiB va_spare=1.50 GiB chunk=64.0 MiB ring_req=2.11 GiB
+1.03.085.156 W ggml_cuda_slab_init_locked: device 0: slab 7.38 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 5.88 GiB (2.40 GiB reserve, 1.50 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+1.03.088.282 W SLAB_INIT dev=1 free=8.92 GiB reserve=2.40 GiB headroom=0.88 GiB aux=1.53 GiB size(VA)=8.00 GiB mapped=6.50 GiB boundary=1.50 GiB va_spare=1.50 GiB chunk=64.0 MiB ring_req=2.11 GiB
+1.03.088.283 W ggml_cuda_slab_init_locked: device 1: slab 6.50 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 5.00 GiB (2.40 GiB reserve, 1.50 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+1.03.092.203 I cmn          init: llama threadpool init, n_threads = 8
+1.03.982.325 W alloc_all_locked: MoE expert cache (auto): arena 9475.0 MiB of 9475.0 MiB host experts (100.0% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+1.04.011.742 W alloc_table_locked: layer=43 role=blk.43.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.029.815 W alloc_table_locked: layer=43 role=blk.43.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.048.200 W alloc_table_locked: layer=43 role=blk.43.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.073.178 W alloc_table_locked: layer=43 role=blk.43.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.086.569 W alloc_table_locked: layer=43 role=blk.43.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.099.250 W alloc_table_locked: layer=43 role=blk.43.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.131.911 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.156.720 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.174.142 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.189.147 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.202.036 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.213.572 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.229.430 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.240.020 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.254.658 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.283.732 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.300.701 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.314.593 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.334.107 W alloc_table_locked: layer=41 role=blk.41.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.350.668 W alloc_table_locked: layer=41 role=blk.41.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.368.774 W alloc_table_locked: layer=41 role=blk.41.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.517.484 W ggml_cuda_slab_narrow2_floor_locked: device 0: narrow-2 (MTP draft compute) pinned at [8.38, 8.88] GiB (0.50 GiB); the arena now tops out at 5.88 GiB
+1.04.519.657 W ggml_cuda_slab_narrow2_floor_locked: device 1: narrow-2 (MTP draft compute) pinned at [7.50, 8.00] GiB (0.50 GiB); the arena now tops out at 5.00 GiB
+1.04.520.025 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'false'
+1.04.520.486 W set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU
+1.04.520.487 W spec common_specu: backend offload failed for seq_id=0; using CPU sampler
+1.04.520.489 W spec common_specu: backend offload failed for seq_id=1; using CPU sampler
+1.04.520.489 W spec common_specu: backend offload failed for seq_id=2; using CPU sampler
+1.04.520.490 W spec common_specu: backend offload failed for seq_id=3; using CPU sampler
+1.04.535.557 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.04.535.579 I srv  llama_server: model loaded
+1.04.535.583 I srv  llama_server: listening on http://127.0.0.1:18087
+1.05.353.188 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+1.05.353.255 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+1.06.314.536 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=16 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=0.0 MiB ring=-2013265920
+1.06.314.539 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=16 tok=4 nseq=1 drop_now=1
+1.06.655.207 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.655.210 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.655.211 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.713.536 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.713.537 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.713.538 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.824.362 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.824.364 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.824.365 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.859.721 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=3 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.859.722 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=3 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.859.723 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=3 nseq=1 drop_now=0
+1.06.958.809 I slot print_timing: id  3 | task 0 | prompt eval time =    1293.39 ms /    50 tokens (   25.87 ms per token,    38.66 tokens per second)
+1.06.958.811 I slot print_timing: id  3 | task 0 |        eval time =     312.14 ms /    16 tokens (   20.81 ms per token,    48.06 tokens per second)
+1.06.958.811 I slot print_timing: id  3 | task 0 |       total time =    1605.53 ms /    66 tokens
+1.06.958.813 I slot print_timing: id  3 | task 0 |    graphs reused =          2
+1.06.958.814 I slot print_timing: id  3 | task 0 |   graph reallocs =          0    /     2        (same size) / (changed size)
+1.06.958.816 I slot print_timing: id  3 | task 0 | draft acceptance = 1.00000 (   11 accepted /    11 generated), mean len =  3.75
+1.06.958.834 I slot print_timing: id  3 | task 0 |   MoE arena = 0.6904 (10770 hit / 15600 reaches this turn), arena 9475.0 MiB
+1.06.958.854 I slot      release: id  3 | task 0 | stop processing: n_tokens = 65, truncated = 0
+1.06.960.849 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.635 (> 0.100 thold), f_keep = 0.508
+1.06.960.895 I slot launch_slot_: id  3 | task 8 | processing task, is_child = 0
+1.07.236.079 I slot get_availabl: id  2 | task -1 | selected slot by LRU, t_last = -1
+1.07.236.129 I slot launch_slot_: id  2 | task 10 | processing task, is_child = 0
+1.07.236.130 I slot get_availabl: id  1 | task -1 | selected slot by LRU, t_last = -1
+1.07.236.140 I slot launch_slot_: id  1 | task 11 | processing task, is_child = 0
+1.07.236.141 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.07.236.152 I slot launch_slot_: id  0 | task 12 | processing task, is_child = 0
+1.07.293.584 W moe_cache_evict_slab_range: evicted 3072.0 MiB of arena tables from the taken slab chunks (arena now 6421.2 MiB)
+1.07.293.803 W moe_cache_evict_slab_range: evicted 3452.0 MiB of arena tables from the taken slab chunks (arena now 3002.5 MiB)
+1.07.545.294 W moe_cache_evict_slab_range: evicted 154.0 MiB of arena tables from the taken slab chunks (arena now 2848.8 MiB)
+1.09.193.459 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=24 tok=6 nseq=1 dev=ROCm0 cur=5568.0 MiB was=1792.0 MiB ring=-2013265920
+1.09.193.466 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=24 tok=6 nseq=1 drop_now=1
+1.09.233.231 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.257.899 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.275.520 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.290.534 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.308.739 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.318.793 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.333.291 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.349.895 W alloc_table_locked: layer=41 role=blk.41.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.385.671 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.411.226 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.425.179 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.435.226 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.448.888 W moe_cache_rearm: re-armed 54 stood-down expert-cache tables after a compute-buffer drop (arena now 9475.0 MiB)
+1.09.894.218 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=6 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.09.894.221 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=6 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.09.894.223 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=6 tok=4 nseq=1 drop_now=0
+1.11.473.619 I slot print_timing: id  3 | task 8 | prompt eval time =    2769.73 ms /    52 tokens (   53.26 ms per token,    18.77 tokens per second)
+1.11.473.621 I slot print_timing: id  3 | task 8 |        eval time =    1742.98 ms /    61 tokens (   29.05 ms per token,    34.42 tokens per second)
+1.11.473.622 I slot print_timing: id  3 | task 8 |       total time =    4512.71 ms /   113 tokens
+1.11.473.622 I slot print_timing: id  3 | task 8 |    graphs reused =         19
+1.11.473.623 I slot print_timing: id  3 | task 8 |   graph reallocs =          1    /     3        (same size) / (changed size)
+1.11.473.625 I slot print_timing: id  3 | task 8 | draft acceptance = 0.71930 (   41 accepted /    57 generated), mean len =  3.16
+1.11.473.638 I slot print_timing: id  3 | task 8 |   MoE arena = 0.9288 (145558 hit / 156710 reaches this turn), arena 9475.0 MiB
+1.11.473.650 I slot      release: id  3 | task 8 | stop processing: n_tokens = 112, truncated = 0
+1.11.712.782 I slot print_timing: id  0 | task 12 | prompt eval time =    3118.82 ms /    53 tokens (   58.85 ms per token,    16.99 tokens per second)
+1.11.712.784 I slot print_timing: id  0 | task 12 |        eval time =    1357.79 ms /    86 tokens (   15.97 ms per token,    62.60 tokens per second)
+1.11.712.784 I slot print_timing: id  0 | task 12 |       total time =    4476.62 ms /   139 tokens
+1.11.712.785 I slot print_timing: id  0 | task 12 |    graphs reused =         23
+1.11.712.785 I slot print_timing: id  0 | task 12 |   graph reallocs =          2    /     3        (same size) / (changed size)
+1.11.712.788 I slot print_timing: id  0 | task 12 | draft acceptance = 0.89855 (   62 accepted /    69 generated), mean len =  3.70
+1.11.712.799 I slot print_timing: id  0 | task 12 |   MoE arena = 0.9188 (185892 hit / 202310 reaches this turn), arena 9475.0 MiB
+1.11.712.810 I slot      release: id  0 | task 12 | stop processing: n_tokens = 138, truncated = 0
+1.11.719.255 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=12 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.11.719.257 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=12 tok=8 nseq=2 drop_now=1
+1.11.830.662 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.830.664 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.830.665 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.11.941.224 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.941.225 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.941.226 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.11.977.630 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.977.632 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.977.632 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.12.006.399 I slot print_timing: id  2 | task 10 | prompt eval time =    3118.91 ms /    56 tokens (   55.69 ms per token,    17.95 tokens per second)
+1.12.006.400 I slot print_timing: id  2 | task 10 |        eval time =    1651.32 ms /    89 tokens (   18.77 ms per token,    53.29 tokens per second)
+1.12.006.401 I slot print_timing: id  2 | task 10 |       total time =    4770.23 ms /   145 tokens
+1.12.006.402 I slot print_timing: id  2 | task 10 |    graphs reused =         26
+1.12.006.402 I slot print_timing: id  2 | task 10 |   graph reallocs =          2    /     3        (same size) / (changed size)
+1.12.006.406 I slot print_timing: id  2 | task 10 | draft acceptance = 0.75309 (   61 accepted /    81 generated), mean len =  3.26
+1.12.006.419 I slot print_timing: id  2 | task 10 |   MoE arena = 0.9237 (201661 hit / 218310 reaches this turn), arena 9475.0 MiB
+1.12.006.430 I slot      release: id  2 | task 10 | stop processing: n_tokens = 144, truncated = 0
+1.12.011.379 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.011.381 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.011.381 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.12.101.355 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.101.357 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.101.358 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.176.046 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.176.048 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.176.049 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.202.622 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.202.623 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.202.624 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.225.771 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.225.773 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.225.773 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.248.931 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.248.933 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.248.933 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.272.801 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.272.802 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.272.803 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.295.969 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.295.970 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.295.970 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.319.423 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.319.424 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.319.424 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.343.297 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.343.300 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.343.300 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.366.992 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.366.994 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.366.994 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.390.809 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.390.811 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.390.811 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.414.641 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.414.643 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.414.643 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.435.213 I slot print_timing: id  1 | task 11 | prompt eval time =    3118.87 ms /    50 tokens (   62.38 ms per token,    16.03 tokens per second)
+1.12.435.215 I slot print_timing: id  1 | task 11 |        eval time =    2080.18 ms /   122 tokens (   17.19 ms per token,    58.17 tokens per second)
+1.12.435.215 I slot print_timing: id  1 | task 11 |       total time =    5199.05 ms /   172 tokens
+1.12.435.217 I slot print_timing: id  1 | task 11 |    graphs reused =         38
+1.12.435.218 I slot print_timing: id  1 | task 11 |   graph reallocs =          3    /     3        (same size) / (changed size)
+1.12.435.221 I slot print_timing: id  1 | task 11 | draft acceptance = 0.67500 (   81 accepted /   120 generated), mean len =  3.02
+1.12.435.235 I slot print_timing: id  1 | task 11 |   MoE arena = 0.9306 (227357 hit / 244310 reaches this turn), arena 9475.0 MiB
+1.12.435.247 I slot      release: id  1 | task 11 | stop processing: n_tokens = 171, truncated = 0
+1.12.437.173 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.827 (> 0.100 thold), f_keep = 0.384
+1.12.526.785 I slot launch_slot_: id  3 | task 56 | processing task, is_child = 0
+1.12.793.500 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.830 (> 0.100 thold), f_keep = 0.319
+1.12.793.842 I slot launch_slot_: id  0 | task 58 | processing task, is_child = 0
+1.12.794.425 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.839 (> 0.100 thold), f_keep = 0.326
+1.12.794.722 I slot launch_slot_: id  2 | task 57 | processing task, is_child = 0
+1.12.795.013 I slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, f_sim_best = 0.820 (> 0.100 thold), f_keep = 0.240
+1.12.795.315 I slot launch_slot_: id  1 | task 59 | processing task, is_child = 0
+1.12.815.447 W moe_cache_evict_slab_range: evicted 3072.0 MiB of arena tables from the taken slab chunks (arena now 6421.2 MiB)
+1.12.815.888 W moe_cache_evict_slab_range: evicted 3424.0 MiB of arena tables from the taken slab chunks (arena now 3028.8 MiB)
+1.12.903.015 W moe_cache_evict_slab_range: evicted 182.0 MiB of arena tables from the taken slab chunks (arena now 2848.8 MiB)
+1.17.407.357 I slot print_timing: id  3 | task 56 | prompt eval time =    2101.09 ms /    52 tokens (   40.41 ms per token,    24.75 tokens per second)
+1.17.407.359 I slot print_timing: id  3 | task 56 |        eval time =    2500.87 ms /    59 tokens (   43.12 ms per token,    23.19 tokens per second)
+1.17.407.360 I slot print_timing: id  3 | task 56 |       total time =    4601.96 ms /   111 tokens
+1.17.407.360 I slot print_timing: id  3 | task 56 |    graphs reused =         54
+1.17.407.361 I slot print_timing: id  3 | task 56 |   graph reallocs =          4    /     4        (same size) / (changed size)
+1.17.407.364 I slot print_timing: id  3 | task 56 | draft acceptance = 0.82353 (   42 accepted /    51 generated), mean len =  3.47
+1.17.407.379 I slot print_timing: id  3 | task 56 |   MoE arena = 0.9903 (99109 hit / 100080 reaches this turn), arena 2848.8 MiB
+1.17.407.397 I slot      release: id  3 | task 56 | stop processing: n_tokens = 111, truncated = 0
+1.18.242.763 I slot print_timing: id  0 | task 58 | prompt eval time =    2111.01 ms /    53 tokens (   39.83 ms per token,    25.11 tokens per second)
+1.18.242.766 I slot print_timing: id  0 | task 58 |        eval time =    3336.41 ms /    86 tokens (   39.25 ms per token,    25.48 tokens per second)
+1.18.242.766 I slot print_timing: id  0 | task 58 |       total time =    5447.42 ms /   139 tokens
+1.18.242.767 I slot print_timing: id  0 | task 58 |    graphs reused =         59
+1.18.242.767 I slot print_timing: id  0 | task 58 |   graph reallocs =          5    /     4        (same size) / (changed size)
+1.18.242.770 I slot print_timing: id  0 | task 58 | draft acceptance = 0.89855 (   62 accepted /    69 generated), mean len =  3.70
+1.18.242.784 I slot print_timing: id  0 | task 58 |   MoE arena = 0.9930 (76025 hit / 76560 reaches this turn), arena 2848.8 MiB
+1.18.242.800 I slot      release: id  0 | task 58 | stop processing: n_tokens = 138, truncated = 0
+1.18.247.422 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=12 tok=8 nseq=2 dev=ROCm0 cur=5568.0 MiB was=1792.0 MiB ring=-2013265920
+1.18.247.424 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=12 tok=8 nseq=2 drop_now=1
+1.18.290.699 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.313.094 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.329.262 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.344.210 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.362.951 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.372.955 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.387.617 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.403.873 W alloc_table_locked: layer=41 role=blk.41.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.439.031 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.464.675 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.478.693 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.488.731 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.18.503.070 W moe_cache_rearm: re-armed 54 stood-down expert-cache tables after a compute-buffer drop (arena now 9475.0 MiB)
+1.18.588.167 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.588.168 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.588.169 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.633.407 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.633.409 W DROP_DEBUG ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.633.410 W DROP_DECIDE ctx=0x565079607900 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+Warning: Queue error: HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION: The agent attempted to access memory beyond the largest legal address.
+Failed to write segment data: Broken pipe
+GPU coredump: handler exited with error (status: 1)
+GPU core dump failed
+
+****************************************************************************
+*** GPU HANG ANALYSIS - VGPU(0x5650988af530) Queue(0x7fb6cb5fe000)
+****************************************************************************
+SWq=0x7fb6cb5fe000, HWq=0x7fb6a4100000, id=4, priority=1, Dispatch Header = 0xd02 (type=2, barrier=1, acquire=2, release=1), setup=3, grid=[1024, 1, 1], workgroup=[256, 1, 1], private_seg_size=0, group_seg_size=0, kernel_obj=0x7fb09afecd80, kernarg_address=0x7fb0812c2500, completion_signal=0x0, rptr=202978, wptr=203060
+****************************************************************************
+
+:0:rocdevice.cpp            :4466: 249774846095 us:  Callback: Queue 0x7fb6a4100000 aborting with error : HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION: The agent attempted to access memory beyond the largest legal address. code: 0x29 [host: soar, GPU index: 0, kernel: void k_set_rows_q8_0_group<long>(float const*, long const*, block_q8_0*, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>)]

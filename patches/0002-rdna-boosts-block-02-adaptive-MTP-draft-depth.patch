@@ -1,4 +1,4 @@
-From 78044ed04a492de8ea4df436ecfd807ce4058145 Mon Sep 17 00:00:00 2001
+From adce20250921ae0ff777898171b41c247538151b Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 14:21:47 -0500
 Subject: [PATCH 02/11] rdna-boosts: block 02: adaptive MTP draft depth
@@ -16,6 +16,9 @@ Sources: old 01 (whole block).
  include/llama.h                               |   1 +
  src/llama-context.cpp                         |   1 +
  src/llama-cparams.h                           |   1 +
+ src/llama-ext.h                               |   6 +
+ src/llama-model.cpp                           |   8 +
+ src/llama-model.h                             |   3 +
  src/models/delta-net-base.cpp                 |  11 +-
  tests/CMakeLists.txt                          |  23 ++
  tests/test-arg-parser.cpp                     |  17 ++
@@ -24,7 +27,7 @@ Sources: old 01 (whole block).
  tools/cli/README.md                           |   3 +-
  tools/server/README.md                        |   3 +-
  tools/server/server-context.cpp               |  15 +-
- 19 files changed, 1051 insertions(+), 41 deletions(-)
+ 22 files changed, 1068 insertions(+), 41 deletions(-)
  create mode 100644 common/speculative-adaptive.h
  create mode 100644 tests/test-recurrent-state-depth.cpp
  create mode 100644 tests/test-speculative-adaptive.cpp
@@ -977,6 +980,56 @@ index f4eb181a7..a3f8efff8 100644
      uint32_t n_outputs_max;   // max outputs supported by the context
      uint32_t n_outputs_max_per_seq;
      int32_t  n_threads;       // number of threads to use for generation
+diff --git a/src/llama-ext.h b/src/llama-ext.h
+index faf4beb69..f0092d4ac 100644
+--- a/src/llama-ext.h
++++ b/src/llama-ext.h
+@@ -141,6 +141,12 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
+ // returns the number of extracted layers from target model
+ LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
+ 
++// layers whose input embeddings contexts created from this model extract from the start (as if
++// llama_set_embeddings_layer_inp(ctx, lid, true) had been called before the context's first graph reserve).
++// For a target whose draft will turn the extraction on (DFlash): the compute buffers are then sized for it once,
++// instead of being freed and allocated again, larger, at the first decode after the draft attaches.
++LLAMA_API void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n);
++
+ // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
+ // returns total number of elements or 0 on error
+ // if out is nullptr, returns the number of tokens without writing to out
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 450f94c37..da8fe01b1 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -3890,6 +3890,14 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+     return (uint32_t) model->target_layer_ids.size();
+ }
+ 
++void llama_model_set_embeddings_layer_inp_preset(struct llama_model * model, const int32_t * lids, uint32_t n) {
++    if (n == 0) {
++        model->embeddings_layer_inp_preset.clear();
++    } else {
++        model->embeddings_layer_inp_preset.assign(lids, lids + n);
++    }
++}
++
+ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
+     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
+         return 0;
+diff --git a/src/llama-model.h b/src/llama-model.h
+index dff84c574..f540e024f 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -764,6 +764,9 @@ struct llama_model {
+     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
+     std::vector<int32_t> target_layer_ids;
+ 
++    // layers whose input embeddings new contexts extract from the start (llama_model_set_embeddings_layer_inp_preset)
++    std::vector<int32_t> embeddings_layer_inp_preset;
++
+     std::vector<llama_layer> layers;
+ 
+     //Dense linear projections for SentenceTransformers models like embeddinggemma
 diff --git a/src/models/delta-net-base.cpp b/src/models/delta-net-base.cpp
 index ad6612647..a29d8b89c 100644
 --- a/src/models/delta-net-base.cpp

@@ -1,0 +1,627 @@
+0.00.019.054 I srv  llama_server: initializing ...
+0.00.019.063 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.019.299 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.020.803 I srv    load_model: loading model '/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf'
+0.00.049.984 I common_draft_reserve_estimate: draft reserve estimate for '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': weights 2647 + kv 862 (1 x 1 layers, 2 kv heads, 256/256 head dims, indexer yes) + compute 512 + slack 192 = 4213 MiB (n_ctx 262144)
+0.01.231.111 E llama_init_from_model: failed to initialize the context: qwen4exp requires ctx_other to be set (this warning is normal during memory fitting)
+0.01.246.953 W operator(): the extra model cannot be measured during fitting (failed to create llama_context from model); reserving the DERIVED 4213 MiB as a per-device-split reserve instead -- this is the MTP case, which needs ctx_other while fitting has no target context yet
+0.01.246.982 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+1.00.307.510 W common_init_result: slab draft reserve derived from '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf': draft CONTEXT 1566 MiB (kv 862 + compute 512 + slack 192); the draft's 2647 MiB of weights are loaded BEFORE this slab and are measured from the free VRAM instead of reserved.  The reserve is headroom + this.
+1.00.307.530 I common_speculative_load_model: loading draft model '/models/Qwen3.8/Flash-Next/IQ3_XXS/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf'
+1.03.352.077 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=2048
+1.03.356.477 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.03.359.907 W SLAB_INIT dev=0 free=9.81 GiB reserve=2.40 GiB headroom=0.88 GiB aux=1.53 GiB size(VA)=8.88 GiB mapped=7.38 GiB boundary=1.50 GiB va_spare=1.50 GiB chunk=64.0 MiB ring_req=2.11 GiB
+1.03.359.910 W ggml_cuda_slab_init_locked: device 0: slab 7.38 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 5.88 GiB (2.40 GiB reserve, 1.50 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+1.03.359.914 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.03.362.711 W SLAB_INIT dev=1 free=8.92 GiB reserve=2.40 GiB headroom=0.88 GiB aux=1.53 GiB size(VA)=8.00 GiB mapped=6.50 GiB boundary=1.50 GiB va_spare=1.50 GiB chunk=64.0 MiB ring_req=2.11 GiB
+1.03.362.715 W ggml_cuda_slab_init_locked: device 1: slab 6.50 GiB (chunk 64.0 MiB): work 1.50 GiB + arena 5.00 GiB (2.40 GiB reserve, 1.50 GiB VA spare for `ggml_cuda_slab_extend`; ring region pending (above the narrow floor))
+1.03.363.280 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.03.364.964 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=2048
+1.03.366.675 I cmn          init: llama threadpool init, n_threads = 8
+1.04.273.228 W alloc_all_locked: MoE expert cache (auto): arena 9475.0 MiB of 9475.0 MiB host experts (100.0% residency).  MOE_EXPERT_CACHE_MIB=0 disables the cache; set a positive value to size it explicitly.
+1.04.302.887 W alloc_table_locked: layer=43 role=blk.43.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.321.086 W alloc_table_locked: layer=43 role=blk.43.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.338.910 W alloc_table_locked: layer=43 role=blk.43.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.363.729 W alloc_table_locked: layer=43 role=blk.43.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.376.947 W alloc_table_locked: layer=43 role=blk.43.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.389.848 W alloc_table_locked: layer=43 role=blk.43.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.421.737 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.446.821 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.463.998 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.479.076 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.491.939 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.503.466 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.518.990 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.529.556 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.544.436 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.573.313 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.590.325 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.604.217 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.624.096 W alloc_table_locked: layer=41 role=blk.41.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.640.247 W alloc_table_locked: layer=41 role=blk.41.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.658.353 W alloc_table_locked: layer=41 role=blk.41.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.04.811.895 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=512
+1.04.814.034 W COMPUTE_ALLOC 512.0 MiB dev=0 slab_on=1 flag=1
+1.04.815.386 W ggml_cuda_slab_narrow2_floor_locked: device 0: narrow-2 (MTP draft compute) pinned at [8.38, 8.88] GiB (0.50 GiB); the arena now tops out at 5.88 GiB
+1.04.815.390 W NARROW2_ALLOC dev=0 need=512.0 MiB off=8576.0 MiB live=1
+1.04.815.393 W COMPUTE_ALLOC 512.0 MiB dev=1 slab_on=1 flag=1
+1.04.815.867 W ggml_cuda_slab_narrow2_floor_locked: device 1: narrow-2 (MTP draft compute) pinned at [7.50, 8.00] GiB (0.50 GiB); the arena now tops out at 5.00 GiB
+1.04.815.869 W NARROW2_ALLOC dev=1 need=512.0 MiB off=7680.0 MiB live=1
+1.04.815.933 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=4
+1.04.816.024 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=512
+1.04.816.224 W NARROW2_RELEASE dev=0 need=512.0 MiB off=8576.0 MiB live=0
+1.04.816.225 W NARROW2_RELEASE dev=1 need=512.0 MiB off=7680.0 MiB live=0
+1.04.816.274 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'false'
+1.04.816.826 W set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU
+1.04.816.827 W spec common_specu: backend offload failed for seq_id=0; using CPU sampler
+1.04.816.829 W spec common_specu: backend offload failed for seq_id=1; using CPU sampler
+1.04.816.829 W spec common_specu: backend offload failed for seq_id=2; using CPU sampler
+1.04.816.829 W spec common_specu: backend offload failed for seq_id=3; using CPU sampler
+1.04.819.307 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=512
+1.04.819.366 W COMPUTE_ALLOC 512.0 MiB dev=0 slab_on=1 flag=1
+1.04.819.367 W NARROW2_ALLOC dev=0 need=512.0 MiB off=8576.0 MiB live=1
+1.04.819.369 W COMPUTE_ALLOC 512.0 MiB dev=1 slab_on=1 flag=1
+1.04.819.369 W NARROW2_ALLOC dev=1 need=512.0 MiB off=7680.0 MiB live=1
+1.04.819.405 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=4
+1.04.819.472 W GRAPH_RESERVE ctx=0x55f027340b60 is_draft=1 n_tokens=512
+1.04.823.757 W COMPUTE_ALLOC 1.2 MiB dev=0 slab_on=1 flag=0
+1.04.824.095 W COMPUTE_ALLOC 1.2 MiB dev=1 slab_on=1 flag=0
+1.04.831.734 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.04.831.758 I srv  llama_server: model loaded
+1.04.831.762 I srv  llama_server: listening on http://127.0.0.1:18087
+1.05.278.774 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+1.05.278.846 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+1.05.286.429 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=1536.0
+1.05.286.433 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1536.0 narrow_floor=1536.0
+1.05.287.659 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=2048
+1.05.289.427 W COMPUTE_ALLOC 1792.0 MiB dev=0 slab_on=1 flag=1
+1.05.289.430 W WORK_ALLOC dev=0 need=1792.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1536.0
+1.05.289.445 W COMPUTE_ALLOC 1792.0 MiB dev=1 slab_on=1 flag=1
+1.05.289.446 W WORK_ALLOC dev=1 need=1792.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1536.0
+1.05.289.865 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.05.291.521 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=2048
+1.06.238.783 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=16 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=0.0 MiB ring=-2013265920
+1.06.238.786 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=16 tok=4 nseq=1 drop_now=1
+1.06.241.214 W WORK_RELEASE dev=0 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.06.241.216 W WORK_RELEASE dev=1 off=0.0 MiB need=1792.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.06.244.706 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.06.245.837 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.06.245.840 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.06.245.842 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.06.245.843 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.06.577.124 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.577.126 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.577.127 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.633.455 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.633.457 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.633.458 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.744.070 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.744.072 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.744.073 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.06.779.171 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=3 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.779.172 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=3 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.06.779.173 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=3 nseq=1 drop_now=0
+1.06.879.540 I slot print_timing: id  3 | task 0 | prompt eval time =    1289.98 ms /    50 tokens (   25.80 ms per token,    38.76 tokens per second)
+1.06.879.543 I slot print_timing: id  3 | task 0 |        eval time =     310.69 ms /    16 tokens (   20.71 ms per token,    48.28 tokens per second)
+1.06.879.543 I slot print_timing: id  3 | task 0 |       total time =    1600.66 ms /    66 tokens
+1.06.879.545 I slot print_timing: id  3 | task 0 |    graphs reused =          2
+1.06.879.546 I slot print_timing: id  3 | task 0 |   graph reallocs =          0    /     2        (same size) / (changed size)
+1.06.879.548 I slot print_timing: id  3 | task 0 | draft acceptance = 1.00000 (   11 accepted /    11 generated), mean len =  3.75
+1.06.879.568 I slot print_timing: id  3 | task 0 |   MoE arena = 0.6904 (10770 hit / 15600 reaches this turn), arena 9475.0 MiB
+1.06.879.591 I slot      release: id  3 | task 0 | stop processing: n_tokens = 65, truncated = 0
+1.06.882.106 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.623 (> 0.100 thold), f_keep = 0.508
+1.06.882.132 I slot launch_slot_: id  3 | task 8 | processing task, is_child = 0
+1.07.156.933 I slot get_availabl: id  2 | task -1 | selected slot by LRU, t_last = -1
+1.07.156.980 I slot launch_slot_: id  2 | task 10 | processing task, is_child = 0
+1.07.156.982 I slot get_availabl: id  1 | task -1 | selected slot by LRU, t_last = -1
+1.07.156.994 I slot launch_slot_: id  1 | task 9 | processing task, is_child = 0
+1.07.156.995 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.07.157.003 I slot launch_slot_: id  0 | task 11 | processing task, is_child = 0
+1.07.210.478 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.07.210.481 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.07.214.445 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.07.214.448 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.07.214.612 W moe_cache_evict_slab_range: evicted 3072.0 MiB of arena tables from the taken slab chunks (arena now 6421.2 MiB)
+1.07.214.616 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.07.214.617 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.07.214.831 W moe_cache_evict_slab_range: evicted 3452.0 MiB of arena tables from the taken slab chunks (arena now 3002.5 MiB)
+1.07.463.252 W moe_cache_evict_slab_range: evicted 154.0 MiB of arena tables from the taken slab chunks (arena now 2848.8 MiB)
+1.09.178.266 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=12 tok=8 nseq=1 dev=ROCm0 cur=5568.0 MiB was=1792.0 MiB ring=-2013265920
+1.09.178.269 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=12 tok=8 nseq=1 drop_now=1
+1.09.183.436 W WORK_RELEASE dev=0 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.09.183.439 W WORK_RELEASE dev=1 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.09.186.661 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.09.187.769 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.09.187.772 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.09.187.774 W WORK_SHRINK dev=0 old=5568.0 MiB new=1792.0 MiB
+1.09.187.778 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.09.187.778 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.09.187.779 W WORK_SHRINK dev=1 old=5568.0 MiB new=1792.0 MiB
+1.09.220.164 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.244.535 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.261.868 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.276.867 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.294.400 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.304.373 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.319.033 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.335.389 W alloc_table_locked: layer=41 role=blk.41.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.371.162 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.395.985 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.410.093 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.420.303 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.09.436.486 W moe_cache_rearm: re-armed 54 stood-down expert-cache tables after a compute-buffer drop (arena now 9475.0 MiB)
+1.09.908.571 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.09.908.574 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.09.908.575 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.10.349.836 W COMPUTE_ALLOC 4.9 MiB dev=0 slab_on=1 flag=0
+1.10.350.265 W COMPUTE_ALLOC 4.9 MiB dev=1 slab_on=1 flag=0
+1.11.525.618 I slot print_timing: id  2 | task 10 | prompt eval time =    3192.30 ms /    52 tokens (   61.39 ms per token,    16.29 tokens per second)
+1.11.525.620 I slot print_timing: id  2 | task 10 |        eval time =    1176.30 ms /    61 tokens (   19.61 ms per token,    51.01 tokens per second)
+1.11.525.621 I slot print_timing: id  2 | task 10 |       total time =    4368.60 ms /   113 tokens
+1.11.525.621 I slot print_timing: id  2 | task 10 |    graphs reused =         20
+1.11.525.622 I slot print_timing: id  2 | task 10 |   graph reallocs =          1    /     4        (same size) / (changed size)
+1.11.525.624 I slot print_timing: id  2 | task 10 | draft acceptance = 0.71930 (   41 accepted /    57 generated), mean len =  3.16
+1.11.525.636 I slot print_timing: id  2 | task 10 |   MoE arena = 0.9103 (164699 hit / 180920 reaches this turn), arena 9475.0 MiB
+1.11.525.648 I slot      release: id  2 | task 10 | stop processing: n_tokens = 112, truncated = 0
+1.11.538.750 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.11.538.752 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 drop_now=1
+1.11.541.323 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.11.541.325 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.11.544.334 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.11.545.466 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.11.545.469 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.11.545.471 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.11.545.472 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.11.645.876 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.645.878 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.645.879 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.11.687.674 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.687.675 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.687.676 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.11.800.293 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.800.295 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.800.296 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.11.887.311 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.887.313 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.887.314 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.11.925.166 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.925.171 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.925.171 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.11.953.534 I slot print_timing: id  3 | task 8 | prompt eval time =    2857.73 ms /    53 tokens (   53.92 ms per token,    18.55 tokens per second)
+1.11.953.536 I slot print_timing: id  3 | task 8 |        eval time =    2213.66 ms /    86 tokens (   26.04 ms per token,    38.40 tokens per second)
+1.11.953.536 I slot print_timing: id  3 | task 8 |       total time =    5071.39 ms /   139 tokens
+1.11.953.537 I slot print_timing: id  3 | task 8 |    graphs reused =         20
+1.11.953.537 I slot print_timing: id  3 | task 8 |   graph reallocs =          6    /     4        (same size) / (changed size)
+1.11.953.540 I slot print_timing: id  3 | task 8 | draft acceptance = 0.89855 (   62 accepted /    69 generated), mean len =  3.70
+1.11.953.554 I slot print_timing: id  3 | task 8 |   MoE arena = 0.9365 (171678 hit / 183320 reaches this turn), arena 9475.0 MiB
+1.11.953.565 I slot      release: id  3 | task 8 | stop processing: n_tokens = 138, truncated = 0
+1.11.957.103 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.957.104 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.957.105 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.11.993.243 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.993.245 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.11.993.246 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.12.024.956 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.024.957 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.024.957 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.12.057.267 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.057.268 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.057.269 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.12.086.249 I slot print_timing: id  1 | task 9 | prompt eval time =    3192.25 ms /    56 tokens (   57.00 ms per token,    17.54 tokens per second)
+1.12.086.251 I slot print_timing: id  1 | task 9 |        eval time =    1736.98 ms /    89 tokens (   19.74 ms per token,    50.66 tokens per second)
+1.12.086.251 I slot print_timing: id  1 | task 9 |       total time =    4929.23 ms /   145 tokens
+1.12.086.252 I slot print_timing: id  1 | task 9 |    graphs reused =         23
+1.12.086.252 I slot print_timing: id  1 | task 9 |   graph reallocs =          7    /     4        (same size) / (changed size)
+1.12.086.255 I slot print_timing: id  1 | task 9 | draft acceptance = 0.79487 (   62 accepted /    78 generated), mean len =  3.38
+1.12.086.268 I slot print_timing: id  1 | task 9 |   MoE arena = 0.9222 (198206 hit / 214920 reaches this turn), arena 9475.0 MiB
+1.12.086.278 I slot      release: id  1 | task 9 | stop processing: n_tokens = 144, truncated = 0
+1.12.090.577 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.090.578 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.090.579 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.12.183.217 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.183.219 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.183.219 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.220.125 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.220.126 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.220.127 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.243.602 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.243.603 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.243.604 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.267.169 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.267.170 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.267.171 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.290.410 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.290.411 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.290.412 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.313.643 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.313.644 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.313.645 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.337.434 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.337.436 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.337.436 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.360.514 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.360.515 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.360.515 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.384.206 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.384.207 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.384.207 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.408.501 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.408.502 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.408.503 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.432.219 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.432.220 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.432.221 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.456.198 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.456.199 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.456.200 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.479.984 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.479.985 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=1792.0 MiB ring=-2013265920
+1.12.479.985 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.12.500.885 I slot print_timing: id  0 | task 11 | prompt eval time =    3192.21 ms /    50 tokens (   63.84 ms per token,    15.66 tokens per second)
+1.12.500.887 I slot print_timing: id  0 | task 11 |        eval time =    2151.66 ms /   122 tokens (   17.78 ms per token,    56.24 tokens per second)
+1.12.500.887 I slot print_timing: id  0 | task 11 |       total time =    5343.87 ms /   172 tokens
+1.12.500.888 I slot print_timing: id  0 | task 11 |    graphs reused =         36
+1.12.500.888 I slot print_timing: id  0 | task 11 |   graph reallocs =          8    /     4        (same size) / (changed size)
+1.12.500.891 I slot print_timing: id  0 | task 11 | draft acceptance = 0.67500 (   81 accepted /   120 generated), mean len =  3.02
+1.12.500.904 I slot print_timing: id  0 | task 11 |   MoE arena = 0.9299 (225888 hit / 242920 reaches this turn), arena 9475.0 MiB
+1.12.500.913 I slot      release: id  0 | task 11 | stop processing: n_tokens = 171, truncated = 0
+1.12.502.890 I slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, f_sim_best = 0.839 (> 0.100 thold), f_keep = 0.326
+1.12.592.295 I slot launch_slot_: id  1 | task 56 | processing task, is_child = 0
+1.12.859.241 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.820 (> 0.100 thold), f_keep = 0.240
+1.12.859.583 I slot launch_slot_: id  0 | task 59 | processing task, is_child = 0
+1.12.860.162 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.827 (> 0.100 thold), f_keep = 0.384
+1.12.860.460 I slot launch_slot_: id  2 | task 57 | processing task, is_child = 0
+1.12.860.748 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.830 (> 0.100 thold), f_keep = 0.319
+1.12.861.044 I slot launch_slot_: id  3 | task 58 | processing task, is_child = 0
+1.12.877.030 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.12.877.033 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.12.881.332 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.12.881.335 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.12.881.702 W moe_cache_evict_slab_range: evicted 3072.0 MiB of arena tables from the taken slab chunks (arena now 6421.2 MiB)
+1.12.881.706 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.12.881.707 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.12.882.178 W moe_cache_evict_slab_range: evicted 3424.0 MiB of arena tables from the taken slab chunks (arena now 3028.8 MiB)
+1.12.974.214 W moe_cache_evict_slab_range: evicted 182.0 MiB of arena tables from the taken slab chunks (arena now 2848.8 MiB)
+1.17.341.260 I slot print_timing: id  2 | task 57 | prompt eval time =    1961.24 ms /    52 tokens (   37.72 ms per token,    26.51 tokens per second)
+1.17.341.263 I slot print_timing: id  2 | task 57 |        eval time =    2512.17 ms /    59 tokens (   43.31 ms per token,    23.09 tokens per second)
+1.17.341.263 I slot print_timing: id  2 | task 57 |       total time =    4473.40 ms /   111 tokens
+1.17.341.264 I slot print_timing: id  2 | task 57 |    graphs reused =         52
+1.17.341.264 I slot print_timing: id  2 | task 57 |   graph reallocs =          9    /     5        (same size) / (changed size)
+1.17.341.267 I slot print_timing: id  2 | task 57 | draft acceptance = 0.82353 (   42 accepted /    51 generated), mean len =  3.47
+1.17.341.282 I slot print_timing: id  2 | task 57 |   MoE arena = 0.9910 (89359 hit / 90170 reaches this turn), arena 2848.8 MiB
+1.17.341.297 I slot      release: id  2 | task 57 | stop processing: n_tokens = 111, truncated = 0
+1.17.349.788 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 dev=ROCm0 cur=5568.0 MiB was=1792.0 MiB ring=-2013265920
+1.17.349.790 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 drop_now=1
+1.17.356.837 W WORK_RELEASE dev=0 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.17.356.839 W WORK_RELEASE dev=1 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.17.360.300 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.17.361.446 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.17.361.448 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.17.361.449 W WORK_SHRINK dev=0 old=5568.0 MiB new=1792.0 MiB
+1.17.361.452 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.17.361.453 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.17.361.453 W WORK_SHRINK dev=1 old=5568.0 MiB new=1792.0 MiB
+1.17.391.665 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.414.044 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.429.545 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.444.201 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.462.004 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.471.995 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.486.647 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.502.801 W alloc_table_locked: layer=41 role=blk.41.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.537.660 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.560.816 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.575.554 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.585.794 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.17.600.595 W moe_cache_rearm: re-armed 54 stood-down expert-cache tables after a compute-buffer drop (arena now 9475.0 MiB)
+1.17.685.094 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.685.096 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.685.097 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.17.755.336 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.755.338 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.755.339 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.17.848.755 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.848.758 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.848.759 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.17.943.552 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.943.554 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.943.555 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.17.993.158 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.993.160 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.17.993.161 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.18.038.232 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.038.234 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.038.235 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.18.085.457 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.085.459 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.085.460 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.18.131.647 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.131.649 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.131.650 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.18.174.723 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.174.725 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.174.726 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.18.215.692 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.215.694 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.215.695 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.18.253.098 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.253.099 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.253.100 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.18.286.032 I slot print_timing: id  3 | task 58 | prompt eval time =    1958.05 ms /    53 tokens (   36.94 ms per token,    27.07 tokens per second)
+1.18.286.034 I slot print_timing: id  3 | task 58 |        eval time =    3456.90 ms /    86 tokens (   40.67 ms per token,    24.59 tokens per second)
+1.18.286.034 I slot print_timing: id  3 | task 58 |       total time =    5414.95 ms /   139 tokens
+1.18.286.035 I slot print_timing: id  3 | task 58 |    graphs reused =         52
+1.18.286.035 I slot print_timing: id  3 | task 58 |   graph reallocs =         20    /     5        (same size) / (changed size)
+1.18.286.038 I slot print_timing: id  3 | task 58 | draft acceptance = 0.89855 (   62 accepted /    69 generated), mean len =  3.70
+1.18.286.053 I slot print_timing: id  3 | task 58 |   MoE arena = 0.9229 (99826 hit / 108170 reaches this turn), arena 9475.0 MiB
+1.18.286.067 I slot      release: id  3 | task 58 | stop processing: n_tokens = 138, truncated = 0
+1.18.289.612 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.289.613 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.289.614 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.18.329.872 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.329.874 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.329.875 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.364.074 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.364.076 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.364.076 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.396.780 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.396.781 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.396.782 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.430.868 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.430.869 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.430.869 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.464.172 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.464.173 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.464.173 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.500.606 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.500.607 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.500.608 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.536.140 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.536.142 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.536.143 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.18.569.182 I slot print_timing: id  0 | task 59 | n_gen =    102, tg =  27.00 t/s, tg_3s =  27.27 t/s
+1.18.569.228 I slot print_timing: id  1 | task 56 | prompt eval time =    1964.49 ms /    56 tokens (   35.08 ms per token,    28.51 tokens per second)
+1.18.569.230 I slot print_timing: id  1 | task 56 |        eval time =    3740.18 ms /   100 tokens (   37.78 ms per token,    26.47 tokens per second)
+1.18.569.230 I slot print_timing: id  1 | task 56 |       total time =    5704.68 ms /   156 tokens
+1.18.569.231 I slot print_timing: id  1 | task 56 |    graphs reused =         59
+1.18.569.232 I slot print_timing: id  1 | task 56 |   graph reallocs =         21    /     5        (same size) / (changed size)
+1.18.569.235 I slot print_timing: id  1 | task 56 | draft acceptance = 0.73118 (   68 accepted /    93 generated), mean len =  3.19
+1.18.569.248 I slot print_timing: id  1 | task 56 |   MoE arena = 0.9217 (114451 hit / 124170 reaches this turn), arena 9475.0 MiB
+1.18.569.262 I slot      release: id  1 | task 56 | stop processing: n_tokens = 155, truncated = 0
+1.18.573.907 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.573.909 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.573.910 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.18.609.247 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.609.249 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.609.250 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.650.757 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.650.759 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.650.760 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.676.304 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.676.306 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.676.307 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.700.907 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.700.908 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.700.909 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.725.821 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.725.822 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.725.823 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.750.218 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.750.219 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.750.220 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.774.433 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.774.434 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.774.435 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.799.463 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.799.464 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.799.464 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.824.396 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.824.397 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.824.397 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.849.605 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.849.606 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.849.607 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.874.628 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.874.629 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.874.629 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.899.311 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.899.312 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.899.313 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.923.198 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.923.200 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.923.200 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.947.100 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.947.101 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.947.102 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.971.026 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.971.027 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.971.027 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.18.994.535 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.994.537 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.18.994.537 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.018.454 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.018.456 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.018.456 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.042.047 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.042.049 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.042.049 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.065.855 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.065.856 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.065.857 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.089.583 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.089.584 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.089.584 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.113.446 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.113.447 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.113.448 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.137.149 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.137.151 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.137.151 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.160.917 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.160.919 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.19.160.919 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.19.182.576 I slot print_timing: id  0 | task 59 | prompt eval time =    1967.94 ms /    50 tokens (   39.36 ms per token,    25.41 tokens per second)
+1.19.182.578 I slot print_timing: id  0 | task 59 |        eval time =    4353.58 ms /   178 tokens (   24.60 ms per token,    40.66 tokens per second)
+1.19.182.578 I slot print_timing: id  0 | task 59 |       total time =    6321.52 ms /   228 tokens
+1.19.182.579 I slot print_timing: id  0 | task 59 |    graphs reused =         82
+1.19.182.580 I slot print_timing: id  0 | task 59 |   graph reallocs =         22    /     5        (same size) / (changed size)
+1.19.182.582 I slot print_timing: id  0 | task 59 | draft acceptance = 0.73939 (  122 accepted /   165 generated), mean len =  3.22
+1.19.182.596 I slot print_timing: id  0 | task 59 |   MoE arena = 0.9268 (133619 hit / 144170 reaches this turn), arena 9475.0 MiB
+1.19.182.607 I slot      release: id  0 | task 59 | stop processing: n_tokens = 227, truncated = 0
+1.19.184.271 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.820 (> 0.100 thold), f_keep = 0.181
+1.19.274.560 I slot launch_slot_: id  0 | task 119 | processing task, is_child = 0
+1.19.364.547 W srv         alloc:  - making room for prompt cache entry, removing oldest entry (size = 339.978 MiB)
+1.19.458.808 W srv         alloc:  - making room for prompt cache entry, removing oldest entry (size = 340.379 MiB)
+1.19.552.959 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.827 (> 0.100 thold), f_keep = 0.387
+1.19.553.321 I slot launch_slot_: id  2 | task 118 | processing task, is_child = 0
+1.19.553.902 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 0.830 (> 0.100 thold), f_keep = 0.319
+1.19.554.208 I slot launch_slot_: id  3 | task 120 | processing task, is_child = 0
+1.19.554.498 I slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, f_sim_best = 0.839 (> 0.100 thold), f_keep = 0.303
+1.19.554.800 I slot launch_slot_: id  1 | task 121 | processing task, is_child = 0
+1.19.571.401 W WORK_RELEASE dev=0 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.19.571.404 W WORK_RELEASE dev=1 off=0.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=1792.0 narrow_floor=1792.0
+1.19.575.525 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.19.575.528 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.19.575.837 W moe_cache_evict_slab_range: evicted 3072.0 MiB of arena tables from the taken slab chunks (arena now 6421.2 MiB)
+1.19.575.840 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.19.575.841 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=0 ret_off=3968.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=1792.0
+1.19.576.207 W moe_cache_evict_slab_range: evicted 3424.0 MiB of arena tables from the taken slab chunks (arena now 3028.8 MiB)
+1.19.593.324 W moe_cache_evict_slab_range: evicted 182.0 MiB of arena tables from the taken slab chunks (arena now 2848.8 MiB)
+1.23.950.035 I slot print_timing: id  2 | task 118 | prompt eval time =    1861.79 ms /    52 tokens (   35.80 ms per token,    27.93 tokens per second)
+1.23.950.037 I slot print_timing: id  2 | task 118 |        eval time =    2526.41 ms /    59 tokens (   43.56 ms per token,    22.96 tokens per second)
+1.23.950.038 I slot print_timing: id  2 | task 118 |       total time =    4388.20 ms /   111 tokens
+1.23.950.038 I slot print_timing: id  2 | task 118 |    graphs reused =         98
+1.23.950.039 I slot print_timing: id  2 | task 118 |   graph reallocs =         23    /     6        (same size) / (changed size)
+1.23.950.041 I slot print_timing: id  2 | task 118 | draft acceptance = 0.80392 (   41 accepted /    51 generated), mean len =  3.41
+1.23.950.056 I slot print_timing: id  2 | task 118 |   MoE arena = 0.9268 (133619 hit / 144170 reaches this turn), arena 2848.8 MiB
+1.23.950.070 I slot      release: id  2 | task 118 | stop processing: n_tokens = 110, truncated = 0
+1.23.958.986 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 dev=ROCm0 cur=5568.0 MiB was=5568.0 MiB ring=-2013265920
+1.23.958.989 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=16 tok=8 nseq=2 drop_now=1
+1.23.966.456 W WORK_RELEASE dev=0 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.23.966.458 W WORK_RELEASE dev=1 off=3968.0 MiB need=1536.0 MiB found=1 live_needs=0 boundary=5568.0 narrow_floor=1792.0
+1.23.969.974 W GRAPH_RESERVE ctx=0x55f00764da50 is_draft=0 n_tokens=4
+1.23.971.142 W COMPUTE_ALLOC 1536.0 MiB dev=0 slab_on=1 flag=1
+1.23.971.145 W WORK_ALLOC dev=0 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.23.971.146 W WORK_SHRINK dev=0 old=5568.0 MiB new=1792.0 MiB
+1.23.971.149 W COMPUTE_ALLOC 1536.0 MiB dev=1 slab_on=1 flag=1
+1.23.971.149 W WORK_ALLOC dev=1 need=1536.0 MiB narrow=1 ret_off=0.0 MiB narrow_floor=1792.0 ring=2176.0 boundary=5568.0
+1.23.971.149 W WORK_SHRINK dev=1 old=5568.0 MiB new=1792.0 MiB
+1.24.001.171 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.023.554 W alloc_table_locked: layer=38 role=blk.38.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.039.748 W alloc_table_locked: layer=38 role=blk.38.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.054.698 W alloc_table_locked: layer=38 role=blk.38.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.073.202 W alloc_table_locked: layer=40 role=blk.40.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.083.201 W alloc_table_locked: layer=40 role=blk.40.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.097.863 W alloc_table_locked: layer=40 role=blk.40.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.114.098 W alloc_table_locked: layer=41 role=blk.41.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.149.147 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.172.289 W alloc_table_locked: layer=42 role=blk.42.ffn_down_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.186.950 W alloc_table_locked: layer=42 role=blk.42.ffn_gate_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.197.060 W alloc_table_locked: layer=42 role=blk.42.ffn_up_exps.weight is FULLY RESIDENT (512/512 slots): identity fast path ON (the decode band now reads the arena directly; no per-token routing readback)
+1.24.210.960 W moe_cache_rearm: re-armed 54 stood-down expert-cache tables after a compute-buffer drop (arena now 9475.0 MiB)
+1.24.295.387 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.295.389 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.295.390 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.367.859 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.367.861 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.367.862 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.428.043 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.428.045 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.428.046 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.480.575 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.480.577 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.480.577 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.523.467 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.523.468 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.523.469 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.566.053 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.566.055 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.566.055 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.606.077 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.606.079 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.606.080 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.650.471 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.650.472 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.650.473 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.691.998 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.692.000 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.692.000 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.731.716 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.731.717 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.731.718 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.769.171 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.769.173 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.769.174 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.24.802.471 I slot print_timing: id  3 | task 120 | prompt eval time =    1858.42 ms /    53 tokens (   35.06 ms per token,    28.52 tokens per second)
+1.24.802.473 I slot print_timing: id  3 | task 120 |        eval time =    3378.82 ms /    86 tokens (   39.75 ms per token,    25.16 tokens per second)
+1.24.802.473 I slot print_timing: id  3 | task 120 |       total time =    5237.23 ms /   139 tokens
+1.24.802.474 I slot print_timing: id  3 | task 120 |    graphs reused =         98
+1.24.802.474 I slot print_timing: id  3 | task 120 |   graph reallocs =         34    /     6        (same size) / (changed size)
+1.24.802.477 I slot print_timing: id  3 | task 120 | draft acceptance = 0.89855 (   62 accepted /    69 generated), mean len =  3.70
+1.24.802.489 I slot print_timing: id  3 | task 120 |   MoE arena = 0.9262 (133531 hit / 144170 reaches this turn), arena 9475.0 MiB
+1.24.802.502 I slot      release: id  3 | task 120 | stop processing: n_tokens = 138, truncated = 0
+1.24.806.022 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.806.024 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.806.025 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=8 nseq=2 drop_now=0
+1.24.845.859 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.845.860 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.845.861 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.24.879.721 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.879.722 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.879.723 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.24.912.937 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.912.938 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.912.939 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.24.946.053 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.946.054 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.946.055 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.24.979.011 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.979.012 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.24.979.013 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.25.012.628 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.012.630 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.012.630 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.25.044.099 I slot print_timing: id  0 | task 119 | n_gen =    100, tg =  27.34 t/s, tg_3s =  27.62 t/s
+1.25.047.570 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.047.571 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.047.572 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=8 nseq=2 drop_now=0
+1.25.079.944 I slot print_timing: id  1 | task 121 | prompt eval time =    1865.10 ms /    56 tokens (   33.31 ms per token,    30.03 tokens per second)
+1.25.079.946 I slot print_timing: id  1 | task 121 |        eval time =    3656.38 ms /   100 tokens (   36.93 ms per token,    27.08 tokens per second)
+1.25.079.946 I slot print_timing: id  1 | task 121 |       total time =    5521.48 ms /   156 tokens
+1.25.079.947 I slot print_timing: id  1 | task 121 |    graphs reused =        105
+1.25.079.947 I slot print_timing: id  1 | task 121 |   graph reallocs =         35    /     6        (same size) / (changed size)
+1.25.079.950 I slot print_timing: id  1 | task 121 | draft acceptance = 0.73118 (   68 accepted /    93 generated), mean len =  3.19
+1.25.079.961 I slot print_timing: id  1 | task 121 |   MoE arena = 0.9267 (133605 hit / 144170 reaches this turn), arena 9475.0 MiB
+1.25.079.973 I slot      release: id  1 | task 121 | stop processing: n_tokens = 155, truncated = 0
+1.25.084.377 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.084.378 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.084.379 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=8 tok=4 nseq=1 drop_now=0
+1.25.115.834 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.115.836 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.115.836 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.153.334 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.153.336 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.153.336 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.177.276 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.177.278 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.177.278 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.201.751 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.201.752 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.201.753 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.226.103 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.226.104 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.226.105 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.251.743 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.251.744 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.251.745 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.276.977 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm0 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.276.978 W DROP_DEBUG ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 dev=ROCm1 cur=1792.0 MiB was=5568.0 MiB ring=-2013265920
+1.25.276.979 W DROP_DECIDE ctx=0x55f00764da50 ctype=0 n_prev=4 tok=4 nseq=1 drop_now=0
+1.25.298.373 I slot print_timing: id  0 | task 119 | prompt eval time =    1868.71 ms /    50 tokens (   37.37 ms per token,    26.76 tokens per second)
+1.25.298.375 I slot print_timing: id  0 | task 119 |        eval time =    3874.85 ms /   135 tokens (   28.92 ms per token,    34.58 tokens per second)
+1.25.298.375 I slot print_timing: id  0 | task 119 |       total time =    5743.56 ms /   185 tokens
+1.25.298.376 I slot print_timing: id  0 | task 119 |    graphs reused =        112
+1.25.298.376 I slot print_timing: id  0 | task 119 |   graph reallocs =         36    /     6        (same size) / (changed size)
+1.25.298.379 I slot print_timing: id  0 | task 119 | draft acceptance = 0.81197 (   95 accepted /   117 generated), mean len =  3.44
+1.25.298.391 I slot print_timing: id  0 | task 119 |   MoE arena = 0.9107 (102153 hit / 112170 reaches this turn), arena 9475.0 MiB
+1.25.298.401 I slot      release: id  0 | task 119 | stop processing: n_tokens = 184, truncated = 0
