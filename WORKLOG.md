@@ -51,6 +51,73 @@ throughput win.  Re-entry conditions and the validation plan are in the `RESOLUT
 `README.md`, the 2026-10-11 `FINDINGS-offset-mechanism.md` and the 2026-10-16 revalidation kept as
 dated history; `tools/` gained `test-multiseq-runs.cpp` and `fa-config-diag.patch`).  `TODO.md` #52,
 `GREEDY-PURITY.md` §38, `README.md`.  No release, no fork-branch refresh, no container build.
+## 261019.013 (r92) -- 2-byte band arm joins the 32-column block (TODO #27); the head-512 prefill row is fixed (issue #188)
+
+**Release `v12-097cf33d9-r92`**: base `097cf33d9`, canonical tip `47c5b2dd6`, net tree
+`da55e8282512084eae8f414c911cb4515be8e5cc`, **12 blocks** (block 05 amended, no new block).
+`validate-set.sh` green (strict 12/12 on a fresh tarball, tree matches).  Two flash-attention changes,
+both in block 05, from one campaign (`wip/fa-band-2byte-row/` -> `archive/work/fa-band-2byte-row/`, TODO
+#27 closed) and one filed issue (#188).
+
+### 1. The 2-byte band arm gets the 32-column block, not a `ncols == 16` row
+
+The campaign's proposal (add a band row for `ncols == 16`, keeping `ncols1 = 2` for f16/bf16) was built
+and measured: it wins 14 % at `n_q = 1` and **loses 15 % at `n_q = 3..4`**, because a 2-column arm needs
+`ceil(n_q/2)` output tiles and every tile streams the whole KV cache.  The delivered fix is
+`ggml_cuda_fattn_band_wmma_ncols1() -> 4` for **every** K/V type plus the 2-byte band split
+`3*nsm/4 -> nsm/2`:
+
+| head 256 GQA 6, us/call | n_q 1 | n_q 4 | n_q 8 |
+|---|---|---|---|
+| f16 kv 16384 (r91 -> r92) | 106.5 -> 102.2 | 133.9 -> 105.9 | 221.1 -> 175.9 |
+| f16 kv 98304 | 760 -> 684 | 763 -> 695 | 1142 -> 823 |
+| bf16 kv 98304 | 813 -> 685 | 869 -> 696 | 1451 -> 832 |
+
+Model (27B UD-Q4_K_XL, 1 GPU): `tg128 @ d98304` f16 22.63 -> **23.28 (+2.9 %)**, bf16 21.88 ->
+**23.25 (+6.3 %)**; `tg128` at d0/d1024/d4096 flat; deep MTP (53k prompt, `draft-mtp n3`) bf16
+63.8 -> **68.3 (+7.0 %)** / f16 64.3 -> **68.4 (+6.4 %)**.  Four-axis gate (bf16, `-n 3000`, Protocol A):
+R 58.9 -> 60.7, P 72.1 -> 75.3, C 80.1 -> 80.2, K 86.2 -> 86.5, plain flat, acceptance
+0.576 / 0.799 / 0.904 / 0.992 -> 0.601 / 0.844 / 0.902 / 0.992.
+
+### 2. Issue #188: head-512 prefill was a config-row regression, not a tile-vs-MMA verdict
+
+The RDNA `(512, 512, 32)` MMA row is the **only** head-512 row the AMD dispatcher can reach
+(`switch_ncols1` forces `ncols = 32/ncols2` for `DKQ > 256`).  The 2026-09-14 RDNA prefill sweep
+replaced upstream's `128, 2, 32, 128, 128, 128, 1, true` with `256, 2, 128, 96, 16, 16, 1, true`
+(8 warps, 128 KV rows, `nbatch_V2 = 16`), which is ~1.35x **slower than the tile kernel**, so RDNA4's
+WMMA cap of 576 made every Gemma 4 global layer pay.  Retuned to 4 warps / 32 KV rows / one 128-half2
+K/V batch / combine 64 / Q in registers:
+
+| gemma-4 31B global-attn (D=512, 4 KV, 32 Q, ub 512), ms/call | r91 | tile | r92 |
+|---|---|---|---|
+| q8_0 kv 32768 | 126.1 | 92.4 | **42.3** |
+| q8_0 kv 98304 | 377.0 | 283.6 | **128.1** |
+| f16 kv 98304 | 374.2 | 250.9 | **127.9** |
+
+End to end `llama-bench pp512 -ub 512 -ctk/-ctv q8_0`: **Gemma-4-31B** d0 1133 -> 1182 (+4 %), d32768
+299 -> **583 (+95 %)**, d98304 122 -> **299 (+144 %)**; **Gemma-4-26B-A4B** +3.8 % / +96 % / +141 %;
+`tg` unchanged on both (decode for head 512 stays on the tile kernel).  The row is unreachable on
+RDNA3_0/3_5 (their WMMA caps are 256/320), so this is RDNA4-only in practice.  An upstream candidate
+(raise the RDNA4 WMMA cap; upstream's 512 row is already the fast shape) is in
+`upstream/UPSTREAM-PR-fa-512-rdna-head-cap.md`, and issue #188 is closed pointing at it.
+
+### Gates (both changes together)
+
+`FLASH_ATTN_EXT` **6391/6391 OK, 0 FAIL**; `test-logits-width-probe` W = 1..8 PASS (`maxdiff 0`) on 27B
+f16/bf16, 35B-A3B f16/bf16 and Flash-Next 2 GPU f16/bf16; greedy `plain == draft-mtp n3 == n7` on the
+27B (f16/bf16) and the 4B P=192..256 grid, and byte-identical to r91 at 200 tokens; prefill-logit 27B
+Q8_0 **0.000707 / 98.755 %** (identical to r91).  Full tables:
+`benchmarks/2026-10-19-fa-band-2byte-and-head512.md`.
+
+### Finding: the gemma4-12b prefill-logit instrument cannot gate a head-512 kernel change
+
+Against the r91 base, gemma4-12b measures **0.0957 / 90.1 %** for the new 512 row, **0.1180 / 89.1 %**
+for the pre-existing tile kernel and 0.1286 between the two, i.e. every legal head-512 implementation
+lands at 0.10-0.13 on this model while PPL is unchanged (no-FA reference 220.30, tile 223.92, r92
+224.55, r91 225.16; all inside the +/-12.0 s.e.) and 120-token greedy text is closest to the `-fa off`
+reference for r92.  The canonical instruments (27B Q8_0, Flash-Next) contain no head-512 layers, so the
+gate structurally cannot see this change.  Recorded as a measurement property of that model, not a
+threshold change; the maintainer approved the change on the PPL + reference evidence.
 
 ## 261019.011 (no release) -- rdna35 mmvq fusion: the impurity is the preempted `GLU -> MMQ down` fusion, not the fused gate/up
 

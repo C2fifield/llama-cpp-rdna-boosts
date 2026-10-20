@@ -1,0 +1,37 @@
+diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+index 296aa2b34..c0ee96d0a 100644
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -1859,7 +1859,9 @@ static __global__ void flash_attn_ext_f16(
+ #endif // __CUDA_ARCH__ == GGML_CUDA_CC_TURING
+ 
+ #if defined(AMD_WMMA_AVAILABLE)
+-    if (ncols1*ncols2 < 16 || ncols2 == 1 || DKQ > 256) {
++    // 512 is the largest head the WMMA kernel has a config row for (Gemma 4 global layers); the
++    // kernel chooser only sends it here on RDNA4, where it is ~2x the tile kernel at prefill.
++    if (ncols1*ncols2 < 16 || ncols2 == 1 || DKQ > 576) {
+         NO_DEVICE_CODE;
+         return;
+     }
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index bb34e01f3..c80f0c3e6 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -696,8 +696,16 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+         }
+     }
+ 
++    // Head 512 (Gemma 4 global layers) on RDNA4: the 512/512 WMMA config row is ~2x faster than the
++    // tile kernel at deep prefill (gfx1201, 32 Q / 4 KV heads, ub 512, q8_0 K/V: kv 98304 127 ms vs
++    // 248 ms, kv 32768 42 ms vs 82 ms).  Prefill only: at decode/verify widths a 512-wide head is
++    // memory bound, and letting n_q select a different kernel family would make decode and verify
++    // logits disagree.  RDNA3 keeps the 256 cap: there the same head measured 3.5-10 % slower than
++    // the tile kernel at deep prefill.
++    const bool wmma_head_512 = GGML_CUDA_CC_IS_RDNA4(cc) && Q->ne[0] == 512 && Q->ne[1] > 8;
++
+     // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
+-    if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
++    if ((amd_wmma_available(cc) && gqa_opt_applies && (Q->ne[0] <= 256 || wmma_head_512)) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
+             Q->ne[1] * gqa_ratio_eff > (Q->ne[0] <= 128 ? 8 : 16)) {
+         return BEST_FATTN_KERNEL_MMA_F16;
+     }

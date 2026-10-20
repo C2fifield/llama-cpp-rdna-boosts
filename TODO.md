@@ -739,6 +739,14 @@ only the **native-quantized** arm (`ncols1 = 4`).  The 2-byte f16/bf16 arm uses 
 columns, and r6 made native bf16 default-on so the arm is live.  Record:
 `archive/work/rdna4-fa-band/VERIFICATION-r21.md`, `WORKLOG.md` 2026-09-28 (r21, PR #62).
 
+**CLOSED 2026-10-19 (r92), differently than proposed.**  A `ncols == 16` row was built and measured and
+is a net loss: it wins ~14 % at `n_q = 1` and loses ~15 % at `n_q = 3..4`, because a 2-column arm needs
+`ceil(n_q/2)` output tiles and each tile streams the whole KV cache.  The 2-byte arm instead joins the
+**32-column** band block (`ncols1 = 4` for every K/V type) with its band split lowered to `nsm/2`:
+head 256 GQA 6, f16, kv 98304, `n_q` 1/4/8 = 760/763/1142 -> **684/695/823** us, bf16 813/869/1451 ->
+**685/696/832**; 27B `tg128 @ d98304` +2.9 % (f16) / +6.3 % (bf16), deep MTP +6.4 % / +7.0 %.  Folded
+into block 05; `archive/work/fa-band-2byte-row/RESOLUTION.md`.
+
 ## Documented, deliberately NOT fixed (accepted limitations — do not re-report)
 
 - **The `launch-ledger` remainder (item 5(c)) — measured, not pursued (2026-09-12 (8)).**  The small-pp

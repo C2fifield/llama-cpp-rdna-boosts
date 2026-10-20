@@ -1,8 +1,9 @@
 # `fa-band-2byte-row` — extend the RDNA4 GQA band's 64-wide K/V row to the 2-byte arm (TODO #27)
 
-**Status: OPEN (seeded 2026-10-11), small tuning follow-up.** Not part of the delivery; nothing here may be
-applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in `AGENTS.md`).
-Same item as **TODO #27**. The predecessor campaign
+**Status: CLOSED at r92 (promoted into block 05).** The plan below (add a `ncols == 16` band row) was
+measured and superseded; the delivered fix gives the 2-byte arm the 32-column band block and lowers its
+band split. See [`RESOLUTION.md`](RESOLUTION.md) for the numbers, the gates and what was not done.
+Kept as the campaign's original brief; it is no longer work in flight. Same item as **TODO #27**. The predecessor campaign
 [`archive/work/rdna4-fa-band/`](../../archive/work/rdna4-fa-band/) added the `ncols == 32` band row; its
 `VERIFICATION-r21.md` §"One factual correction" identified this as the follow-up. This directory is the
 live campaign.

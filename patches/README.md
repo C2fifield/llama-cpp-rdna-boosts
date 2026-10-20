@@ -11,6 +11,43 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r92` (2026-10-19) -- the FA band's 2-byte arm joins the 32-column block (TODO #27) and the head-512 prefill row is fixed (issue #188; block 05; no new block):**
+> canonical tip `47c5b2dd6`, net tree `da55e8282512084eae8f414c911cb4515be8e5cc`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).
+>
+> **`ggml/src/ggml-cuda/fattn-rdna.cuh`** -- *the 2-byte (f16/bf16) band arm uses the 32-column band
+> block, and its band split is `nsm/2`*.  `ggml_cuda_fattn_band_wmma_ncols1()` returned 2 for the 2-byte
+> types, so their arm compiled to `ncols = 16` and matched no band row (it kept the pre-band 128-half2
+> config).  Adding a `ncols == 16` row was measured first and is a net loss (14 % faster at `n_q = 1`,
+> **15 % slower at `n_q = 3..4`**: a 2-column arm needs `ceil(n_q/2)` output tiles and every tile streams
+> the whole KV cache).  The arm now takes the same 32-column row as the quantized arm, which needs
+> `ncols1 = 4` for all widths -- the value is part of the width-purity contract (`W = 1..8` one config),
+> not a per-width choice -- and the 2-byte split drops from `3*nsm/4` to `nsm/2` (P 16 beats 24/32 at kv
+> 16384..51200, within noise at 98304).  Head 256 GQA 6, f16, kv 98304, `n_q` 1/4/8 = 760/763/1142 ->
+> **684/695/823** us (bf16 813/869/1451 -> 685/696/832); 27B `tg128 @ d98304` +2.9 % (f16) / +6.3 %
+> (bf16), deep MTP +6.4 % / +7.0 %, four-axis R/P/C/K 58.9/72.1/80.1/86.2 -> 60.7/75.3/80.2/86.5 t/s.
+> The quantized arm is unchanged.  `GGML_HIP_FA_BAND_WMMA=2` still forces the old 2-column arm for A/B.
+>
+> **`ggml/src/ggml-cuda/fattn-mma-f16.cuh`** -- *the RDNA `(512, 512, 32)` MMA row goes back to a
+> 4-warp shape*.  That row is the only head-512 row the AMD dispatcher can reach
+> (`switch_ncols1` forces `ncols = 32/ncols2` for `DKQ > 256`), and the 2026-09-14 RDNA prefill sweep had
+> replaced upstream's `128, 2, 32, 128, 128, 128, 1, true` with `256, 2, 128, 96, 16, 16, 1, true` --
+> ~1.35x **slower than the tile kernel**, so RDNA4's WMMA cap of 576 made every Gemma 4 global layer pay
+> (issue #188).  Retuned to 4 warps / 32 KV rows / one 128-half2 K/V batch / combine 64 / Q in registers:
+> the Gemma 4 31B global-attn shape (D=512, 4 KV heads, 32 Q heads, ub 512, q8_0 KV) goes 32768
+> 126.1 -> **42.3** ms and 98304 377.0 -> **128.1** ms (tile: 92.4 / 283.6), and end-to-end `pp512` is
+> **+95 % at d32768 / +144 % at d98304** on Gemma-4-31B and 26B-A4B (`tg` flat; head-512 decode stays on
+> the tile kernel).  Unreachable on RDNA3_0/3_5 (caps 256/320), so it is RDNA4-only in practice; an
+> upstream candidate (raise the RDNA4 cap, upstream's row is already the fast shape) is in
+> `../upstream/UPSTREAM-PR-fa-512-rdna-head-cap.md`.
+>
+> **Gates (both):** `FLASH_ATTN_EXT` 6391/6391 OK; `test-logits-width-probe` W = 1..8 PASS (27B, 35B-A3B,
+> Flash-Next; f16 and bf16); `plain == draft-mtp n3/n7` on the 27B and the 4B P-grid; prefill-logit 27B
+> Q8_0 **0.000707 / 98.755 %** (identical to r91).  Two findings are recorded: the `ncols == 16` row is
+> not shipped (superseded), and the gemma4-12b prefill-logit arm cannot gate a head-512 kernel change
+> (every legal head-512 implementation differs by 0.10-0.13 KLD there while PPL is unchanged) --
+> `../benchmarks/2026-10-19-fa-band-2byte-and-head512.md`, `../archive/work/fa-band-2byte-row/RESOLUTION.md`.
+>
 > **Current release `v12-097cf33d9-r91` (2026-10-19) -- the rollback-boundary campaign closed (blocks 03/09/10; no new block):**
 > canonical tip `45f817cc3`, net tree `90507dfb528cbfe0c688261226d18934653b1b61`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).  Two WIP campaigns promoted, one patch

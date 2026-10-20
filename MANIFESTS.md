@@ -5,9 +5,18 @@ work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
 The **current delivery (V2.0)** is a **12-block set** (block 00 + blocks 01-11) against upstream master
-**`097cf33d9`**, released as **`v12-097cf33d9-r91`** (canonical tip `45f817cc3`, net tree
-`90507dfb528cbfe0c688261226d18934653b1b61`): strict **12/12** `git am` (`scripts/validate-set.sh`
-green on a fresh tarball), whitespace-clean.  r91 **closes the rollback-boundary campaign** (blocks 03/09/10,
+**`097cf33d9`**, released as **`v12-097cf33d9-r92`** (canonical tip `47c5b2dd6`, net tree
+`da55e8282512084eae8f414c911cb4515be8e5cc`): strict **12/12** `git am` (`scripts/validate-set.sh`
+green on a fresh tarball), whitespace-clean.  r92 **amends block 05** for two flash-attention items: the
+2-byte (f16/bf16) band arm stops special-casing `ncols1 = 2` and joins the 32-column band block with its
+band split lowered to `nsm/2` (TODO #27; the `ncols == 16` row was built, measured and rejected -- f16 kv
+98304 `n_q` 1/4/8 760/763/1142 -> 684/695/823 us, 27B `tg128 @ d98304` +2.9 % f16 / +6.3 % bf16, deep MTP
++6.4 % / +7.0 %), and the RDNA `(512, 512, 32)` MMA row is retuned back to a 4-warp shape, which restores
+head-512 prefill on RDNA4 (issue #188: Gemma-4-31B/26B-A4B `pp512` +95 % at d32768 and +144 % at d98304,
+decode flat; the row is the only head-512 row the AMD dispatcher reaches).  Gates: `FLASH_ATTN_EXT`
+6391/6391, `test-logits-width-probe` W = 1..8 PASS on 27B / 35B-A3B / Flash-Next (f16 + bf16),
+`plain == draft-mtp` n3/n7, prefill-logit 27B Q8_0 0.000707 / 98.755 %.  r91 **closes the rollback-boundary
+campaign** (blocks 03/09/10,
 no new block): the per-sequence recurrent rollback tracker now folds **every** ubatch of a prepare list in
 (block 03 -- the issue-#131 warning was a stale entry, reproduced on gfx1201 as 1 warning and gone with the
 fix, text identical), the chunked GDN prefill writes its rollback snapshots via a fixed-`D` sequential tail

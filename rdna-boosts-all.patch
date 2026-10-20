@@ -13107,7 +13107,7 @@ index 41d948335..4d4a47652 100644
              const int total_work = ntiles_KV * ntiles_dst;
  
 diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 296aa2b34..99ce513ff 100644
+index 296aa2b34..bccf264fa 100644
 --- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 +++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 @@ -127,7 +127,27 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co
@@ -13163,7 +13163,7 @@ index 296aa2b34..99ce513ff 100644
 -    GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 16, 128, 3,  64,  96,  64, 128, 1, true);
 -    GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 32, 128, 2,  32, 128, 128, 128, 1, true);
 +    GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 16, 128, 2,  64,  96,  16,  16, 1, true);
-+    GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 32, 256, 2, 128,  96,  16,  16, 1, true);
++    GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 32, 128, 2,  32, 128, 128,  64, 1, true);
      GGML_CUDA_FATTN_MMA_CONFIG_CASE(512, 512, 64, 128, 2,  32, 128, 128, 128, 1, true);
  
      GGML_CUDA_FATTN_MMA_CONFIG_CASE(576, 512,  8, 128, 3,  64,  96,  64, 128, 1, true);
@@ -15863,10 +15863,10 @@ index 000000000..e17d4bf60
 +}
 diff --git a/ggml/src/ggml-cuda/fattn-rdna.cuh b/ggml/src/ggml-cuda/fattn-rdna.cuh
 new file mode 100644
-index 000000000..dbcd0a3f5
+index 000000000..818c30451
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fattn-rdna.cuh
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,435 @@
 +// RDNA/ROCm flash-attention predicates: the native-KV staging policy and selectors, and
 +// the RDNA4 decode/verify band (WMMA) helpers.  Split out of fattn-common.cuh (an upstream
 +// hub) so an upstream re-base collides with the predicate call points, not their bodies.
@@ -16170,12 +16170,16 @@ index 000000000..dbcd0a3f5
 +// (see there), so n_q = 1 and every verify width reduce identically (GREEDY-PURITY band invariant).
 +// GGML_HIP_FA_BAND_WMMA=0 disables the band, 2/4 force ncols1 (any other non-zero value means 4).
 +//
-+// The band's ncols1: the wide 4-column tile is the verify-width optimum for the native-quantized
-+// K/V types, whose dequantization dominates and hides the columns an n_q = 1 decode leaves unused.
-+// The 2-byte types (f16, and bf16 when its native arm is on) have no dequantization, so those
-+// unused columns are a much larger fraction of the n_q = 1 cost: measured on gfx1201 (head 256,
-+// GQA 6, kv 102400) the 2-column tile is 747 us at n_q = 1 vs 967 for 4 columns (and 861 vs 970 at
-+// n_q = 4) while the verify widths stay within noise.
++// The band's ncols1 is 4 for every K/V type and every query width: a single 32-column block per
++// output tile.  It is not a per-width choice, because ncols1 is part of the width-purity contract
++// (one kernel config for n_q = 1..8, GREEDY-PURITY.md §36), and with the band's 64-half2 K/V row the
++// narrower tile only wins where a wider block is mostly empty.  Measured on gfx1201 (head 256,
++// GQA 6, kv 98304, f16 KV, us per call, band split nsm/2): ncols1 2 / 4 gives 683 / 686 at n_q = 1
++// and 979 / 824 at n_q = 8, while at kv 16384 it is 98 / 102 at n_q = 1 and 204 / 175 at n_q = 8.
++// The 2-column tile was the right default while the 2-byte arm still selected the old 128-half2
++// config row (747 vs 967 us at n_q = 1, kv 102400); TODO #27 gave that arm the band's 64-half2 row,
++// after which the extra output tiles (ceil(n_q/2) instead of ceil(n_q/4), each streaming the whole
++// KV cache) dominate at every verify width.
 +static inline int ggml_cuda_fattn_band_wmma_ncols1_env() {
 +    static const int v = []() {
 +        const char * env = getenv("GGML_HIP_FA_BAND_WMMA");
@@ -16214,19 +16218,21 @@ index 000000000..dbcd0a3f5
 +}
 +
 +static inline int ggml_cuda_fattn_band_wmma_ncols1(const ggml_tensor * dst) {
++    GGML_UNUSED(dst);
 +    const int v = ggml_cuda_fattn_band_wmma_ncols1_env();
 +    if (v > 0) {
 +        return v == 2 ? 2 : 4;
 +    }
-+    return ggml_cuda_fattn_band_wmma_two_byte(dst) ? 2 : 4;
++    return 4;
 +}
 +
 +// Blocks per output tile in the band (the interleave period P, see launch_fattn).  0 = one block per
 +// CU (nsm); GGML_HIP_FA_BAND_WMMA_SPLIT overrides it for tuning.  Whatever the source, it must not
 +// depend on n_q or on the KV length, or decode and verify would split differently.  The 2-byte types
-+// do less work per KV iteration, so the P partials' fixup is a larger fraction of their cost; a
-+// smaller P measured best for them on gfx1201 (nsm 32) across 16k..200k, while the quantized types
-+// keep nsm.  Expressed as a fraction of nsm so a smaller RDNA4 part scales down with it.
++// do less work per KV iteration, so the P partials' fixup is a larger fraction of their cost; half of
++// nsm measured best for them on gfx1201 (nsm 32: P 16 beats 24/32 by 6-8 % at kv 16384-51200 and is
++// within noise at 98304, for n_q = 1..8), while the quantized types keep nsm.  Expressed as a
++// fraction of nsm so a smaller RDNA4 part scales down with it.
 +static inline int ggml_cuda_fattn_band_wmma_split(const ggml_tensor * dst) {
 +    static const int env_split = []() {
 +        const char * env = getenv("GGML_HIP_FA_BAND_WMMA_SPLIT");
@@ -16240,7 +16246,7 @@ index 000000000..dbcd0a3f5
 +        return 0;
 +    }
 +    const int nsm = ggml_cuda_info().devices[ggml_cuda_get_device()].nsm;
-+    return std::max(2, (3*nsm)/4);
++    return std::max(2, nsm/2);
 +}
 +
 +// Self-contained band predicate shared by the kernel chooser, the ncols dispatcher and launch_fattn,
