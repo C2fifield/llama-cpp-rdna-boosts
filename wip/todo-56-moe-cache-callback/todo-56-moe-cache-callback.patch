@@ -1,0 +1,234 @@
+From 39f1e0b93895c85ea1daa3af3cb99153c3d5decf Mon Sep 17 00:00:00 2001
+From: Stew Forster <stew675@gmail.com>
+Date: Tue, 20 Oct 2026 16:52:22 -0500
+Subject: [PATCH] todo56: the scheduler must invoke the copy callback (upstream
+ MoE cache slot map)
+
+`--moe-cache-mib` (the upstream `llama_moe_cache`) was unusable on every delivery
+block from block 09 on: `test-llama-archs -a deepseek2`'s `MoE cache` row either
+faulted the GPU or returned a wrong result (NMSE 4.02e-03 on gfx1201), and a real
+35B-A3B `-ncmoe 40 --moe-cache-mib 3072` decode faulted in
+`mul_mat_vec_q_moe<Q5_K, 2, false>`.  This is TODO #56.
+
+Root cause: the delivery rewrote `ggml_backend_sched_copy_input` for its own
+host-expert paths (staging ring / expert cache / per-op offload / slab) and the
+rewrite never calls `sched->callback_copy`.  That callback is how the upstream
+cache is driven: `llama_context::sched_copy_experts` -> `llama_moe_cache::copy()`
+plans the LRU slots, uploads the missing experts into the bank and writes the
+*slot map*.  Starved of the call, the slot map is never written and stays 0xff
+(-1) over the whole tensor, while `build_moe_cache_slots` has already replaced
+the op's `src0` with the bank view and its ids with `GET_ROWS(slot_map, ids)`.
+The routed `MUL_MAT_ID` then indexes the bank with -1: one expert *below* the
+bank.  Where that address is mapped the result is silently wrong (gfx1201
+default arm), where it is not it is an HSA page fault (gfx1151; gfx1201 with
+GGML_CUDA_ASYNC_INPUT=0).  Traced with a temporary print in
+`ggml_cuda_mul_mat_vec_f`: the failing op read
+`ids=ffn_moe_slots-1 ... idmin=-1 idmax=-1` against
+`src0=moe_cache.blk.1.ffn_down_exps.weight ne[2]=4`.
+
+Fix:
+* `ggml_backend_sched_copy_input`: restore the base
+  `callback_copy(+host weight)` call, at the base position (after the
+  wait-before-overwrite) and in the branch that has no `MUL_MAT_ID` consumer --
+  the upstream slot map is read by a `GET_ROWS`, so it lands there.  The
+  delivery's expert branch (device gather / cache take-over / pruning) is
+  untouched, so no host expert table can reach the callback and its hot path is
+  unchanged.
+* `llama_context::sched_copy_experts`: keep only the upstream-cache branch and
+  delete the per-op staging/pruning copy that has been dead code since the
+  scheduler took that over (and which would double-stage every host expert
+  table if it ever ran again, now that the callback is wired).
+
+Consequence to record: with the callback live, the upstream cache's
+large-batch `copy_experts()` arm (device-bank hits copied into the staging
+buffer) is still not reached, because the delivery's scheduler owns that
+pruning.  Values are identical either way (the bank holds the same expert
+bytes), so this is a missing upstream optimisation on a path the delivery
+serves with its own cache, not a correctness gap.
+
+Validation (gfx1151, Strix Halo, ROCm 10.1.0):
+* `test-llama-archs -s 42`: 375/375 (was 373/375; `deepseek2` 5/7 -> 7/7 rows,
+  `MoE cache` 2.10e-10 = the upstream base value).  Same with
+  GGML_CUDA_ASYNC_INPUT=0.
+* Real model, 35B-A3B Q4_K_M `-ncmoe 40`: greedy text byte-identical to the
+  pre-fix build, tg 61.5 vs 61.4 t/s, pp 143.5 vs 144.0 t/s (no delta).
+  Pre-fix, the same command plus `--moe-cache-mib 3072` was a GPU fault.
+* Post-fix `--moe-cache-mib 3072` on that model: correct and coherent, 62.08 %
+  hit rate (7343 hits / 4485 misses); prefill unchanged (1805 vs 1831 t/s on a
+  16 KB prompt) but decode 50.1 -> 37.8 t/s, i.e. the upstream engine's
+  per-cached-layer host synchronisation.  `--moe-cache-mib` therefore stays a
+  working-but-not-recommended path; the delivery's own MOE_EXPERT_CACHE_MIB
+  engine is the one to use.
+---
+ ggml/src/ggml-backend.cpp | 13 ++++++
+ src/llama-context.cpp     | 89 +++------------------------------------
+ src/llama-context.h       | 15 -------
+ 3 files changed, 20 insertions(+), 97 deletions(-)
+
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 7c40344e5..4465bd3d8 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -2933,6 +2933,19 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+             copy_experts(first_id, last_id);
+         } else {
+             wait_before_overwrite();
++            // upstream `llama_moe_cache` (`--moe-cache-mib`): its slot map is a host weight that a
++            // GET_ROWS reads, so it lands here (it has no MUL_MAT_ID consumer).  The copy callback
++            // plans the slots, uploads the missing experts and fills the slot map.  Without this
++            // call the map is never written (it stays 0xff = -1 over the whole tensor) and the
++            // cached layer's MUL_MAT_ID indexes the expert bank with -1, i.e. reads one expert
++            // below the bank: a silent wrong result where that address is mapped (gfx1201, mean
++            // NMSE 4.02e-03 on test-llama-archs' `MoE cache` row) and a GPU memory fault where it
++            // is not (gfx1151, async-input off).  The delivery's own host-expert staging/pruning
++            // above owns every expert table, so the callback only ever answers for the slot map.
++            if (sched->callback_copy != NULL && ggml_backend_sched_is_host_weight(input) &&
++                sched->callback_copy(split_backend, input, input_cpy, &split->graph, sched->callback_copy_user_data)) {
++                return;
++            }
+             // A device-to-device input copy runs on the SOURCE backend's stream (cuda cpy_tensor_async), so it is
+             // not ordered after work already queued on the split backend - including an outbound copy of an
+             // earlier split's output, issued on this backend's stream AFTER that split's event was recorded.  With
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index ee231898e..deea3fc3b 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3717,8 +3717,6 @@ ggml_status llama_context::graph_compute(
+         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+     }
+ 
+-    copy_experts.reset();
+-
+     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+@@ -3732,85 +3730,13 @@ ggml_status llama_context::graph_compute(
+ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data) {
+     auto * lctx = static_cast<llama_context *>(user_data);
+ 
+-    // the slot maps of the MoE cache
+-    if (lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph)) {
+-        return true;
+-    }
+-
+-    auto & st = lctx->copy_experts;
+-
+-    // the ids must be computed before the split starts, so only the first node of the split is considered
+-    if (ggml_graph_n_nodes(graph) == 0) {
+-        return false;
+-    }
+-    const ggml_tensor * node = ggml_graph_node(graph, 0);
+-    if (node->op != GGML_OP_MUL_MAT_ID || node->src[0] != dst) {
+-        return false;
+-    }
+-
+-    const ggml_tensor * ids = node->src[2];
+-    if (ggml_nelements(ids) == 0) {
+-        return true;
+-    }
+-
+-    const int64_t n_expert    = src->ne[2];
+-    const size_t  expert_size = src->nb[2];
+-
+-    if (ids != st.ids || (int64_t) st.used.size() != n_expert) {
+-        st.ids_data.resize(ggml_nbytes(ids)/sizeof(int32_t));
+-        ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
+-        ggml_backend_synchronize(backend);
+-
+-        st.used.assign(n_expert, false);
+-        for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
+-            for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
+-                const int32_t id = st.ids_data[i1*ids->nb[1]/sizeof(int32_t) + i0*ids->nb[0]/sizeof(int32_t)];
+-                GGML_ASSERT(id >= 0 && id < n_expert);
+-                st.used[id] = true;
+-            }
+-        }
+-
+-        st.ids = ids;
+-    }
+-
+-    // group consecutive experts and copy them together
+-    for (int64_t first = 0; first < n_expert; ) {
+-        if (!st.used[first]) {
+-            first++;
+-            continue;
+-        }
+-        int64_t last = first;
+-        while (last + 1 < n_expert && st.used[last + 1]) {
+-            last++;
+-        }
+-
+-        // the experts in the MoE cache are copied from device memory, the others are uploaded
+-        int64_t next = first;
+-        for (int64_t e = first; e <= last && lctx->moe_cache; ) {
+-            const int64_t n = lctx->moe_cache->copy_experts(backend, src, dst, e, last);
+-            if (n == 0) {
+-                e++;
+-                continue;
+-            }
+-            if (next < e) {
+-                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
+-            }
+-            e   += n;
+-            next = e;
+-        }
+-
+-        // copy a bit extra to ensure there are no NaNs in the padding of the last expert, this is necessary for MMQ in the CUDA backend
+-        const size_t offset  = next*expert_size;
+-        const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
+-        const size_t size    = (last + 1 - next)*expert_size + padding;
+-        if (size > 0) {
+-            ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, size);
+-        }
+-
+-        first = last + 1;
+-    }
+-
+-    return true;
++    // The slot maps of the upstream `llama_moe_cache` (`--moe-cache-mib`): plan the slots, upload
++    // the missing experts and fill the slot map, so the GET_ROWS that follows reads fresh slot ids.
++    // This is the ONLY thing this callback answers for.  The used-expert staging and pruning of
++    // the delivery's own host-expert paths (op-offload / expert cache / slab) lives in the
++    // scheduler (`ggml_backend_sched_copy_input`), which is the sole owner of that machinery --
++    // keeping a second copy of it here would double-stage every host expert table.
++    return lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph);
+ }
+ 
+ llm_graph_cb llama_context::graph_get_cb() const {
+@@ -5096,7 +5022,6 @@ void llama_context::opt_epoch_iter(
+                     ggml_backend_tensor_set(labels, &onef, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
+                 }
+             }
+-            copy_experts.reset();
+             ggml_opt_eval(opt_ctx, result);
+             if (callback) {
+                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 6f73f67aa..e0da0a94f 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -423,21 +423,6 @@ private:
+ 
+     bool sched_need_reserve = true;
+ 
+-    // state of sched_copy_experts, reset before each graph compute
+-    struct copy_experts_info {
+-        const ggml_tensor *  ids = nullptr;
+-        std::vector<int32_t> ids_data;
+-        std::vector<bool>    used;
+-
+-        void reset() {
+-            ids = nullptr;
+-            ids_data.clear();
+-            used.clear();
+-        }
+-    };
+-
+-    copy_experts_info copy_experts;
+-
+     // graph reallocations during inference where the backend assignments did not change, split by whether the
+     // graph size is the same as the previously scheduled one (unexpected) or different
+     int32_t n_reallocs_same = 0;
+-- 
+2.56.0
+
