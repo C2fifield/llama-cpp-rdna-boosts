@@ -29,7 +29,8 @@
 #   --build-dir NAME BUILD_DIR   build directory, relative to REPO (default
 #                                build-per-block)
 #   --jobs N         JOBS        build parallelism (default 16)
-#   --rocm DIR       ROCM_714    ROCm install (default /opt/rocm-7.14.1-gfx120X)
+#   --rocm DIR       ROCM_DIR    ROCm install (default /opt/rocm-10.1.0-gfx120X;
+#                                ROCM_714 is still honoured as an env alias)
 #   --gpu-target T   GPU_TARGETS (default gfx1201)
 #   --keep-going                 continue past the first failure (default: stop)
 #   --changed-from REV           only build commits in BASE..TIP whose own delta
@@ -51,7 +52,7 @@ MANIFEST="$REPO_DIR/release.json"
 REPO="${LLAMA_REPO:-$HOME/llama.cpp}"
 BUILD_DIR="build-per-block"
 JOBS="${JOBS:-16}"
-ROCM_714="${ROCM_714:-/opt/rocm-7.14.1-gfx120X}"
+ROCM_DIR="${ROCM_DIR:-${ROCM_714:-/opt/rocm-10.1.0-gfx120X}}"
 GPU_TARGETS="${GPU_TARGETS:-gfx1201}"
 KEEP_GOING=0
 LIST_ONLY=0
@@ -68,7 +69,7 @@ while [ $# -gt 0 ]; do
         --tip)        TIP="$2"; shift 2 ;;
         --build-dir)  BUILD_DIR="$2"; shift 2 ;;
         --jobs)       JOBS="$2"; shift 2 ;;
-        --rocm)       ROCM_714="$2"; shift 2 ;;
+        --rocm)       ROCM_DIR="$2"; shift 2 ;;
         --gpu-target) GPU_TARGETS="$2"; shift 2 ;;
         --keep-going) KEEP_GOING=1; shift ;;
         --changed-from) CHANGED_FROM="$2"; shift 2 ;;
@@ -86,7 +87,17 @@ if [ -z "$BASE" ] || [ -z "$TIP" ]; then
 fi
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "ERROR: $REPO is not a git checkout" >&2; exit 2; }
 case "$BUILD_DIR" in /*|..*|*..) echo "ERROR: --build-dir must be a plain relative path" >&2; exit 2 ;; esac
-[ -d "$ROCM_714" ] || { echo "ERROR: ROCm install not found: $ROCM_714" >&2; exit 2; }
+[ -d "$ROCM_DIR" ] || { echo "ERROR: ROCm install not found: $ROCM_DIR" >&2; exit 2; }
+
+# Put THIS tree's headers in front of /usr/include, where Fedora keeps a complete ROCm 7.1.x install.
+# clang injects its own --hip-path/include AFTER /usr/include, so without this <hip/...>,
+# <hipblas/...> and <rocblas/...> resolve to the distro headers while we link this tree's libraries.
+# On ROCm 10.1 that is fatal (clang 24 no longer declares the __ocml_* intrinsics 7.1's
+# amd_hip_bf16.h calls, so every TU including <hip/hip_bf16.h> fails); on 7.14 it silently compiled
+# the distro headers and produced a binary no gate could tell apart.  A joined -isystem<path> takes
+# no separate argument, so CMake >= 4.3 cannot swallow it when it appends --cuda-host-only.
+# (Same rule and same guard as ~/bin/build-llama-rocm; do not pass a bare -mllvm here.)
+ISYSTEM="-isystem$ROCM_DIR/include"
 
 command -v git >/dev/null || { echo "ERROR: git is required" >&2; exit 2; }
 git -C "$REPO" cat-file -e "$BASE^{commit}" 2>/dev/null || { echo "ERROR: base $BASE not in $REPO" >&2; exit 2; }
@@ -156,20 +167,28 @@ for c in "${selected[@]}"; do
     git -C "$REPO" checkout -q "$c" || { echo "    CHECKOUT FAILED"; failed=$((failed+1)); fail_list+=("$c checkout"); [ "$KEEP_GOING" = 0 ] && break; continue; }
 
     rm -rf "$REPO/$BUILD_DIR"
-    if ! HIPCXX="$ROCM_714/lib/llvm/bin/clang" HIP_PATH="$ROCM_714" \
+    if ! HIPCXX="$ROCM_DIR/lib/llvm/bin/clang" HIP_PATH="$ROCM_DIR" \
         cmake -S "$REPO" -B "$REPO/$BUILD_DIR" \
             -DGGML_RPC=1 -DGGML_HIP=ON -DGGML_NATIVE=1 -DGGML_HIP_RCCL=1 \
             -DHIP_PLATFORM=amd -DGGML_HIP_GRAPHS=ON -DGPU_TARGETS="$GPU_TARGETS" \
-            -DCMAKE_C_COMPILER="$ROCM_714/lib/llvm/bin/clang" \
+            -DCMAKE_C_COMPILER="$ROCM_DIR/lib/llvm/bin/clang" \
             -DAMDGPU_TARGETS="$GPU_TARGETS" -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER="$ROCM_714/lib/llvm/bin/clang++" \
-            -DCMAKE_INSTALL_RPATH="\$ORIGIN:$ROCM_714/lib" \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_HIP_FLAGS= \
+            -DCMAKE_CXX_COMPILER="$ROCM_DIR/lib/llvm/bin/clang++" \
+            -DCMAKE_INSTALL_RPATH="\$ORIGIN:$ROCM_DIR/lib" \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_HIP_FLAGS="$ISYSTEM" \
             "${CCACHE_LAUNCHERS[@]}" \
             > "$LOG_DIR/${total}.configure.log" 2>&1; then
         echo "    CONFIGURE FAILED (log: $LOG_DIR/${total}.configure.log)"
         tail -5 "$LOG_DIR/${total}.configure.log" | sed 's/^/      /'
         failed=$((failed+1)); fail_list+=("$c configure")
+        [ "$KEEP_GOING" = 0 ] && break
+        continue
+    fi
+    # Include-order guard: the flag must reach the HIP compile line (a re-edited CMAKE_HIP_FLAGS, a
+    # CMake change appending after it, or a build dir reused from another ROCm tree all break it).
+    if ! grep -qF -- "$ISYSTEM" "$REPO/$BUILD_DIR/ggml/src/ggml-hip/CMakeFiles/ggml-hip.dir/flags.make" 2>/dev/null; then
+        echo "    CONFIGURE LOST $ISYSTEM (HIP headers would resolve from /usr/include)"
+        failed=$((failed+1)); fail_list+=("$c include-order")
         [ "$KEEP_GOING" = 0 ] && break
         continue
     fi
