@@ -1,5 +1,100 @@
 # WORKLOG - dated delivery records
 
+## 261020.007 (r96) -- sched-moe-dup-consumer + state-read-batch promoted (PR #186 + PR #189), and the `-sm layer` MTP corruption they fix
+
+**Release `v12-097cf33d9-r96`**: base `097cf33d9`, canonical tip `2fc3b2f53`, net tree
+`cad83cc3af1b1a678d743926470764ab4fd198b3`, **12 blocks**.  Blocks 09 and 11 amended, no new block.
+Both PRs are from `@briansp2020` and were cut against r89/r91; both are commented with the release and the
+verification below, then closed.
+
+**What landed.**
+
+* **Block 09, PR #186 (`wip/sched-moe-dup-consumer`).**  In `ggml_backend_sched_split_graph`, a
+  cache-managed routed op whose expert weights are already an input of the current split now starts a split
+  of its own, so the existing re-registration path stages them again for that consumer's own routing.
+  qwen4exp's last layer has two `MUL_MAT_ID` consumers of one table (the gathered logits tail and the
+  full-row MTP export tail), and with both in one split neither can be served by the expert cache, so the
+  scheduler's guarded fast paths decline.  `GGML_SCHED_MOE_DUP_SPLIT=0` restores the merged split (new,
+  default-on; A/B and bisection only).  `Fold (r96, PR #186)` note at the site.
+* **Block 09, PR #189 (meta half).**  `ggml_backend_meta_get_tensor_async` now shares the synchronous read's
+  split arithmetic (it no longer asserts `offset == 0` and one segment), so a caller can queue an arbitrary
+  row range across the simple backends and synchronize once.  Calls that worked before issue the same copies.
+* **Block 11, PR #189 (context half).**  `llama_io_write_host` queues its deferred state-save reads as
+  `ggml_backend_tensor_get_async` into one pinned staging buffer kept by the context (`state_stage`), then
+  synchronizes each backend once and copies to the caller's buffer.  `LLAMA_STATE_ASYNC=0` restores the
+  synchronous path; `LLAMA_STATE_ASYNC_MAX_MIB` (default **256**) bounds the state that takes it, so a
+  whole-slot save never pins gigabytes.  Restores are unchanged.  The staging buffer is retained per
+  context (16 MiB granular, bounded by the cap) and is one buffer per context, so state saves on one
+  context must not run concurrently; both are recorded in `ENVIRONMENT.md` and in the code.
+* **The patch as submitted does not compile on this tree**: `llama_state_sync_all` uses `std::find` and
+  `src/llama-context.cpp` has no `#include <algorithm>` (`no member named 'find' in namespace 'std'`).
+  The include is added in the fold (block 11) and was reported back on the PR.
+
+**Fold.**  `git blame` on the pre-fold 12-block tip confirmed ownership: `ggml-backend.cpp` (split) and
+`ggml-backend-meta.cpp` (async read) -> block 09, `src/llama-context.cpp/.h` -> block 11.  Blocks 00-08 came
+out as **identical commit objects** (their patch bodies are byte-identical; only the `From <sha>` line
+changes because the chain is re-cut), and the pre-fold tree (`r95 + both PRs + the include`) and the folded
+tree are both `cad83cc3af1b1a678d743926470764ab4fd198b3`.  Regenerated with `make-patches.sh` +
+`make-release.sh`; `validate-set.sh` green (checksums, strict 12/12 `git am` on a fresh tarball, applied tree
+`cad83cc3`); `gate-per-block-build.sh` **12/12, 0 failed**.
+
+**The finding: #186 also fixes a pre-existing r95 correctness bug.**  On r95, `-sm layer` + `--ncmoe` +
+`draft-mtp` on a qwen4exp model intermittently emits text that is not greedy pure, with 0.00000 draft
+acceptance: the merged split's second consumer reads the expert-cache arena slots staged for the *first*
+consumer's routing.  Flash-Next GSQ-IQ3_XXS + the shared Q8_0 MTP head, 2 GPU, `-sm layer -ncmoe 10`,
+`-n 48`, seed 42, temp 0:
+
+| arm | text | acceptance |
+|---|---|---|
+| plain decode (`--spec-type none`) | 172 chars `de61b9b1bed7` (the truth) | n/a |
+| r95 + `draft-mtp`, 6 natural runs | 5x `de61b9b1bed7`, 1x `a2b6c01a0a19` (223 chars) | `0.00000` on the bad run |
+| r95 + #186, 6 runs | 6x `de61b9b1bed7` | healthy |
+| r96, 6 runs | 6x `de61b9b1bed7` | healthy |
+
+Pinning one captured **heat-map** state reproduces the bad output 2/2 (so the flip is persisted state, not
+run-to-run noise); `MOE_EXPERT_CACHE_MIB=0` restores purity, while `GGML_SCHED_DEVGATHER=0`,
+`GGML_SCHED_STAGE=0` and `GGML_SCHED_STAGE_MIN_TOKENS=999999` do not.  On r96 the same pinned state gives
+`de61b9b1bed7`, and `GGML_SCHED_MOE_DUP_SPLIT=0` reproduces `a2b6c01a0a19` exactly, which confirms both the
+cause and the switch.  `-sm tensor` is immune (no cache gather on the meta backend) and 35B-A3B is immune
+(one consumer).  No TODO item: the bug is fixed by this release.  Invariant, numbers and why the existing
+gates could not see it: `GREEDY-PURITY.md` §43.
+
+**Claim verification (gfx1201, 3x R9700, ROCm 10.1.0, 2 GPU `-sm tensor -ncmoe 10`, prompt cache on).**
+Client TTFT, 4-turn chat, 10 rounds per arm, median (spread ~5 ms):
+
+| turn | r95 | r96 | r96 `LLAMA_STATE_ASYNC=0` (= #186 only) |
+|---|---|---|---|
+| 0 (cache warm) | 238 ms | **119 ms (-50 %)** | 155 ms |
+| 1 (~34 new tokens) | 656 ms | **393 ms (-40 %)** | 458 ms |
+| 2 (~28 new tokens) | 644 ms | **283 ms (-56 %)** | 350 ms |
+| 3 (~3.2k new tokens) | 2200 ms | **1938 ms (-12 %)** | 2018 ms |
+
+So #186 is 65-67 ms of turns 1-2 and #189 is another 65-67 ms, isolated by the same-binary kill switch
+(a separate #186-only build agrees with the `LLAMA_STATE_ASYNC=0` arm to 0.4 ms).  Both PRs understate their
+win on this host, which is consistent with a PCIe 5.0 x4 uplink: #186 avoids a 1062 MiB table copy per
+affected prompt chunk.  The controls close the loop: r96 with **both** switches off
+(`LLAMA_STATE_ASYNC=0 GGML_SCHED_MOE_DUP_SPLIT=0`) is 243/657/652/2206 ms, i.e. r95 (238/656/644/2200) within
+noise, so both features are genuinely default-on and the two kill switches restore r95 exactly.  No
+regression: a 4200-token prefill 3211.6 -> 3012.5 ms, Flash-Next decode
+101.7 -> 102.1 t/s, 35B-A3B `-sm layer` 30.0 -> 77.6 t/s on the fixed path (the r95 number was the 0 %
+acceptance run).
+
+**Release gates.**  Coherence 4B Q8_0 3 GPU `1c5d32ac537d` (r95 == r96).  Flash-Next + MTP, `-sm tensor
+-ncmoe 10`: prose400 `ee262db5a7e6`, code400 `1f661d931013` (both == r95).  35B-A3B Q4_K_M `-ncmoe 40`
+`-sm tensor` and `-sm layer` `4ac3a523160f` (== r95).  Four-axis adaptive-MTP gate, `-n 3000`, reasoning
+pinned, r95 vs r96: **R 56.0/56.0, P 74.5/74.6, C 78.9/78.8, K 86.5/86.6 t/s**, acceptance identical to five
+decimals (0.51169 / 0.81835 / 0.87068 / 0.99200), and `draft-mtp-adaptive` beats plain decode on every axis
+(plain 30.5-31.3 t/s).  `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` on 27B UD-IQ3_S, 3 interleaved
+rounds: **B=1 37.04/37.03, B=4 118.7/118.7, B=8 164.9/165.1 t/s** (r95/r96; round 1 is a cold first run in
+both arms and is excluded).  `gate-prefill-logits.sh`: mean KLD **0.000707**, same-top-p **98.755 %**
+(identical to r94/r95).  `test-backend-ops -b ROCm0 -o RMS_NORM,ADD,MUL_MAT,CPY,CONCAT,SSM_CONV`
+**3130/3130**.  `check-gpu-faults.sh` over every r96 log plus the kernel journal: clean.  `.github`
+workflows unchanged.
+
+**Docs.**  `ENVIRONMENT.md` gains `GGML_SCHED_MOE_DUP_SPLIT`, `LLAMA_STATE_ASYNC` and
+`LLAMA_STATE_ASYNC_MAX_MIB`; `patches/README.md` blocks 09 and 11 carry the two changes and the new
+invariant; `GREEDY-PURITY.md` §43 is the rulebook entry.
+
 ## 261020.006 (r95) -- rdna3-verify-fusions promoted: the verify-band fusions on RDNA3_0 too (PR #192 + PR #193)
 
 **Release `v12-097cf33d9-r95`**: base `097cf33d9`, canonical tip `fe1befcf7`, net tree

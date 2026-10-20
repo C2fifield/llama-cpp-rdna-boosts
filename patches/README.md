@@ -346,8 +346,21 @@ whatever VRAM is left.
   `ROCm_Host` master, the per-device host buffer types, and the base of the async graph-input ring.
 * `ggml-backend.cpp`: the scheduler's staged cross-backend upload (including the cross-device
   `wait_before_overwrite` ordering that fixed issue #103), routed-expert rebalancing and env-read caching.
+* **A second consumer of a staged expert table gets its own split** (r96, PR #186): a cache-managed
+  `MUL_MAT_ID` whose weights are already an input of the current split now starts a new split, so the
+  existing re-registration path stages them again for that consumer's own routing.  qwen4exp's gathered
+  logits tail and its full-row MTP export tail are the motivating pair: merged, neither consumer could be
+  served by the expert cache and the scheduler's guarded fast paths declined, so the last layer's whole
+  table was copied for every prompt chunk on `-sm tensor` (-30 %/-47 % TTFT on follow-up turns,
+  bit-identical text) and on `-sm layer` the second consumer read the arena slots staged for the first
+  routing, which silently produced non-greedy-pure text with 0.00000 draft acceptance.  `GGML_SCHED_MOE_DUP_SPLIT=0`
+  restores the merged split.  Invariant and evidence: `GREEDY-PURITY.md` §43.
 * `ggml-backend-meta.cpp`: `MIRRORED` tensors serving arbitrary byte ranges and the per-device split of a
   host expert table.
+* **The meta `get_tensor_async` reads an arbitrary row range** (r96, PR #189): it shares the synchronous
+  read's split arithmetic instead of asserting `offset == 0` and one segment, so a caller can batch many
+  per-device reads behind one `synchronize`.  Calls that worked before issue the same copies as before.
+  The caller is block 11's batched state save.
 * `common/fit.cpp`: `--fit` reserves the arena and the slab headroom per device.
 * Host-side: mmap reclaim (`LLAMA_LOAD_RELEASE_MMAP`), rear-fill host layers
   (`LLAMA_HOST_EXPERTS_FROM_END`), `--host-experts pool` (`MOE_HOST_POOL_MIB`), a second draft scheduler
@@ -379,12 +392,14 @@ whatever VRAM is left.
 `GGML_COMPUTE_BUFFER_MARGIN_PCT`/`_CHUNK_MIB`, `GGML_CUDA_ASYNC_INPUT`, `GGML_SCHED_STAGE*`,
 `GGML_STAGE_*`, `LLAMA_LOAD_RELEASE_MMAP`, `LLAMA_DROP_COMPUTE_BUFFERS`, `LLAMA_DROP_EXTRA_RESERVE_MIB`,
 `GGML_CPU_MOE_OFFLOAD_THREADS`, `GGML_CPU_DISABLE_TINY_GRAPH_SINGLE_THREAD`, `LLAMA_TENSOR_HOST_BUFT`,
-`GGML_HIP_GRAPH_FORCE_UPDATE`, `GGML_META_SS_VERIFY`.
+`GGML_HIP_GRAPH_FORCE_UPDATE`, `GGML_META_SS_VERIFY`, `GGML_SCHED_MOE_DUP_SPLIT`.
 
 **Invariants.**  Host experts are always pinned; a partially failed cache **falls back wholesale**; no
 arena is freed while a kernel carrying its address is in flight; the slab is **MoE-only** (armed solely by
 the MoE preflight — never enable it for a dense model); a `-ncmoe` host table is split per device, not
-mirrored (`GGML_META_SPLIT_COPY=1`).
+mirrored (`GGML_META_SPLIT_COPY=1`); a staged expert table gets **one consumer per split** (a second
+`MUL_MAT_ID` consumer of the same weights starts its own split, because the cache arena can only hold one
+routing's slots — `GREEDY-PURITY.md` §43).
 
 **Gates.**  Host-expert coherence (`-ncmoe`/`-cmoe`, and `cache-on == cache-off` text), `test-llama-archs`,
 `MOE_EXPERT_CACHE_VALIDATE=1`, `scripts/check-gpu-faults.sh` on the run's journal + log.
@@ -468,11 +483,20 @@ had no other home.
   next reserve sizes from the current graph), the per-device `max_host_expert_slice_bytes` split rule, the
   application of the embeddings-layer-input preset, and the `-sm tensor` H2D-ring auto-size + narrow-band
   pin.
+* **The batched state save** (r96, PR #189): `llama_io_write_host` queues its deferred reads as
+  `ggml_backend_tensor_get_async` into one pinned staging buffer kept by the context, synchronizes each
+  backend once, then copies to the caller's buffer.  A recurrent model's checkpoint is about 75 small
+  ranges, and under `-sm tensor` each was one synchronous read per device, so a checkpoint paid about 150
+  device syncs before every prompt chunk of a follow-up turn (Flash-Next + MTP: -55 ms/-59 ms TTFT,
+  isolated by the same-binary `LLAMA_STATE_ASYNC=0` arm).  States above `LLAMA_STATE_ASYNC_MAX_MIB` and any
+  state with a tensor no context backend owns keep the synchronous path, and restores are unchanged.  The
+  file also gains `#include <algorithm>` (the patch as submitted does not compile without it).
 * **Build time**: one FA template instantiation TU per `(ncols1, ncols2, head size)` instead of per
   `(ncols1, ncols2)` — same instantiations, grouped so the backend build is no longer one-file-bound.
 
 **Knobs.**  `LLAMA_OUTPUT_PINNED`, `MTP_DRAFT_N_UBATCH`, `GGML_LF_DFLASH_DEV`, `GGML_LF_FAST_TOPK`,
-`LLAMA_STATE_GET_MERGE_GAP`, `GGML_CPU_MOE_OFFLOAD_THREADS`, `GGML_CUDA_SLAB_RING_MIB`.
+`LLAMA_STATE_GET_MERGE_GAP`, `LLAMA_STATE_ASYNC`, `LLAMA_STATE_ASYNC_MAX_MIB`,
+`GGML_CPU_MOE_OFFLOAD_THREADS`, `GGML_CUDA_SLAB_RING_MIB`.
 
 **Notes.**  A backend-iface entry is a compile-time contract: adding one to the struct means adding it to
 **every** backend's initializer, or the build breaks for that backend.  Keep the difference documented when

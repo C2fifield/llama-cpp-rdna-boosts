@@ -92,6 +92,7 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 | **§40b** | a reserve/measure graph must match its memory context's stream count | doctrine |
 | **§41** | a runtime, address-selected fusion is a cross-process purity risk; a compile-time one is not | fix |
 | **§42** | a width gate is not a purity rule: extending a fused chain *down* to one token | fix |
+| **§43** | one split holds one consumer of a staged expert table | fix (r96) |
 
 ---
 
@@ -800,3 +801,41 @@ Two r78 block-10 fusions extend an existing chain or move a launch, and both kee
 (Gemma4, and gpt-oss-20b for the Q8_1 half); on `rope_multi` models it does nothing, so a "purity + speed"
 claim from one model does not transfer.  PR #173 was rejected for r78 for exactly this reason — its matcher
 cannot fire on any model here, so no correctness result about it could be produced at all.
+
+## 43. One split holds one consumer of a staged expert table
+
+The MoE expert cache serves a routed `MUL_MAT_ID` from the **arena**, and the arena holds the slots staged
+for *one* routing.  Two `MUL_MAT_ID` consumers of the same expert weights in one split therefore cannot
+both be served: the scheduler's guarded fast paths (`moe_cache_take_over`, the used-expert pruning) are
+already declined when they count two consumers, but the op-level arena read is not, so the second consumer
+reads the first routing's slots.  qwen4exp is the model that exposes it, because its last layer has two
+consumers of the same table: the gathered logits tail and the full-row MTP export tail.
+
+Measured on r95 (before the fix), Flash-Next GSQ-IQ3_XXS + the shared Q8_0 MTP head, 2 GPU, `-sm layer`,
+`-ncmoe 10`, `draft-mtp` n-max 3, `-n 48`, seed 42, temp 0:
+
+| arm | text | acceptance |
+|---|---|---|
+| plain decode (`--spec-type none`) | 172 chars `de61b9b1bed7` (the truth) | n/a |
+| r95 + `draft-mtp`, 6 natural runs | 5x `de61b9b1bed7`, 1x `a2b6c01a0a19` (223 chars) | `0.00000` on the bad runs |
+| r95 + the split fix (PR #186), 6 runs | 6x `de61b9b1bed7` | healthy (`0.63636`) |
+
+The flip is driven by the **persisted MoE heat map**: pinning one captured heat-map state reproduces the
+bad output 2/2, and `MOE_EXPERT_CACHE_MIB=0` restores purity, while `GGML_SCHED_DEVGATHER=0`,
+`GGML_SCHED_STAGE=0` and `GGML_SCHED_STAGE_MIN_TOKENS=999999` do not.  `-sm tensor` is immune (the meta
+backend has no cache gather) and 35B-A3B is immune (one consumer only).  Under `-sm tensor` the bug shows up
+as throughput instead: with both consumers in one split the last layer's 1062 MiB table is copied for every
+prompt chunk (Flash-Next `-ncmoe 10`, follow-up turns 645/641 ms -> 449/341 ms, bit-identical text).
+
+**Rule:** a split may hold only **one** consumer of a cache-managed expert table.  The scheduler enforces it
+by starting a new split at a second `MUL_MAT_ID` consumer of weights the current split already stages
+(`ggml_backend_sched_split_graph`, r96, PR #186); the re-registration path then stages them again for that
+consumer's own routing, which is ready by then.  `GGML_SCHED_MOE_DUP_SPLIT=0` restores the merged split for
+A/B only.  Any future "recompute this layer's FFN on all rows" path must either get its own split the same
+way or keep the table out of the cache.
+
+**Why no gate caught it:** the failure needs a *persisted* heat map in a particular state plus `-sm layer`
+plus MTP, so it is invisible to the coherence gate (which never runs `-sm layer` + MTP), to the four-axis
+MTP gate (27B with no host experts, where the split fix is inert) and to the prefill-logit gate (no MTP
+export in `llama-perplexity`).  The instrument that found it was a `plain == draft-mtp` text comparison on
+the affected config, repeated across natural heat-map states.
