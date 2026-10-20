@@ -1,5 +1,24 @@
 # WORKLOG - dated delivery records
 
+## 261020.002 (r93) -- publication record (tag, CI, fork refresh, worker image build)
+
+**`v12-097cf33d9-r93` is published.**  Tag `aebb9885bf37…` on commit `3a90850`; delivery `main` pushed.
+Workflows green: `Validate delivery set` (main and tag) and `Release patch set` (tag), which published
+the GitHub Release with `patches.tar.gz`, `rdna-boosts-all.patch`, `release.json` and `SHA256SUMS`.
+
+**Personal fork refreshed** (`git@github.com:stew675/llama.cpp.git`, fork only, never upstream).  A clean
+`apply-all.sh` at `097cf33d9` re-created `rdna-boosts` (strict 12/12, applied tree
+`260e6f49f4…` = `release.json`); the branch tip is `67adfdaf5`.  Built with `~/bin/build-llama-rocm`
+and gated from that checkout: coherence `sha=1c5d32ac537d`, fixed-n3 prose MTP acceptance 0.59813 /
+172.6 t/s (gfx1201, 1 GPU), prefill-logit **0.000707 / 98.755 %**.  Pushed with
+`--force-with-lease=rdna-boosts:fac77f21f…` (`fac77f21f… -> 67adfdaf5`).  `~/llama.cpp` now holds the
+r93 `build-rocm` tree.
+
+**Container images.**  The `radiance` worker watcher picked up the new tag at `2026-10-20T05:00:02-05:00`
+(r92 had finished at 01:48) and is building/pushing ROCm **7.14.1 + 10.1** (`full`/`light`/`server`)
+under its `flock`, off-host as required: log `~/.cache/rdna-containers/build-v12-097cf33d9-r93.log`;
+it writes `last-built` only on a successful push.  No local container build was run.
+
 ## 261020.001 (r93) -- RDNA3_0 per-shape mmvq `nwarps` promoted (block 08); the `wip/nwarps` campaign closes
 
 **Release `v12-097cf33d9-r93`**: base `097cf33d9`, canonical tip `982cbf104`, net tree
