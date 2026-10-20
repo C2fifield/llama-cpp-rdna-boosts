@@ -1,5 +1,36 @@
 # WORKLOG - dated delivery records
 
+## 261020.009 (r97) -- qwen4exp multi-GPU MTP 4-axis gate re-run (validates the split-mode-dependent DSV4_HC_POST default)
+
+Gate re-run requested after the r97 promotion, because block 10's new default changes the HC-combine arm
+for a **Meta (tensor-split) device** on the qwen4exp family: `cparams.fused_dsv4_hc_post` is now the
+fused op there (the primitive `hc_combine_norm` chain is numerically wrong across a tensor split).  Record
+and full tables: [`benchmarks/2026-10-20-qwen4exp-mtp-4axis-r97.md`](benchmarks/2026-10-20-qwen4exp-mtp-4axis-r97.md).
+
+Cell: r97 (`b37a3b5ad`), 3x R9700 gfx1201, ROCm 10.1.0, Qwen3.8-Flash-Next IQ4_NL +
+`-md mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`, `-sm tensor -ncmoe 48 -c 32768 -b 4096 -ub 4096
+--load-mode none --lazy-mode off -ctk/-ctv f16`, `-n 3000`, per-axis `--reasoning`, seed 42 temp 0.
+
+| axis | plain t/s | `draft-mtp n3` t/s | acceptance | purity (plain / n3 / n7) |
+|---|---:|---:|---:|---|
+| P prose | 60.6 | 124.6 | 0.832 | `471d102e7b7d` x3 |
+| C code | 62.6 | 139.4 | 0.932 | `a4f29c5ebd50` x3 |
+| K recall | 57.9 | 120.0 | 0.992 | `ef6e78e4a495` x3 |
+| R reasoning | 62.1 | 108.3 | 0.610 | `febe0a3c7911` x3 |
+
+MTP beats plain by 1.74-2.23x on every axis, acceptance 0.61-0.99 (prose floor ~0.45), and the text is
+byte-identical across the purity range (`n_max <= 7`) on all four axes.  The replaced arm
+(`LLAMA_FUSED_DSV4_HC_POST=0`) is throughput-neutral (P 124.1 vs 124.6, C 138.4 vs 139.4, acceptance
+0.826/0.917 vs 0.832/0.932) but **not equivalent**: on the code axis it emits different greedy text from
+the first line (850 vs 795 chars), i.e. the r97 default fixes a real qwen4exp `-sm tensor` decode
+difference, not just the synthetic arch-test row.
+
+Two operational notes recorded there: `--load-mode none --lazy-mode off` is mandatory for qwen4exp (the
+26.8 GiB PLE is mmap-lazy otherwise; the same cells read 105.5/22.6 t/s with `-ub 2048`), and `-md` must
+not be passed with `--spec-type none` -- that aborts in `GGML_ASSERT(!suffix_fallback.empty())`
+(`src/llama-model.cpp:520`), **pre-existing** (reproduced on the r96 build), not an r97 change.
+
+Docs only: no patch, `release.json` or tree change; `scripts/validate-set.sh` is unaffected.
 ## 261020.008 (r97) -- halo arch-independent fixes (CPU-only MoE, QSA CPU form, reserve sequence count) + two defects they exposed
 
 **Release `v12-097cf33d9-r97`**: base `097cf33d9`, canonical tip `b37a3b5ad`, net tree
