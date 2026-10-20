@@ -1,10 +1,15 @@
 # `kv-cell-offset-nondeterminism` — the unified-KV cell-offset / attention-tile alignment non-determinism (TODO #52 part C)
 
-**Status: PARKED (2026-10-11, after `v16-a55e952b8-r43`; mechanism refined 2026-10-11 — see
-[`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md)).** Not part of the delivery; nothing here
-may be applied to the fork without the maintainer's go-ahead (see the WIP and promotion rules in
-`AGENTS.md`). This is the working home for the residual that survived the r42 (part A) and r43 (part B)
-fixes to issue #134 / TODO #52.
+**Status: CLOSED (2026-10-19, after `v12-097cf33d9-r91`; archived from `wip/`).  Read
+[`RESOLUTION.md`](RESOLUTION.md) first — it replaces the older "quantum = the FA tile" model below.**
+The quantum is the per-launch **KV-split period** (`pb × nbatch_fa`, `pb` = `parallel_blocks` or the band
+`P`), a shift by one period is bit-identical, and the decisive variable is the **decode head's** residue
+class in the shared stream.  The cheap fix (chunking / band-boundary prompt starts) is refuted by
+measurement; a sufficient fix (period-granular per-sequence cell *ownership*) is identified but
+deliberately not implemented (upstream allocator redesign, no throughput win).  **Workaround:
+`--no-kv-unified`.** Not part of the delivery — this directory is the record of the residual that
+survived the r42 (part A) and r43 (part B) fixes to issue #134 / TODO #52; see `AGENTS.md` ("WIP and
+promotion rules").
 
 > **2026-10-16 revalidation (r69).**  The core effect still reproduces on the current tree, but
 > `--no-kv-unified` is **not** "fully green": its *concurrent repeats* are reproducible, while solo vs
@@ -14,6 +19,11 @@ fixes to issue #134 / TODO #52.
 > known Windows-only prefill/fusion/hipBLASLt per-start flip (the *old* issue #67).  See
 > [`FINDINGS-2026-10-16-revalidation.md`](FINDINGS-2026-10-16-revalidation.md) and TODO #67.
 
+> **2026-10-19: CLOSED as upstream-inherent, with the mechanism now exact — see
+> [`RESOLUTION.md`](RESOLUTION.md).**  The 2026-10-11 paragraph below is kept as the historical
+> disposition; its "quantum = the FA reduction tile" wording is superseded (a tile-aligned start is *not*
+> invariant; the period `pb × nbatch_fa` is).
+>
 > **2026-10-11 disposition — PARKED, not archived.** The pragmatic call is to stop here: a proper fix
 > means per-sequence contiguous, tile-aligned KV regions (or per-region anchored reductions) in the
 > unified attention cache, i.e. a fundamental change to upstream's design, and there are more pressing
@@ -144,10 +154,10 @@ export LD_LIBRARY_PATH=/opt/rocm-10.1.0-gfx120X/lib
 **Server gate** (`archive/work/moe-verify-fusions/tools/multiseq.sh` and its `_plain`/`_np2` variants):
 ```bash
 # unified, 2 slots, plain (no MTP), GSQ target; green iff A_solo == A_conc1..3
-PROMPTS=<repo>/wip/kv-cell-offset-nondeterminism/prompts
+PROMPTS=<repo>/archive/work/kv-cell-offset-nondeterminism/prompts
 M=/llm/models/Qwen3.8/Flash-Next/GSQ-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
   PROMPT_A=$PROMPTS/mixed30k-v2.txt PROMPT_B=$PROMPTS/msqB.txt \
-  GPUS=0,1 PORT=8997 <repo>/wip/kv-cell-offset-nondeterminism/tools/msq_plain.sh  \
+  GPUS=0,1 PORT=8997 <repo>/archive/work/kv-cell-offset-nondeterminism/tools/msq_plain.sh  \
   <build-dir> tag
 # compare: same with --no-kv-unified  -> green
 # (the prompts are historical field prompts.  mixed30k-v2.txt is the same doc dump as mixed30k.txt

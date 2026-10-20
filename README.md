@@ -500,23 +500,26 @@ shipped for bisection and for the real defect above.
 ## Concurrent serving with `--kv-unified` is not deterministic (issue #134)
 
 Mixing `-np > 1` with `--kv-unified` does **not** give run-to-run reproducible greedy output: a
-sequence's attention result depends on the physical **set** of KV cells it occupies in the shared
-unified stream, and that set is a function of allocator/scheduling history (the flash-attention kernel
-reduces in fixed tiles anchored to the buffer base).  Identical concurrent repetitions can differ, and a
-concurrent run can differ from the same request run solo, at the rounding level (a greedy near-tie can
-flip).  **Use `--no-kv-unified` when strict reproducibility is required.**  This is inherent to
-upstream's unified-KV design — it reproduces on unmodified upstream `097cf33d9` — and not a defect
-introduced by this patch set; the analysis and reproducers are preserved (parked) at
-`wip/kv-cell-offset-nondeterminism/`.  Single-request and non-unified runs are unaffected by the
-unified-KV effect, and the delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`,
+sequence's attention result depends on the KV-tile indices of its cells **modulo the per-launch
+attention KV-split period** (`pb x nbatch_fa`), and under unified KV every new **decode** token takes the
+next cell from the *shared* head, so that residue follows the co-resident session's allocation/scheduling
+history.  Identical concurrent repetitions can differ, and a concurrent run can differ from the same
+request run solo, at the rounding level (a greedy near-tie can flip).  **Use `--no-kv-unified` when
+strict reproducibility is required.**  This is inherent to upstream's unified-KV design — it reproduces
+on unmodified upstream `097cf33d9` — and not a defect introduced by this patch set; the analysis,
+reproducers and the exact rule are preserved (closed 2026-10-19) at
+`archive/work/kv-cell-offset-nondeterminism/` (`RESOLUTION.md`).  A fix requires period-granular
+per-sequence cell *ownership* in the unified pool — an upstream allocator redesign with no throughput
+win, so it is not implemented.  Single-request and non-unified runs are unaffected by the unified-KV
+effect, and the delivery's op-level purity invariants (`W = 1..8`, `plain == draft-mtp`,
 `native == staging`) are scoped to a fixed batch and are unchanged.
 
 **Separate from the unified-KV case (2026-10-16, issue #151 follow-up).**  The reporter (R9700 /
 Windows) also sees a start-to-start greedy flip with HIP graphs on, and reports that `--no-kv-unified`
 does not remove it.  We could **not** reproduce it on Linux/ROCm 7.14: fresh-process decode-logit
 probes (W=1..8) are bit-identical across starts, graphs on and off, including on the reporter's 27B
-model with q8_0 KV (`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  It is
-most likely the known Windows-only per-start flip (the r25 `rope -> view -> set_rows` bit-transparency
+model with q8_0 KV (`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).
+It is most likely the known Windows-only per-start flip (the r25 `rope -> view -> set_rows` bit-transparency
 fix, and the external hipBLASLt solution-selection issue, workaround `ROCBLAS_USE_HIPBLASLT=0`), both
 prefill-driven and independent of graphs.  Tracked as TODO #67.
 

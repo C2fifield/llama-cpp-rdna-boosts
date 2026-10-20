@@ -980,9 +980,10 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > "break" `llama-perplexity` (PPL 8.51 -> 2097): with the fix it is **8.5100**, the probe is bit-identical
 > solo vs co-batch, and prefill-logit is **0.000707 / 98.755 %** (unchanged from base).  Batched TG is
 > unchanged; the only cost is ~2 % PP on the multi-sequence all-output prefill path.  The residual
-> `--kv-unified` server non-determinism (TODO #52 part C: a sequence's attention result depends on the
-> physical offset of its KV cells modulo the FA reduction tile; upstream-inherent) is a new campaign:
-> `wip/kv-cell-offset-nondeterminism/`.
+> `--kv-unified` server non-determinism (TODO #52 part C: a sequence's attention result depends on its KV
+> cells' tile indices modulo the per-launch KV-split period, and the shared decode head follows the
+> co-resident session's history; upstream-inherent, closed 2026-10-19) is recorded at
+> `archive/work/kv-cell-offset-nondeterminism/`.
 
 > **Current release `v16-a55e952b8-r39` (2026-10-10) -- the op-offload H2D staging ring moves INSIDE the movable-boundary slab (block 06 + block 15):**
 > promotes `archive/work/slab-ring-region/` (TODO #49).  The ring is no longer a raw `cudaMalloc` competing with the
@@ -2310,8 +2311,8 @@ stream -- it recovers ordering rather than adding work.  `GGML_READBACK_SYNC=0` 
 
 This is the defect that made the held batching change "break" `llama-perplexity` (PPL 8.51 -> 2097);
 with the fix the PPL is `8.5100` and the probe is bit-identical solo vs co-batch.  The residual
-`--kv-unified` server non-determinism is a separate, upstream-inherent defect (TODO #52 part C; see
-`wip/kv-cell-offset-nondeterminism/`), not this one.
+`--kv-unified` server non-determinism is a separate, upstream-inherent defect (TODO #52 part C; closed
+2026-10-19, see `archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md`), not this one.
 
 ## 2026-10-08 block-06 amendment (r32): the post-prefill re-reserve uses the current ubatch's sequence count (issue #48)
 

@@ -1445,34 +1445,46 @@ pin the request schedule (sequential, or a fixed arrival order) and compare that
 `test-backend-ops` for the op-level guarantees.  The archived investigation is
 `archive/work/unified-cache-decode/`.
 
-**Refined 2026-10-11 (issue #134 / TODO #52 part C).**  The cause is narrower than "continuous
-batching": it is **unified KV** specifically.  `--no-kv-unified` with the same concurrent schedule is
+**Refined 2026-10-11 (issue #134 / TODO #52 part C); made exact and CLOSED 2026-10-19.**  The cause is
+narrower than "continuous batching": it is **unified KV** specifically.  `--no-kv-unified` with the same concurrent schedule is
 fully reproducible, because each sequence then owns a contiguous region starting at cell 0, so the
 flash-attention reduction grid is anchored per sequence.  Under `--kv-unified` a sequence's logits
-depend on the physical **set** of KV cells it occupies in the shared stream (the FA kernel reduces in
-fixed tiles anchored to the buffer base); the set is a function of the allocator's history, and a
-*start*-alignment is not enough because the cache's head-reset then re-fragments a growing sequence.
-The required quantum is the per-launch `nbatch_fa`/split period, which varies with head dim, GQA ratio,
-KV type and verify width (a fixed constant is not generally correct); it reproduces on unmodified
-upstream `a55e952b8`, so it is upstream-inherent, not a delivery defect.  **Workaround: `--no-kv-unified`
-when strict reproducibility is required.**  A proper fix (per-sequence contiguous, tile-aligned regions
-with a per-region anchored view, i.e. non-unified semantics inside the shared pool) is an upstream
-redesign; the campaign is **parked** at `wip/kv-cell-offset-nondeterminism/` (evidence:
-`FINDINGS-offset-mechanism.md`; probe + server repro under `tools/`).
+depend on the physical **set** of KV cells it occupies in the shared stream.  The **exact rule** is: the
+result is a function of the sequence's KV cells' tile indices **modulo the per-launch KV-split period**
+`pb × nbatch_fa`, where `pb` is `parallel_blocks` for the decode/verify tile kernel (chosen from
+`ntiles_KV = ceil(n_kv/nbatch_fa)`, i.e. from the *shared* view length) and the fixed band `P`
+(`nsm`, or `(3*nsm)/4` for 2-byte K/V) otherwise.  The kernel takes KV iterations round-robin by
+`pb` and `flash_attn_combine_results` sums the partials linearly in block order, so a shift by exactly
+one period is **bit-identical** and any smaller shift can change the rounding.  Measured on r91
+(gfx1151, 4B Q8_0): offsets 32/64/96/128 (all tile-aligned) give four different hashes, while every
+offset is bit-identical to `offset + 960` (`pb` 30 × `nbatch_fa` 32); 35B-A3B (`pb` 60) is identical
+under `+1920`.  The decisive variable in the server case is the **decode head**: every new token takes
+the shared head, so its residue class follows the co-resident session's allocation history.  It
+reproduces on unmodified upstream, so it is upstream-inherent, not a delivery defect.  **Workaround:
+`--no-kv-unified` when strict reproducibility is required.**  The proposed cheap fix (chunk sessions by
+the band width / align prompt starts) is **refuted** — the quantum is the period, not the tile, and
+prompt-start alignment cannot pin the decode head.  A sufficient fix (period-granular per-sequence cell
+*ownership*: whole period blocks per session, its head inside its own block, ~30-38 MiB of reserved
+cells per live session on the tested models) is an upstream allocator redesign with no throughput win
+and is deliberately not implemented.  **CLOSED 2026-10-19**; record:
+[`archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md`](archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md)
+(evidence, tools and the validation plan for a future fix).
 
 **Correction 2026-10-16 (issue #151 follow-up).**  This covers the `--kv-unified` case only.  The
 reporter additionally sees a start-to-start greedy flip with HIP graphs on, under both `--kv-unified`
 and `--no-kv-unified`.  We could **not** reproduce it on Linux/ROCm 7.14: fresh-process decode-logit
 probes are bit-identical across starts, graphs on and off (r69 revalidation,
-`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  Under `--no-kv-unified` the
+`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  Under `--no-kv-unified` the
 concurrent repeats are reproducible but solo differs from concurrent (a cross-sequence batching
 effect, not the cell set).  The reported flip is most likely the known Windows-only per-start flip
 (the r25 rope/set_rows fix, and the external hipBLASLt solution selection).  Tracked as TODO #67.
 
 **No performance angle.**  Making concurrent serving deterministic would require either pinning the
-batch shape/grouping or carrying the per-sequence-region redesign; neither is a throughput win, and the
-field symptom is only a rounding-level near-tie flip, so there is nothing to gain by fixing it now.
-The one performance-relevant knob is batching efficiency, which is orthogonal.
+batch shape/grouping or carrying the per-sequence-region (period-granular ownership) redesign; neither is
+a throughput win, and the field symptom is only a rounding-level near-tie flip, so there is nothing to
+gain by fixing it now.
+The one performance-relevant knob is batching efficiency, which is orthogonal.  This is the reason the
+campaign was closed without a fix (2026-10-19).
 
 ## 39. A decode-only fusion must match the standalone launch it replaces (2026-09-28, r18)
 

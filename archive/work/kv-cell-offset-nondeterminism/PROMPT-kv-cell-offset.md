@@ -1,9 +1,11 @@
-# Cold-start prompt — unified-KV cell-offset non-determinism (TODO #52 part C)
+# Cold-start prompt — unified-KV cell-offset non-determinism (TODO #52 part C) — **RETIRED**
 
-> **PARKED 2026-10-11.** The campaign is parked, not active: the residue is upstream-inherent and a
-> proper fix is an upstream unified-KV redesign, so it is documented as a gotcha instead. Do **not**
-> resume this prompt unless the maintainer explicitly reopens it. See the disposition block in
-> [`README.md`](README.md) and [`FINDINGS-offset-mechanism.md`](FINDINGS-offset-mechanism.md).
+> **CLOSED 2026-10-19 — this prompt is retired.** The campaign is closed: the mechanism is pinned (the
+> quantum is the FA **KV-split period** `pb × nbatch_fa`, and the **decode head's** residue class in the
+> shared stream is what varies), the proposed band-boundary chunking fix is refuted by measurement, and a
+> sufficient fix (period-granular per-sequence cell ownership) is an upstream allocator redesign with no
+> throughput win.  **Do not resume it** unless the maintainer reopens with a different decision.  Read
+> [`RESOLUTION.md`](RESOLUTION.md); the text below is the 2026-10-11 cold-start prompt, kept as history.
 
 Paste the block below into a fresh session. It is self-contained; the campaign README has the full detail.
 
@@ -32,7 +34,7 @@ cross-sequence batching and unified KV both intact, not a feature stand-down. Li
 (anchoring the FA tile grid to the sequence, per-sequence contiguous/aligned cell ranges, or an
 offset-invariant reduction) are in the campaign README §4; pick one, implement it in WIP, and validate.
 
-Read `wip/kv-cell-offset-nondeterminism/README.md` **first, in full**, then `AGENTS.md`
+Read `archive/work/kv-cell-offset-nondeterminism/README.md` **first, in full**, then `AGENTS.md`
 ("Report findings before shipping", "Pushing policy", "WIP and promotion rules", "Default-on policy").
 The predecessor campaign is archived at `archive/work/moe-verify-fusions/` — read its
 `FINDINGS-B-readback-ordering.md` (the offset sweep and the condition matrix) and `HANDOVER-multiseq-bc.md`.

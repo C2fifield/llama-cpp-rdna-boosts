@@ -159,7 +159,7 @@ D=/llm/models/Qwen3.8/Flash-Next/IQ4_NL/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
 Prompt (must not be regenerated; a result is valid only against the hash it names):
 
 ```
-wip/kv-cell-offset-nondeterminism/prompts/mixed30k.txt
+archive/work/kv-cell-offset-nondeterminism/prompts/mixed30k.txt
 sha256 69624f4d207f40bdf7357e74ec978af5bfb4725a0968faf4eea4aab46c2ae241
 ```
 
@@ -167,7 +167,7 @@ Run (server on `127.0.0.1:8942`, `LOGD=/tmp/srr`; the scripts accept `GPUS`, `M`
 
 ```bash
 mkdir -p /tmp/srr
-cp wip/kv-cell-offset-nondeterminism/prompts/mixed30k.txt /tmp/srr/mixed30k.txt
+cp archive/work/kv-cell-offset-nondeterminism/prompts/mixed30k.txt /tmp/srr/mixed30k.txt
 cd archive/work/moe-verify-fusions/tools
 
 # MTP arm, 3 GPUs (hybrid AR default), then the same on 2 GPUs as the control

@@ -21,7 +21,7 @@ The r38 deficit is gone:
 3-device internal all-reduce was needed.
 
 Harness: `archive/work/moe-verify-fusions/tools/{field3.sh,field_nospec.sh}`; prompt
-`wip/kv-cell-offset-nondeterminism/prompts/mixed30k.txt` (sha256 `69624f4d...`, unchanged); model
+`archive/work/kv-cell-offset-nondeterminism/prompts/mixed30k.txt` (sha256 `69624f4d...`, unchanged); model
 Qwen3.8-Flash-Next IQ4_NL + the shared Q8_0 MTP head, `-ncmoe 48 --spec-draft-n-max 3`, 32 358-token
 prompt, 1000 generated.
 

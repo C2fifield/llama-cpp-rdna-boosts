@@ -236,8 +236,8 @@ does not reproduce.**  Fresh-process decode-logit probes (`test-logits-width-pro
 bit-identical across starts, graphs on and off, on the 4B Q8_0 and on the reporter's 27B Swift Q5_K_M
 with q8_0 KV, at P=256 and P=512 (27B W=1 hash `cec25c2aa3cc3e21` both ways), and the forward/prefill
 `llama-perplexity --kl-divergence-base` self-comparison is `RMS Δp 0.001 %`.  Full data:
-`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`; tools
-`tools/decodestart.sh` (decode) and `tools/selfkld.sh` (forward only).
+`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`; tools
+(`archive/work/kv-cell-offset-nondeterminism/tools/`) `decodestart.sh` (decode) and `selfkld.sh` (forward only).
 
 **Working hypothesis: the known Windows-only per-start flip, not a graphs or unified-KV root.**  Two
 such flips are on record from this reporter: the `rope -> view -> set_rows` fused-vs-unfused clang
@@ -509,7 +509,7 @@ fixes — see the measured cost and the re-enable recipe in `ENVIRONMENT.md` §7
 
 ### 52. Multi-sequence MTP is non-deterministic: a rollback reads a recurrent snapshot the last batch did not write — CORRECTNESS
 
-**PARTIALLY RESOLVED, DELIVERED in `v16-a55e952b8-r42` (2026-10-10).** Part 1 is fixed in **block 02**:
+**PARTIALLY RESOLVED, DELIVERED in `v16-a55e952b8-r42` (2026-10-10); PART C CLOSED (2026-10-19).** Part 1 is fixed in **block 02**:
 `ggml_cuda_op_gated_delta_net_impl` took the whole-batch chunked kernel for `n_seqs > 1 && K == 1`
 unconditionally while the solo path took the sequential kernel, so a sequence's GDN result depended on its
 co-resident sequences; the multi-sequence branch now shares the single-sequence `n_tokens >
@@ -517,18 +517,28 @@ GDN_CHUNKED_MIN_TOKENS` gate. **Part B (the held multi-token batching change) is
 It was correct; it only appeared to break `llama-perplexity` at `n_seq >= 4` because of a **logits-readback
 ordering hazard** (the pinned async D2H copy was not ordered against the next ubatch's compute). The readback
 is now completed before the next ubatch runs; PPL `8.5100`, the probe bit-identical, prefill-logit
-`0.000707 / 98.755 %`. **The remaining component C** -- the `--kv-unified` server non-determinism (a
-sequence's attention result depends on the physical offset of its KV cells modulo the FA reduction tile, and
-it is upstream-inherent) -- is **PARKED (2026-10-11) in `wip/kv-cell-offset-nondeterminism/`** (handover +
-cold-start prompt; refined findings in `FINDINGS-offset-mechanism.md`): the dependence is on the sequence's
-whole physical *cell set*, a fixed alignment is insufficient, and a proper fix needs per-sequence
-contiguous tile-aligned regions (an upstream redesign). Documented as a gotcha (README / `GREEDY-PURITY.md`
-§38); issue #134 closed as upstream-inherent. Reopen the campaign if the maintainer or @DanoPTT decides it
-is worth the redesign. **Correction 2026-10-16 (issue #151 follow-up):** the reporter's *separate*
+`0.000707 / 98.755 %`. **The remaining component C** -- the `--kv-unified` server non-determinism --
+is **CLOSED (2026-10-19) as upstream-inherent, with the mechanism now exact**
+([`archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md`](archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md)):
+a sequence's attention result depends on its KV cells' tile indices **modulo the per-launch KV-split
+period** (`pb x nbatch_fa`; `pb` is `parallel_blocks` for the tile kernel, derived from the *shared* view
+length, or the fixed band `P`) -- a shift by one period is bit-identical, any smaller shift can flip a
+near-tie -- and under `--kv-unified` every new **decode** token takes the shared head, so that residue
+follows the co-resident session's allocation history.  Measured on r91 (gfx1151): period 960 cells on the
+4B (`pb` 30) and 1920 on 35B-A3B (`pb` 60), both verified bit-identical under a one-period shift.  The
+proposed cheap fix (chunk unified sessions by the band width / start prompts at a band boundary) is
+**refuted**: the quantum is the period, not the tile, and prompt-start alignment cannot pin the decode
+head.  A sufficient fix -- **period-granular per-sequence cell ownership** (whole period blocks per
+session, its head inside its own block) -- was costed (~one period of reserved cells per live session:
+30 MiB on the 4B, 37.5 MiB on 35B-A3B) and deliberately **not implemented**: an upstream allocator
+redesign with no throughput win.  Gotcha unchanged (README / `GREEDY-PURITY.md` §38): **use
+`--no-kv-unified` when strict reproducibility is required**; issue #134 stays upstream-inherent.  Reopen
+only if upstream carries a period-granular unified allocator or a user needs determinism *and* unified
+KV together (validation plan in the RESOLUTION). **Correction 2026-10-16 (issue #151 follow-up):** the reporter's *separate*
 HIP-graphs start-to-start flip (surviving `--no-kv-unified`, on a fresh server's first request) is not
 this cell-offset root; tracked as **TODO #67**, where it was **not reproduced** on Linux/ROCm 7.14
 (likely the known Windows per-start flip).  This campaign's own effect was revalidated on r69:
-`wip/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`. It is a separate root from the
+`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`. It is a separate root from the
 recurrent rollback. The `seq_rm` boundary warning
 (Issue #131) is a false positive in the cross-sequence case: the probe is bit-exact at the production
 verify width, and **r44 block 02** now tracks the last-batch shape **per sequence** so the diagnostic
@@ -545,7 +555,7 @@ ngram types), so the campaign's ngram exposure claim was wrong.  Record:
 [`archive/work/rs-rollback-boundary/RESOLUTION.md`](archive/work/rs-rollback-boundary/RESOLUTION.md).  The
 predecessor record is `archive/work/moe-verify-fusions/`. The text below is the original finding.
 
-**Working home: `wip/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-10 while investigating the single-sequence
+**Working home (closed): `archive/work/kv-cell-offset-nondeterminism/` (part C); predecessor record `archive/work/moe-verify-fusions/`** (found 2026-10-10 while investigating the single-sequence
 divergence — see [`HANDOVER-single-seq-rollback.md`](archive/work/moe-verify-fusions/HANDOVER-single-seq-rollback.md)).
 
 **Symptom.**  `llama-server -np 2 --kv-unified --spec-type draft-mtp`, two concurrent greedy requests (A

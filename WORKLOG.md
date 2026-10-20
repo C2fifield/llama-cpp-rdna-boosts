@@ -1,5 +1,57 @@
 # WORKLOG - dated delivery records
 
+## 261019.012 (no release) -- the unified-KV cell-offset campaign closes: the quantum is the FA KV-split period, and the shared decode head is the variable
+
+**Campaign closed (no delivery change).**  `wip/kv-cell-offset-nondeterminism/` ->
+`archive/work/kv-cell-offset-nondeterminism/` with a `RESOLUTION.md`; **TODO #52 part C is CLOSED**, the
+consumer/rulebook gotcha is sharpened (`README.md`, `GREEDY-PURITY.md` §38), and nothing in `patches/` or
+`release.json` moves.  Issue #134 stays upstream-inherent; the workaround is unchanged
+(`--no-kv-unified` when strict reproducibility is required).
+
+**The campaign's parked model was directionally right but named the wrong quantum.**  The 2026-10-11
+finding said "a sequence's attention result depends on its whole physical cell set, modulo the FA
+reduction tile, so a fixed alignment is not enough".  Re-derived from the launcher and measured on r91
+(gfx1151 / ROCm 10.1, 1 GPU), the rule is: the result is a function of the sequence's KV cells' tile
+indices **modulo the per-launch KV-split period** `pb x nbatch_fa` -- `pb` = `parallel_blocks` for the
+decode/verify tile kernel (from an efficiency search over `ntiles_KV = ceil(n_kv/nbatch_fa)`, i.e. the
+**shared** view length) or the fixed band `P` (`nsm`, `(3*nsm)/4` for 2-byte K/V).  The kernel takes KV
+iterations round-robin by `pb` and `flash_attn_combine_results` sums the partials linearly in block
+order, so a shift by **one period is bit-identical** and any smaller shift can change the rounding.
+
+**Measured (new probe `test-multiseq-runs.cpp`: the report sequence's token stream and positions are
+held fixed, only its physical cell placement changes; `fa-config-diag.patch` prints `pb`):**
+
+| arm (4B Q8_0 f16 KV, `nbatch_fa` 32, decode `pb` 30) | logits hash |
+|---|---|
+| offset 32 / 64 / 96 / 128 (all **tile-aligned**) | `b8bc508b86b0614e` / `5ab10c344414cf93` / `41b96d97e4bac7f2` / `9ba3b5ea1888eb3b` -- 4 distinct |
+| offset X vs **X + 960** (= `pb x nbatch_fa`), X = 32/64/128/256/288 | **bit-identical** every pair |
+| prompt cells fixed at 288; only the **final decode cell** moves into a block the prompt already uses (T=1344) | `ba09fe281f969372` vs `fbc7a801f51babc0` (T=1120/1600/2560/3520, no collision) |
+| `--no-kv-unified`, offsets 32/288/544/1024 | one hash (`fbc7a801f51babc0`) -- green |
+| 35B-A3B Q4_K_M (`ncols2` 8 -> `pb` 60, period 1920): offset 32 vs 1952, 512 vs 992 | bit-identical; 32 vs 272 differs |
+
+So the quantum is `pb x nbatch_fa`, not the tile, and the decisive variable is the **decode head**: under
+`--kv-unified` every new token takes the shared head, so its residue class follows the co-resident
+session's allocation history.  (The campaign's observed "quantum 64" is the regime where
+`pb == ntiles_KV`, so every tile owns its own accumulator and any tile-aligned placement is invariant.)
+The **prefill** path is not exposed: prefill logits are invariant both to tile-aligned offsets and to the
+padded view length with the cells held fixed (`LLAMA_KV_N_PAD_MIN` 256->4096).
+
+**The proposed cheap fix is refuted.**  "Chunk all unified sessions by the decode band width and start
+every prompt at a band boundary" fails on two measured grounds: (a) a tile-aligned start is not invariant
+(only a **period**-aligned one is); (b) even period-aligned prompt starts leave each decode token at the
+shared head, and moving only that one cell is enough to change the result.  **A sufficient fix exists but
+is deliberately not implemented:** period-granular per-sequence cell *ownership* (each session's cells are
+whole period-aligned `pb x nbatch_fa` blocks that no other session writes into; its head lives inside its
+own block).  Cost is at most one period of reserved-unwritten cells per live session -- measured 960
+cells = **30 MiB** (4B) and 1920 cells = **37.5 MiB** (35B-A3B) -- but it is an upstream allocator redesign
+(`find_slot`/`apply_ubatch`/`seq_rm`/`seq_cp`/shift/SWA reuse/head-reset/mask-skip assumptions) with no
+throughput win.  Re-entry conditions and the validation plan are in the `RESOLUTION.md`.
+
+**Records.** `archive/work/kv-cell-offset-nondeterminism/` (`RESOLUTION.md` = the definitive record;
+`README.md`, the 2026-10-11 `FINDINGS-offset-mechanism.md` and the 2026-10-16 revalidation kept as
+dated history; `tools/` gained `test-multiseq-runs.cpp` and `fa-config-diag.patch`).  `TODO.md` #52,
+`GREEDY-PURITY.md` §38, `README.md`.  No release, no fork-branch refresh, no container build.
+
 ## 261019.011 (no release) -- rdna35 mmvq fusion: the impurity is the preempted `GLU -> MMQ down` fusion, not the fused gate/up
 
 **Campaign closed (ending B).**  `wip/rdna35-mmvq-fusion-perf/` -> `archive/work/rdna35-mmvq-fusion-perf/`
