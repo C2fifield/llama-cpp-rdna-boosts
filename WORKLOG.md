@@ -1,5 +1,75 @@
 # WORKLOG - dated delivery records
 
+## 261020.010 (r98) -- PR #195 (q8_0 FA fetch-ahead) promoted into block 05; PR #194 declined
+
+**Release `v12-097cf33d9-r98`**: base `097cf33d9`, canonical tip `aafd389b0`, net tree
+`7b6b428011320af45168dee6278716c55e3eb6c1`, **12 blocks**.  Block 05 amended, no new block.
+
+### PR #195 `rdna4-band-fetch-ahead` (`@overdoingism`) -- PROMOTED, block 05, default on
+
+With `q8_0` K and V read in place (decode/verify, `n_q <= 8`, head 256) the RDNA4 band launches a second
+kernel variant, `flash_attn_ext_f16<..., band_fetch_ahead = true>`, that fetches the raw q8_0 bytes of the
+next K/V batches into registers ahead of use and converts a batch into shared memory only when it is due.
+Its barriers order shared memory only (release / `s_barrier` / acquire on `"local"`): `__syncthreads()`
+also waits for every outstanding global load, which would drain the fetches.  The quants stay packed in
+32-bit words and an empty `asm volatile` pins the conversion at the stage point.  64-column block (widths
+5..8): two batches in flight, Q in registers.  32-column block (widths 1..4): one batch in flight and the
+stream continues across the iteration boundary into the next unmasked KV block, Q read from shared memory.
+The variant is compiled in two generated translation units of its own, so every other launch keeps its
+compiled code.  `GGML_HIP_FA_BAND_FETCH_AHEAD=0` runs the kernel without it.
+
+**The claim that mattered, and it holds.**  Device objects were extracted from both builds and the gfx1201
+ISA diffed with mangled names normalised: **0 differing instructions** in both `dkq256` band instances, a
+`dkq128` instance, `fattn-tile`, `fattn-vec` and `fattn.cu`.  The variant kernel is `W` in its own
+generated TU and `U` in the two `-case-` TUs that select it (the FA instantiation rule).
+
+Gates (gfx1201, ROCm 10.1.0, 27B UD-Q4_K_XL with `q8_0` K/V unless noted), all on the **canonical** r98
+build after a fresh `validate-set.sh` apply:
+
+| gate | result |
+|---|---|
+| `test-backend-ops -o FLASH_ATTN_EXT` | 6391 OK / 0 FAIL on both builds, identical per-case |
+| prefill-logit KLD (27B Q8_0; and `-ub 8` / `-ub 1` on 27B UD-Q4_K_M) | 0.000000 / 100.000 % in all three |
+| greedy text vs r97, 8K and 110K context | identical (`a9296d829c35`, `1580326fb41e`) |
+| greedy text vs r97, 2 GPU tensor 8K / gemma4 12B (head-256 SWA) | identical (`63b6b7cf6fdf`, `dbe017af390a`) |
+| 4-axis MTP `-n 3000` (P/C/K/R) | text and acceptance identical; P 71.7 C 80.8 K 86.4 R 59.8 t/s |
+| `n7` vs plain (64-column, depth 2) | identical text |
+| `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` | B=1 29.47 -> 30.12, B=4 95.73 -> 97.70, B=8 flat |
+| kill switch (`GGML_HIP_FA_BAND_FETCH_AHEAD=0`) | identical text and throughput |
+| `check-gpu-faults.sh` | clean |
+
+The 4-axis gate was run on dense 27B (1 GPU, `q8_0` K/V) rather than the qwen4exp cell, because the tree
+gated here is byte-identical to the tree PR #195 was verified on and the only delta is the q8_0 band
+variant; the dense cell exercises both band blocks (widths 1..4 at `n3`, 5..8 at `n7`).
+
+Speed, 3 interleaved pairs each: **8K 29.3 -> 29.5 t/s** (+0.7 %, r98 canonical build 29.7), **110K
+24.5 -> 25.1 t/s** (+2.4 %, canonical 25.1), 2 GPU tensor 8K 45.2 -> 45.6; prefill unchanged (840.0 ->
+839.2 t/s at 110K).  The submitter's end-to-end note (measured on an earlier single-kernel form) is
+therefore conservative for the shipped form.
+
+Record (with the submitted patch and README): `archive/work/rdna4-band-fetch-ahead/`, `RESOLUTION.md`.
+
+### PR #194 `set-tensor-async-ring` (`@briansp2020`) -- DECLINED, no delivery change
+
+It keeps r90's `set_tensor_async` snapshot guarantee (self-KLD control 100.000 % at `-ub 8` and `-ub 1`),
+but it **drains the graph-input upload queue** before every direct copy, which turns the batched upload
+kernel (`GGML_CUDA_ASYNC_INPUT_BATCH`, PR #182) back into per-copy uploads.  Measured on r97, 3 interleaved
+pairs: Flash-Next 2 GPU tensor `-ncmoe 10` MTP n3 **131.4 -> 129.8 t/s (-1.2 %)**, 35B-A3B 2 GPU tensor
+`-ncmoe 10` MTP n3 **184.6 -> 180.3 (-2.3 %)**, dense 27B neutral (1 GPU plain and 2 GPU tensor MTP).  With
+`GGML_CUDA_ASYNC_INPUT_BATCH=0` both builds read exactly 129.1 t/s, which isolates the mechanism.
+
+The PR reply asks for the drain to be scoped to the destination-overlap case (`ggml_cuda_async_input_set`
+already does that), and notes the two smaller points: the per-context ring takes no lock where the
+per-device ring takes `d.mtx`, and `cudaEventSynchronize` on a half switch is a host-blocking wait in the
+upload path.  Record: `archive/work/set-tensor-async-ring/` (no `wip/` stub; the PR arrived as a branch).
+
+### Docs
+
+`patches/README.md` block 05 content + knob + the FA instantiation rule under "Facts that span blocks";
+`ENVIRONMENT.md` §8 gains `GGML_HIP_FA_BAND_FETCH_AHEAD`; `wip/CAMPAIGNS.md` records both outcomes.
+`release.json` regenerated (`make-patches.sh` + `make-release.sh`); `validate-set.sh` green (strict `git am`
+from a fresh 097cf33d9 tarball, 12 blocks, tree `7b6b4280`).
+
 ## 261020.009 (r97) -- qwen4exp multi-GPU MTP 4-axis gate re-run (validates the split-mode-dependent DSV4_HC_POST default)
 
 Gate re-run requested after the r97 promotion, because block 10's new default changes the HC-combine arm

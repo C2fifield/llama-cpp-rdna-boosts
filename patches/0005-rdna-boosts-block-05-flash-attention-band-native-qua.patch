@@ -1,4 +1,4 @@
-From 5dd86fef40a2b30e5a7468a9e1fa8533d616f1f0 Mon Sep 17 00:00:00 2001
+From 4e6c8ca7cb5c2a04a688a912f2a03db3ce4cdf4e Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 16:03:33 -0500
 Subject: [PATCH 05/11] rdna-boosts: block 05: flash-attention band, native
@@ -68,296 +68,327 @@ one 128-half2 K/V batch, combine 64, Q in registers: gemma-4 31B global-attn sha
 4 KV heads, 32 Q heads, ub 512, q8_0 KV) 32768 126.1 -> 42.3 ms and 98304 377.0 -> 128.1 ms,
 end to end pp512 +95 % at d32768 and +144 % at d98304 (31B and 26B-A4B).  Records:
 archive/work/fa-band-2byte-row/, upstream/UPSTREAM-PR-fa-512-rdna-head-cap/.
+
+Fold (r98, PR #195, @overdoingism): with q8_0 K and V read in place (decode/verify, up to 8 query rows)
+the RDNA4 band launches a second kernel variant, `flash_attn_ext_f16<..., band_fetch_ahead = true>`, which
+fetches the raw q8_0 bytes of the next K/V batches into registers ahead of use and converts a batch into
+shared memory only when it is due; its barriers order shared memory only (release / s_barrier / acquire on
+"local"), because `__syncthreads()` also waits for every outstanding global load and would drain the fetches
+at the next barrier.  The quants stay packed in 32-bit words, with an empty `asm volatile` pinning the
+conversion at the stage point (otherwise the compiler unpacks the bytes right after the fetch, which waits
+there and needs 4x the registers).  64-column block (widths 5..8): two batches in flight, Q in registers.
+32-column block (widths 1..4): one batch in flight and the stream continues across the iteration boundary
+into the next KV block that is not fully masked, Q read from shared memory (a register-resident Q is spilled
+there and its scratch reloads share the load counter with the fetched K/V).  The variant is compiled in two
+generated translation units of its own (`template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_{4,8}-
+ncols2_8-dkq256-dv256.cu`, emitted by generate_cu_files.py), so every other launch, including f16 / bf16 K/V
+and prefill, compiles to the same gfx1201 instructions as before it (verified at the assembly level: 0
+differing instructions in both dkq256 band instances, a dkq128 instance, the tile and vec units and
+fattn.cu).  Default on; `GGML_HIP_FA_BAND_FETCH_AHEAD=0` runs the kernel without it for q8_0 too.  It also
+keys the FA shared-memory attribute raise per (variant, device) rather than per device, so the two kernels
+cannot share one "already raised" flag.
+
+Gates (gfx1201, ROCm 10.1.0, 27B UD-Q4_K_XL with q8_0 K/V unless noted): bit-identical to r97 everywhere
+the variant fires -- `test-backend-ops -o FLASH_ATTN_EXT` 6391/6391 on both builds, prefill-logit KLD
+0.000000 / same-top-p 100.000 %, greedy text identical at 8K and 110K context, on a 2 GPU tensor split and
+on gemma4 12B (its head-256 SWA layers), the 4-axis adaptive MTP gate at -n 3000 (text and draft acceptance
+identical on all four axes) and n7 = plain; `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` B=1 29.47 ->
+30.12 t/s, B=4 95.73 -> 97.70, B=8 flat; decode +0.7 % at 8K and +2.4 % at 110K context (3 interleaved pairs
+each; prefill unchanged at 840 t/s), +0.9 % on the 2 GPU tensor split.
 ---
- docs/build.md                                 |   2 +-
- ggml/CMakeLists.txt                           |   2 +-
- ggml/cmake/common.cmake                       |   2 +-
- ggml/include/ggml.h                           |  17 +
- ggml/src/ggml-cpu/ops.cpp                     |  34 +-
- ggml/src/ggml-cuda/convert.cu                 |   6 +
- ggml/src/ggml-cuda/dequantize.cuh             |  13 +
- ggml/src/ggml-cuda/fattn-common.cuh           | 738 +++++++++++++++++-
- ggml/src/ggml-cuda/fattn-mma-f16.cuh          | 715 +++++++++++++----
- ggml/src/ggml-cuda/fattn-rdna.cuh             | 435 +++++++++++
- ggml/src/ggml-cuda/fattn-tile.cu              |  29 +
- ggml/src/ggml-cuda/fattn-tile.cuh             | 569 ++++++++++++--
- ggml/src/ggml-cuda/fattn-vec.cuh              |  14 +-
- ggml/src/ggml-cuda/fattn.cu                   | 220 +++++-
- ggml/src/ggml-cuda/ggml-cuda.cu               |  82 ++
- ...stance-ncols1_1-ncols2_16-dkq192-dv128.cu} |   1 -
- ...nstance-ncols1_1-ncols2_16-dkq576-dv512.cu |   5 +
- ...stance-ncols1_1-ncols2_32-dkq320-dv256.cu} |   1 -
- ...nstance-ncols1_1-ncols2_32-dkq576-dv512.cu |   5 +
- ...instance-ncols1_1-ncols2_8-dkq112-dv112.cu |   5 +
- ...instance-ncols1_1-ncols2_8-dkq128-dv128.cu |   5 +
- ...instance-ncols1_1-ncols2_8-dkq192-dv128.cu |   5 +
- ...instance-ncols1_1-ncols2_8-dkq256-dv256.cu |   5 +
- ...instance-ncols1_1-ncols2_8-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_1-ncols2_8-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_1-ncols2_8-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_1-ncols2_8-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_1-ncols2_8.cu |  12 -
- ...nstance-ncols1_16-ncols2_1-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_16-ncols2_1-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_16-ncols2_1-dkq256-dv256.cu |   5 +
- ...-instance-ncols1_16-ncols2_1-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_16-ncols2_1-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_16-ncols2_1-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_16-ncols2_1.cu |  10 -
- ...nstance-ncols1_16-ncols2_2-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_16-ncols2_2-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_16-ncols2_2-dkq256-dv256.cu |   5 +
- ...nstance-ncols1_16-ncols2_2-dkq512-dv512.cu |   5 +
- ...-instance-ncols1_16-ncols2_2-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_16-ncols2_2-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_16-ncols2_2-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_16-ncols2_2.cu |  11 -
- ...nstance-ncols1_16-ncols2_4-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_16-ncols2_4-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_16-ncols2_4-dkq256-dv256.cu |   5 +
- ...nstance-ncols1_16-ncols2_4-dkq512-dv512.cu |   5 +
- ...nstance-ncols1_16-ncols2_4-dkq576-dv512.cu |   5 +
- ...-instance-ncols1_16-ncols2_4-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_16-ncols2_4-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_16-ncols2_4-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_16-ncols2_4.cu |  12 -
- ...stance-ncols1_2-ncols2_16-dkq192-dv128.cu} |   1 -
- ...nstance-ncols1_2-ncols2_16-dkq576-dv512.cu |   5 +
- ...stance-ncols1_2-ncols2_32-dkq320-dv256.cu} |   1 -
- ...nstance-ncols1_2-ncols2_32-dkq576-dv512.cu |   5 +
- ...instance-ncols1_2-ncols2_4-dkq112-dv112.cu |   5 +
- ...instance-ncols1_2-ncols2_4-dkq128-dv128.cu |   5 +
- ...instance-ncols1_2-ncols2_4-dkq256-dv256.cu |   5 +
- ...instance-ncols1_2-ncols2_4-dkq512-dv512.cu |   5 +
- ...instance-ncols1_2-ncols2_4-dkq576-dv512.cu |   5 +
- ...6-instance-ncols1_2-ncols2_4-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_2-ncols2_4-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_2-ncols2_4-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_2-ncols2_4.cu |  12 -
- ...instance-ncols1_2-ncols2_8-dkq112-dv112.cu |   5 +
- ...instance-ncols1_2-ncols2_8-dkq128-dv128.cu |   5 +
- ...instance-ncols1_2-ncols2_8-dkq192-dv128.cu |   5 +
- ...instance-ncols1_2-ncols2_8-dkq256-dv256.cu |   5 +
- ...instance-ncols1_2-ncols2_8-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_2-ncols2_8-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_2-ncols2_8-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_2-ncols2_8-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_2-ncols2_8.cu |  12 -
- ...nstance-ncols1_32-ncols2_1-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_32-ncols2_1-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_32-ncols2_1-dkq256-dv256.cu |   5 +
- ...-instance-ncols1_32-ncols2_1-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_32-ncols2_1-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_32-ncols2_1-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_32-ncols2_1.cu |  10 -
- ...nstance-ncols1_32-ncols2_2-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_32-ncols2_2-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_32-ncols2_2-dkq256-dv256.cu |   5 +
- ...nstance-ncols1_32-ncols2_2-dkq512-dv512.cu |   5 +
- ...-instance-ncols1_32-ncols2_2-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_32-ncols2_2-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_32-ncols2_2-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_32-ncols2_2.cu |  11 -
- ...stance-ncols1_4-ncols2_16-dkq192-dv128.cu} |   1 -
- ...nstance-ncols1_4-ncols2_16-dkq576-dv512.cu |   5 +
- ...instance-ncols1_4-ncols2_2-dkq112-dv112.cu |   5 +
- ...instance-ncols1_4-ncols2_2-dkq128-dv128.cu |   5 +
- ...instance-ncols1_4-ncols2_2-dkq256-dv256.cu |   5 +
- ...instance-ncols1_4-ncols2_2-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_4-ncols2_2-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_4-ncols2_2-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_4-ncols2_2-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_4-ncols2_2.cu |  11 -
- ...instance-ncols1_4-ncols2_4-dkq112-dv112.cu |   5 +
- ...instance-ncols1_4-ncols2_4-dkq128-dv128.cu |   5 +
- ...instance-ncols1_4-ncols2_4-dkq256-dv256.cu |   5 +
- ...instance-ncols1_4-ncols2_4-dkq512-dv512.cu |   5 +
- ...instance-ncols1_4-ncols2_4-dkq576-dv512.cu |   5 +
- ...6-instance-ncols1_4-ncols2_4-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_4-ncols2_4-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_4-ncols2_4-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_4-ncols2_4.cu |  12 -
- ...instance-ncols1_4-ncols2_8-dkq112-dv112.cu |   5 +
- ...instance-ncols1_4-ncols2_8-dkq128-dv128.cu |   5 +
- ...instance-ncols1_4-ncols2_8-dkq192-dv128.cu |   5 +
- ...instance-ncols1_4-ncols2_8-dkq256-dv256.cu |   5 +
- ...instance-ncols1_4-ncols2_8-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_4-ncols2_8-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_4-ncols2_8-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_4-ncols2_8-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_4-ncols2_8.cu |  12 -
- ...nstance-ncols1_64-ncols2_1-dkq112-dv112.cu |   5 +
- ...nstance-ncols1_64-ncols2_1-dkq128-dv128.cu |   5 +
- ...nstance-ncols1_64-ncols2_1-dkq256-dv256.cu |   5 +
- ...-instance-ncols1_64-ncols2_1-dkq64-dv64.cu |   5 +
- ...-instance-ncols1_64-ncols2_1-dkq80-dv80.cu |   5 +
- ...-instance-ncols1_64-ncols2_1-dkq96-dv96.cu |   5 +
- ...ttn-mma-f16-instance-ncols1_64-ncols2_1.cu |  10 -
- ...instance-ncols1_8-ncols2_1-dkq112-dv112.cu |   5 +
- ...instance-ncols1_8-ncols2_1-dkq128-dv128.cu |   5 +
- ...instance-ncols1_8-ncols2_1-dkq256-dv256.cu |   5 +
- ...6-instance-ncols1_8-ncols2_1-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_8-ncols2_1-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_8-ncols2_1-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_8-ncols2_1.cu |  10 -
- ...instance-ncols1_8-ncols2_2-dkq112-dv112.cu |   5 +
- ...instance-ncols1_8-ncols2_2-dkq128-dv128.cu |   5 +
- ...instance-ncols1_8-ncols2_2-dkq256-dv256.cu |   5 +
- ...instance-ncols1_8-ncols2_2-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_8-ncols2_2-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_8-ncols2_2-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_8-ncols2_2-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_8-ncols2_2.cu |  11 -
- ...instance-ncols1_8-ncols2_4-dkq112-dv112.cu |   5 +
- ...instance-ncols1_8-ncols2_4-dkq128-dv128.cu |   5 +
- ...instance-ncols1_8-ncols2_4-dkq256-dv256.cu |   5 +
- ...instance-ncols1_8-ncols2_4-dkq512-dv512.cu |   5 +
- ...instance-ncols1_8-ncols2_4-dkq576-dv512.cu |   5 +
- ...6-instance-ncols1_8-ncols2_4-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_8-ncols2_4-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_8-ncols2_4-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_8-ncols2_4.cu |  12 -
- ...instance-ncols1_8-ncols2_8-dkq112-dv112.cu |   5 +
- ...instance-ncols1_8-ncols2_8-dkq128-dv128.cu |   5 +
- ...instance-ncols1_8-ncols2_8-dkq192-dv128.cu |   5 +
- ...instance-ncols1_8-ncols2_8-dkq256-dv256.cu |   5 +
- ...instance-ncols1_8-ncols2_8-dkq512-dv512.cu |   5 +
- ...6-instance-ncols1_8-ncols2_8-dkq64-dv64.cu |   5 +
- ...6-instance-ncols1_8-ncols2_8-dkq80-dv80.cu |   5 +
- ...6-instance-ncols1_8-ncols2_8-dkq96-dv96.cu |   5 +
- ...attn-mma-f16-instance-ncols1_8-ncols2_8.cu |  12 -
- .../fattn-tile-instance-dkq112-dv112-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq112-dv112-f16.cu   |   5 +
- ...fattn-tile-instance-dkq112-dv112-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq112-dv112-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq112-dv112-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq112-dv112-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq112-dv112-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq112-dv112-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-f16.cu   |   5 +
- ...fattn-tile-instance-dkq128-dv128-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq128-dv128-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq128-dv128-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-f16.cu   |   5 +
- ...fattn-tile-instance-dkq192-dv128-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq192-dv128-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq192-dv128-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-f16.cu   |   5 +
- ...fattn-tile-instance-dkq256-dv256-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq256-dv256-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq256-dv256-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-f16.cu   |   5 +
- ...fattn-tile-instance-dkq320-dv256-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq320-dv256-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq320-dv256.cu       |   5 -
- .../fattn-tile-instance-dkq40-dv40-bf16.cu    |   5 +
- ... => fattn-tile-instance-dkq40-dv40-f16.cu} |   2 +-
- .../fattn-tile-instance-dkq40-dv40-iq4_nl.cu  |   5 +
- .../fattn-tile-instance-dkq40-dv40-q4_0.cu    |   5 +
- .../fattn-tile-instance-dkq40-dv40-q4_1.cu    |   5 +
- .../fattn-tile-instance-dkq40-dv40-q5_0.cu    |   5 +
- .../fattn-tile-instance-dkq40-dv40-q5_1.cu    |   5 +
- .../fattn-tile-instance-dkq40-dv40-q8_0.cu    |   5 +
- .../fattn-tile-instance-dkq40-dv40.cu         |   5 -
- .../fattn-tile-instance-dkq512-dv512-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512-f16.cu   |   5 +
- ...fattn-tile-instance-dkq512-dv512-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq512-dv512-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq512-dv512.cu       |   5 -
- .../fattn-tile-instance-dkq576-dv512-bf16.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512-f16.cu   |   5 +
- ...fattn-tile-instance-dkq576-dv512-iq4_nl.cu |   5 +
- .../fattn-tile-instance-dkq576-dv512-q4_0.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512-q4_1.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512-q5_0.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512-q5_1.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512-q8_0.cu  |   5 +
- .../fattn-tile-instance-dkq576-dv512.cu       |   5 -
- .../fattn-tile-instance-dkq64-dv64-bf16.cu    |   5 +
- ... => fattn-tile-instance-dkq64-dv64-f16.cu} |   2 +-
- .../fattn-tile-instance-dkq64-dv64-iq4_nl.cu  |   5 +
- .../fattn-tile-instance-dkq64-dv64-q4_0.cu    |   5 +
- .../fattn-tile-instance-dkq64-dv64-q4_1.cu    |   5 +
- .../fattn-tile-instance-dkq64-dv64-q5_0.cu    |   5 +
- .../fattn-tile-instance-dkq64-dv64-q5_1.cu    |   5 +
- .../fattn-tile-instance-dkq64-dv64-q8_0.cu    |   5 +
- .../fattn-tile-instance-dkq64-dv64.cu         |   5 -
- .../fattn-tile-instance-dkq72-dv72-bf16.cu    |   5 +
- ... => fattn-tile-instance-dkq72-dv72-f16.cu} |   2 +-
- .../fattn-tile-instance-dkq72-dv72-iq4_nl.cu  |   5 +
- .../fattn-tile-instance-dkq72-dv72-q4_0.cu    |   5 +
- .../fattn-tile-instance-dkq72-dv72-q4_1.cu    |   5 +
- .../fattn-tile-instance-dkq72-dv72-q5_0.cu    |   5 +
- .../fattn-tile-instance-dkq72-dv72-q5_1.cu    |   5 +
- .../fattn-tile-instance-dkq72-dv72-q8_0.cu    |   5 +
- .../fattn-tile-instance-dkq72-dv72.cu         |   5 -
- .../fattn-tile-instance-dkq80-dv80-bf16.cu    |   5 +
- ... => fattn-tile-instance-dkq80-dv80-f16.cu} |   2 +-
- .../fattn-tile-instance-dkq80-dv80-iq4_nl.cu  |   5 +
- .../fattn-tile-instance-dkq80-dv80-q4_0.cu    |   5 +
- .../fattn-tile-instance-dkq80-dv80-q4_1.cu    |   5 +
- .../fattn-tile-instance-dkq80-dv80-q5_0.cu    |   5 +
- .../fattn-tile-instance-dkq80-dv80-q5_1.cu    |   5 +
- .../fattn-tile-instance-dkq80-dv80-q8_0.cu    |   5 +
- .../fattn-tile-instance-dkq80-dv80.cu         |   5 -
- .../fattn-tile-instance-dkq96-dv96-bf16.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96-f16.cu     |   5 +
- .../fattn-tile-instance-dkq96-dv96-iq4_nl.cu  |   5 +
- .../fattn-tile-instance-dkq96-dv96-q4_0.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96-q4_1.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96-q5_0.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96-q5_1.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96-q8_0.cu    |   5 +
- .../fattn-tile-instance-dkq96-dv96.cu         |   5 -
- .../fattn-vec-instance-bf16-iq4_nl.cu         |   7 +
- .../fattn-vec-instance-f16-iq4_nl.cu          |   7 +
- .../fattn-vec-instance-iq4_nl-bf16.cu         |   7 +
- .../fattn-vec-instance-iq4_nl-f16.cu          |   7 +
- .../fattn-vec-instance-iq4_nl-iq4_nl.cu       |   7 +
- .../fattn-vec-instance-iq4_nl-q4_0.cu         |   7 +
- .../fattn-vec-instance-iq4_nl-q4_1.cu         |   7 +
- .../fattn-vec-instance-iq4_nl-q5_0.cu         |   7 +
- .../fattn-vec-instance-iq4_nl-q5_1.cu         |   7 +
- .../fattn-vec-instance-iq4_nl-q8_0.cu         |   7 +
- .../fattn-vec-instance-q4_0-iq4_nl.cu         |   7 +
- .../fattn-vec-instance-q4_1-iq4_nl.cu         |   7 +
- .../fattn-vec-instance-q5_0-iq4_nl.cu         |   7 +
- .../fattn-vec-instance-q5_1-iq4_nl.cu         |   7 +
- .../fattn-vec-instance-q8_0-iq4_nl.cu         |   7 +
- .../template-instances/generate_cu_files.py   |  13 +-
- ggml/src/ggml-hip/CMakeLists.txt              |  11 +
- ggml/src/ggml.c                               |  39 +
- src/llama-context.cpp                         | 217 ++++-
- src/llama-context.h                           |  11 +-
- src/llama-cparams.h                           |   2 +
- src/llama-graph.cpp                           | 183 +++--
- src/llama-graph.h                             |  60 ++
- src/llama-kv-cache.cpp                        | 182 +++++
- src/llama-kv-cache.h                          |  14 +
- tests/test-backend-ops.cpp                    | 156 +++-
- 287 files changed, 4596 insertions(+), 573 deletions(-)
+ docs/build.md                                 |    2 +-
+ ggml/CMakeLists.txt                           |    2 +-
+ ggml/cmake/common.cmake                       |    2 +-
+ ggml/include/ggml.h                           |   17 +
+ ggml/src/ggml-cpu/ops.cpp                     |   34 +-
+ ggml/src/ggml-cuda/convert.cu                 |    6 +
+ ggml/src/ggml-cuda/dequantize.cuh             |   13 +
+ ggml/src/ggml-cuda/fattn-common.cuh           |  772 +++++++++++-
+ ggml/src/ggml-cuda/fattn-mma-f16.cuh          | 1045 ++++++++++++++---
+ ggml/src/ggml-cuda/fattn-rdna.cuh             |  446 +++++++
+ ggml/src/ggml-cuda/fattn-tile.cu              |   29 +
+ ggml/src/ggml-cuda/fattn-tile.cuh             |  569 +++++++--
+ ggml/src/ggml-cuda/fattn-vec.cuh              |   14 +-
+ ggml/src/ggml-cuda/fattn.cu                   |  220 +++-
+ ggml/src/ggml-cuda/ggml-cuda.cu               |   82 ++
+ ...ch-ahead-ncols1_4-ncols2_8-dkq256-dv256.cu |    7 +
+ ...ch-ahead-ncols1_8-ncols2_8-dkq256-dv256.cu |    7 +
+ ...stance-ncols1_1-ncols2_16-dkq192-dv128.cu} |    1 -
+ ...nstance-ncols1_1-ncols2_16-dkq576-dv512.cu |    5 +
+ ...stance-ncols1_1-ncols2_32-dkq320-dv256.cu} |    1 -
+ ...nstance-ncols1_1-ncols2_32-dkq576-dv512.cu |    5 +
+ ...instance-ncols1_1-ncols2_8-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_1-ncols2_8-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_1-ncols2_8-dkq192-dv128.cu |    5 +
+ ...instance-ncols1_1-ncols2_8-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_1-ncols2_8-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_1-ncols2_8-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_1-ncols2_8-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_1-ncols2_8-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_1-ncols2_8.cu |   12 -
+ ...nstance-ncols1_16-ncols2_1-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_16-ncols2_1-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_16-ncols2_1-dkq256-dv256.cu |    5 +
+ ...-instance-ncols1_16-ncols2_1-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_16-ncols2_1-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_16-ncols2_1-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_16-ncols2_1.cu |   10 -
+ ...nstance-ncols1_16-ncols2_2-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_16-ncols2_2-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_16-ncols2_2-dkq256-dv256.cu |    5 +
+ ...nstance-ncols1_16-ncols2_2-dkq512-dv512.cu |    5 +
+ ...-instance-ncols1_16-ncols2_2-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_16-ncols2_2-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_16-ncols2_2-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_16-ncols2_2.cu |   11 -
+ ...nstance-ncols1_16-ncols2_4-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_16-ncols2_4-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_16-ncols2_4-dkq256-dv256.cu |    5 +
+ ...nstance-ncols1_16-ncols2_4-dkq512-dv512.cu |    5 +
+ ...nstance-ncols1_16-ncols2_4-dkq576-dv512.cu |    5 +
+ ...-instance-ncols1_16-ncols2_4-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_16-ncols2_4-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_16-ncols2_4-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_16-ncols2_4.cu |   12 -
+ ...stance-ncols1_2-ncols2_16-dkq192-dv128.cu} |    1 -
+ ...nstance-ncols1_2-ncols2_16-dkq576-dv512.cu |    5 +
+ ...stance-ncols1_2-ncols2_32-dkq320-dv256.cu} |    1 -
+ ...nstance-ncols1_2-ncols2_32-dkq576-dv512.cu |    5 +
+ ...instance-ncols1_2-ncols2_4-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_2-ncols2_4-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_2-ncols2_4-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_2-ncols2_4-dkq512-dv512.cu |    5 +
+ ...instance-ncols1_2-ncols2_4-dkq576-dv512.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_4-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_4-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_4-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_2-ncols2_4.cu |   12 -
+ ...instance-ncols1_2-ncols2_8-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_2-ncols2_8-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_2-ncols2_8-dkq192-dv128.cu |    5 +
+ ...instance-ncols1_2-ncols2_8-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_2-ncols2_8-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_8-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_8-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_2-ncols2_8-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_2-ncols2_8.cu |   12 -
+ ...nstance-ncols1_32-ncols2_1-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_32-ncols2_1-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_32-ncols2_1-dkq256-dv256.cu |    5 +
+ ...-instance-ncols1_32-ncols2_1-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_32-ncols2_1-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_32-ncols2_1-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_32-ncols2_1.cu |   10 -
+ ...nstance-ncols1_32-ncols2_2-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_32-ncols2_2-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_32-ncols2_2-dkq256-dv256.cu |    5 +
+ ...nstance-ncols1_32-ncols2_2-dkq512-dv512.cu |    5 +
+ ...-instance-ncols1_32-ncols2_2-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_32-ncols2_2-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_32-ncols2_2-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_32-ncols2_2.cu |   11 -
+ ...stance-ncols1_4-ncols2_16-dkq192-dv128.cu} |    1 -
+ ...nstance-ncols1_4-ncols2_16-dkq576-dv512.cu |    5 +
+ ...instance-ncols1_4-ncols2_2-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_4-ncols2_2-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_4-ncols2_2-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_4-ncols2_2-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_2-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_2-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_2-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_4-ncols2_2.cu |   11 -
+ ...instance-ncols1_4-ncols2_4-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_4-ncols2_4-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_4-ncols2_4-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_4-ncols2_4-dkq512-dv512.cu |    5 +
+ ...instance-ncols1_4-ncols2_4-dkq576-dv512.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_4-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_4-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_4-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_4-ncols2_4.cu |   12 -
+ ...instance-ncols1_4-ncols2_8-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_4-ncols2_8-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_4-ncols2_8-dkq192-dv128.cu |    5 +
+ ...instance-ncols1_4-ncols2_8-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_4-ncols2_8-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_8-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_8-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_4-ncols2_8-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_4-ncols2_8.cu |   12 -
+ ...nstance-ncols1_64-ncols2_1-dkq112-dv112.cu |    5 +
+ ...nstance-ncols1_64-ncols2_1-dkq128-dv128.cu |    5 +
+ ...nstance-ncols1_64-ncols2_1-dkq256-dv256.cu |    5 +
+ ...-instance-ncols1_64-ncols2_1-dkq64-dv64.cu |    5 +
+ ...-instance-ncols1_64-ncols2_1-dkq80-dv80.cu |    5 +
+ ...-instance-ncols1_64-ncols2_1-dkq96-dv96.cu |    5 +
+ ...ttn-mma-f16-instance-ncols1_64-ncols2_1.cu |   10 -
+ ...instance-ncols1_8-ncols2_1-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_8-ncols2_1-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_8-ncols2_1-dkq256-dv256.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_1-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_1-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_1-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_8-ncols2_1.cu |   10 -
+ ...instance-ncols1_8-ncols2_2-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_8-ncols2_2-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_8-ncols2_2-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_8-ncols2_2-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_2-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_2-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_2-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_8-ncols2_2.cu |   11 -
+ ...instance-ncols1_8-ncols2_4-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_8-ncols2_4-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_8-ncols2_4-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_8-ncols2_4-dkq512-dv512.cu |    5 +
+ ...instance-ncols1_8-ncols2_4-dkq576-dv512.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_4-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_4-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_4-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_8-ncols2_4.cu |   12 -
+ ...instance-ncols1_8-ncols2_8-dkq112-dv112.cu |    5 +
+ ...instance-ncols1_8-ncols2_8-dkq128-dv128.cu |    5 +
+ ...instance-ncols1_8-ncols2_8-dkq192-dv128.cu |    5 +
+ ...instance-ncols1_8-ncols2_8-dkq256-dv256.cu |    5 +
+ ...instance-ncols1_8-ncols2_8-dkq512-dv512.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_8-dkq64-dv64.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_8-dkq80-dv80.cu |    5 +
+ ...6-instance-ncols1_8-ncols2_8-dkq96-dv96.cu |    5 +
+ ...attn-mma-f16-instance-ncols1_8-ncols2_8.cu |   12 -
+ .../fattn-tile-instance-dkq112-dv112-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq112-dv112-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq112-dv112-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq112-dv112-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq112-dv112-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq112-dv112-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq112-dv112-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq112-dv112-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq128-dv128-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq128-dv128-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq128-dv128-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq192-dv128-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq192-dv128-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq192-dv128-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq256-dv256-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq256-dv256-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq256-dv256-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq320-dv256-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq320-dv256-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq320-dv256.cu       |    5 -
+ .../fattn-tile-instance-dkq40-dv40-bf16.cu    |    5 +
+ ... => fattn-tile-instance-dkq40-dv40-f16.cu} |    2 +-
+ .../fattn-tile-instance-dkq40-dv40-iq4_nl.cu  |    5 +
+ .../fattn-tile-instance-dkq40-dv40-q4_0.cu    |    5 +
+ .../fattn-tile-instance-dkq40-dv40-q4_1.cu    |    5 +
+ .../fattn-tile-instance-dkq40-dv40-q5_0.cu    |    5 +
+ .../fattn-tile-instance-dkq40-dv40-q5_1.cu    |    5 +
+ .../fattn-tile-instance-dkq40-dv40-q8_0.cu    |    5 +
+ .../fattn-tile-instance-dkq40-dv40.cu         |    5 -
+ .../fattn-tile-instance-dkq512-dv512-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq512-dv512-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq512-dv512-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq512-dv512.cu       |    5 -
+ .../fattn-tile-instance-dkq576-dv512-bf16.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512-f16.cu   |    5 +
+ ...fattn-tile-instance-dkq576-dv512-iq4_nl.cu |    5 +
+ .../fattn-tile-instance-dkq576-dv512-q4_0.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512-q4_1.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512-q5_0.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512-q5_1.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512-q8_0.cu  |    5 +
+ .../fattn-tile-instance-dkq576-dv512.cu       |    5 -
+ .../fattn-tile-instance-dkq64-dv64-bf16.cu    |    5 +
+ ... => fattn-tile-instance-dkq64-dv64-f16.cu} |    2 +-
+ .../fattn-tile-instance-dkq64-dv64-iq4_nl.cu  |    5 +
+ .../fattn-tile-instance-dkq64-dv64-q4_0.cu    |    5 +
+ .../fattn-tile-instance-dkq64-dv64-q4_1.cu    |    5 +
+ .../fattn-tile-instance-dkq64-dv64-q5_0.cu    |    5 +
+ .../fattn-tile-instance-dkq64-dv64-q5_1.cu    |    5 +
+ .../fattn-tile-instance-dkq64-dv64-q8_0.cu    |    5 +
+ .../fattn-tile-instance-dkq64-dv64.cu         |    5 -
+ .../fattn-tile-instance-dkq72-dv72-bf16.cu    |    5 +
+ ... => fattn-tile-instance-dkq72-dv72-f16.cu} |    2 +-
+ .../fattn-tile-instance-dkq72-dv72-iq4_nl.cu  |    5 +
+ .../fattn-tile-instance-dkq72-dv72-q4_0.cu    |    5 +
+ .../fattn-tile-instance-dkq72-dv72-q4_1.cu    |    5 +
+ .../fattn-tile-instance-dkq72-dv72-q5_0.cu    |    5 +
+ .../fattn-tile-instance-dkq72-dv72-q5_1.cu    |    5 +
+ .../fattn-tile-instance-dkq72-dv72-q8_0.cu    |    5 +
+ .../fattn-tile-instance-dkq72-dv72.cu         |    5 -
+ .../fattn-tile-instance-dkq80-dv80-bf16.cu    |    5 +
+ ... => fattn-tile-instance-dkq80-dv80-f16.cu} |    2 +-
+ .../fattn-tile-instance-dkq80-dv80-iq4_nl.cu  |    5 +
+ .../fattn-tile-instance-dkq80-dv80-q4_0.cu    |    5 +
+ .../fattn-tile-instance-dkq80-dv80-q4_1.cu    |    5 +
+ .../fattn-tile-instance-dkq80-dv80-q5_0.cu    |    5 +
+ .../fattn-tile-instance-dkq80-dv80-q5_1.cu    |    5 +
+ .../fattn-tile-instance-dkq80-dv80-q8_0.cu    |    5 +
+ .../fattn-tile-instance-dkq80-dv80.cu         |    5 -
+ .../fattn-tile-instance-dkq96-dv96-bf16.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96-f16.cu     |    5 +
+ .../fattn-tile-instance-dkq96-dv96-iq4_nl.cu  |    5 +
+ .../fattn-tile-instance-dkq96-dv96-q4_0.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96-q4_1.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96-q5_0.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96-q5_1.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96-q8_0.cu    |    5 +
+ .../fattn-tile-instance-dkq96-dv96.cu         |    5 -
+ .../fattn-vec-instance-bf16-iq4_nl.cu         |    7 +
+ .../fattn-vec-instance-f16-iq4_nl.cu          |    7 +
+ .../fattn-vec-instance-iq4_nl-bf16.cu         |    7 +
+ .../fattn-vec-instance-iq4_nl-f16.cu          |    7 +
+ .../fattn-vec-instance-iq4_nl-iq4_nl.cu       |    7 +
+ .../fattn-vec-instance-iq4_nl-q4_0.cu         |    7 +
+ .../fattn-vec-instance-iq4_nl-q4_1.cu         |    7 +
+ .../fattn-vec-instance-iq4_nl-q5_0.cu         |    7 +
+ .../fattn-vec-instance-iq4_nl-q5_1.cu         |    7 +
+ .../fattn-vec-instance-iq4_nl-q8_0.cu         |    7 +
+ .../fattn-vec-instance-q4_0-iq4_nl.cu         |    7 +
+ .../fattn-vec-instance-q4_1-iq4_nl.cu         |    7 +
+ .../fattn-vec-instance-q5_0-iq4_nl.cu         |    7 +
+ .../fattn-vec-instance-q5_1-iq4_nl.cu         |    7 +
+ .../fattn-vec-instance-q8_0-iq4_nl.cu         |    7 +
+ .../template-instances/generate_cu_files.py   |   25 +-
+ ggml/src/ggml-hip/CMakeLists.txt              |   11 +
+ ggml/src/ggml.c                               |   39 +
+ src/llama-context.cpp                         |  217 +++-
+ src/llama-context.h                           |   11 +-
+ src/llama-cparams.h                           |    2 +
+ src/llama-graph.cpp                           |  183 ++-
+ src/llama-graph.h                             |   60 +
+ src/llama-kv-cache.cpp                        |  182 +++
+ src/llama-kv-cache.h                          |   14 +
+ tests/test-backend-ops.cpp                    |  156 ++-
+ 289 files changed, 4975 insertions(+), 595 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/fattn-rdna.cuh
+ create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_4-ncols2_8-dkq256-dv256.cu
+ create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_8-ncols2_8-dkq256-dv256.cu
  rename ggml/src/ggml-cuda/template-instances/{fattn-mma-f16-instance-ncols1_1-ncols2_16.cu => fattn-mma-f16-instance-ncols1_1-ncols2_16-dkq192-dv128.cu} (79%)
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16-dkq576-dv512.cu
  rename ggml/src/ggml-cuda/template-instances/{fattn-mma-f16-instance-ncols1_1-ncols2_32.cu => fattn-mma-f16-instance-ncols1_1-ncols2_32-dkq320-dv256.cu} (79%)
@@ -819,7 +850,7 @@ index 651524be7..a8cf54eb5 100644
      const block_q4_1 * x = (const block_q4_1 *) vx;
  
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index 2ea7cac83..4c870e946 100644
+index 2ea7cac83..622617378 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
 @@ -8,6 +8,33 @@
@@ -911,7 +942,7 @@ index 2ea7cac83..4c870e946 100644
      GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
  
      const ggml_tensor * K = dst->src[1];
-@@ -81,9 +131,235 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
+@@ -81,9 +131,269 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
          }
      }
  
@@ -975,6 +1006,40 @@ index 2ea7cac83..4c870e946 100644
 +#pragma unroll
 +    for (int l = 0; l < GGML_CUDA_FA_Q8_CHUNK/2; ++l) {
 +        dst[l] = d2 * make_half2(q[2*l + 0], q[2*l + 1]);
++    }
++}
++
++// The same chunk in two steps, for a loader that issues the fetches of several chunks before it converts the first one
++// (the RDNA4 band's q8_0 fetch-ahead, see flash_attn_ext_f16_band_fetch); same values as
++// ggml_cuda_fattn_dequantize_q8_0_chunk.  The quants stay packed in 32-bit words until the conversion: as separate bytes
++// the compiler unpacks them right after the fetch (to carry them through the loader's control flow), which waits for
++// the fetch and needs 4x the registers.
++struct ggml_cuda_fattn_q8_0_chunk_raw {
++    half d;
++    int  q[GGML_CUDA_FA_Q8_CHUNK/4];
++};
++
++static __device__ __forceinline__ void ggml_cuda_fattn_load_q8_0_chunk(
++        const char * const __restrict__ row, const int el, ggml_cuda_fattn_q8_0_chunk_raw & raw) {
++    static_assert(sizeof(block_q8_0) == QK8_0 + 2, "bad block_q8_0");
++
++    const int blk = el / QK8_0;
++    const int off = el % QK8_0;
++    const char * bp = row + (size_t) blk*sizeof(block_q8_0);
++
++    ggml_cuda_memcpy_1<sizeof(half), 2>(&raw.d, bp);
++    ggml_cuda_memcpy_1<GGML_CUDA_FA_Q8_CHUNK, 2>(raw.q, bp + sizeof(half) + off);
++}
++
++static __device__ __forceinline__ void ggml_cuda_fattn_convert_q8_0_chunk(
++        const ggml_cuda_fattn_q8_0_chunk_raw & raw, half2 * const __restrict__ dst) {
++    const half2 d2 = __half2half2(raw.d);
++
++#pragma unroll
++    for (int l = 0; l < GGML_CUDA_FA_Q8_CHUNK/2; ++l) {
++        const int8_t q0 = (int8_t) (raw.q[l/2] >> (16*(l % 2) + 0));
++        const int8_t q1 = (int8_t) (raw.q[l/2] >> (16*(l % 2) + 8));
++        dst[l] = d2 * make_half2(q0, q1);
 +    }
 +}
 +
@@ -1147,7 +1212,7 @@ index 2ea7cac83..4c870e946 100644
  template <int D, int nthreads>
  static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_f16(
      const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds_v) {
-@@ -300,6 +576,48 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q5_1(
+@@ -300,6 +610,48 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q5_1(
      return sum;
  }
  
@@ -1196,7 +1261,7 @@ index 2ea7cac83..4c870e946 100644
  template <int D, int nthreads>
  static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
      const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
-@@ -589,6 +907,49 @@ static __device__ __forceinline__ void dequantize_V_q5_1(const void * __restrict
+@@ -589,6 +941,49 @@ static __device__ __forceinline__ void dequantize_V_q5_1(const void * __restrict
      }
  }
  
@@ -1246,7 +1311,7 @@ index 2ea7cac83..4c870e946 100644
  template <typename T, int ne>
  static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
      const block_q8_0 * x = (const block_q8_0 *) vx;
-@@ -636,6 +997,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
+@@ -636,6 +1031,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
          return vec_dot_fattn_vec_KQ_q5_1<D, nthreads>;
      } else if constexpr (type_K == GGML_TYPE_Q8_0) {
          return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
@@ -1255,7 +1320,7 @@ index 2ea7cac83..4c870e946 100644
      } else if constexpr (type_K == GGML_TYPE_BF16) {
          return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
      } else {
-@@ -658,6 +1021,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
+@@ -658,6 +1055,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
          return dequantize_V_q5_1<T, ne>;
      } else if constexpr (type_V == GGML_TYPE_Q8_0) {
          return dequantize_V_q8_0<T, ne>;
@@ -1264,7 +1329,7 @@ index 2ea7cac83..4c870e946 100644
      } else if constexpr (type_V == GGML_TYPE_BF16) {
          return dequantize_V_bf16<float, ne>;
      } else {
-@@ -723,6 +1088,132 @@ static __global__ void flash_attn_mask_to_KV_max(
+@@ -723,6 +1122,132 @@ static __global__ void flash_attn_mask_to_KV_max(
      KV_max[sequence*ne31 + jt] = KV_max_sj;
  }
  
@@ -1397,7 +1462,7 @@ index 2ea7cac83..4c870e946 100644
  void ggml_cuda_flash_attn_ext_compact_mask(
          const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream);
  
-@@ -977,11 +1468,31 @@ static __global__ void flash_attn_combine_results(
+@@ -977,11 +1502,31 @@ static __global__ void flash_attn_combine_results(
      dst[tid] = VKQ_numerator / VKQ_denominator;
  }
  
@@ -1430,7 +1495,7 @@ index 2ea7cac83..4c870e946 100644
  ) {
      constexpr int ncols = ncols1 * ncols2;
  
-@@ -994,6 +1505,11 @@ void launch_fattn(
+@@ -994,6 +1539,11 @@ void launch_fattn(
      const ggml_tensor * mask  = dst->src[3];
      const ggml_tensor * sinks = dst->src[4];
  
@@ -1442,7 +1507,7 @@ index 2ea7cac83..4c870e946 100644
      ggml_tensor * KQV = dst;
  
      GGML_ASSERT(Q->type == GGML_TYPE_F32);
-@@ -1011,12 +1527,52 @@ void launch_fattn(
+@@ -1011,12 +1561,52 @@ void launch_fattn(
      const int cc  = ggml_cuda_info().devices[id].cc;
      const int nsm = ggml_cuda_info().devices[id].nsm;
  
@@ -1500,7 +1565,7 @@ index 2ea7cac83..4c870e946 100644
  
      const char * K_data = (const char *) K->data;
      size_t nb11 = K->nb[1];
-@@ -1028,7 +1584,7 @@ void launch_fattn(
+@@ -1028,7 +1618,7 @@ void launch_fattn(
      size_t nb22 = V->nb[2];
      size_t nb23 = V->nb[3];
  
@@ -1509,7 +1574,7 @@ index 2ea7cac83..4c870e946 100644
          const size_t bs = ggml_blck_size(K->type);
          const size_t ts = ggml_type_size(K->type);
  
-@@ -1056,7 +1612,7 @@ void launch_fattn(
+@@ -1056,7 +1646,7 @@ void launch_fattn(
          K_data = (char *) K_f16;
      }
  
@@ -1518,7 +1583,7 @@ index 2ea7cac83..4c870e946 100644
          if (V_is_K_view) {
              V_data = K_data;
              nb21   = nb11;
-@@ -1132,9 +1688,116 @@ void launch_fattn(
+@@ -1132,9 +1722,116 @@ void launch_fattn(
          CUDA_CHECK(cudaGetLastError());
      }
  
@@ -1635,7 +1700,7 @@ index 2ea7cac83..4c870e946 100644
      GGML_ASSERT(max_blocks_per_sm > 0);
      int parallel_blocks = max_blocks_per_sm;
  
-@@ -1169,7 +1832,29 @@ void launch_fattn(
+@@ -1169,7 +1866,29 @@ void launch_fattn(
          blocks_num.y = 1;
          blocks_num.z = 1;
  
@@ -1666,7 +1731,7 @@ index 2ea7cac83..4c870e946 100644
              const int nblocks_stream_k_raw = std::min(max_blocks, ntiles_KV*ntiles_dst);
              // Round down to a multiple of ntiles_dst so that each output tile gets the same number of blocks (avoids fixup).
              // Only do this if the occupancy loss from rounding is acceptable.
-@@ -1185,8 +1870,9 @@ void launch_fattn(
+@@ -1185,8 +1904,9 @@ void launch_fattn(
              blocks_num.x = nblocks_stream_k;
          }
  
@@ -1678,7 +1743,7 @@ index 2ea7cac83..4c870e946 100644
          }
      } else {
          // parallel_blocks must not be larger than what the tensor size allows:
-@@ -1255,28 +1941,44 @@ void launch_fattn(
+@@ -1255,28 +1975,44 @@ void launch_fattn(
  
      GGML_ASSERT(block_dim.x % warp_size == 0);
  
@@ -1727,7 +1792,7 @@ index 2ea7cac83..4c870e946 100644
              const int bpt         = nblocks_sk / ntiles_dst;
  
              const uint3 fd0 = init_fastdiv_values(ntiles_x * ntiles_z_gqa * K->ne[2]);
-@@ -1291,7 +1993,7 @@ void launch_fattn(
+@@ -1291,7 +2027,7 @@ void launch_fattn(
                  (float *) KQV->data, dst_tmp_meta.ptr,
                   Q->ne[1], Q->ne[2], K->ne[2], nblocks_sk,
                   gqa_ratio, bpt, fd0, fd1, fd2);
@@ -1737,7 +1802,7 @@ index 2ea7cac83..4c870e946 100644
              const int total_work = ntiles_KV * ntiles_dst;
  
 diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 0572b2bd6..bccf264fa 100644
+index 0572b2bd6..2c656aaa5 100644
 --- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 +++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 @@ -127,7 +127,27 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co
@@ -1830,7 +1895,7 @@ index 0572b2bd6..bccf264fa 100644
  #if defined(AMPERE_MMA_AVAILABLE)
      return ggml_cuda_fattn_mma_get_config_ampere(DKQ, DV, ncols);
  #elif defined(TURING_MMA_AVAILABLE)
-@@ -258,75 +286,107 @@ static constexpr __device__ fattn_mma_config ggml_cuda_fattn_mma_get_config(cons
+@@ -258,75 +286,127 @@ static constexpr __device__ fattn_mma_config ggml_cuda_fattn_mma_get_config(cons
  #elif defined(VOLTA_MMA_AVAILABLE)
      return ggml_cuda_fattn_mma_get_config_volta(DKQ, DV, ncols);
  #elif defined(AMD_WMMA_AVAILABLE)
@@ -1852,96 +1917,118 @@ index 0572b2bd6..bccf264fa 100644
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nthreads;
 +static __host__ int ggml_cuda_fattn_mma_get_nthreads(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
 +    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nthreads;
-+}
-+
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nthreads(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nthreads;
-+}
-+
-+static __host__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).occupancy;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nthreads(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nthreads;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).occupancy;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nthreads(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nthreads;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).occupancy;
-+static __host__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_fa;
++static __host__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).occupancy;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).occupancy;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_fa;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_occupancy(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).occupancy;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nbatch_fa;
-+static __host__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_K2;
++static __host__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_fa;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nbatch_fa;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_K2;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_fa(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_fa;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nbatch_K2;
-+static __host__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_V2;
++static __host__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_K2;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nbatch_K2;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_V2;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_K2(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_K2;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nbatch_V2;
-+static __host__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_combine;
++static __host__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_V2;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nbatch_V2;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_combine;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_V2(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_V2;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nbatch_combine;
-+static __host__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nstages_target;
++static __host__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nbatch_combine;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nbatch_combine;
-+static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nstages_target;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nbatch_combine(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nbatch_combine;
  }
  
 -static __host__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).nstages_target;
-+static __host__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
-+    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).Q_in_reg;
++static __host__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).nstages_target;
  }
  
 -static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).nstages_target;
++static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages_target(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).nstages_target;
++}
++
++static __host__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols, const int cc, const int ncols2) {
++    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc, ncols2).Q_in_reg;
++}
++
 +static constexpr __device__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols, const int ncols2 = 1) {
 +    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, ncols2).Q_in_reg;
++}
++
++// The RDNA4 band rows that have a second kernel variant, which fetches q8_0 K/V ahead (see flash_attn_ext_f16_band_depth):
++// the 32-column block (query widths 1..4) and the 64-column block (widths 5..8).  The variant is launched for q8_0 K and V;
++// the other K/V types, and q8_0 with GGML_HIP_FA_BAND_FETCH_AHEAD=0, run the kernel without it.
++static constexpr __host__ __device__ bool ggml_cuda_fattn_mma_band_has_fetch_ahead(const int DKQ, const int DV, const int ncols1, const int ncols2) {
++#if defined(GGML_USE_HIP)
++    constexpr bool is_hip = true;
++#else
++    constexpr bool is_hip = false;
++#endif // defined(GGML_USE_HIP)
++    return is_hip && DKQ == 256 && DV == 256 && ncols2 == 8 && (ncols1 == 4 || ncols1 == 8);
  }
  
 -static __host__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols, const int cc) {
 -    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols, cc).Q_in_reg;
++// In the fetch-ahead variant the 32-column block reads Q from shared memory: a register-resident Q is spilled there, and
++// its scratch reloads count in the same load counter as the fetched K/V, so every reload would wait for the fetch-ahead
++// (same values, so the result does not change).  gfx1201, KV 110592: 13 % faster with both than without either; the
++// 64-column block is faster with Q in registers.
++static constexpr __host__ __device__ bool ggml_cuda_fattn_mma_band_fetch_ahead_Q_in_lds(const int DKQ, const int DV, const int ncols1, const int ncols2) {
++    return ggml_cuda_fattn_mma_band_has_fetch_ahead(DKQ, DV, ncols1, ncols2) && ncols1 == 4;
+ }
+ 
+-static constexpr __device__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols) {
+-    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).Q_in_reg;
 +// Swizzling needs a tile stride that is a multiple of 32 half2 columns.
 +static constexpr __host__ __device__ bool ggml_cuda_fattn_mma_bank_aligned(const int nbatch_2) {
 +    return nbatch_2 >= 32 && nbatch_2 % 32 == 0;
@@ -1961,17 +2048,15 @@ index 0572b2bd6..bccf264fa 100644
 +    GGML_UNUSED_VARS(DKQ, DV, ncols1, ncols2);
 +    return false;
 +#endif // defined(TURING_MMA_AVAILABLE)
- }
- 
--static constexpr __device__ bool ggml_cuda_fattn_mma_get_Q_in_reg(const int DKQ, const int DV, const int ncols) {
--    return ggml_cuda_fattn_mma_get_config(DKQ, DV, ncols).Q_in_reg;
++}
++
 +// Row padding is only needed if the tile is not swizzled.
 +static constexpr __host__ __device__ int ggml_cuda_fattn_mma_get_stride_tile(const int nbatch_2, const bool swizzled) {
 +    return swizzled ? nbatch_2 : nbatch_2 + 4;
  }
  
  static constexpr __device__ int get_cols_per_thread() {
-@@ -346,30 +406,16 @@ static __host__ int get_cols_per_warp(const int cc) {
+@@ -346,30 +426,16 @@ static __host__ int get_cols_per_warp(const int cc) {
      }
  }
  
@@ -2004,7 +2089,7 @@ index 0572b2bd6..bccf264fa 100644
      // sparse gather is not implemented for multi-stage loading
      return use_sparse && nstages_target > 1 ? 1 : nstages_target;
  #else
-@@ -380,10 +426,193 @@ static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(
+@@ -380,10 +446,193 @@ static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(
  
  // ------------------------------------------------------------------------------------------------------------------
  
@@ -2200,7 +2285,7 @@ index 0572b2bd6..bccf264fa 100644
      constexpr int warp_size = ggml_cuda_get_physical_warp_size();
      // K/V data is loaded with decreasing granularity for D for better memory bandwidth.
      // The minimum granularity is 16 bytes.
-@@ -470,6 +699,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
+@@ -470,6 +719,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
                      } else {
                          src = !oob_check || i < i_sup ? KV + int64_t(k_VKQ_0 + i)*stride_KV + k*h2_per_chunk : zero;
                      }
@@ -2210,7 +2295,7 @@ index 0572b2bd6..bccf264fa 100644
                      ggml_cuda_memcpy_1<16>(swizzle<stride_tile>(tile_KV, i*stride_tile + k*h2_per_chunk, i), src);
                  }
              }
-@@ -484,12 +716,63 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
+@@ -484,12 +736,63 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
      }
  }
  
@@ -2275,12 +2360,139 @@ index 0572b2bd6..bccf264fa 100644
      if constexpr (use_cp_async) {
          static_assert(nbatch_fa <= 8*warp_size && nbatch_fa % 8 == 0, "bad nbatch_fa");
          static_assert(!oob_check, "OOB check incompatible with cp_async");
-@@ -600,20 +883,20 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -571,9 +874,122 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_mask(
+     }
+ }
+ 
++// RDNA4 decode/verify band with q8_0 K and V: fetch ahead.  The synchronous loader issues the global loads of a K or V
++// batch only once the previous batch has been computed and every warp has passed the barrier, then waits for them at
++// once, so each of the four batches of a KV iteration exposes a full memory round trip (on gfx1201 about 70 % of the
++// band's time is spent waiting for loads or at the barriers behind them).  Instead, the raw q8_0 bytes of a batch are
++// fetched into registers ahead of use (all K batches at the start of the iteration, each V batch as soon as a K batch
++// has been staged) and only converted and stored to shared memory when the batch is due.  The staged tiles hold the
++// same values in the same slots as with flash_attn_ext_f16_load_tile_native, so the result is bit-identical.
++template<int nwarps, int nbatch_fa, int D2>
++struct flash_attn_ext_f16_band_batch {
++    static constexpr int chunks_per_row    = D2 / (16/sizeof(half2));
++    static constexpr int chunks_per_thread = nbatch_fa*chunks_per_row >= nwarps*32 ? nbatch_fa*chunks_per_row / (nwarps*32) : 1;
++
++    ggml_cuda_fattn_q8_0_chunk_raw raw[chunks_per_thread];
++    bool                           ok [chunks_per_thread];
++};
++
++template<int nwarps, int nbatch_fa, int D2, bool oob_check>
++static __device__ __forceinline__ void flash_attn_ext_f16_band_fetch(
++        flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, D2> & batch, const char * const __restrict__ KV, const int stride_KV,
++        const int el_off, const int k_VKQ_0, const int i_sup) {
++    using batch_t = flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, D2>;
++    static_assert(nbatch_fa*batch_t::chunks_per_row % (nwarps*32) == 0, "bad band batch");
++    const int tid = threadIdx.y*32 + threadIdx.x;
++#pragma unroll
++    for (int j = 0; j < batch_t::chunks_per_thread; ++j) {
++        const int c = tid + j*nwarps*32;
++        const int i = c / batch_t::chunks_per_row;
++        const int k = c % batch_t::chunks_per_row;
++        batch.ok[j] = !oob_check || i < i_sup;
++        if (batch.ok[j]) {
++            ggml_cuda_fattn_load_q8_0_chunk(KV + (size_t) (k_VKQ_0 + i)*stride_KV, el_off + k*GGML_CUDA_FA_Q8_CHUNK, batch.raw[j]);
++        }
++    }
++}
++
++template<int stride_tile, int nwarps, int nbatch_fa, int D2>
++static __device__ __forceinline__ void flash_attn_ext_f16_band_stage(
++        const flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, D2> & batch, half2 * const __restrict__ tile_KV) {
++    using batch_t = flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, D2>;
++    constexpr int h2_per_chunk = 16/sizeof(half2);
++    const int tid = threadIdx.y*32 + threadIdx.x;
++#pragma unroll
++    for (int j = 0; j < batch_t::chunks_per_thread; ++j) {
++        const int c = tid + j*nwarps*32;
++        const int i = c / batch_t::chunks_per_row;
++        const int k = c % batch_t::chunks_per_row;
++        __align__(16) half2 tmp[h2_per_chunk];
++        if (batch.ok[j]) {
++            // Pin the conversion here: it is pure arithmetic on the fetched words, and without the opaque asm the
++            // compiler moves it up to the fetch (through the merge after the runtime K/V type check), which waits for
++            // the fetch right there and keeps the unpacked bytes live instead of the packed words.
++            ggml_cuda_fattn_q8_0_chunk_raw raw = batch.raw[j];
++            uint16_t d_bits;
++            memcpy(&d_bits, &raw.d, sizeof(d_bits));
++            asm volatile("" : "+v"(raw.q[0]), "+v"(raw.q[1]), "+v"(d_bits));
++            memcpy(&raw.d, &d_bits, sizeof(d_bits));
++            ggml_cuda_fattn_convert_q8_0_chunk(raw, tmp);
++        } else {
++#pragma unroll
++            for (int l = 0; l < h2_per_chunk; ++l) {
++                tmp[l] = make_half2(0.0f, 0.0f);
++            }
++        }
++        ggml_cuda_memcpy_1<16>(swizzle<stride_tile>(tile_KV, i*stride_tile + k*h2_per_chunk, i), tmp);
++    }
++}
++
++// The band's barriers only order shared-memory accesses (a KV iteration shares nothing through global memory), so the
++// fetched-ahead loads stay in flight across them.  __syncthreads() would also wait for every outstanding global load.
++template<bool band>
++static __device__ __forceinline__ void flash_attn_ext_f16_iter_barrier() {
++#if defined(AMD_WMMA_AVAILABLE)
++    if constexpr (band) {
++        __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
++        __builtin_amdgcn_s_barrier();
++        __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
++        return;
++    }
++#endif // defined(AMD_WMMA_AVAILABLE)
++    __syncthreads();
++}
++
++// Fetch-ahead depth of the RDNA4 band: the number of K/V batches whose raw bytes are in flight in registers, 0 = no
++// fetch-ahead (always 0 outside the fetch-ahead kernel variant, see ggml_cuda_fattn_mma_band_has_fetch_ahead).  The
++// batches of an iteration (K first, then V) form a stream: when a batch is staged, the batch `depth` places later is
++// fetched into the registers just freed.  Two batches where a thread fetches at most 2 chunks per batch (the 16-warp
++// 64-column block); the first two batches of each iteration are then fetched at its start.  One batch where a thread
++// fetches 4 (the 8-warp 32-column block has no registers for two: gfx1201 spills ~400 VGPRs); the stream then continues
++// across the end of an iteration into the next one (fetched during the last V batch), so that the first batch of an
++// iteration is not exposed either.  Measured best per row on gfx1201 (the 64-column block is slower with the
++// cross-iteration stream: it keeps the next K live through the PV products).
++template<int DKQ, int DV, int ncols1, int ncols2, int nwarps, bool V_is_K_view, bool use_sparse, bool fetch_ahead>
++static constexpr __device__ int flash_attn_ext_f16_band_depth() {
++#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
++    constexpr int ncols     = ncols1*ncols2;
++    constexpr int nbatch_fa = ggml_cuda_fattn_mma_get_nbatch_fa(DKQ, DV, ncols, ncols2);
++    constexpr int nbatch_K2 = ggml_cuda_fattn_mma_get_nbatch_K2(DKQ, DV, ncols, ncols2);
++    constexpr int nbatch_V2 = ggml_cuda_fattn_mma_get_nbatch_V2(DKQ, DV, ncols, ncols2);
++    constexpr int chunks    = flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, nbatch_K2>::chunks_per_thread;
++    if (!fetch_ahead || !ggml_cuda_fattn_mma_band_has_fetch_ahead(DKQ, DV, ncols1, ncols2) ||
++            V_is_K_view || use_sparse || ggml_cuda_get_physical_warp_size() != 32 ||
++            ggml_cuda_fattn_mma_get_nstages(DKQ, DV, ncols1, ncols2, use_sparse) != 0 || nbatch_K2 != nbatch_V2 ||
++            (DKQ/2) % nbatch_K2 != 0 || (DV/2) % nbatch_V2 != 0 || chunks > 4) {
++        return 0;
++    }
++    return chunks <= 2 ? 2 : 1;
++#else
++    GGML_UNUSED_VARS(DKQ, DV, ncols1, ncols2, nwarps, V_is_K_view, use_sparse, fetch_ahead);
++    return 0;
++#endif // defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
++}
++
+ template<int DKQ, int DV, int ncols1, int ncols2, int nwarps,
+     bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool needs_fixup, bool is_fixup, bool last_iter, bool oob_check,
+-    typename T_A_KQ, typename T_B_KQ, typename T_C_KQ, typename T_A_VKQ, typename T_B_VKQ, typename T_C_VKQ>
++    typename T_A_KQ, typename T_B_KQ, typename T_C_KQ, typename T_A_VKQ, typename T_B_VKQ, typename T_C_VKQ,
++    bool band_fetch_ahead = false>
+ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+         const float2 * const __restrict__ Q_f2,
+         const half2  * const __restrict__ K_h2,
+@@ -600,24 +1016,71 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
          float        * const __restrict__ KQ_rowsum,
          const int jt,
          const int kb0,
 -        const int k_VKQ_sup) {
-+        const int k_VKQ_sup, const kq_derived_t derived, const fattn_kv_native_t kv_native) {
++        const int k_VKQ_sup, const kq_derived_t derived, const fattn_kv_native_t kv_native,
++        // RDNA4 band fetch-ahead (see flash_attn_ext_f16_band_depth): the caller's ring of fetched batches, which holds
++        // the first batches of this iteration when band_on, and the next iteration's kb0 (-1: none).
++        void * const band_ring_v = nullptr, const bool band_on = false, const int band_kb0_next = -1) {
  #if defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
      constexpr int  warp_size       = ggml_cuda_get_physical_warp_size();
      constexpr int  ncols           = ncols1 * ncols2;
@@ -2294,7 +2506,8 @@ index 0572b2bd6..bccf264fa 100644
 +    constexpr int  nbatch_fa       = ggml_cuda_fattn_mma_get_nbatch_fa(DKQ, DV, ncols, ncols2);
 +    constexpr int  nbatch_K2       = ggml_cuda_fattn_mma_get_nbatch_K2(DKQ, DV, ncols, ncols2);
 +    constexpr int  nbatch_V2       = ggml_cuda_fattn_mma_get_nbatch_V2(DKQ, DV, ncols, ncols2);
-+    constexpr bool Q_in_reg        = ggml_cuda_fattn_mma_get_Q_in_reg (DKQ, DV, ncols, ncols2);
++    constexpr bool Q_in_reg        = ggml_cuda_fattn_mma_get_Q_in_reg (DKQ, DV, ncols, ncols2) &&
++        !(band_fetch_ahead && ggml_cuda_fattn_mma_band_fetch_ahead_Q_in_lds(DKQ, DV, ncols1, ncols2));
      constexpr int  nstages         = ggml_cuda_fattn_mma_get_nstages  (DKQ, DV, ncols1, ncols2, use_sparse);
  
 -    constexpr bool swz = ggml_cuda_fattn_mma_get_swizzled(DKQ, DV, ncols);
@@ -2302,7 +2515,54 @@ index 0572b2bd6..bccf264fa 100644
      constexpr int stride_tile_K = swz ? nbatch_K2 : nbatch_K2 + 4;
      constexpr int stride_tile_V = V_is_K_view ? stride_tile_K : (swz ? nbatch_V2 : nbatch_V2 + 4);
  
-@@ -633,28 +916,36 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
++    // RDNA4 decode/verify band: q8_0 K/V are fetched ahead (see flash_attn_ext_f16_band_depth) and the iteration's
++    // barriers only order shared memory.
++    constexpr int  band_depth = flash_attn_ext_f16_band_depth<DKQ, DV, ncols1, ncols2, nwarps, V_is_K_view, use_sparse, band_fetch_ahead>();
++    constexpr bool band_fetch = band_depth > 0;
++    constexpr int  n_band_K   = band_fetch ? (DKQ/2)/nbatch_K2 : 1;
++    constexpr int  n_band_V   = band_fetch ? (DV/2)/nbatch_V2  : 1;
++    static_assert(!band_fetch || !oob_check, "the band fetch-ahead assumes whole KV tiles");
++    using band_batch_t = flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, nbatch_K2>;
++    constexpr bool band_cross = band_depth == 1; // the stream continues into the next iteration (see above)
++    // Within one iteration the ring is this function's own; across iterations it is the caller's.
++    band_batch_t   band_local[band_cross ? 1 : (band_depth > 0 ? band_depth : 1)];
++    band_batch_t * const band_ring = band_cross ? (band_batch_t *) band_ring_v : band_local;
++    const bool band_q8 = band_fetch && band_on;
++
+     const int k_VKQ_0 = kb0 * nbatch_fa;
++    if constexpr (band_fetch && !band_cross) {
++        if (band_q8) {
++#pragma unroll
++            for (int t = 0; t < band_depth; ++t) {
++                flash_attn_ext_f16_band_fetch<nwarps, nbatch_fa, nbatch_K2, false>
++                    (band_ring[t], kv_native.K, kv_native.stride_K, 2*t*nbatch_K2, k_VKQ_0, nbatch_fa);
++            }
++        }
++    }
++
++    // Batch s of the iteration (K batches, then V batches) has been staged: fetch batch s + band_depth of the stream into
++    // the ring slot it freed, from this iteration or from the next one.
++    auto band_advance = [&](const int s) {
++        if constexpr (band_fetch) {
++            const int t  = s + band_depth;
++            const int tb = t % (n_band_K + n_band_V);
++            const int kv = t < n_band_K + n_band_V ? k_VKQ_0 : band_kb0_next*nbatch_fa;
++            if (t >= n_band_K + n_band_V && (!band_cross || band_kb0_next < 0)) {
++                return;
++            }
++            if (tb < n_band_K) {
++                flash_attn_ext_f16_band_fetch<nwarps, nbatch_fa, nbatch_K2, false>
++                    (band_ring[t % band_depth], kv_native.K, kv_native.stride_K, 2*tb*nbatch_K2, kv, nbatch_fa);
++            } else {
++                flash_attn_ext_f16_band_fetch<nwarps, nbatch_fa, nbatch_V2, false>
++                    (band_ring[t % band_depth], kv_native.V, kv_native.stride_V, 2*(tb - n_band_K)*nbatch_V2, kv, nbatch_fa);
++            }
++        }
++    };
+ #if defined(TURING_MMA_AVAILABLE)
+     T_C_KQ KQ_C[nbatch_fa/(np*(cols_per_warp == 8 ? T_C_KQ::I : T_C_KQ::J))];
+ #elif defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
+@@ -633,32 +1096,51 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
          constexpr bool use_cp_async = true;
          cp_async_wait_all();
          __syncthreads();
@@ -2341,13 +2601,40 @@ index 0572b2bd6..bccf264fa 100644
              constexpr bool use_cp_async = nstages == 1;
 -            flash_attn_ext_f16_load_tile<stride_tile_K, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
 -                (K_h2 + k0_start, tile_K, k0_diff, stride_K, k_VKQ_0, k_VKQ_sup, indices);
-+            flash_attn_ext_f16_load_tile<stride_tile_K, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
-+                (K_h2 + k0_start, tile_K, k0_diff, stride_K, k_VKQ_0, k_VKQ_sup, indices,
-+                 kv_native.K, kv_native.stride_K, 2*k0_start, kv_native.type_K);
-             if (use_cp_async) {
-                 cp_async_wait_all();
+-            if (use_cp_async) {
+-                cp_async_wait_all();
++            bool staged = false;
++            if constexpr (band_fetch) {
++                if (band_q8) {
++                    const int s = k0_iter / nbatch_K2;
++                    flash_attn_ext_f16_band_stage<stride_tile_K, nwarps, nbatch_fa, nbatch_K2>(band_ring[s % band_depth], tile_K);
++                    band_advance(s);
++                    staged = true;
++                }
              }
-@@ -738,7 +1029,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+-            __syncthreads();
++            if (!staged) {
++                flash_attn_ext_f16_load_tile<stride_tile_K, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
++                    (K_h2 + k0_start, tile_K, k0_diff, stride_K, k_VKQ_0, k_VKQ_sup, indices,
++                     kv_native.K, kv_native.stride_K, 2*k0_start, kv_native.type_K);
++                if (use_cp_async) {
++                    cp_async_wait_all();
++                }
++            }
++            flash_attn_ext_f16_iter_barrier<band_fetch>();
+         }
+ 
+         // Calculate tile of KQ:
+@@ -714,7 +1196,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+         }
+ 
+         if constexpr (nstages <= 1) {
+-            __syncthreads(); // Only needed if tile_K == tile_V.
++            flash_attn_ext_f16_iter_barrier<band_fetch>(); // Only needed if tile_K == tile_V.
+         }
+     }
+ 
+@@ -738,7 +1220,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
      float KQ_rowsum_add[cols_per_thread] = {0.0f};
  
      if constexpr (cols_per_warp == 8) {
@@ -2356,7 +2643,7 @@ index 0572b2bd6..bccf264fa 100644
  #pragma unroll
              for (int i00 = 0; i00 < nbatch_fa; i00 += np*T_C_KQ::I) {
                  const int i0 = i00 + (threadIdx.y % np)*T_C_KQ::I;
-@@ -800,7 +1091,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -800,7 +1282,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
              }
          }
      } else { // not Turing mma or T_B_KQ::I > 8
@@ -2365,7 +2652,7 @@ index 0572b2bd6..bccf264fa 100644
  #pragma unroll
              for (int i00 = 0; i00 < nbatch_fa; i00 += np*T_C_KQ::J) {
                  const int i0 = i00 + (threadIdx.y % np)*T_C_KQ::J;
-@@ -986,12 +1277,13 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -986,12 +1468,13 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
          cp_async_wait_all();
          __syncthreads();
          if (!last_iter) {
@@ -2383,19 +2670,37 @@ index 0572b2bd6..bccf264fa 100644
          }
      }
  
-@@ -1006,8 +1298,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -1006,12 +1489,24 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
              const int i0_diff = i0_stop - i0_start;
              if (!V_is_K_view || i0_stop > 2*nbatch_K2) {
                  constexpr bool use_cp_async = nstages == 1;
 -                flash_attn_ext_f16_load_tile<stride_tile_V, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
 -                    (V_h2 + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_0, k_VKQ_sup, indices);
-+                flash_attn_ext_f16_load_tile<stride_tile_V, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
-+                    (V_h2 + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_0, k_VKQ_sup, indices,
-+                     kv_native.V, kv_native.stride_V, i0_start, kv_native.type_V);
-                 if (use_cp_async) {
-                     cp_async_wait_all();
+-                if (use_cp_async) {
+-                    cp_async_wait_all();
++                bool staged = false;
++                if constexpr (band_fetch) {
++                    if (band_q8) {
++                        const int s = n_band_K + i0_start/(2*nbatch_V2);
++                        flash_attn_ext_f16_band_stage<stride_tile_V, nwarps, nbatch_fa, nbatch_V2>(band_ring[s % band_depth], tile_V);
++                        band_advance(s);
++                        staged = true;
++                    }
                  }
-@@ -1023,7 +1316,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+-                __syncthreads();
++                if (!staged) {
++                    flash_attn_ext_f16_load_tile<stride_tile_V, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse>
++                        (V_h2 + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_0, k_VKQ_sup, indices,
++                         kv_native.V, kv_native.stride_V, i0_start, kv_native.type_V);
++                    if (use_cp_async) {
++                        cp_async_wait_all();
++                    }
++                }
++                flash_attn_ext_f16_iter_barrier<band_fetch>();
+ 
+                 // gfx11 signed-zero leak: a KV row that is masked (P == +0.0) for every query
+                 // column of this block still feeds its V to the WMMA, where the masked cell's
+@@ -1023,7 +1518,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
                  // leak. V_is_K_view (MLA) reuses K data as V and needs the K tile zeroed
                  // instead - not implemented here (RDNA caps route those heads to the tile kernel).
                  if constexpr (!V_is_K_view && !swz) {
@@ -2404,7 +2709,25 @@ index 0572b2bd6..bccf264fa 100644
                          const int tid = threadIdx.y * warp_size + threadIdx.x;
  #pragma unroll
                          for (int i = tid; i < nbatch_fa; i += nwarps*warp_size) {
-@@ -1096,7 +1389,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+@@ -1039,7 +1534,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+                                 }
+                             }
+                         }
+-                        __syncthreads();
++                        flash_attn_ext_f16_iter_barrier<band_fetch>();
+                     }
+                 }
+             }
+@@ -1088,7 +1583,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
+ #endif // defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
+ 
+         if constexpr (nstages <= 1) {
+-            __syncthreads(); // Only needed if tile_K == tile_V.
++            flash_attn_ext_f16_iter_barrier<band_fetch>(); // Only needed if tile_K == tile_V.
+         }
+     }
+ #else
+@@ -1096,7 +1591,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
          scale, slope, logit_softcap, ne01, ne02,
          stride_K, stride_V, stride_mask,
          tile_Q, tile_K, tile_V, tile_mask,
@@ -2413,7 +2736,16 @@ index 0572b2bd6..bccf264fa 100644
      NO_DEVICE_CODE;
  #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
  }
-@@ -1223,6 +1516,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1216,13 +1711,15 @@ template<int DKQ, int ncols> struct mma_tile_sizes {
+ };
+ #endif // defined(TURING_MMA_AVAILABLE)
+ 
+-template<int DKQ, int DV, int ncols1, int ncols2, int nwarps, bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool needs_fixup, bool is_fixup>
++template<int DKQ, int DV, int ncols1, int ncols2, int nwarps, bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool needs_fixup, bool is_fixup,
++    bool band_fetch_ahead = false>
+ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+         const float2 * const __restrict__ Q_f2,
+         const half2  * const __restrict__ K_h2,
          const half2  * const __restrict__ V_h2,
          const half   * const __restrict__ mask_h,
          const int32_t * const __restrict__ indices,
@@ -2421,7 +2753,7 @@ index 0572b2bd6..bccf264fa 100644
          const float  * const __restrict__ sinks_f,
          float2       * const __restrict__ dstk,
          float2       * const __restrict__ dstk_fixup,
-@@ -1241,7 +1535,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1241,7 +1738,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          const int jt,
          const int zt_gqa,
          const int kb0_start,
@@ -2433,7 +2765,7 @@ index 0572b2bd6..bccf264fa 100644
  #if defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
      //In this kernel Q, K, V are matrices while i, j, k are matrix indices.
  
-@@ -1257,11 +1554,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1257,11 +1757,12 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
      constexpr int  cols_per_warp   = T_B_KQ::I;
      constexpr int  cols_per_thread = get_cols_per_thread();
      constexpr int  np              = cols_per_warp > ncols ? nwarps : nwarps * cols_per_warp/ncols; // Number of parallel CUDA warps per Q column.
@@ -2446,11 +2778,12 @@ index 0572b2bd6..bccf264fa 100644
 +    constexpr int  nbatch_K2       = ggml_cuda_fattn_mma_get_nbatch_K2     (DKQ, DV, ncols, ncols2);
 +    constexpr int  nbatch_V2       = ggml_cuda_fattn_mma_get_nbatch_V2     (DKQ, DV, ncols, ncols2);
 +    constexpr int  nbatch_combine  = ggml_cuda_fattn_mma_get_nbatch_combine(DKQ, DV, ncols, ncols2);
-+    constexpr bool Q_in_reg        = ggml_cuda_fattn_mma_get_Q_in_reg      (DKQ, DV, ncols, ncols2);
++    constexpr bool Q_in_reg        = ggml_cuda_fattn_mma_get_Q_in_reg      (DKQ, DV, ncols, ncols2) &&
++        !(band_fetch_ahead && ggml_cuda_fattn_mma_band_fetch_ahead_Q_in_lds(DKQ, DV, ncols1, ncols2));
      constexpr int  nstages         = ggml_cuda_fattn_mma_get_nstages       (DKQ, DV, ncols1, ncols2, use_sparse);
  
      if (cols_per_warp > ncols) {
-@@ -1271,7 +1568,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1271,7 +1772,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
  
      static_assert(nwarps * (cols_per_warp/ncols2) % ncols1 == 0, "bad nwarps");
  
@@ -2459,7 +2792,7 @@ index 0572b2bd6..bccf264fa 100644
      constexpr int stride_tile_Q = DKQ/2 + 4;
      constexpr int stride_tile_K = swz ? nbatch_K2 : nbatch_K2 + 4;
      constexpr int stride_tile_V = V_is_K_view ? stride_tile_K : (swz ? nbatch_V2 : nbatch_V2 + 4);
-@@ -1368,18 +1665,41 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1368,56 +1869,146 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          constexpr bool use_cp_async = true;
          constexpr bool oob_check    = false;
          constexpr int  k_VKQ_sup    = nbatch_fa;
@@ -2497,7 +2830,7 @@ index 0572b2bd6..bccf264fa 100644
 +                const     int  k_VKQ_sup = min(nbatch_fa, ne11 - kb0*nbatch_fa);
 +                flash_attn_ext_f16_iter
 +                    <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
-+                     T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++                     T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
 +                    (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
 +                     ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
 +                     KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native);
@@ -2507,8 +2840,9 @@ index 0572b2bd6..bccf264fa 100644
              constexpr bool last_iter = false;
              constexpr int  k_VKQ_sup = nbatch_fa;
              flash_attn_ext_f16_iter
-@@ -1387,7 +1707,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
-                  T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
+                 <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
+-                 T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++                 T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
                  (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
                   ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
 -                 KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup);
@@ -2516,8 +2850,10 @@ index 0572b2bd6..bccf264fa 100644
          }
          constexpr bool last_iter = true;
          const     int  k_VKQ_sup = ne11 - kb0*nbatch_fa;
-@@ -1396,10 +1716,26 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
-               T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
+         flash_attn_ext_f16_iter
+             <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
+-              T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++              T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
              (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
               ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
 -             KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup);
@@ -2526,7 +2862,54 @@ index 0572b2bd6..bccf264fa 100644
      } else {
          constexpr bool oob_check = false;
 -        for (; kb0 < kb0_stop-1; ++kb0) {
++
++        // RDNA4 band fetch-ahead (see flash_attn_ext_f16_band_depth): the ring of fetched K/V batches, carried from one
++        // KV iteration to the next.  The first batches of the first iteration are fetched here.
++        constexpr int band_depth = flash_attn_ext_f16_band_depth<DKQ, DV, ncols1, ncols2, nwarps, V_is_K_view, use_sparse, band_fetch_ahead>();
++        using band_batch_t = flash_attn_ext_f16_band_batch<nwarps, nbatch_fa, nbatch_K2>;
++        band_batch_t band_ring[band_depth > 0 ? band_depth : 1];
++        const bool band_q8 = band_depth > 0 && kv_native.type_K == FATTN_KV_NATIVE_Q8_0 && kv_native.type_V == FATTN_KV_NATIVE_Q8_0;
++        // Always the ring's own address (a runtime choice between it and nullptr would keep the ring out of registers).
++        void * const band_ring_v = band_ring;
++        static_assert(band_depth <= (DKQ/2)/nbatch_K2, "the prologue fetches K batches only");
++        auto band_prologue = [&](const int kb0_first) {
++            if constexpr (band_depth == 1) { // only the cross-iteration stream starts here (see flash_attn_ext_f16_band_depth)
++                if (band_q8) {
++#pragma unroll
++                    for (int t = 0; t < band_depth; ++t) {
++                        flash_attn_ext_f16_band_fetch<nwarps, nbatch_fa, nbatch_K2, false>
++                            (band_ring[t], kv_native.K, kv_native.stride_K, 2*t*nbatch_K2, kb0_first*nbatch_fa, nbatch_fa);
++                    }
++                }
++            }
++        };
++
 +        if (kq_blocks != nullptr) {
++          if constexpr (band_depth == 1) {
++            // The next iteration is the next KV block that is not fully masked (the stream continues into it).
++            auto unmasked = [&](int k) {
++                while (k < kb0_stop && fattn_kq_group_masked(kq_blocks, k, nbatch_fa)) {
++                    k += kb0_step;
++                }
++                return k;
++            };
++            kb0 = unmasked(kb0);
++            if (kb0 < kb0_stop) {
++                band_prologue(kb0);
++            }
++            while (kb0 < kb0_stop) {
++                const int kb0_next = unmasked(kb0 + kb0_step);
++                constexpr bool last_iter = false;
++                constexpr int  k_VKQ_sup = nbatch_fa;
++                flash_attn_ext_f16_iter
++                    <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
++                     T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
++                    (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
++                     ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
++                     KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native, band_ring_v, band_q8, kb0_next < kb0_stop ? kb0_next : -1);
++                kb0 = kb0_next;
++            }
++          } else {
 +            for (; kb0 < kb0_stop; kb0 += kb0_step) {
 +                if (fattn_kq_group_masked(kq_blocks, kb0, nbatch_fa)) {
 +                    continue;
@@ -2535,38 +2918,43 @@ index 0572b2bd6..bccf264fa 100644
 +                constexpr int  k_VKQ_sup = nbatch_fa;
 +                flash_attn_ext_f16_iter
 +                    <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
-+                     T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++                     T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
 +                    (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
 +                     ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
-+                     KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native);
++                     KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native, band_ring_v, band_q8, -1);
 +            }
++          }
 +        } else {
++        band_prologue(kb0);
 +        for (; kb0 + kb0_step < kb0_stop; kb0 += kb0_step) {
              constexpr bool last_iter = false;
              constexpr int  k_VKQ_sup = nbatch_fa;
              flash_attn_ext_f16_iter
-@@ -1407,7 +1743,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
-                  T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
+                 <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
+-                 T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++                 T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
                  (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
                   ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
 -                 KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup);
-+                 KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native);
++                 KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native, band_ring_v, band_q8, kb0 + kb0_step);
          }
          constexpr bool last_iter = true;
          constexpr int  k_VKQ_sup = nbatch_fa;
-@@ -1416,8 +1752,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
-              T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
+         flash_attn_ext_f16_iter
+             <DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, last_iter, oob_check,
+-             T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ>
++             T_A_KQ, T_B_KQ, T_C_KQ, T_A_VKQ, T_B_VKQ, T_C_VKQ, band_fetch_ahead>
              (Q_f2, K_h2, V_h2, mask_h, indices, dstk, dstk_fixup, scale, slope, logit_softcap,
               ne01, ne02, stride_K, stride_V, stride_mask, tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C,
 -             KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup);
-+             KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native);
++             KQ_max, KQ_rowsum, jt, kb0, k_VKQ_sup, derived, kv_native, band_ring_v, band_q8, -1);
 +        }
      }
 +    } // kb0 < kb0_stop
  
      // With multi-stage loading there is no __syncthreads at the end of the iter,
      //     there can be a race condition on shared memory access for combining/writing back results.
-@@ -1556,11 +1894,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1556,11 +2147,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          if (np == 1) {
              // No combination is needed, the meta data can be directly written from registers to VRAM.
              if (needs_fixup && threadIdx.x < T_B_KQ::I) {
@@ -2580,7 +2968,7 @@ index 0572b2bd6..bccf264fa 100644
                  dstk_fixup_meta[jc_cwm] = KQ_cmr;
              }
          }
-@@ -1595,11 +1933,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1595,11 +2186,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          if (np == 1) {
              // No combination is needed, the meta data can be directly written from registers to VRAM.
              if (needs_fixup && thread_should_write) {
@@ -2594,7 +2982,7 @@ index 0572b2bd6..bccf264fa 100644
                  dstk_fixup_meta[jc_cwm] = KQ_cmr;
              }
          }
-@@ -1668,11 +2006,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1668,11 +2259,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
              // Combined KQ max + rowsum.
              static_assert(cols_per_warp <= warp_size);
              if (needs_fixup && (cols_per_warp == warp_size || threadIdx.x < cols_per_warp)) {
@@ -2608,7 +2996,7 @@ index 0572b2bd6..bccf264fa 100644
                  dstk_fixup_meta[(threadIdx.y/np)*cols_per_warp + threadIdx.x] = make_float2(KQ_cmn, KQ_crs);
              }
          }
-@@ -1742,9 +2080,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1742,9 +2333,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          __syncthreads();
  
          if (np == 1 || threadIdx.y % np == 0) {
@@ -2620,7 +3008,7 @@ index 0572b2bd6..bccf264fa 100644
  
  #pragma unroll
              for (int stride_k : {warp_size, warp_size/2, warp_size/4, warp_size/8}) {
-@@ -1802,12 +2140,18 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1802,12 +2393,18 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
                  }
              }
          }
@@ -2641,11 +3029,13 @@ index 0572b2bd6..bccf264fa 100644
          scale, slope, logit_softcap, ne01, ne02, gqa_ratio,
          stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
          jt, kb0_start, kb0_stop);
-@@ -1824,14 +2168,16 @@ static constexpr __host__ __device__ bool ggml_cuda_flash_attn_ext_mma_f16_may_u
+@@ -1823,15 +2420,17 @@ static constexpr __host__ __device__ bool ggml_cuda_flash_attn_ext_mma_f16_may_u
+            (DKQ == 256 && DV == 256 && ncols1 == 8 && ncols2 == 8);
  }
  
- template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse>
+-template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse>
 -__launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
++template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool band_fetch_ahead = false>
 +__launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2, ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2, ncols2))
  static __global__ void flash_attn_ext_f16(
          const char * Q_ptr,
@@ -2659,7 +3049,7 @@ index 0572b2bd6..bccf264fa 100644
          float      * dst_ptr,
          float2     * dst_meta_ptr,
          const float scale,
-@@ -1846,7 +2192,13 @@ static __global__ void flash_attn_ext_f16(
+@@ -1846,7 +2445,13 @@ static __global__ void flash_attn_ext_f16(
                              const int32_t nb11, const int32_t nb12, const int64_t nb13,
                              const int32_t nb21, const int32_t nb22, const int64_t nb23,
                              const int32_t ne31, const int32_t ne32, const int32_t ne33,
@@ -2674,7 +3064,7 @@ index 0572b2bd6..bccf264fa 100644
      ggml_cuda_pdl_sync(); // TODO optimize placement
  #if defined(FLASH_ATTN_AVAILABLE) && (defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE))
      const char * GGML_CUDA_RESTRICT Q              = Q_ptr;
-@@ -1856,7 +2208,13 @@ static __global__ void flash_attn_ext_f16(
+@@ -1856,7 +2461,13 @@ static __global__ void flash_attn_ext_f16(
      const char * GGML_CUDA_RESTRICT sinks          = sinks_ptr;
      // sparse: one index list per (sequence, query tile), the live count of each list follows the lists
      const int  * GGML_CUDA_RESTRICT sparse_indices = use_sparse ? KV_max_ptr : nullptr;
@@ -2689,7 +3079,7 @@ index 0572b2bd6..bccf264fa 100644
      float      * GGML_CUDA_RESTRICT dst            = dst_ptr;
      float2     * GGML_CUDA_RESTRICT dst_meta       = dst_meta_ptr;
  
-@@ -1889,7 +2247,7 @@ static __global__ void flash_attn_ext_f16(
+@@ -1889,7 +2500,7 @@ static __global__ void flash_attn_ext_f16(
  #endif // __CUDA_ARCH__ == GGML_CUDA_CC_TURING
  
  #if defined(AMD_WMMA_AVAILABLE)
@@ -2698,7 +3088,7 @@ index 0572b2bd6..bccf264fa 100644
          NO_DEVICE_CODE;
          return;
      }
-@@ -1904,8 +2262,8 @@ static __global__ void flash_attn_ext_f16(
+@@ -1904,8 +2515,8 @@ static __global__ void flash_attn_ext_f16(
  
      constexpr int warp_size = ggml_cuda_get_physical_warp_size();
      constexpr int ncols     = ncols1 * ncols2;
@@ -2709,7 +3099,7 @@ index 0572b2bd6..bccf264fa 100644
      constexpr int nwarps    = nthreads / warp_size;
  
      const int gqa_ratio = ne02 / ne12; // With grouped query attention there are > 1 Q matrices per K, V matrix.
-@@ -1925,6 +2283,62 @@ static __global__ void flash_attn_ext_f16(
+@@ -1925,6 +2536,62 @@ static __global__ void flash_attn_ext_f16(
          KV_max = KV_max_ptr + int64_t(iter_j)*ne33*ne11;
      }
  
@@ -2752,14 +3142,14 @@ index 0572b2bd6..bccf264fa 100644
 +            if (blockIdx.y == gridDim.y - 1) {
 +                constexpr bool needs_fixup = true;
 +                constexpr bool is_fixup    = false;
-+                flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
++                flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, band_fetch_ahead>
 +                    (Q_f2, K_h2, V_h2, mask_h, nullptr, nullptr, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 +                     ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa,
 +                     kb0_start, kb0_stop, derived, kv_native, kb0_step);
 +            } else {
 +                constexpr bool needs_fixup = false;
 +                constexpr bool is_fixup    = true;
-+                flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
++                flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, band_fetch_ahead>
 +                    (Q_f2, K_h2, V_h2, mask_h, nullptr, nullptr, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 +                     ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa,
 +                     kb0_start, kb0_stop, derived, kv_native, kb0_step);
@@ -2772,7 +3162,7 @@ index 0572b2bd6..bccf264fa 100644
      // kbc == k block continuous, current index in continuous ijk space.
      int       kbc      = int64_t(blockIdx.x + 0)*(iter_k*iter_j*iter_z_gqa*ne12*ne03) / gridDim.x;
      const int kbc_stop = int64_t(blockIdx.x + 1)*(iter_k*iter_j*iter_z_gqa*ne12*ne03) / gridDim.x;
-@@ -1953,8 +2367,21 @@ static __global__ void flash_attn_ext_f16(
+@@ -1953,8 +2620,21 @@ static __global__ void flash_attn_ext_f16(
          float2       * dstk   = ((float2 *) dst) + (sequence*ne01.z*ne02 + zt_Q) * (DV/2);
  
          const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);
@@ -2794,19 +3184,22 @@ index 0572b2bd6..bccf264fa 100644
  
          const float slope = ncols2 == 1 ? get_alibi_slope(max_bias, zt_Q, n_head_log2, m0, m1) : 1.0f;
  
-@@ -1967,15 +2394,20 @@ static __global__ void flash_attn_ext_f16(
+@@ -1966,16 +2646,21 @@ static __global__ void flash_attn_ext_f16(
+         constexpr bool is_fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
          if (kb0_start == 0) {
              constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
-             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+-            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
 -                (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 -                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, band_fetch_ahead>
 +                (Q_f2, K_h2, V_h2, mask_h, indices, kq_blocks_tile, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 +                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, derived, kv_native);
          } else {
              constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
-             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+-            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
 -                (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 -                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, band_fetch_ahead>
 +                (Q_f2, K_h2, V_h2, mask_h, indices, kq_blocks_tile, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 +                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, derived, kv_native);
          }
@@ -2819,7 +3212,7 @@ index 0572b2bd6..bccf264fa 100644
          kbc += iter_k;
          kbc -= kbc % iter_k;
  
-@@ -2002,8 +2434,19 @@ static __global__ void flash_attn_ext_f16(
+@@ -2002,8 +2687,19 @@ static __global__ void flash_attn_ext_f16(
      float2       * dstk   = ((float2 *) dst) + (sequence*ne01.z*ne02 + zt_Q) * (DV/2);
  
      const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);
@@ -2839,12 +3232,14 @@ index 0572b2bd6..bccf264fa 100644
  
      const float slope = ncols2 == 1 ? get_alibi_slope(max_bias, zt_Q, n_head_log2, m0, m1) : 1.0f;
  
-@@ -2016,10 +2459,10 @@ static __global__ void flash_attn_ext_f16(
+@@ -2015,11 +2711,11 @@ static __global__ void flash_attn_ext_f16(
+ 
      constexpr bool is_fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
      constexpr bool needs_fixup = false;
-     flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+-    flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
 -        (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 -         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++    flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, band_fetch_ahead>
 +        (Q_f2, K_h2, V_h2, mask_h, indices, kq_blocks_tile, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
 +         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, derived, kv_native);
  #else
@@ -2853,7 +3248,32 @@ index 0572b2bd6..bccf264fa 100644
          max_bias, m0, m1, n_head_log2, logit_softcap,
          ne00, ne01, ne02, ne03,
                nb01, nb02, nb03,
-@@ -2042,12 +2485,12 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
+@@ -2034,6 +2730,24 @@ static __global__ void flash_attn_ext_f16(
+ 
+ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_tensor * dst, const int ncols1, const int ncols2);
+ 
++// The q8_0 fetch-ahead variant of an RDNA4 band kernel (see ggml_cuda_fattn_mma_band_has_fetch_ahead) is compiled in a
++// translation unit of its own (template-instances/fattn-mma-f16-band-fetch-ahead-*.cu): next to the kernel without it,
++// it changes how the compiler optimizes the code the two share, and with it the compiled code of that kernel (not its
++// results).
++template <int DKQ, int DV, int ncols1, int ncols2>
++fattn_kernel_t ggml_cuda_flash_attn_ext_mma_f16_band_fetch_ahead_kernel() {
++    return flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, false, false, false, true>;
++}
++
++#define DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(DKQ, DV, ncols1, ncols2)                \
++    template fattn_kernel_t ggml_cuda_flash_attn_ext_mma_f16_band_fetch_ahead_kernel \
++    <DKQ, DV, ncols1, ncols2>()                                                     \
++
++#if defined(GGML_USE_HIP)
++extern DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(256, 256, 4, 8);
++extern DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(256, 256, 8, 8);
++#endif // defined(GGML_USE_HIP)
++
+ template <int DKQ, int DV, int ncols1, int ncols2>
+ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * KQV = dst;
+@@ -2042,14 +2756,24 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
  
      constexpr int ncols = ncols1 * ncols2;
  
@@ -2868,11 +3288,23 @@ index 0572b2bd6..bccf264fa 100644
 +    const int  nbatch_K2      = ggml_cuda_fattn_mma_get_nbatch_K2     (DKQ, DV, ncols, cc, ncols2);
 +    const int  nbatch_V2      = ggml_cuda_fattn_mma_get_nbatch_V2     (DKQ, DV, ncols, cc, ncols2);
 +    const int  nbatch_combine = ggml_cuda_fattn_mma_get_nbatch_combine(DKQ, DV, ncols, cc, ncols2);
-+    const bool Q_in_reg       = ggml_cuda_fattn_mma_get_Q_in_reg      (DKQ, DV, ncols, cc, ncols2);
      const int  nstages        = ggml_cuda_fattn_mma_get_nstages       (DKQ, DV, ncols1, ncols2, cc);
  
++    // RDNA4 decode/verify with q8_0 K and V read in place (launch_fattn reads them natively for up to 8 query rows): the
++    // kernel variant that fetches K/V ahead (see ggml_cuda_fattn_mma_band_has_fetch_ahead).
++    bool band_fetch_ahead = false;
++    if constexpr (ggml_cuda_fattn_mma_band_has_fetch_ahead(DKQ, DV, ncols1, ncols2)) {
++        band_fetch_ahead = GGML_CUDA_CC_IS_RDNA4(cc) && ggml_cuda_fattn_band_fetch_ahead_enabled() && KQV->src[0]->ne[1] <= 8 &&
++            ggml_cuda_fattn_kv_native_type(KQV->src[1]) == FATTN_KV_NATIVE_Q8_0 &&
++            ggml_cuda_fattn_kv_native_type(KQV->src[2]) == FATTN_KV_NATIVE_Q8_0;
++    }
++    const bool Q_in_reg       = ggml_cuda_fattn_mma_get_Q_in_reg      (DKQ, DV, ncols, cc, ncols2) &&
++        !(band_fetch_ahead && ggml_cuda_fattn_mma_band_fetch_ahead_Q_in_lds(DKQ, DV, ncols1, ncols2));
++
      const int cols_per_warp = std::min(ncols, get_cols_per_warp(cc));
-@@ -2057,7 +2500,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
+     const int warp_size_host = ggml_cuda_info().devices[ctx.device].warp_size;
+     const int nwarps         = nthreads / warp_size_host;
+@@ -2057,7 +2781,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
      constexpr bool V_is_K_view = DKQ == 576; // Guaranteed by the kernel selection logic in fattn.cu
  
      // KV tile strides must match flash_attn_ext_f16_iter / _process_tile.
@@ -2881,7 +3313,27 @@ index 0572b2bd6..bccf264fa 100644
      const int stride_tile_K = swz ? nbatch_K2 : nbatch_K2 + 4;
      const int stride_tile_V = V_is_K_view ? stride_tile_K : (swz ? nbatch_V2 : nbatch_V2 + 4);
      const size_t nbytes_shared_KV_1stage = nbatch_fa            * std::max(stride_tile_K,  stride_tile_V) * sizeof(half2);
-@@ -2132,7 +2575,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
+@@ -2111,11 +2835,16 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
+         {
+             constexpr bool use_sparse_kernel = false;
+             fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
++            if constexpr (ggml_cuda_fattn_mma_band_has_fetch_ahead(DKQ, DV, ncols1, ncols2)) {
++                if (band_fetch_ahead) {
++                    fattn_kernel = ggml_cuda_flash_attn_ext_mma_f16_band_fetch_ahead_kernel<DKQ, DV, ncols1, ncols2>();
++                }
++            }
+ 
+-            static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
+-            if (!shared_memory_limit_raised[id]) {
++            static bool shared_memory_limit_raised[2][GGML_CUDA_MAX_DEVICES] = {{false}};
++            if (!shared_memory_limit_raised[band_fetch_ahead][id]) {
+                 CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
+-                shared_memory_limit_raised[id] = true;
++                shared_memory_limit_raised[band_fetch_ahead][id] = true;
+             }
+         }
+     } else {
+@@ -2132,7 +2861,7 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
  
      const bool async_kv_preload = nstages == 2 && !use_sparse;
      launch_fattn<DV, ncols1, ncols2>
@@ -2892,10 +3344,10 @@ index 0572b2bd6..bccf264fa 100644
  
 diff --git a/ggml/src/ggml-cuda/fattn-rdna.cuh b/ggml/src/ggml-cuda/fattn-rdna.cuh
 new file mode 100644
-index 000000000..818c30451
+index 000000000..ab68a299f
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fattn-rdna.cuh
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,446 @@
 +// RDNA/ROCm flash-attention predicates: the native-KV staging policy and selectors, and
 +// the RDNA4 decode/verify band (WMMA) helpers.  Split out of fattn-common.cuh (an upstream
 +// hub) so an upstream re-base collides with the predicate call points, not their bodies.
@@ -3276,6 +3728,17 @@ index 000000000..818c30451
 +    }
 +    const int nsm = ggml_cuda_info().devices[ggml_cuda_get_device()].nsm;
 +    return std::max(2, nsm/2);
++}
++
++// With q8_0 K and V the band launches a kernel variant that fetches the raw K/V bytes ahead into registers
++// (flash_attn_ext_f16_band_depth in fattn-mma-f16.cuh; bit-identical).  GGML_HIP_FA_BAND_FETCH_AHEAD=0 launches the
++// kernel without it, as for the other K/V types.
++static inline bool ggml_cuda_fattn_band_fetch_ahead_enabled() {
++    static const bool v = []() {
++        const char * env = getenv("GGML_HIP_FA_BAND_FETCH_AHEAD");
++        return env == nullptr || atoi(env) != 0;
++    }();
++    return v;
 +}
 +
 +// Self-contained band predicate shared by the kernel chooser, the ncols dispatcher and launch_fattn,
@@ -4794,6 +5257,32 @@ index bda04bc63..cda66f1bf 100644
  }
  
  #ifdef USE_CUDA_GRAPH
+diff --git a/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_4-ncols2_8-dkq256-dv256.cu b/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_4-ncols2_8-dkq256-dv256.cu
+new file mode 100644
+index 000000000..e4a23c039
+--- /dev/null
++++ b/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_4-ncols2_8-dkq256-dv256.cu
+@@ -0,0 +1,7 @@
++// This file has been autogenerated by generate_cu_files.py, do not edit manually.
++
++#include "../fattn-mma-f16.cuh"
++
++#if defined(GGML_USE_HIP)
++DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(256, 256, 4, 8);
++#endif // defined(GGML_USE_HIP)
+diff --git a/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_8-ncols2_8-dkq256-dv256.cu b/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_8-ncols2_8-dkq256-dv256.cu
+new file mode 100644
+index 000000000..a485820cf
+--- /dev/null
++++ b/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-band-fetch-ahead-ncols1_8-ncols2_8-dkq256-dv256.cu
+@@ -0,0 +1,7 @@
++// This file has been autogenerated by generate_cu_files.py, do not edit manually.
++
++#include "../fattn-mma-f16.cuh"
++
++#if defined(GGML_USE_HIP)
++DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(256, 256, 8, 8);
++#endif // defined(GGML_USE_HIP)
 diff --git a/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16.cu b/ggml/src/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16-dkq192-dv128.cu
 similarity index 79%
 rename from ggml/src/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16.cu
@@ -7809,7 +8298,7 @@ index 000000000..a379c23dc
 +DECL_FATTN_VEC_CASE(128, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL);
 +DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL);
 diff --git a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
-index 7be409bd3..25ef80f87 100755
+index 7be409bd3..1d494567c 100755
 --- a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
 +++ b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
 @@ -8,13 +8,13 @@ HEAD_SIZES_KQ = [40, 64, 72, 80, 96, 112, 128, 192, 256, 320, 512, 576]
@@ -7828,7 +8317,19 @@ index 7be409bd3..25ef80f87 100755
  """
  
  SOURCE_FATTN_VEC = """// This file has been autogenerated by generate_cu_files.py, do not edit manually.
-@@ -71,10 +71,15 @@ def get_short_name(long_quant_name):
+@@ -34,6 +34,11 @@ SOURCE_FATTN_MMA_START = """// This file has been autogenerated by generate_cu_f
+ 
+ SOURCE_FATTN_MMA_CASE = "DECL_FATTN_MMA_F16_CASE({head_size_kq}, {head_size_v}, {ncols1}, {ncols2});\n"
+ 
++SOURCE_FATTN_MMA_BAND_FETCH_AHEAD = """#if defined(GGML_USE_HIP)
++DECL_FATTN_MMA_F16_BAND_FETCH_AHEAD(256, 256, {ncols1}, 8);
++#endif // defined(GGML_USE_HIP)
++"""
++
+ TYPES_MMQ = [
+     "GGML_TYPE_Q1_0",
+     "GGML_TYPE_Q2_0",
+@@ -71,10 +76,15 @@ def get_short_name(long_quant_name):
  for filename in glob("*.cu"):
      os.remove(filename)
  
@@ -7846,6 +8347,20 @@ index 7be409bd3..25ef80f87 100755
  
  for type_k in TYPES_KV:
      for type_v in TYPES_KV:
+@@ -108,6 +118,13 @@ for ncols in [8, 16, 32, 64]:
+                 head_size_v = HEAD_SIZES_V_OVERRIDE.get(head_size_kq, head_size_kq)
+                 f.write(SOURCE_FATTN_MMA_CASE.format(ncols1=ncols1, ncols2=ncols2, head_size_kq=head_size_kq, head_size_v=head_size_v))
+ 
++# The q8_0 fetch-ahead variants of the RDNA4 band kernel, each in a translation unit of its own (see
++# ggml_cuda_flash_attn_ext_mma_f16_band_fetch_ahead_kernel in fattn-mma-f16.cuh).
++for ncols1 in [4, 8]:
++    with open(f"fattn-mma-f16-band-fetch-ahead-ncols1_{ncols1}-ncols2_8-dkq256-dv256.cu", "w") as f:
++        f.write(SOURCE_FATTN_MMA_START)
++        f.write(SOURCE_FATTN_MMA_BAND_FETCH_AHEAD.format(ncols1=ncols1))
++
+ for type in TYPES_MMQ:
+     with open(f"mmq-instance-{get_short_name(type)}.cu", "w") as f:
+         f.write(SOURCE_MMQ.format(type=type))
 diff --git a/ggml/src/ggml-hip/CMakeLists.txt b/ggml/src/ggml-hip/CMakeLists.txt
 index 75d4d60e8..97a8531cb 100644
 --- a/ggml/src/ggml-hip/CMakeLists.txt

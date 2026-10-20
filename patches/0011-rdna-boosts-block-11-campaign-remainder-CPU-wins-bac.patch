@@ -1,4 +1,4 @@
-From b37a3b5adc1b2da17403f8b82e4556fe8d6e2b2f Mon Sep 17 00:00:00 2001
+From aafd389b0ff42a04ee1808d964fe0eb1b8ad70ef Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -757,10 +757,10 @@ index 2632ae3a0..b935bf150 100644
          /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
          /* .context = */ new ggml::cpu::repack::extra_buffer_type(),
 diff --git a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
-index 8850c796e..5b2dc1e22 100755
+index e4053fe61..6596c6952 100755
 --- a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
 +++ b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
-@@ -96,26 +96,32 @@ for ncols in [8, 16, 32, 64]:
+@@ -101,26 +101,32 @@ for ncols in [8, 16, 32, 64]:
          if ncols2 > ncols:
              continue
          ncols1 = ncols // ncols2
@@ -812,7 +812,7 @@ index 8850c796e..5b2dc1e22 100755
 +                f.write(SOURCE_FATTN_MMA_START)
                  f.write(SOURCE_FATTN_MMA_CASE.format(ncols1=ncols1, ncols2=ncols2, head_size_kq=head_size_kq, head_size_v=head_size_v))
  
- for type in TYPES_MMQ:
+ # The q8_0 fetch-ahead variants of the RDNA4 band kernel, each in a translation unit of its own (see
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
 index b4d3e470c..8798940c0 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp

@@ -230,6 +230,13 @@ almost all of them `template-instances/*.cu`.
 * **The derived kq mask (V3)**: per-token bounds + one per-cell position replace the packed mask; the FA
   kernel computes visibility on the fly.  Implemented in **both** the MMA and the tile kernels, and only
   for prefill-shaped batches (`n_tokens > 8`), so decode/verify are untouched.
+* **q8_0 fetch-ahead variant (r98, PR #195)**: with q8_0 K and V read in place (decode/verify, `n_q <= 8`,
+  head 256) the band launches a second kernel, `flash_attn_ext_f16<..., band_fetch_ahead = true>`, that
+  fetches the raw q8_0 bytes of the next K/V batches into registers ahead of use and converts each batch
+  into shared memory only when it is due; its barriers order shared memory only, because `__syncthreads()`
+  also waits for every outstanding global load and would drain the fetches.  Two generated translation
+  units of its own (so the kernels without it compile to the same gfx1201 ISA), default on.  The
+  instantiation rule the two generated files follow is in **Facts that span blocks**, below.
 * **Fully-masked KV group skip** (`GGML_CUDA_FA_MASK_SKIP`, prefill only) — exact zeros, bit-identical.
 * **Hygiene**: the `(512, 512, 32)` RDNA MMA row retuned to a 4-warp shape (issue #188, Gemma-4 head-512
   prefill), the RDNA2 (gfx1030) gate fixes of PR #181, the masked-V HIP fixes, and the FA staging arena
@@ -237,6 +244,7 @@ almost all of them `template-instances/*.cu`.
 
 **Knobs.**  `LLAMA_KQ_MASK_DERIVED`, `GGML_CUDA_FA_KV_NATIVE` (auto / force on / force staging),
 `GGML_CUDA_FA_MASK_SKIP`, `GGML_HIP_FA_BAND_WMMA*` (`_SPLIT`, `_GQA_MAX`, `_WIDE`),
+`GGML_HIP_FA_BAND_FETCH_AHEAD` (r98; `=0` runs the q8_0 band kernel without the fetch-ahead variant),
 `GGML_CUDA_FA_WMMA_256` / `_MAX_HEAD`, `GGML_CUDA_FA_ALL_QUANTS` (build), `GGML_CUDA_OP_TIMING`
 (diagnostic).
 
@@ -542,7 +550,11 @@ a hook is CUDA-only (the non-CUDA entries stay NULL and the feature is simply in
   `mmvq` parameter table) and RDNA2 is best-effort.
 * **The arch gate is runtime** everywhere in the set, so one multi-arch binary picks the right path.
 * **`ggml-cuda.cu` is shared by blocks 00/07/08/09/10** and is the usual re-base conflict site; the
-  `template-instances/*.cu` files are block 05's and are generated (`generate_cu_files.py`).
+  `template-instances/*.cu` files are block 05's and are generated (`generate_cu_files.py`).  A new FA
+  kernel variant also goes into its own generated instance file, never implicitly into the dispatch TU:
+  `nm -C` shows the kernel `W` in the instance TU and `U` in the `...-case-...` TU that selects it (the
+  r98 q8_0 fetch-ahead variant is `fattn-mma-f16-band-fetch-ahead-ncols1_{4,8}-ncols2_8-dkq256-dv256.cu`).
+  Give it its own TU whenever the two arms would otherwise change each other's compiled code.
 * **A knob's `getenv` call site may land in a later block than the feature it controls** (the series is
   linear and `ggml-cuda.cu` accumulates): `ENVIRONMENT.md` is authoritative for what a variable does and
   its default, and `git grep` on the applied branch for its call sites.  A block's "knobs" list here is the

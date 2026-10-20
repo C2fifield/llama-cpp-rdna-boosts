@@ -30,6 +30,27 @@ is the signature of a stub, not of a campaign.
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
 | [`moe-cache-coverage/`](moe-cache-coverage/README.md) | **how much of the routing distribution the arena can hold and how well admission uses it** (renamed from `moe-arena-defrag` 2026-10-17).  P0 (heat-map correctness) shipped in r80; next is the offline routing-trace replayer, then a per-layer capacity quota | **OPEN (renamed + retargeted 2026-10-17)** — the defrag premise was refuted by measurement: the arena is ~100 % allocated in slots (0.51 % truncation) and eviction churn is 3.0 % of reaches, so compaction wins ≤ 0.5 % of bytes.  The same review found the **MoE heat map doubling per flush** (fixed in r80) and showed the Strata hit-rate gap is accounting + arena size, not fragmentation (equal basis: 91.9 % vs 90.6 %).  Plan: P1 offline routing-trace replayer, P2 per-layer capacity quota (0.3-0.5 pts on a clean map, the only strictly-in-arena win), P3 metric parity; arena size handed to `archive/work/slab-transient-absorption/`.  See [`FINDINGS-2026-10-17-coverage-vs-defrag.md`](moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md) |
 
+**Promoted (r98, 2026-10-20).**  PR #195 (`@overdoingism`, `rdna4-band-fetch-ahead`) was promoted into
+**block 05**: with q8_0 K and V read in place (decode/verify, head 256) the RDNA4 band runs a kernel
+variant that fetches the next K/V batches into registers ahead of use and orders only shared memory at
+its barriers.  Default-on (`GGML_HIP_FA_BAND_FETCH_AHEAD=0` is the kill switch), bit-identical everywhere
+it fires, two generated translation units of its own so the non-variant kernels keep their compiled code.
+Measured +0.7 % decode at 8K and +2.4 % at 110K context, prefill unchanged.  The PR arrived as a branch
+under its own `wip/rdna4-band-fetch-ahead/`, never as an entry here, so the open set was not touched and
+no stub was created or removed; its record is at `archive/work/rdna4-band-fetch-ahead/` with a
+`RESOLUTION.md`.  See `WORKLOG.md` 261020.010.
+
+**Declined (r98, 2026-10-20).**  PR #194 (`@briansp2020`, `set-tensor-async-ring`) was reviewed and **not**
+promoted.  It keeps r90's `set_tensor_async` snapshot guarantee (verified: 100.000 % on the FINDINGS-2026-10-
+19b self-KLD control at `-ub 8` and `-ub 1`), but its per-context ring drains the graph-input upload queue
+(`ggml_cuda_async_input_drain`) before every direct copy, which turns the batched upload kernel
+(`GGML_CUDA_ASYNC_INPUT_BATCH`, PR #182) back into per-copy uploads.  On this tree that is **-1.2 %**
+(Flash-Next 2 GPU tensor `-ncmoe 10`, MTP n3) and **-2.3 %** (35B-A3B 2 GPU tensor `-ncmoe 10`, MTP n3),
+neutral on dense 27B; with `GGML_CUDA_ASYNC_INPUT_BATCH=0` both builds measure identically, which
+confirms the mechanism.  The reply on the PR asks for the drain to be scoped to the destination-overlap
+case (as `ggml_cuda_async_input_set` already does); re-measure on resubmission.  Record:
+`archive/work/set-tensor-async-ring/`.
+
 **Closed (2026-10-19, no delivery change).**  `kv-cell-offset-nondeterminism/` left `wip/` and is
 archived at `archive/work/kv-cell-offset-nondeterminism/` with a `RESOLUTION.md`; **TODO #52 part C is
 CLOSED** and no stub remains here.  The mechanism is now exact: a sequence's FA result depends on its
