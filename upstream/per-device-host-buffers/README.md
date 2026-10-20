@@ -1,5 +1,8 @@
 # UPSTREAM-PR: per-device host buffer types + host-expert op offload placement
 
+> **Upstream candidate** · status: prepared 2026-10-05; applies clean to `a55e952b8`; validated on 2x / 3x R9700 · not filed.
+> Delivery: **block 09** (host-expert offload placement) · patch: [`UPSTREAM-PR-per-device-host-buffers.patch`](UPSTREAM-PR-per-device-host-buffers.patch) (this directory).
+
 **Patch:** `UPSTREAM-PR-per-device-host-buffers.patch` (4 files, +75/-21; re-cut against upstream
 `a55e952b8`, applies clean with offsets).
 **Delivery home:** **block 06** (folded in at r14, 2026-10-05; r13 carried it as block 16) —

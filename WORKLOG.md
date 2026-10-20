@@ -1,5 +1,77 @@
 # WORKLOG - dated delivery records
 
+## 261020.003 (no release) -- top-level documentation audit: contracts at the top, history in `archive/docs/`
+
+**Docs only; no delivery change** (`patches/`, `release.json` and the scripts are untouched).  The
+top-level docs had drifted into being a second, stalish copy of this file: release narrative in
+`README.md`/`BASELINE.md`/`MANIFESTS.md`, closed work in `TODO.md`, amendment notes in
+`patches/README.md`, and the closed-case narratives in `GREEDY-PURITY.md`.  Each doc now has one job.
+
+**What moved (verbatim, so old citations still resolve):**
+
+* `BASELINE.md`'s 16-block provenance narrative, its per-block cut history and its dated re-base records
+  -> `archive/docs/baseline-history.md`.  `BASELINE.md` is now the current baseline + what the patches
+  are + how they are cut + the drift policy (`1177` lines removed).
+* `MANIFESTS.md`'s release-by-release verification narrative and its pre-V2.0 per-block table ->
+  `archive/docs/validation-history.md`.  `MANIFESTS.md` is now the apply order, the release gates, the
+  per-block verification table and the failure handling (`2155` lines removed).
+* `patches/README.md`'s amendment notes (r1..r93, 16-block numbering) ->
+  `archive/docs/patch-notes-history.md`; `patches/README.md` is now a per-block reference (what each of
+  the 12 blocks contains, its files, its knobs, its purity notes).  `6913` lines removed.
+* `GREEDY-PURITY.md`'s per-finding narratives -> `archive/docs/GREEDY-PURITY-FINDINGS.md` (which now holds
+  every `§N`, not just the 2026-09 subset); the rulebook keeps the invariants, the index and one summary
+  entry per `§N` (claim, rule, numbers, record).  `1690 -> 762` lines.
+* `README.md`'s release-history paragraph (r81..r93 re-narrated in the intro) and its `<details>`
+  pre-V2.0 16-block notes -> the former is deleted (the release note is the top of this file), the latter
+  is `archive/docs/pre-v2-block-notes.md`.  `576 -> 496` lines.
+* `TODO.md` rewritten as **forward-looking only** (`1084 -> 372` lines): the closed items (#27 #30 #47 #48
+  #50 #52 #53 #58 #62 #63 #69 #73 #74, item 16, item 5(b), the r81 PR #173 section, the merge-hygiene
+  supersession, and the resolved halves of the meta-upload section) are removed -- each already has its
+  dated entry here plus its campaign record.  Two still-open residues were re-filed under new numbers so
+  they are not lost with their parents: **#75** (35B-A3B greedy text is run-to-run nondeterministic with
+  `GGML_CUDA_ASYNC_INPUT=0`, noted inside #73) and **#76** (the q8_0 K/V-write fusion is inert on iSWA
+  models, the "still open" half of the closed r81 section).  #77 (segmented-upload perf) and #78 (DFlash
+  Meta top-k) are the two `wip/` follow-ups that had only a section/number-less status.  Numbers are
+  never reused, so old citations still resolve.
+* `upstream/` is now one sub-directory per candidate (`<name>/README.md` +
+  `UPSTREAM-PR-<name>.patch`), each README carrying an at-a-glance status + delivery mapping; the index is
+  a short table.  The `moe-router-tie-break` candidate (present as files, missing from the old table) is
+  now indexed.  Old `upstream/UPSTREAM-PR-<name>.md` citations mean `upstream/<name>/README.md`.
+* **New `scripts/README.md`** -- an index of all 13 scripts (what each does, when to run it) plus the two
+  flows (apply+verify, cut a release) and the ordering rule (`make-patches.sh` -> `make-release.sh` ->
+  `validate-set.sh` -> tag).
+* `t3.txt` deleted -- a stray 4-line shell-redirect artifact (a failed `curl` invocation) accidentally
+  committed in `35340736` (a `wip/first-prefill-latency` commit).
+
+**Corrections found during the audit** (all fixed in this change):
+
+1. **`MANIFESTS.md`'s "authoritative apply order" table was the 16-block table** (`0001` adaptive-MTP …
+   `0015` campaign wins) under an "apply order (current delivery)" heading, i.e. it described a set that
+   has not existed since r51.  It is replaced by the 12-block table (block 00 = foundation, 01 all-reduce,
+   02 adaptive MTP, 03 chunked GDN, 04 BF16 KV, 05 FA band, 06 MMB, 07 k-quant, 08 fused kernels,
+   09 host-resident MoE, 10 qwen4exp, 11 remainder).
+2. **`README.md` said the set can be applied "whole or pick the ones you want"** -- it cannot: the series
+   is linear and a block assumes its predecessors (`apply-all.sh` has no subset flow).
+   `GREEDY-PURITY.md` §8's "exclude the k-quant block with one line in `apply-all.sh`" relied on the old
+   16-block order where it was the last patch; it now says the set must be re-cut without it.
+3. **`upstream/README.md`'s table omitted `moe-router-tie-break`**, 15 rows for 16 candidate file pairs.
+4. **Stale release identities in headers:** `README.md` r91, `BASELINE.md` r91 + the 16-block
+   `ebbb18522`/`9113cc188` "current delivery", `MANIFESTS.md` r92 + 16 patches, `TODO.md` r89,
+   `ENVIRONMENT.md` r52, `CONTAINERS.md` r51 example.  Each header is now release-agnostic and points at
+   `release.json` / the top of this file.
+5. **`GREEDY-PURITY.md` had two `§39` and two `§40`** (the `ssm_gate_beta` fusion rule and the MoE
+   expert-cache band; the thread-count rule and the reserve-graph rule).  Citations exist for both
+   meanings, so they are labelled **§39b/§40b** with a note, not renumbered.
+6. `AGENTS.md`'s Layout/drift/"editing the docs" text said `MANIFESTS.md`/`BASELINE.md` *are* dated
+   history, `TODO.md` was not listed at all, and `scripts/gate-per-block-build.sh` was missing from the
+   scripts row.  All three fixed, plus a one-job-per-doc rule for the next editor.
+
+**Findings left for the maintainer** (not changed here): the `ENVIRONMENT.md` per-row block annotations
+mix pre-/post-V2.0 numbering in a few rows (`GGML_CUDA_GRID_STALL_PAD` "block 15",
+`GGML_CUDA_AR_CE_SCRATCH_MIB` "block 12", `GGML_CUDA_POOL_CACHE_MB` "block 06"), and
+`archive/work/beta-integration/integration.md` still uses the 16-block numbering throughout.  Both are
+historical-record edits, so they were left alone.
+
 ## 261020.002 (r93) -- publication record (tag, CI, fork refresh, worker image build)
 
 **`v12-097cf33d9-r93` is published.**  Tag `aebb9885bf37…` on commit `3a90850`; delivery `main` pushed.

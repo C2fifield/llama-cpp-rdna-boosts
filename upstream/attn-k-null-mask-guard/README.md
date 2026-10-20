@@ -1,5 +1,8 @@
 # Upstream-PR proposal — llama: `llm_graph_input_attn_k` tolerates an absent kq mask
 
+> **Upstream candidate** · status: prepared 2026-09-10; verified on unadulterated master `9cf3bf256` (CPU). **Hardening only** — no reachable null-mask path upstream today · not filed.
+> Delivery: **block 05** (part of the old block-15 *W2* QSA derived-bias/visibility work) · patch: [`UPSTREAM-PR-attn-k-null-mask-guard.patch`](UPSTREAM-PR-attn-k-null-mask-guard.patch) (this directory).
+
 Status: PREPARED 2026-09-10.  Verified against **unadulterated master** (`9cf3bf256`): the patch applies
 clean (`git apply --check`), it compiles, and a same-seed run on the 4B control model is byte-identical
 (no behaviour change for graphs that have a mask).  Not yet filed.  Patch file:

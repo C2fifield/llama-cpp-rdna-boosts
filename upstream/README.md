@@ -1,52 +1,51 @@
 # upstream/ — standalone upstream-PR candidates
 
-This directory holds candidates to be **upstreamed to ggml-org/llama.cpp as pull requests**: clean,
-self-contained changes that could stand on their own.  Two kinds:
+Each candidate is a **self-contained change that could be filed as a PR against unadulterated
+`ggml-org/llama.cpp`**, in its own sub-directory:
 
-* **already inside a delivery patch** (`patches/` 0001-0014 and `beta/qwen4exp/...`) — here as a
-  reference and as the starting point for a PR branch;
-* **campaign wins staged in the beta Block 15** (`archive/work/block-15-campaign-wins/`) — here because they are upstream-applicable in
-  their own right (if upstream takes one, Block 0015 must drop it on the next regeneration).
+```
+<name>/
+├── README.md                  # what it is, why, the validation, what was NOT validated
+└── UPSTREAM-PR-<name>.patch   # the patch, cut against the master commit named in the README
+```
 
-They are NOT additional deliverables: applying one of these on top of the full delivery
-would double-apply the hunks.  Treat each as:
+**None of these is a deliverable.**  Every one is either *already inside a delivery block* (here as the
+reference and the starting point for a PR branch) or *not in the delivery at all*.  Applying one on top of
+the full delivery would double-apply the hunks.
 
-1. a reference for the exact upstreamable change (with its own README/notes), and
-2. the starting point for a PR branch against upstream master (re-created from the
-   file's current state in the fork, not blindly applied).
+**Filing one:** re-create the branch from current upstream master, re-run the README's own *Validation*
+section there (the recorded numbers are from the fork-point tree), and check the README's "what was NOT
+validated".  If a hunk is ever accepted upstream, drop it from the delivery at the next regeneration — the
+delivery then carries only the fork-local remainder.
 
-| file | what it is | where it lives in the delivery | status |
-|---|---|---|---|---|
-| `UPSTREAM-PR-fa-kv-split-width.patch` + `.md` | ggml-cuda: make the flash-attention KV-split (`parallel_blocks`) heuristic query-width independent for small batches — decode and every speculative verify width then reduce identically, so greedy output no longer changes with the MTP draft length | **delivery block 00** (structural and architecture fixes); block 00 also carries the Vulkan masked-V fixes | prepared 2026-09-10; validated on gfx1201 against the delivery (issue #25: `--spec-draft-n-max 2` == `4` on 2/3-GPU, adaptive == both, plain decode byte-identical, acceptance gate holds); applies clean to `9113cc188`; not filed |
-| `UPSTREAM-PR-fa-decode-verify-kernel-family.patch` + `.md` | ggml-cuda: keep the decode/verify band on one flash-attention kernel family — a quantized K/V cache took VEC for `n_q <= 2` and TILE from `n_q = 3`, so greedy decode disagreed with spec-draft verify (F1) | **inside block 08** (2026-09-11 amendment) | written, validated (3x gfx1201); NVIDIA/Ada arm included |
-| `UPSTREAM-PR-ggml-sched-probe.patch` + `.md` | a debug probe for the ggml backend scheduler (per-op fallback / sync tracking), core-ggml only | inside `beta/qwen4exp/qwen4exp-support.patch` (the sched-fallback-sync hunk) | prepared, not filed; re-verified 2026-09-10 to still apply clean to current master (`9cf3bf256`) |
-| `UPSTREAM-PR-ggml-alloc-unused-view.patch` + `.md` | ggml-alloc: release view sources whose views are never consumed (a real leak; repro included) | **staged in beta Block 15** (`../archive/work/block-15-campaign-wins/`, win W4); A/B via `../archive/work/block-15-campaign-wins/ab/w4-revert.patch` | prepared 2026-09-10, applies clean to `9cf3bf256`, repro + `test-alloc`/`test-batch-alloc` verified **on master**; upstream-drop check 2026-09-10: still absent upstream; not filed |
-| `UPSTREAM-PR-kv-cache-keys-only.patch` + `.md` | llama: keys-only KV caches -- `llama_kv_cache` gains `v_enabled` (no V tensor, no V-side op); the qwen4exp indexer store passes `false` (its V is dead: the indexer scores keys) | **staged in beta Block 15** (`../archive/work/block-15-campaign-wins/`, win W3) | prepared 2026-09-10; verified on **master** (`9cf3bf256`, CPU): applies clean, compiles, indexer KV **72.00 → 24.00 MiB** at ctx 8192 (K 24 / V 48 → K 24 / no V), same-seed text byte-identical, `test-alloc`/`test-batch-alloc` 0 failures; not filed |
-| `UPSTREAM-PR-attn-k-null-mask-guard.patch` + `.md` | llama: `llm_graph_input_attn_k` tolerates an absent kq mask (guard the fill like the sibling `attn_kv` class does; let `can_reuse_impl` accept a null mask) | **staged in beta Block 15** (`../archive/work/block-15-campaign-wins/`, part of win W2) | prepared 2026-09-10; verified on **master** (`9cf3bf256`, CPU): applies clean, compiles, same-seed text byte-identical; **hardening only** -- no reachable null-mask path on master today (every construction site builds a mask); not filed |
-| `UPSTREAM-PR-get-rows-iq4-nl-sub-qk-k.patch` + `.md` | ggml-cuda: `GET_ROWS` on an `iq4_nl` row that is not a whole `QK_K` super-block — the support predicate sends it to the CPU; add the sub-block `get_rows_cuda_q<QK4_NL, QR4_NL, dequantize_q4_nl>` path and accept `ne00 % QK4_NL == 0` | **inside block 08** (2026-09-13 sixth amendment, TODO item 3) | prepared 2026-09-13; applies clean to `790cf51aa`; validated on gfx1201 (GPU split count 142 -> 22, prefill +25-36 %, `GET_ROWS` 215/215 -> 219/219, op bit-exact vs CPU); no NVIDIA hardware was available; not filed (see the `.md` "what was NOT validated") |
-| `UPSTREAM-PR-meta-offload-op.patch` + `.md` | ggml-backend-meta: let the tensor split op-offload host weights — the meta device left `offload_op` NULL, so under `-sm tensor` the scheduler never selected it for an op-offloaded node and `-ncmoe`/`--cpu-moe` executed the whole MoE on the CPU.  Also lets a `MIRRORED` tensor serve an arbitrary byte range (the used-expert pruning uploads at a non-zero offset and reads the router ids as a strided view's raw span, both of which the old `offset == 0` / `ggml_is_contiguous` asserts rejected) | **delivery block 06** (r12, 2026-09-27) — source tree `archive/work/h2d-staging-ring/`, patch `h2d-stage.patch` (fixes 1+2 of three) | prepared 2026-09-27; applies clean to master `84e76d8a2`; **built and measured standalone on pristine master + this patch**: `-sm tensor -ncmoe 99 -fa 1 pp8192 ub8192` **505.49 -> 1690.26 t/s**, `test-backend-ops -o MUL_MAT_ID` 2/2 OK, generation coherent; no NVIDIA hardware available; not filed |
+| directory | what | in the delivery | status |
+|---|---|---|---|
+| [`fa-kv-split-width/`](fa-kv-split-width/README.md) | ggml-cuda: make the FA KV-split (`parallel_blocks`) heuristic query-width independent for small batches, so decode and every spec-verify width reduce identically | **block 00** | validated (gfx1201, issue #25), applies clean to its base |
+| [`fa-decode-verify-kernel-family/`](fa-decode-verify-kernel-family/README.md) | ggml-cuda: keep the decode/verify band on one FA kernel family (a quantized K/V cache took VEC for `n_q <= 2`, TILE from 3) | **block 05** | validated (3x gfx1201) |
+| [`fa-512-rdna-head-cap/`](fa-512-rdna-head-cap/README.md) | ggml-cuda: let RDNA4 use the WMMA FA kernel for head 512 (prefill-only), instead of always falling to the tile kernel | **block 05** (r92, issue #188) | builds and runs on `097cf33d9`; `FLASH_ATTN_EXT` 3993/3993 |
+| [`attn-k-null-mask-guard/`](attn-k-null-mask-guard/README.md) | llama: `llm_graph_input_attn_k` tolerates an absent kq mask (guard the fill, let `can_reuse_impl` accept null) | **block 05** | hardening only — no reachable null-mask path upstream today |
+| [`get-rows-iq4-nl-sub-qk-k/`](get-rows-iq4-nl-sub-qk-k/README.md) | ggml-cuda: `GET_ROWS` on an `iq4_nl` row that is not a whole `QK_K` super-block (keeps the node on the GPU) | **block 08** | validated on gfx1201 (split count 142 → 22, +25-36 % prefill) |
+| [`moe-router-tie-break/`](moe-router-tie-break/README.md) | ggml-cuda: make the fused MoE router bit-identical to the generic chain (softmax order, division, stable argsort tie-break) | **block 08** | validated on gfx1201 |
+| [`q1-0-amd-perm/`](q1-0-amd-perm/README.md) | ggml-cuda: port the Q1_0 table lookups off HIP's private-memory `__byte_perm` to `__builtin_amdgcn_perm` | **block 07** | bit-identical (16.7M cases); no speed claim |
+| [`ggml-alloc-unused-view/`](ggml-alloc-unused-view/README.md) | ggml-alloc: release view sources whose views are never consumed (a real leak; repro included) | **block 00** | repro + `test-alloc`/`test-batch-alloc` verified on master |
+| [`mul-mat-id-dup/`](mul-mat-id-dup/README.md) | ggml-cuda: handle repeated expert ids in `MUL_MAT_ID` (per-occurrence compact rows, expanded column grids, no first-match `break`) | **block 00** (since r66) | dup cases 16/16 (base 0/16), full suites green |
+| [`meta-offload-op/`](meta-offload-op/README.md) | ggml-backend-meta: let the tensor split op-offload host weights, and let a `MIRRORED` tensor serve an arbitrary byte range | **block 09** | measured standalone on pristine master (505 → 1690 t/s) |
+| [`meta-split-unalloc-alias-and-alloc-fail/`](meta-split-unalloc-alias-and-alloc-fail/README.md) | ggml-backend-meta: resolve an alias through its view chain when the allocator never initialised it, and fail an allocation with NULL instead of asserting | **block 00** (+ the `offload_op` gate in **block 09**) | builds on `097cf33d9`; validated at 24 GiB-card parity |
+| [`per-device-host-buffers/`](per-device-host-buffers/README.md) | ggml-cuda + llama + ggml-backend: per-device host buffer types and host-expert offload placement | **block 09** | validated on 2x / 3x R9700 |
+| [`moe-host-expert-pinning/`](moe-host-expert-pinning/README.md) | llama: keep host-resident MoE expert weights pinned instead of downgrading them to the pageable mapping | **block 09** | +83 % `-sm tensor -ncmoe 99` pp8192, bit-identical text |
+| [`sched-cross-device-input-order/`](sched-cross-device-input-order/README.md) | ggml-backend: order a cross-device split-input copy after the destination backend's queued work | **block 09** (issue #103 / PR #104) | fork form validated; upstream form applies clean, not built upstream |
+| [`ggml-sched-probe/`](ggml-sched-probe/README.md) | ggml sched: probe the stored layout before the alloc-fallback's full device sync (single-device fast path) | **block 10** (qwen4exp) | single-GPU validated |
+| [`kv-cache-keys-only/`](kv-cache-keys-only/README.md) | llama: keys-only KV caches — `llama_kv_cache` gains `v_enabled` (no V tensor, no V-side op) | **block 10** (+ the plumbing in **block 08**) | verified on master: indexer KV 72.00 → 24.00 MiB at ctx 8192 |
 
-| `UPSTREAM-PR-moe-host-expert-pinning.patch` + `.md` | llama: keep host-resident MoE expert weights pinned — `select_weight_buft`'s "avoid using a host buffer when using mmap" guard now skips the downgrade for `MUL_MAT_ID` weights, the tensors op-offload (`-ncmoe`) uploads every ubatch, so those uploads read pinned memory instead of the pageable model mapping | **delivery block 06** (r15, 2026-09-27) | prepared 2026-09-27; applies clean to master `84e76d8a2`; validated on gfx1201 2x R9700: **+83 %** `-sm tensor -ncmoe 99` pp8192 (2794 -> 5104 t/s) and bit-identical same-seed output; same finding ships in GenerelSchwerz's `moe-cache` fork; no NVIDIA hardware available; not filed |
-| `UPSTREAM-PR-sched-cross-device-input-order.patch` + `.md` | ggml-backend: order a cross-device split-input copy after the destination backend's queued work — the copy runs on the source backend's stream, so with the allocator reusing an earlier split's output region it could overwrite that output before its outbound copy read it (garbage prefill output with `-sm layer` on 2 GPUs and host experts) | **delivery block 06** (r12, 2026-10-05, issue #103 / PR #104) | prepared 2026-10-05; the fork form is validated (FAIL -> PASS on 2 x R9700 with a prefill-rebalance harness, byte-identical elsewhere); the upstream form is re-cut against `a55e952b8` and applies clean; not built or filed against upstream yet |
-| `UPSTREAM-PR-per-device-host-buffers.patch` + `.md` | ggml-cuda + llama + ggml-backend: per-device host buffer types and host-expert offload placement — `-sm layer` + `-ncmoe` sent every MoE op to device 0 (the host buft was a device-0 singleton, the `ctx_key` comparator merged same-name bufts, and the op-offload loop returned the first backend) | **delivery block 06** (r14, 2026-10-05; folded in from r13's block 16) | prepared 2026-10-05; applies clean to `a55e952b8`; validated on gfx1201 2 x / 3 x R9700 (`-sm layer -ncmoe 48` 10.3 -> 58.6 t/s at 2 GPUs, 81.0 at 3; single-device unchanged; MUL_MAT_ID 931/931, QSA 26/26, acceptance 0.889); no NVIDIA hardware available; not filed |
-| `UPSTREAM-PR-q1-0-amd-perm.patch` + `.md` | ggml-cuda: port the Q1_0 table lookups off HIP's private-memory `__byte_perm` to `__builtin_amdgcn_perm` (adds the `ggml_cuda_byte_perm` helper; 24 call sites in `vecdotq.cuh` / `mmq-load-tiles.cuh`) | **delivery block 15** (r49, 2026-10-11) | prepared 2026-10-11; applies clean to `a55e952b8`; bit-identical (16.7M randomized GPU cases, 0 mismatches) and `test-backend-ops -o MUL_MAT -b ROCm0` 1304/1304 with every `q1_0` width; **no Q1_0 model locally**, so no speed claim; no NVIDIA hardware available; not filed |
-| `UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch` + `.md` | ggml-backend-meta: (1) the split-state walk recurses into `src[]` of an alias that the graph allocator never initialises (`build_attn_mha`'s `ggml_view_4d` -> `ggml_permute` pair), so `buffer_n_bufs(NULL)` asserted during the warmup decode; resolve through the view chain to the buffer the alias inherits.  (2) `alloc_buffer_usage()`/`alloc_buffer_n()` asserted on a failed per-device allocation, turning a KV/weight/compute OOM into a core dump; free what was built and return NULL, which every caller already handles | **delivery block 00** (upstream fixes), pending the r82 amendment; the fork-local companion (gate the meta `offload_op` hook to `MUL_MAT_ID`) stays in block 09 | prepared 2026-10-18 from issue #170; applies clean to `097cf33d9` **and builds** there (full tree, ROCm 10.1.0); validated at 24 GiB-card free-memory parity on 2 x R9700: the reporter's minimal + full command lines load/listen/serve a 5246-token prompt, the KV/weight/compute OOM and a partial sub-buffer failure exit 1 cleanly with no VRAM leak, same-seed greedy text identical (`sha=383655591392`); no NVIDIA hardware available; not filed |
-| `UPSTREAM-PR-fa-512-rdna-head-cap.patch` + `.md` | ggml-cuda: let RDNA4 use the WMMA flash-attention kernel for head 512 (Gemma 4 global layers) -- the `AMD_WMMA_AVAILABLE` guard compiles the body out above `DKQ > 256` even though a `(512, 512, 32)` config row and its instance exist, and the chooser caps WMMA at head 256, so head-512 prefill always takes the tile kernel; enable it prefill-only (`Q->ne[1] > 8`) on RDNA4 | **inside block 05** (r92, issue #188); the fork keeps its own tuned 512 row | prepared 2026-10-19; applies clean to `097cf33d9` and **builds and runs** there (ROCm 10.1.0, gfx1201); `FLASH_ATTN_EXT` 3993/3993 on the patched build; Gemma-4-31B Q4_K_XL pp512 +7 % at d32768, +1.7 % at d98304 vs upstream tile (the fork's larger gain needs fork-only FA work, so validate end-to-end rather than with the issue's isolated test-file case, which measures the masked-KV load path); no NVIDIA hardware available; not filed |
-| `UPSTREAM-PR-mul-mat-id-dup.patch` + `.md` | ggml-cuda: handle repeated expert ids in `MUL_MAT_ID` — `mm_ids_helper` now emits every `(token, iex)` occurrence as its own compact row, the MMQ/MMF column-tile grids loop over the expanded expert column list (stream-k keeps the worst-case width), all `MUL_MAT_ID` goes through the compact MMF kernel, and the host fallback drops its first-match `break` | **nowhere in the delivery** — the delivery ships pure on this bug; campaign record `archive/work/upstream-mul-mat-id-dup/` | prepared 2026-10-13 (r53); applies clean to `097cf33d9` and current master `1b70350c9`; gfx1201: `-o MUL_MAT_ID -p 'dup=1'` **16/16** (base 0/16), `-o MUL_MAT_ID` 947/947, `-o MUL_MAT` 2444/2444, no GPU fault; 35B-A3B Q8_0 prefill within noise; no NVIDIA hardware available; not filed |
+## Backlog (not written up yet)
 
-When filing, re-create the branch from upstream master and re-run the file's own Validation section —
-do not blindly apply the copy, and never apply one of these on top of the full delivery (that would
-double-apply the hunks).
+* **The masked-V / freed-cell kernel fixes** (HIP `fattn-tile.cuh`, HIP `fattn-mma-f16.cuh`, Vulkan
+  `flash_attn.comp` / `flash_attn_cm1.comp`) — validated on gfx1151 + Vulkan, folded into the delivery,
+  but **not** re-cut against unadulterated master: the HIP halves sit on the fork's native-bf16/WMMA FA
+  path, so the upstream form needs a fresh port.
 
-If a hunk here is ever accepted upstream, it should be dropped from the delivery patch
-set on the next regeneration (the delivery then carries only the fork-local remainder).
+## Note for old paths
 
-**Backlog:** the FA KV-split width fix (above) is written up and validated against the delivery.  A
-second candidate — the masked-V / freed-cell kernel fixes (HIP `fattn-tile.cuh`, HIP
-`fattn-mma-f16.cuh`, Vulkan `flash_attn.comp`/`flash_attn_cm1.comp`, today folded into block 14) — is
-already validated on gfx1151 + Vulkan but has **not** been re-cut against unadulterated master yet
-(the HIP halves sit on the fork's native-bf16/WMMA FA path, so the upstream form needs a fresh port).
-The four older candidates (the sched probe, the allocator view-release, the keys-only indexer cache,
-and the `attn_k` null-mask guard) are written up above, each with its own `.md` evidence and an
-explicit "what was not validated" section.  Re-run that section on the PR branch before filing; a hunk
-accepted upstream is dropped from the delivery at the next regeneration.
+Until 2026-10-20 the candidates were flat files here (`UPSTREAM-PR-<name>.md` + `.patch`).  A record
+written before then that cites `upstream/UPSTREAM-PR-<name>.md` means
+`upstream/<name>/README.md`; the patch is unchanged and lives beside it.

@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-backend: order a cross-device split-input copy after the destination's queued work
 
+> **Upstream candidate** · status: prepared 2026-10-05; the fork form is validated, the upstream form applies clean to `a55e952b8` but is not built against upstream · not filed.
+> Delivery: **block 09** (issue #103 / PR #104) · patch: [`UPSTREAM-PR-sched-cross-device-input-order.patch`](UPSTREAM-PR-sched-cross-device-input-order.patch) (this directory).
+
 **Status:** candidate, written against upstream master `a55e952b8` and re-cut from the fork's block-06
 fix (`v16-a55e952b8-r12`, issue #103 / PR #104).  The **fork** form is validated (FAIL -> PASS on
 2 x R9700 with a prefill-rebalance harness); the upstream form below is a straight port of the same

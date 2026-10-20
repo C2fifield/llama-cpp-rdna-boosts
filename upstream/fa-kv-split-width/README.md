@@ -1,5 +1,8 @@
 # Upstream-PR proposal — ggml-cuda: make the FA KV split query-width independent for small batches
 
+> **Upstream candidate** · status: prepared 2026-09-10; validated on gfx1201 against the delivery (issue #25) · not filed.
+> Delivery: **block 00** (`ntiles_dst_eff`) · patch: [`UPSTREAM-PR-fa-kv-split-width.patch`](UPSTREAM-PR-fa-kv-split-width.patch) (this directory).
+
 Status: PREPARED 2026-09-10.  Verified on the delivery fork rebuilt at the fork point
 (`9113cc188`): the patch is the first commit of the `rdna-boosts` `structural-fixes` branch, builds, and
 is covered by the full delivery validation below.  Applies clean to `9113cc188` by construction (it is

@@ -1,5 +1,8 @@
 # Upstream-PR proposal — ggml sched: probe-based alloc-fallback sync (single-device fast path)
 
+> **Upstream candidate** · status: prepared 2026-09-06; single-GPU validation passed · not filed.
+> Delivery: **block 10** (qwen4exp; the sched alloc-fallback fast path) · patch: [`UPSTREAM-PR-ggml-sched-probe.patch`](UPSTREAM-PR-ggml-sched-probe.patch) (this directory).
+
 Status: PREPARED 2026-09-06, gated by single-GPU validation (task 3) — PASSED.  Not yet
 filed.  Pre-submit step still required: clean build of the patch on upstream master
 (465e49b9c) + a same-seed coherence run vs unpatched upstream on the target hardware.

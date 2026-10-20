@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-cuda — handle repeated expert ids in `MUL_MAT_ID`
 
+> **Upstream candidate** · status: prepared 2026-10-13; applies clean to `097cf33d9` and current master `1b70350c9`; dup cases 16/16, full suites green · not filed.
+> Delivery: **block 00** (since r66); the delivery ships pure on this bug · patch: [`UPSTREAM-PR-mul-mat-id-dup.patch`](UPSTREAM-PR-mul-mat-id-dup.patch) (this directory).
+
 **Status:** prepared 2026-10-13; applies clean (`git apply --check`) to the fork point `097cf33d9` and
 to current upstream master `1b70350c9`.  Validated on gfx1201 / ROCm 7.14.1.  **Not filed.**
 

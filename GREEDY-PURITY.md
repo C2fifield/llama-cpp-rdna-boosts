@@ -1,937 +1,423 @@
-# Greedy purity, VDR, and the nature of the block 10 variance
+# Greedy purity — the rulebook
 
-> **V2.0 numbering note (2026-10-13).**  This reference document uses the **pre-V2.0 16-block**
-> numbering (`block 10` = the k-quant/VDR umbrella, `block 13` = the fused-MoE `mmvq` block).  In the
-> current **12-block** set (release `v12-097cf33d9-r51`) the k-quant decode-numerics work lives in
-> **block 07** and the fused-MoE/`mmvq` work in **block 08**; the purity *claims* below are unchanged.
+**What this is.**  The delivery's purity contract, one entry per finding: the claim, the rule a change
+must satisfy, the numbers that back it, and where the record lives.  Read the entry for the `§` you are
+about to touch; read the seven invariants before shipping anything that changes a decode or prefill
+kernel.
 
-Status: **reference document**. Read this if you are shipping block 10
-(`0010-rdna-boosts-block-10-k-quant-boosts-Q4_K-Q5_K-Q6_K-Q.patch`) and care about bit-exact reproduction of greedy
-decode vs a stock llama.cpp build. It explains *why* block 10 changes decode
-numerics, what that does and does not mean for correctness, and how to reason
-about the variance in practice. Sections 1-8 were written for the 12-block
-set; block 13 adds a second decode-numerics source on its rewritten mmvq
-rows — see **§9 (2026-09-02 addendum)** before relying on the
-"block 10 is the single patch" claims.
-
-
-## How this document is organised
-
-**Read the summary entry for a section, not the whole file.**  Each `§N` here carries the *claim, the
-measured numbers and the rule*; the long "how we found it" narratives for the closed cases live in
+**Where the rest is.**  The investigation narratives (how each finding was made, which instruments failed,
+which false trails were ruled out) are in
 [`archive/docs/GREEDY-PURITY-FINDINGS.md`](archive/docs/GREEDY-PURITY-FINDINGS.md) under the same `§`
-numbers, and the delivery-side record of each amendment is in `patches/README.md` + `WORKLOG.md`.
-Section numbers are **stable** — dozens of docs cite them, so they are never renumbered; new findings
-are appended.
+numbers.  The delivery-side record of each amendment is in `patches/README.md` and `WORKLOG.md`.  Section
+numbers are **stable** — dozens of docs cite them — so they are never renumbered; new findings append.
 
-**The core invariants (everything below is evidence for these):**
+> **Numbering.**  This document uses the **V2.0 12-block** numbering for new text.  Entries written
+> before 2026-10-13 use the **pre-V2.0 16-block** numbering ("block 10" = the k-quant/VDR umbrella, now
+> **block 07**; "block 13" = fused MoE/`mmvq`, now **block 08**; "block 14" = qwen4exp, now **block 10**;
+> "block 15" = the campaign remainder, now **block 11**).  §39/§40 appear twice in the original numbering;
+> the later pair is labelled **§39b/§40b** here.
+
+## The invariants (everything below is evidence for these)
 
 1. **Inside the decode/verify band, one arm — chosen from the `n_tokens` band and `n_kv`, never from the
    exact width, `n_kv` alone, or `n_tokens == 1`.**  A W=1 decode and a W=(`--spec-draft-n-max` + 1)
-   verify of the same state must take the same kernels (§§11, 13-17, 25, 26).
+   verify of the same state must take the same kernels (§§11, 13-17, 25, 26, 32).
 2. **A batch you can roll back into must be written by the kernel whose snapshots you read** — the
-   rollback bound is a purity bound, not a tuning knob (§27).
-3. **Same real-number result, different rounding order** is what the block 10/13 numerics changes are
-   (§§1-9): stock is the reference *standard*, not the mathematically special order.
+   rollback bound is a purity bound, not a tuning knob, and it is derived from the widest enabled
+   speculator, not from the snapshot depth (§27).
+3. **Same real-number result, different rounding order.**  The k-quant/fused-MoE numerics changes are
+   exactly that; stock is the reference *standard*, not the mathematically special order (§§1-9).
 4. **A newly enabled KV type / op argument / fusion is a new kernel family** and needs the full band
-   sweep, the text gate, the oracle and the perplexity comparison (§§20-22).
+   sweep, the text gate, the oracle and the perplexity comparison (§§20-22, 29).
 5. **Purity outranks raw non-MTP throughput**: land bit-identical decode/verify even at a few percent of
    the widest verify batch, record the delta, then repay it structurally (§§19, 24).
-6. **Use the instrument that can see the defect**: the raw-logit width probe for boundaries, the
-   dense-masked path + a CPU oracle for a fused tensor op, random text for a causal leak, and an
+6. **Use the instrument that can see the defect**: the raw-logit width probe for boundaries, a CPU
+   reference or the dense-masked path for a fused tensor op, random text for a causal leak, and an
    *executed-graph* dump when a chain looks dead (§§11, 21, 23).
-7. **A prefill-logit shift is a purity failure even when decode is clean.**  Same-seed/greedy text and
-   MTP sample the decode distribution *from the post-prefill state* and cannot see a uniform prefill
-   shift; run the prefill-logit KLD gate (`benchmarks/prefill-logit-methodology.md`) before shipping a
-   prefill kernel.  Issue #113: the default-on BF16 chunked GDN passed coherence at mean KLD 0.03.
+7. **A prefill-logit shift is a purity failure even when decode is clean.**  Same-seed text and MTP
+   sample the decode distribution *from the post-prefill state* and cannot see a uniform prefill shift;
+   run the prefill-logit KLD gate (`benchmarks/prefill-logit-methodology.md`) before shipping a prefill
+   kernel.  Issue #113: the default-on BF16 chunked GDN passed coherence at mean KLD 0.03.
+8. **A shape-scoped launch parameter must be forwarded to every kernel that reproduces that launch.**
+   `nwarps` / `rows_per_block` / VDR are width-uniform only if the fused single-token kernels that
+   replace a dense weight launch call the same selector (§19 addendum, §39).
 
-**Section index** (status: *doctrine* = read before shipping / *current* = live state / *fix* = closed
-finding, narrative moved to the findings file):
+## Index
+
+*status*: **doctrine** = read before shipping · **current** = live state · **fix** = closed finding.
 
 | § | claim | status |
 |---|---|---|
-| 1-5 | block 10 changes only the fp32 addition *order* on the K-split decode paths; VDR/`blocks_per_iter` is the mechanism | doctrine |
-| 6-8 | speculative verify runs the same kernels on a wider batch, so the variance composes orthogonally; measured magnitude and stock-reproduction guidance | doctrine (§9 supersedes §2/§8 for block-13+ sets) |
-| 9 | block 13's rewritten mmvq rows are a **second** decode-numerics source | doctrine |
-| 10 | block 00 makes the verify width irrelevant on the small-batch FA path (`ntiles_dst_eff`) | doctrine |
-| 11 | the guarantee is `--spec-draft-n-max <= 7`; cause A (block-12 AR crossover, fixed) + cause B (the FA tile->WMMA switch at `Q->ne[1] > 8` **and** the mmvq/mmq matmul switch at `ncols == 8`, both by design).  Since 2026-09-13 the CLI no longer clamps depths 8..15; it warns and keeps them (the >15 clamp is the recurrent snapshot bound) | current |
-| 12 | the guarantee depends on the KV-cache type; the two fast native types were impure (fixed by §14) | fix + the fast/slow trade |
-| 13 | qwen4exp's hyper-connection band is `1 <= nt <= 8` (`HC_FUSED_MAX_TOKENS`) | fix |
-| 14 | F1: the FA chooser spanned VEC (`n_q <= 2`) and TILE (`n_q >= 3`) for quantized K/V — one family now | fix |
-| 15 | F2 cause 2: upstream's per-type mmvq caps are numeric boundaries inside the band (fixed; also a 14-26 % win) | fix |
-| 16 | cause 3: the QSA dense decode arm was `n_tokens == 1` — now `<= QSA_DECODE_BAND` (8) | fix |
-| 17 | the MoE shared-expert epilogue is token-generic with `nwarps` pinned | fix |
-| 18 | the QSA sparse regime on gfx1151: the two 2026-09-11 width-dependences do not reproduce; the MTP-export logits ULP is fixed; the forced-arm q8_0/q5_0 residual is root-caused and fixed (gfx1151-validated 2026-09-12 (14)) | fix + current |
-| 19 | purity first: a correctness fix may cost a few percent — land it, record it, repay it | doctrine |
-| 20 | a newly enabled KV type is a new kernel family (the enablement checklist) | doctrine |
-| 21 | a shared staging tile makes a block head-homogeneous (the QSA K/V-head bug + the two instruments that found it) | doctrine + fix |
-| 22 | `iq4_nl`: the type is not the only thing an enablement touches | fix |
-| 23 | a shadowed variable left a chain dead and the mask unfilled (four lessons, incl. random-text leak probing) | fix |
-| 24 | the cost of a band amendment can be structural, not arithmetic (the column-blocked epilogue) | doctrine + fix |
-| 25 | the RDNA3_5 single-token-only mmvq fusions are not decode/verify bit-identical (block-13 gate) | current |
-| 26 | the prefill half of a regime policy must be band-keyed too (and defaults follow the documented policy) | doctrine |
-| 27 | a rollback bound is a purity bound (`n_rs_batch`, the GDN chunked kernel's snapshots) | doctrine + fix |
-| 28 | an export-only tail must not redefine the logits path (the MTP `embeddings_nextn` gather deferral) | doctrine + fix |
-| 29 | a flattened batch is not a token count (the QSA indexer score's `ne11 = 4 * n_tps`) | fix |
-| 30 | a support predicate decides the *layout*; an address-driven fusion can move the output (the `iq4_nl` GET_ROWS CPU fallback) | doctrine + fix |
-| 31 | an address-selected fusion must be bit-identical to the path it replaces (the MoE `topk_moe` router + the argsort tie-break) | doctrine + fix |
-| 32 | a decode/verify band policy must scale with the configured draft depth | fix |
-| 33 | a purity (or throughput) gate must run the content the axis intends, long enough to reach steady state | doctrine |
-| 34 | a K/V staging policy is a decode-depth policy (and can be the margin for a high-context load) | doctrine + fix |
-| 35 | a prefill kernel config must be arch- and split-keyed, not one row for all RDNA | doctrine + fix |
-| 36 | §14's `W=1..8` purity is a measured claim; relax the bit-identical guarantee for the coarse quants | doctrine |
-| 37 | a fully-masked KV group is an exact no-op; the issue-#48 skip is bit-identical (kept prefill-only — the decode extension is break-even, §38) | doctrine + current |
-| 38 | concurrent serving is not batch-composition deterministic (1 GPU too); the purity guarantee is for a fixed batch | doctrine |
-| 39 | the MoE expert-cache band now follows the routed-expert MMVQ band (16 on RDNA4); `n_max <= 7` is unchanged and the band-16 cache path is bit-identical to all-VRAM at the widths it newly serves | doctrine + current |
-| 40 | a reserve/measure graph must match its memory context's stream count (`build_attn_mha` splits the query by `k->ne[3]`, and `ggml_flash_attn_ext` asserts `q->ne[3] == k->ne[3]`); a 1-sequence ubatch against a multi-sequence cache builds a zero-token query | doctrine + fix |
+| **§1** | the k-quant VDR work computes the same real-number result through a different fp32 addition order | doctrine |
+| **§2** | the two mechanisms: VDR constants + the RDNA3_5 parameter table | doctrine |
+| **§3** | the dot products are exact; only the fp32 accumulation can round, and the cross-thread tree is identical | doctrine |
+| **§4** | VDR changes *which* partials feed which leaves (and does not add rounding events) | doctrine |
+| **§5** | "bit-identical to stock" is a reproducibility requirement, not a correctness one | doctrine |
+| **§6** | speculative verify runs the same kernels on a wider batch, so the variance composes orthogonally | doctrine |
+| **§7** | measured magnitude: max logit diff 0.184, PPL identical | current |
+| **§8** | practical guidance: how to reproduce stock bits, and how to A/B | doctrine |
+| **§9** | the fused-MoE `mmvq` rewrite is a **second** decode-numerics source | doctrine |
+| **§10** | block 00 makes the verify width irrelevant on the small-batch FA path | doctrine |
+| **§11** | the guarantee is `n_max <= 7`; the causes are one fixed AR dispatch and one deliberate kernel switch | current |
+| **§12** | the guarantee depends on the KV-cache type | fix + trade |
+| **§13** | qwen4exp's hyper-connection band is `1 <= nt <= 8` | fix |
+| **§14** | F1: the FA chooser spanned VEC and TILE inside the band — one family now | fix |
+| **§15** | F2: upstream's per-type mmvq caps were numeric boundaries inside the band | fix |
+| **§16** | cause 3: the QSA dense decode arm was `n_tokens == 1` | fix |
+| **§17** | the MoE shared-expert epilogue is token-generic with `nwarps` pinned | fix |
+| **§18** | the QSA sparse gfx1151 width-dependences did not reproduce; the residuals were two other findings | fix |
+| **§19** | purity first: a correctness fix may cost a few percent — land it, record it, repay it | doctrine |
+| **§20** | a newly enabled KV type is a new kernel family | doctrine |
+| **§21** | a shared staging tile makes a block head-homogeneous (and width purity cannot see it) | doctrine |
+| **§22** | `iq4_nl`: the type is not the only thing an enablement touches | fix |
+| **§23** | a shadowed variable left the mask chain dead and unfilled | fix |
+| **§24** | the cost of a band amendment can be structural, not arithmetic | doctrine |
+| **§25** | the RDNA3_5 single-token-only mmvq fusions are not decode/verify bit-identical | current |
+| **§26** | a regime policy is only pure if the *band* takes one arm — including the prefill half | doctrine |
+| **§27** | a rollback bound is a purity bound (and since r91 it is *enforced*, not observed) | doctrine |
+| **§28** | an export-only tail must not redefine the logits path | doctrine |
+| **§29** | a flattened batch is not a token count | fix |
+| **§30** | a support predicate decides the *layout*; the layout decides an address-gated fusion | doctrine |
+| **§31** | an address-selected fusion must be bit-identical to the path it replaces | doctrine |
+| **§32** | a decode/verify band policy must scale with the configured draft depth | fix |
+| **§33** | a gate must run the content the axis intends, long enough to reach steady state | doctrine |
+| **§34** | a K/V staging policy is a decode-depth policy (and can be a load margin) | doctrine |
+| **§35** | a prefill kernel config must be arch- and split-keyed | doctrine |
+| **§36** | §14's `W=1..8` purity is a *measured* claim; relax it for the coarse quants | doctrine |
+| **§37** | a fully-masked KV group is an exact no-op; the skip must stay prefill-only | doctrine |
+| **§38** | the guarantee is scoped to a fixed batch; `--kv-unified` serving is not deterministic | doctrine |
+| **§39** | a decode-only fusion must match the standalone launch it replaces | doctrine |
+| **§39b** | the MoE expert-cache band follows the routed MMVQ band | current |
+| **§40** | a thread count is a scheduling parameter, not a numerical one | doctrine |
+| **§40b** | a reserve/measure graph must match its memory context's stream count | doctrine |
+| **§41** | a runtime, address-selected fusion is a cross-process purity risk; a compile-time one is not | fix |
+| **§42** | a width gate is not a purity rule: extending a fused chain *down* to one token | fix |
 
+---
 
 ## 1. The one-sentence version
 
-Block 10 does not make decode any more or less *correct* than stock — it
-computes the **same real-number result** through a **different order of fp32
-additions**, which produces a different (equally valid) rounding path; stock
-is not the mathematically special order, it is just the *reference standard*
-that was chosen first and that everything else reproduces.
+The k-quant VDR work (pre-V2.0 "block 10", now **block 07**) does not make decode more or less *correct*
+than stock — it computes the **same real-number result** through a **different order of fp32 additions**.
+Stock is not the mathematically special order; it is the *reference standard* that shipped first and that
+everything else reproduces.
 
 ## 2. What block 10 changes
 
-Block 10 is the single patch in the set that alters decode numerics on the
-K-split decode paths (superseded for block-13-installed sets — see §9). It
-does so through two mechanisms, both in the mmvq decode path:
+Two mechanisms, both in the `mmvq` decode path, and nothing else in the block changes production numerics
+(the MMQ scale-load hoist, the MoE `mmid` whitelist and the perf-harness cases are arithmetic-preserving or
+test-only):
 
 | mechanism | change | effect |
-|-----------|--------|--------|
-| **VDR (vectors-per-thread reduction)** | `VDR_Q4_K_Q8_1_MMVQ 2→4`, `VDR_Q5_K_Q8_1_MMVQ 2→4`, `VDR_Q8_0_Q8_1_MMVQ 2→4`, `VDR_Q6_K_Q8_1_MMVQ 1→2` | each thread accumulates 4 (or 2) chunk partials serially instead of 2 (or 1) |
-| **RDNA3_5 parameter table** (ex-block 06) | `MMVQ_PARAMETERS_RDNA3_5` split from the RDNA2 fallback, `nwarps=2` for Q8_0 on gfx1151 | fewer warps → different cross-warp combine tree |
+|---|---|---|
+| **VDR** | `VDR_Q4_K/Q5_K/Q8_0 2→4`, `VDR_Q6_K 1→2` | each thread accumulates 4 (or 2) chunk partials serially instead of 2 (or 1) |
+| **RDNA3_5 parameter table** | split from the RDNA2 fallback, `nwarps=2` for Q8_0 on gfx1151 | fewer warps → different cross-warp combine tree |
 
-Everything else in block 10 (the mmq prefill scale-load hoist, the MoE mmid
-whitelist, the perf-harness cases) is arithmetic-preserving or test-only and
-does not change any production numerics.
+## 3. The reduction structure
 
-## 3. The reduction structure (identical machinery, different leaf assignment)
-
-The decode kernel `mul_mat_vec_q` (in `mmvq.cu`) computes each output row as
-a dot product of quantized x/y blocks. The dot products themselves are
-**exact**: `ggml_cuda_dp4a` is an integer SIMD dot product, and the scale
-multiplications `d8 * (dot1 * sc)` are single multiplies. The only place
-rounding can differ is the **fp32 accumulation**:
-
-```
-// per-thread serial chain:
-for (int kbx = tid/(qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
-    tmp[j][i] += vec_dot_q_cuda(...);        // ONE serial add per iteration
-}
-// cross-thread combine (identical in stock and block 10):
-tmp[j][i] += tmp_shared[l][j][i][threadIdx.x];   // across warps (shared memory)
-tmp[j][i]  = warp_reduce_sum<warp_size>(tmp[j][i]); // across lanes (shuffle tree)
-```
-
-`warp_reduce_sum` is a fixed, hard-coded binary tree:
-
-```cpp
-for (int offset = width/2; offset > 0; offset >>= 1)
-    x += __shfl_xor_sync(0xffffffff, x, offset, width);   // 16, 8, 4, 2, 1
-```
-
-**Crucially, the cross-thread tree is byte-identical in both paths.** What
-VDR changes is *which* partial sums feed which leaves of that tree, and how
-many serial adds happen per thread before the tree runs.
+The dot products are **exact** (`ggml_cuda_dp4a` is an integer SIMD dot product; the scale multiplies are
+single multiplies); only the **fp32 accumulation** can round.  The per-thread serial chain
+(`tmp[j][i] += vec_dot(...)` once per `blocks_per_iter`) and the cross-thread combine (shared-memory across
+warps, then `warp_reduce_sum`'s hard-coded `16,8,4,2,1` shuffle butterfly) are **identical** in stock and
+in the boosted path.  What changes is *which* partial sums feed which leaves of that tree.
 
 ## 4. Why VDR changes the rounding path
 
-FP32 addition is **not associative**: `(a+b)+c` and `a+(b+c)` can round
-differently. For a fixed row, the VDR value determines:
+`blocks_per_iter = vdr * nwarps*warp_size / qi` and `kqs = vdr * (tid % (qi/vdr))`, so VDR sets the
+per-thread serial chain length and the thread-to-chunk assignment.  The *set* of partial products is
+unchanged; the **association order** is not.
 
-- `blocks_per_iter = vdr * nwarps*warp_size / qi` — how many chunks each
-  thread owns per iteration (doubles from VDR=2 to VDR=4),
-- the per-thread serial chain length (2 chunks then a `tmp +=` at VDR=2;
-  4 chunks then a `tmp +=` at VDR=4),
-- `kqs = vdr * (tid % (qi/vdr))` — which quant groups each thread touches.
+*A note on "fewer rounding accumulations".*  VDR=4 does **fewer** serial rounding steps per thread, not
+more (the outer `tmp +=` chain runs half as often, ~17 % fewer serial fp32 adds).  "The boosted path rounds
+more" is the wrong intuition, and neither path is provably closer to the exact result.
 
-So the *set* of partial products is identical, but the *association order*
-of their summation differs: stock effectively rounds `((c0+c1)+(c2+c3))`
-through the tree, block 10 rounds `(((c0+c1)+c2)+c3)` per thread before the
-tree — and the thread-to-chunk assignment is different too. Same math,
-different rounding events.
+## 5. What "correctness" means here
 
-### A note on "fewer rounding accumulations"
+* **Same real-number result** — no approximation is introduced.
+* **Stock is not more correct** — its ordering was chosen for performance on the hardware of the day.
+* **Bit-identity is a reproducibility requirement, not a correctness one** — golden vectors, cross-build
+  harnesses, `verify == decode` batches, audit trails.  Reproducing stock's bits means reproducing its
+  exact association order, which is why the block is structured as one excludable patch.
 
-If anything, the VDR=4 path does **fewer** serial rounding steps per thread,
-not more: for the same K, `blocks_per_iter` doubles, so the outer `tmp +=`
-chain runs half as often, and the internal adds amortize over more chunks
-(~17% fewer serial fp32 adds per thread at VDR=4, measured from the loop
-structure). This is not a claim of higher accuracy — it is simply evidence
-that "more rounding happens in the boosted path" is not the correct
-intuition. Both paths round a comparable number of times in comparable
-magnitude ranges; neither is provably closer to the exact result.
+## 6. Speculative decoding composes orthogonally
 
-## 5. What "correctness" means here — and what it doesn't
-
-- **Same real-number result.** In exact arithmetic, every VDR configuration
-  computes the identical dot product. There is no approximation being
-  introduced — the products are exact, the scales are exact, the sums are of
-  the same terms.
-- **Stock is not more correct.** The upstream ordering was chosen by the
-  original author for performance and simplicity on the hardware of the day,
-  not because it is the mathematically optimal summation order. There is no
-  correctness bound, no error analysis, no "canonical" association in the
-  reference implementation — it is simply the ordering that shipped first.
-- **Block 10 is not less correct.** It is a different, equally deterministic
-  path through the same fp32 approximation space.
-- **"Bit-identical to stock" is a reproducibility requirement, not a
-  correctness requirement.** It matters when you need byte-exact comparison
-  against stock output: golden test vectors, cross-build test harnesses,
-  speculative-verify batches that must match decode (the `ncols_dst <=
-  MMVQ_MAX_BATCH_SIZE` rule), or audit trails. If your goal is to reproduce
-  stock's bits, you must reproduce stock's exact association order — that is
-  the entire reason block 10 is structured as one excludable patch.
-
-## 6. Speculative decoding: same kernels, same drift, orthogonal composition
-
-Speculative decoding (draft + verify) does not add a separate source of
-variance — it runs the *same* mmvq decode kernels on a wider batch. The
-target model verifies the draft tokens in **one batch of `n_draft+1` rows**
-(default `n_draft = 8`, so up to 9 rows), which hits the identical
-`mul_mat_vec_q` kernels as single-token greedy, just with
-`ncols_dst = n_draft+1`. Acceptance then compares each sampled token
-against the draft:
-
-```cpp
-for (; i < draft.size(); i++) {
-    const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], ...);
-    if (draft[i] != id) break;    // acceptance decision
-}
-```
-
-Two invariants make block 10's interaction with speculation safe and
-bounded:
-
-1. **VDR is per-type only**, not per-column-count: `get_vdr_mmvq(type)`
-   returns the same value for n=1 (single-token decode) and n=2..8
-   (verify batch). Block 10 changes the *values* uniformly, so both paths
-   use the same VDR=4 kernels.
-2. **Block 08's `ncols_dst <= MMVQ_MAX_BATCH_SIZE` rule** forces the
-   verify batch onto the same nwarps as decode, so its per-row
-   accumulation is bit-identical to one-at-a-time decode *within a
-   build*.  The nwarps **value** is per `(type, K)` since the
-   2026-09-12 (18) block-13 amendment (dense Q8_0 `K < 4096` -> 8, else
-   1, with the pinned fusion ops kept at the band-uniform 1); K is fixed
-   for a given weight, so the band stays uniform per weight and the
-   invariant is untouched.
-
-Together these guarantee the distribution-preservation property that
-speculative decoding relies on: the acceptance criterion reproduces the
-target model's distribution exactly — with or without block 10. Block 10
-changes the *rounding path* of that distribution, uniformly across both
-paths; it does not break the consistency between them.
-
-The interaction therefore splits along the same line as plain decoding:
+The verify batch runs the *same* `mmvq` kernels at `ncols_dst = n_draft+1`.  Two invariants keep it
+bounded: **VDR is per-type, not per-column-count**, and the `ncols_dst <= MMVQ_MAX_BATCH_SIZE` rule forces
+the verify batch onto decode's `nwarps`.  So the acceptance criterion still reproduces the target
+distribution exactly.
 
 | | temp = 0 (greedy) | temp > 0 (stochastic) |
 |---|---|---|
-| **acceptance decisions** | draft accepted iff `argmax(target logits) == draft` — a deterministic comparison; a ≤0.184 logit drift can flip near-tie acceptances | acceptance is a random draw from the (slightly shifted) distribution; the drift perturbs *probabilities*, not decisions |
-| **block 10's effect** | can change which tokens are accepted in near-ties → a different greedy stream (the 1-of-3-prompts divergence, same as plain greedy) | shifts acceptance probabilities by ≤~20% relative on the worst token, typically far less; the RNG draw varies run-to-run by more |
-| **correctness impact** | none — both are valid deterministic paths | none — the sampling *distribution* is what matters, and PPL is bit-unchanged |
-
-**The one nuance:** at temp>0 the drift does not vanish — it slightly
-changes the *acceptance rate* (how many draft tokens get accepted per
-block), a marginal throughput effect. It does not change what the model
-produces in any meaningful sense: the output distribution is preserved
-either way, which is the entire point of the spec-decode acceptance
-criterion.
-
-**Bottom line:** block 10 + speculation = block 10 without speculation,
-from the output-distribution standpoint. Speculation is an accelerator;
-block 10 is a rounding-path choice; they compose orthogonally. The only
-place the composition shows up is greedy acceptance (temp=0), where the
-≤0.184 drift can flip near-tie acceptances — the same bounded,
-characterized divergence described throughout this document.
+| effect | a ≤0.184 logit drift can flip near-tie acceptances → a different greedy stream | the drift perturbs probabilities, not decisions; acceptance *rate* may shift slightly |
+| correctness | none — both are valid deterministic paths | none — the distribution is preserved; PPL is bit-unchanged |
 
 ## 7. Measured magnitude of the variance
 
-From the validation runs on gfx1201 (ROCm 7.14):
+| metric (gfx1201, ROCm 7.14) | value |
+|---|---|
+| max abs logit diff, block 10 in vs out | **0.184** |
+| same, flash-attn on vs off (yardstick) | 0.203 |
+| per-token probability change at the worst logit (t=1.0) | ~20 % |
+| top-2 logit gap typically | 0.5-5 nats (0.184 is ~9 % of a 2-nat gap) |
+| PPL (wikitext-2, Q8_0) | identical to pre-block-10 |
+| greedy streams | deterministic within a build; 1 of 3 prompts diverged at one character |
 
-| metric | value | meaning |
-|--------|-------|---------|
-| max |logit| diff (block 10 in vs out) | **0.184** | the largest single-logit change anywhere in the test prompts |
-| same, for flash-attn on vs off (yardstick) | 0.203 | a variance source already accepted upstream — block 10's drift is comparable to it |
-| per-token probability change at the max-diff logit | ~20% at t=1.0 | *modest*, not astronomically small — see note below |
-| logit magnitude in the top region | ~10–30 nats | 0.184 is ~2 orders of magnitude below the logit scale |
-| typical top-2 logit gap | ~0.5–5 nats | 0.184 is ~9% of a 2-nat gap — enough to flip greedy *only* in near-ties |
-| PPL (wikitext-2, Q8_0 model) | 6.3162 / 6.3563, **identical** to pre-block-10 | the aggregate output distribution is unaffected |
-| greedy streams | deterministic *within* a build; 1 of 3 test prompts diverged at 1 character | flips only when two logits sit within the drift of each other |
-
-### Honest framing of the numbers
-
-An earlier draft of this note described the drift as "four orders of
-magnitude below the temperature scale." That phrasing is **not accurate** and
-is not used here. A 0.184 logit difference is ~20% relative probability on
-the single most-affected token at t=1.0 — small relative to the logit scale
-(~2 orders below typical magnitudes) and small enough that PPL is
-bit-unchanged, but it is *not* vanishingly small. What keeps it benign in
-practice:
-
-1. It is a **max** over all tokens; typical logits drift far less.
-2. PPL — the aggregate measure of output quality — is bit-identical.
-3. Greedy output changes only when the top-2 logit gap happens to be smaller
-   than the drift (a near-tie), which is why 1 of 3 prompts diverged at a
-   single character and the other 2 did not diverge at all.
-
-If you require bit-exact greedy reproduction of stock, exclude block 10. If
-you require a *correct, deterministic, high-quality* model, block 10 is
-unambiguously fine: it is one of many valid rounding paths, and the evidence
-shows it neither helps nor hurts what the model produces — only whether the
-bits match stock's arbitrary-but-pinned order.
+**Honest framing:** 0.184 is *not* vanishingly small (~20 % relative probability on the single worst
+token), but it is a **max** over all tokens, PPL is bit-identical, and greedy flips need a near-tie.  If you
+need stock's bits, exclude the block; if you need a correct, deterministic, high-quality model, the block
+is fine.
 
 ## 8. Practical guidance
 
-- **Within a single build:** greedy output is fully deterministic, with or
-  without block 10. The variance only appears when comparing *different
-  builds* (block 10 in vs out, flash-attn on vs off).
-- **Reproducing stock bits:** exclude `0010-rdna-boosts-block-10-k-quant-boosts-Q4_K-Q5_K-Q6_K-Q.patch` (it is
-  applied last; one-line change in `scripts/apply-all.sh`). This restores
-  every VDR constant and the RDNA3_5 table to stock values, so the reduction
-  order matches upstream exactly, on RDNA3, RDNA3_5 and RDNA4 alike.
-- **Mixing the two:** do not apply block 10 partially or hand-tune VDR
-  values in production builds that must match stock — any deviation from the
-  stock association order is a new rounding path and breaks bit-reproduction
-  just as surely as block 10 does.
-- **Comparisons:** when A/B testing block 10 against stock, compare
-  *distributions* (PPL, benchmark scores, sampling quality), not individual
-  greedy tokens — individual tokens are expected to differ in near-ties, in
-  exactly the same way they differ between flash-attn on and off.
+* Within a build, greedy output is fully deterministic — the variance appears only across *builds*.
+* To reproduce stock bits, exclude the k-quant block (**V2.0 `0007`**).  In V2.0 that is **no longer a
+  one-line drop**: `0007` is mid-series and later blocks edit the same `mmvq.cu` region, so the set must
+  be re-cut without it (pre-V2.0 it was the last patch).  Do not apply it partially or hand-tune VDR in
+  production.
+* A/B on **distributions** (PPL, benchmark scores, sampling quality), not individual greedy tokens.
 
-## 9. Block 13 changes decode numerics on its rewritten mmvq rows (addendum, 2026-09-02)
+## 9. The fused-MoE `mmvq` rewrite is a second decode-numerics source
 
-Sections 1-8 were written for the 12-block set. Block 13 (`0013`, amended
-2026-09-02 with the two MTP regression fixes) adds a second source of
-decode-numerics change, so the "block 10 is the single patch" statements in
-§2 and the §8 stock-reproduction guidance are **superseded for any set that
-includes block 13**:
+Pre-V2.0 block 13 (now **block 08**) replaces the §3 K-split loop with an item-split over
+(token, row, kblock) plus an RDNA `rows_per_block` override, feeding different partial sums into the same
+tree.  The 2026-09-02 fix restored `ncols 2..8` and `ncols==1` with `K >= 4096` to the K-split kernel, so
+dense long-K decode is back to block-10-only variance; the remaining surface is `ncols==1` with `K < 4096`
+(MoE down/router and other short-K projections).  Multi-token MoE decode takes the unfused path (the
+`rms_norm`→Q8_1 fold is gated off `MUL_MAT_ID`), and single-token MoE carries fusion-ordering drift.
 
-1. **What block 13 rewrote.** Block 13 replaced the §3 K-split loop in the
-   small-batch decode kernel `mul_mat_vec_q` with an item-split over
-   (token, row, kblock) plus an RDNA `rows_per_block` override. On the rows
-   that run it, the item-split feeds *different partial sums* into the §3
-   cross-thread tree — the same class of fp32 reordering as block 10's VDR,
-   and the same same-seed consequence: greedy streams are deterministic
-   within a build but can flip vs stock (observed: 13-block vs 12-block
-   outputs diverged on near-ties).
-2. **What the 2026-09-02 ksplit fix restored.** ncols 2..8 (the speculative
-   verify batch) and ncols==1 rows with K >= 4096 now dispatch to the
-   pre-block-13 K-split kernel (`mul_mat_vec_q_ksplit`), restoring the §3
-   reduction structure on those rows — dense-model decode is again
-   byte-identical to the 12-block build (verified: dense qwen35 same-seed
-   outputs match). The remaining block-13 kernel surface is ncols==1 rows
-   with K < 4096 (MoE down/router and other short-K projections on RDNA2+
-   tables); those rows still carry block-13 variance vs stock.
-3. **MoE multi-token decode.** The second 2026-09-02 fix gates the
-   block-08 rms_norm->mmvq Q8_1 quantize-cache fold off multi-token
-   MUL_MAT_ID (it corrupted the cached y on that path — MTP acceptance
-   0/1527). Batched MoE decode now follows the unfused path, restoring
-   verify==decode consistency (acceptance 0.51). Separately, MoE
-   single-token decode carries fusion-ordering drift (fused vs unfused
-   differ on near-ties; deterministic within a build; accepted trade-off).
-4. **Practical consequence.** Reproducing stock bits with block 13
-   installed is not a one-line drop like block 10: the K<4096 ncols==1
-   mmvq rows run block 13's item-split kernel (no env switch; the ksplit
-   dispatch condition in `mul_mat_vec_q_switch_ncols_dst` is the gate).
-   Dense long-K decode (the common case) is back to block-10-only variance;
-   MoE/short-K decode carries block-13 variance. Full-set greedy output
-   remains fully deterministic within a single build.
+**Consequence:** reproducing stock bits with this block installed is not a one-line drop; the `ksplit`
+dispatch condition in `mul_mat_vec_q_switch_ncols_dst` is the gate.
 
-## 10. Block 00 makes the verify width irrelevant on the small-batch path (2026-09-10)
+## 10. Block 00 makes the verify width irrelevant on the small-batch FA path
 
-Block 00 (the structural block) removes a second, previously separate
-source of greedy variance: the flash-attention KV split. `launch_fattn`'s
-`parallel_blocks` heuristic keyed off `ntiles_dst`, a function of
-`Q->ne[1]`, so single-token decode (`n_q = 1`) and a speculative verify
-batch (`n_q = 3`, `5`, …) grouped the fp32 online-softmax / PV partial
-sums differently and produced different logits.  `--spec-draft-n-max 2`
-and `4` therefore streamed apart at near-ties even though both ran the
-same kernel instantiation (issue #25).  Block 00 evaluates the heuristic
-as if `n_q == 1` for every `n_q <= 8`; decode and every verify width now
-reduce identically, and plain decode is byte-identical (only `n_q >= 2`
-moves).  `n_q = 1` vs a verify batch can still differ because the FA
-*kernel* is selected from `Q->ne[1]` (decode may take the VEC kernel);
-that is a decode-vs-verify difference, not a draft-length one.
+`launch_fattn`'s `parallel_blocks` keyed off `ntiles_dst` (a function of `Q->ne[1]`), so single-token
+decode and a verify batch grouped the online-softmax/PV partials differently and produced different logits
+(issue #25).  Block 00 evaluates the heuristic as if `n_q == 1` for every `n_q <= 8`, so decode and every
+verify width reduce identically.  `n_q = 1` can still differ from a verify batch because the FA *kernel* is
+selected from `Q->ne[1]` — a decode-vs-verify difference, not a draft-length one.
 
-## 11. The real purity range, and its two causes (2026-09-11 correction + fix)
+## 11. The real purity range: `n_max <= 7`
 
-**The guarantee is `--spec-draft-n-max <= 7` in every configuration** (the boundary is on the *verify
-batch width*, not on `n_max`: the target verifies the drafts plus the last committed token, so `K = n_max + 1`
-and `n_max = 8` is already a 9-token batch).  Earlier notes claimed `n_max <= 15`; they had only ever
-been validated to `n_max = 4`.  Two independent causes bound it:
+The boundary is on the **verify batch width** (`K = n_max + 1`), not on `n_max`.  Two causes:
 
-> **2026-09-13 (issue #30) update.**  This section's *guarantee* is unchanged, but the CLI's policy is:
-> the draft depth is **no longer clamped at 7** — `--spec-draft-n-max 8..15` is kept with a visible
-> notice that `plain` vs `draft-mtp` may no longer be bit-identical, and only `> 15` is clamped (the
-> recurrent rollback snapshot bound, a *correctness* bound, not this purity one).  Cause B is now known
-> to be broader than the FA chooser: the real models also flip at `W = 9` with flash attention
-> **disabled**, because the matmul family changes at `ncols == MMVQ_MAX_BATCH_SIZE`/`MMVF_MAX_BATCH_SIZE`
-> = 8 (27B UD-Q4_K_XL, f16, P=2500: W=1..8 `8ef5ce3ab2d942dd` vs W=9..16 `7d1e01e82be4ce6b`; `FA=0`
-> `b5d4df87caa0348e` vs `0c0cb329b59aedc9`).  A third, fork-specific cause (the qwen4exp QSA dense arm
-> flipping to sparse above `W = 8`) is fixed in block 14 — see §32; the deterministic recurrent
-> snapshot sweep (`tests/test-recurrent-state-depth`) shows there is **no corruption** in 1..15.
+* **Cause A (fork-specific, FIXED):** the size-based all-reduce dispatch switched to NCCL above a
+  per-device-count element count, and the two paths are not bit-identical (the internal pipeline
+  BF16-round-trips).  Under `-sm tensor` the reduced tensor scales with the batch width, so a 7-token
+  verify crossed the old 2-device limit.  The crossover is now 131072, and MTP throughput *rose*
+  (+12 % at `n_max 6` and 12) because the internal pipeline is faster at these sizes.
+* **Cause B (deliberate):** the FA tile→WMMA switch at `Q->ne[1] > 8`, and (with FA off) the
+  `mmvq`→`MMQ` switch at `ncols == 8`.  Beyond the band the fast kernels have a different reduction
+  order; keeping the guarantee would mean giving up WMMA for 9..N-token batches.  There is **no
+  corruption** in 1..15 (deterministic recurrent-state sweep).
 
-| config | guaranteed for | binding cause |
-|---|---|---|
-| 1 GPU (no split) | `n_max <= 7` (W <= 8) | B |
-| 2-GPU `-sm layer` / no split | `n_max <= 7` | B |
-| 2-GPU `-sm tensor` | `n_max <= 5` **before** the §11 fix, `n_max <= 7` after | A, then B |
-| 3-GPU `-sm tensor` | `n_max <= 7` | B |
-| 2-GPU `-sm tensor` + `GGML_CUDA_ALLREDUCE=meta` | `n_max <= 7` | B |
+**Rules.**  Use the **raw-logit probe, not the text gate**, to establish a boundary (text equality is
+evidence *for* purity, never *against* divergence — near-ties are rare).  Above the range, gate on
+acceptance + MTP-vs-plain throughput; adaptive MTP's `n_max = 12` is deliberately outside.  Upstream is
+worse: on `9cf3bf256` (CPU) it diverges at the first width step.
 
-Probe hashes (27B Q8_0, `RS=0`, P=256; identical within a row = bit-identical token-0 logits):
+Record: `archive/work/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md` Part 3; narrative
+`archive/docs/GREEDY-PURITY-FINDINGS.md` §11.
 
-| config | `W = 1..8` | `W = 9` (= `n_max 8`) |
-|---|---|---|
-| 1 GPU | `4089b4d4` | `72af52db` |
-| 2-GPU `-sm layer` | `4089b4d4` | `72af52db` |
-| 2-GPU `-sm tensor` | `a4817ee6` | `b059daa6` |
-| 3-GPU `-sm tensor` | `91434ea9` | `bc3faabd` |
+## 12. The guarantee depends on the KV-cache type
 
-* **Cause A (fork-specific, FIXED 2026-09-11): block 12's size-based all-reduce dispatch.**
-  `ggml_backend_cuda_comm_is_small()` routed a reduction to the internal host-staged pipeline below a
-  per-device-count element count (32768 for 2 devices) and to NCCL above it, and the two are **not
-  bit-identical** (different summation order; the internal pipeline always BF16-round-trips).  Under
-  `-sm tensor` the reduced tensors scale with the batch width, so a 7-token verify (35840 elements)
-  crossed the old 2-device limit while 1..6-token decode stayed below it.  The 2-device crossover is now
-  131072 (the 3-device value); `GGML_CUDA_ALLREDUCE=internal` reproduces the fixed hashes for `W=1..8`,
-  only `W = 7,8` moved, and MTP throughput *rose* (+12 % at `n_max 6` and at `n_max 12`) because the
-  internal pipeline is faster at these sizes.
-* **Cause B (deliberate; by design): the flash-attention tile-vs-WMMA switch at `Q->ne[1] > 8`.**
-  Beyond `W = 8` the launcher prefers the much faster WMMA kernel and its reduction order differs.  The
-  fork's own comment requires speculative verify batches (`n_q <= 8`) to stay on the tile kernel, so
-  `n_max <= 7` **is** the designed guarantee; removing Cause B would mean giving up WMMA for 9..N-token
-  batches.  `MMVQ_MAX_BATCH_SIZE = 8` sits at the same boundary, so Cause B is at `W <= 8` whichever of
-  the two fires first.
-
-**Rules.**  Use the **raw-logit probe, not the text gate, to establish a boundary** — on 3 GPUs the
-300-token greedy text at `n_max = 8` matched plain while the logits had already diverged (text equality
-is evidence *for* purity, never *against* divergence, and near-ties are rare).  Above the range, gate on
-acceptance + MTP-vs-plain throughput instead (`benchmarks/mtp-adaptive-methodology.md`); adaptive MTP's
-`n_max = 12` is deliberately outside the guaranteed range.  Upstream is **worse**, not better: on
-`9cf3bf256` (CPU, 4B Q8_0, P=256) `W = 1` gives `9024dd2e…` while `W = 2..12` all give `3cd0eb0e…`, i.e.
-it diverges at the first width step (its `calc_nwarps`/`MMVQ_MAX_BATCH_SIZE` dispatch is the same shape).
-
-Records: `patches/README.md` block-12 notes, the 2026-09-11 WORKLOG entry,
-`archive/work/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md` Part 3.  Narrative (the `n_max` sweep, the
-localisation code block, why the GDN was not the boundary): `../archive/docs/GREEDY-PURITY-FINDINGS.md` §11.
-
-## 12. The guarantee depends on the KV cache type (2026-09-11, measured during the Block-15 revalidation)
-
-> **The `q8_0`/`q4_0` impurity below is FIXED** (2026-09-11, block-08 amendment) — it was the FA
-> *kernel-family* chooser, not the KV staging; see **§14**.  The §12 measurements stand as the
-> pre-fix record, and its F16-staging explanation of the slow types is refined in §14.
-
-Everything above was measured with an **f16** (or bf16) K/V cache.  Extending the probe matrix to every
-same-type KV pair (`tools` + evidence: `archive/work/kv-quant-purity-followups/README.md`) shows the guarantee is
-**not universal in the cache type**:
-
-| K/V cache (same type) | `W = 1..8` (i.e. `n_max <= 7`) | notes |
-|---|---|---|
-| f16, bf16 | **pure** | the reference configuration |
-| q4_1, q5_0, q5_1, iq4_nl | **pure** | no native FA kernel — they stage through the F16 scratch, ~3.4x slower |
-| **q8_0** | **impure**: `W=1 == W=2`, `W=3..8 == W=3..8`, but the two groups differ | the boundary is `W=2→3`, *not* block 00's `n_q <= 8` |
-| **q4_0** | **impure**, same shape as q8_0 | ditto |
-
-Text-level impact (27B, 3-GPU `-ts 1/1/1`, ctx 8192, 300 greedy tokens): with a q8_0 cache, `--spec-type
-none` gives `8ed58aa9` and `draft-mtp --spec-draft-n-max 3` (== `7`) gives `da56855b` — a real
-divergence, not a near-tie.  The f16 control is `ce7b9a75` for all three (pure).
-
-Two facts worth keeping straight:
-
-* This is **pre-existing** and **not** a delivery-block effect: the same hashes come out of a build
-  without any of the blocks' F1/F3-relevant code (verified: identical on the 15-block delivery build
-  and on the block-15 tree).  `GGML_CUDA_FA_KV_NATIVE` on/off is identical too, so it is not V4's
-  native staging; 1 GPU alone reproduces it, so it is not the all-reduce.
-* The impure set is exactly the two KV types that have a **fast native** both-quantized FA path
-  (>7700 t/s pp512).  So this is a *trade*, not an oversight: the fast implementations are
-  width-dependent, the generic (F16-staging) ones are not.  Any future native path (see the sub-q8_0
-  parity item) must be built width-invariant by construction.
-
-**Guidance (as of the §12 measurements; `q8_0`/`q4_0` are fixed — see §14).**  For plain-vs-speculative greedy purity, use **f16 or bf16** for K and V.  If a q8_0/q4_0
-cache is required, treat plain-vs-spec text equality as *not* guaranteed and gate on adaptive-MTP
-acceptance/throughput instead.  Mixed K/V *types* are a rejected configuration (see
-`archive/work/block-15-campaign-wins/README.md` §7) and are irrelevant to this table.  This table is orthogonal
-to Causes A and B in §11: those are about the *fork's* widths and the FA kernel switch, this is about
-which dequant kernels the cache type selects.
-
-## 13. qwen4exp and the hyper-connection band (2026-09-11, Block 14 amendment)
-
-qwen4exp's fused decode chain (`GGML_OP_HC_MIX` / `GGML_OP_HC_COMBINE`, replacing
-`SCALE/SILU/MUL_MAT/SIGMOID/MUL/ADD`) was gated to a **single-token** batch, so a 1-token decode and an
-n-token verify took different arithmetic (per-node dump: 98 `HC_COMBINE` dispatches at `W=1`, **0** at
-`W>=2`).  **Fixed** by block 14's 2026-09-11 amendment: the whole **decode/verify band `1 <= nt <= 8`**
-(§the `HC_FUSED_MAX_TOKENS` constant) runs the fused ops with the token index on `blockIdx.y`, so every
-token in the band runs the per-token kernel sequence a single-token decode runs.
-
-Measured then (3 GPUs, f16 KV, P=256, `RS=0`): `W = 1..4` was **all one hash** on both splits
-(`3adeb313042a871b` layer, `dcf1ae667f730879` tensor) and the `W >= 5` grouping was **cause 2**, fixed
-later by §15 — so the band is now `n_max <= 7`.  Two caveats: a `<= 8`-token **prefill** chunk also takes
-the fused path (indistinguishable from a verify batch — that is the point), and with a `q8_0`/`q4_0` **KV
-cache** the cache's own impurity (then §12, fixed in §14) dominated.
-
-Narrative + the per-width hash table: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §13.
-
-## 14. F1 fixed (2026-09-11, block-08 amendment): the decode/verify band no longer spans two FA kernel families
-
-§12's `q8_0`/`q4_0` impurity was the FA **kernel-family** chooser, not the KV staging:
-`ggml_cuda_get_best_fattn_kernel()` returned **VEC** for `n_q <= 2` with a quantized K/V and **TILE**
-from `n_q = 3`, and the two families order the online-softmax/PV reduction differently, so `W = 1,2`
-disagreed with every verify width.  Both VEC conditions sit inside the `n_q <= 8` band, so the branch is
-**deleted** and the band is TILE throughout — the same shape as the block-08 WMMA guard and block 00's
-`ntiles_dst_eff` (which is why every earlier F1 suspect measured clean).
-
-| K/V cache (same type) | before | after §14 |
-|---|---|---|
-| f16, bf16 | pure | pure, hashes **bit-identical** (never took VEC) |
-| q4_1, q5_0, q5_1, iq4_nl | pure | unchanged (they take the generic fallback — see the F3 reframing) |
-| **q8_0**, **q4_0** | `W=1,2` != `W=3..8` | **`W=1..8` bit-identical in all four split configs** |
-
-Measured (3x gfx1201): 4B q8_0 1 GPU `W=1..8` all `31a0c1bace68`, 2-GPU tensor `abebfb93`, 3-GPU tensor
-`7fe106f5`; 27B Q8_0 3-GPU `W = 1,2,3,4,5,8` all `d4156dbeb225`; text level (27B, q8_0 KV) plain ==
-`n_max 3` == `n_max 7` = `3537bc2b36be`, f16 control `f32aac948600`.  Every new value equals that
-config's **previous verify** value, so only `W = 1,2` moved: MTP is bit-unchanged (27B acceptance
-0.90789) and the cost is decode-only (tg128 -0.9 % 4B / -0.5 % 27B, pp512 -0.2 %).  **The pure range is
-still `n_max <= 7`** — now for *every* supported KV type.
-
-**F3 reframing.**  §12's "no native FA kernel" explanation is wrong in detail: `q4_1`/`q5_0`/`q5_1`/
-`iq4_nl` are rejected by `ggml_cuda_fattn_kv_type_supported()` unless `GGML_CUDA_FA_ALL_QUANTS` is
-enabled, so the chooser returns `NONE` *before* any VEC/TILE choice and attention takes the generic
-fallback — width-invariant by construction (hence pure) and ~3.4x slower.  F3's first experiment is a
-build-flag A/B of `GGML_CUDA_FA_ALL_QUANTS=ON` plus §14's band rule.
-
-**Harness lesson.**  `llama-cli`'s `\/|` spinner is `\b`-based and timing-dependent and the ASCII
-banner embeds the build SHA: apply backspaces, strip the banner and the `[ Prompt: … | Generation: … ]`
-footer before hashing output — and always run a control that must agree before believing a divergence.
-
-Narrative: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §14.
-
-## 15. F2 cause 2 fixed (2026-09-11, block-13 amendment): the MoE decode/verify band is band-uniform
-
-§13's `W >= 5` grouping was **upstream's per-type mmvq cap** (`get_mmvq_mmid_max_batch_*`), not the
-gate+up+GLU fusion coverage the first pass blamed.  The cap does two things: (1) it sizes
-`mul_mat_vec_q_moe`'s `__launch_bounds__` (`cap × warp_size`) while the block is
-`(warp_size, ncols_dst)`, so it is a *capability* limit (an `IQ3_S` launch with `ncols_dst = 5` exceeds
-the bound and aborts); (2) it chooses mmvq vs MMQ (`ne2 <= cap → mmvq`, else `should_use_mmq → MMQ`) and
-gates the `mul_mat_q_pair` fusion.  **mmvq and MMQ reduce in different orders**, so every cap boundary
-inside the band is a numeric boundary.  It is a *graph-identical* bug — `[GD]` dumps show the same node
-counts (…2647/1668/1565) at `W=4` and `W=5` with the MoE matmuls at the same indices — and the quant is
-what exposes it: the UD-IQ4_XS file mixes expert types per layer (47 layers `IQ3_S` gate/up → cap 4;
-layer 2 `IQ4_XS` → cap 5; down `IQ4_NL`/`Q8_0` → cap 7), which predicts the observed
-`{5} {6,7} {8}` grouping exactly (fused layers 48/48/48/48/1/0/0/0 for `W = 1..8`).
-
-**Fix** (block 13 amendment, completing block 13's own `has_ids` "decode == verify invariant"): floor the
-cap at `MMVQ_MAX_BATCH_SIZE` for every AMD lookup and size the MoE kernel's launch bound at the band.
-Every call site is `MUL_MAT_ID`-only, so dense models cannot be affected (verified).
-
-| split | W=1..8 (f16 KV, P=256, `RS=0`) |
+| K/V (same type) | status |
 |---|---|
-| `-sm layer`  | **all `3adeb313042a871b`** (= the pre-fix `W = 1` decode) |
-| `-sm tensor` | **all `dcf1ae667f730879`** (= the pre-fix `W = 1` decode) |
+| f16, bf16 | pure — the reference configuration |
+| q8_0, q4_0 | **were impure** (`W=1,2` != `W=3..8`) — fixed by §14 |
+| q4_1, q5_0, q5_1, iq4_nl | pure, but through the generic F16-staging fallback (~3.4x slower at the time) |
 
-Every width moved onto that split's pre-fix `W = 1` value (the F1 "move the cheap side" pattern); also
-pure with `RS=from_w`.  At `n_max 3` (`W = 4`, a no-op width) pre/post runs are **byte-identical**
-(acceptance 0.76744, 80.0 vs 80.1 t/s), and at `n_max 7` it is **+16-18 % t/s** (acceptance 0.59375 vs
-0.55556; `n_max 3` == `n_max 7` text `8a50ea24e8d5`, previously disagreeing).  It is also a large
-throughput win at exactly the verify widths (`llama-batched-bench`, fixed/baseline):
+**Rule:** the impure set was exactly the two types with a *fast native* both-quantized FA path, so this is
+a **trade, not an oversight** — any future native path must be width-invariant by construction.
 
-| model | b1 | b2 | b4 | b5 | b6 | b7 | b8 |
-|---|---|---|---|---|---|---|---|
-| qwen4exp 3-GPU tensor | 50.5/50.4 | 85.4/85.6 | 134.1/132.9 | **149.5/118.4** | **162.5/130.6** | **171.4/147.0** | **178.0/155.4** |
-| 35B-A3B MoE 1 GPU | 98.3/98.1 | 156.4/156.2 | 254.2/254.1 | – | – | – | **341.3/289.9** |
-| 4B dense 1 GPU | 100.6/100.5 | 167.2/167.3 | 294.0/294.9 | – | – | – | 414.5/413.3 |
+## 13. qwen4exp's hyper-connection band is `1 <= nt <= 8`
 
-So upstream's per-type mmvq caps were costing 14-26 % at exactly the speculative-verify widths on RDNA4
-with the fork's mmvq + fused-GLU kernels.  (Cause 3 — the qwen4exp *text* divergence this section
-recorded as open — is fixed in **§16**.)
+`HC_MIX` / `HC_COMBINE` were gated to a single-token batch, so decode and verify took different arithmetic
+(98 dispatches at `W=1`, **0** at `W>=2`).  The whole decode/verify band (`HC_FUSED_MAX_TOKENS`) now runs
+the fused ops with the token index on `blockIdx.y`.  **Caveat:** a `<= 8`-token *prefill* chunk takes the
+fused path too — indistinguishable from a verify batch, which is the point.
 
-Narrative: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §15.
+## 14. F1: the FA chooser spanned two kernel families inside the band
 
-## 16. Cause 3 fixed (2026-09-11, block-14 amendment): the QSA decode arm is band-uniform
+§12's `q8_0`/`q4_0` impurity was `ggml_cuda_get_best_fattn_kernel()` returning **VEC** for `n_q <= 2` with a
+quantized K/V and **TILE** from `n_q = 3`.  Both VEC conditions sit inside the band, so the branch is
+deleted and the band is TILE throughout.  Measured (3x gfx1201): 4B q8_0 `W=1..8` all `31a0c1bace68` (1 GPU),
+`abebfb93` (2-GPU tensor), `7fe106f5` (3-GPU); 27B q8_0 KV `plain == n_max 3 == n_max 7` = `3537bc2b36be`.
+Every new value equals that config's **previous verify** value, so only `W = 1,2` moved: MTP is
+bit-unchanged and the cost is decode-only (-0.9 % 4B / -0.5 % 27B tg128).
 
-After §13-§15 the dense models, the MoE and qwen4exp's hyper-connection band were pure, but qwen4exp
-still had a **text** divergence (`plain` vs `draft-mtp`), and it was neither a kernel nor the sparse-FA
-attention: `LLAMA_QSA_OFF=1` made both runs byte-identical (so the defect is in the QSA **indexer**
-machinery), `LLAMA_QSA_SPARSE_FA=0` did not fix it (the kernel is exonerated), and the single-step width
-probe is pure on both splits — its blind spot is exactly this bug (it keeps `n_kv` below the QSA
-selection width, so every width takes the same arm).
+**F3 reframing:** §12's "no native FA kernel" explanation is wrong in detail — `q4_1`/`q5_0`/`q5_1`/
+`iq4_nl` are rejected by `ggml_cuda_fattn_kv_type_supported()` unless `GGML_CUDA_FA_ALL_QUANTS`, so
+attention takes the generic fallback: width-invariant by construction, hence pure.
 
-**Mechanism** (`build_layer_attn`): the indexer has three arms — (1) dense + store keys while
-`n_kv <= width`, (2) the dense arch-policy arm, (3) the sparse top-k selection — and arm 2 was gated on
-`n_tokens == 1`.  `width = indexer_top_k + r - 1` = 2051 on qwen4exp, so from the first decode graph
-(`n_kv = 2304 > 2051`) arm 1 no longer applies and the two runs split: `--spec-type none`
-(`n_tokens=1`) took **arm 2 (dense)**, `draft-mtp n_max 3` (`n_tokens=4`) took **arm 3 (sparse)** — the
-same state, two attention regimes, purely because of the batch width.
+**Harness lesson:** apply backspaces, strip the banner and the `[ Prompt: … ]` footer before hashing
+`llama-cli` output, and always run a control that must agree.
 
-**Fix**: `QSA_DECODE_BAND = 8` (the `n_max <= 7` purity band, the same constant class as
-`HC_FUSED_MAX_TOKENS`); arm 2 now takes `n_tokens <= QSA_DECODE_BAND`.  Prefill is untouched (it is far
-above the band and keeps arm 3 — the arch policy is "prefill is always QSA", §26).  Measured:
-`plain == n_max 3 == n_max 7` = `804de0576868` (704 chars, f16 KV) and `plain == n_max 3` =
-`75d8530c5bb1` (660 chars, q8_0 KV).  The plain stream moved with the fix (658 -> 704 chars) because the
-shared 4-token non-decode shape at `n_kv = 2304` also moved onto the dense arm — the same "the band must
-take one path" trade as §14, and the value chosen is the policy-consistent one.
+## 15. F2 cause 2: upstream's per-type mmvq caps were numeric boundaries inside the band
 
-Narrative (the arm trace and the localisation steps): `../archive/docs/GREEDY-PURITY-FINDINGS.md` §16.
+`get_mmvq_mmid_max_batch_*` sizes `mul_mat_vec_q_moe`'s launch bound *and* chooses mmvq vs MMQ, and the two
+reduce in different orders — so every cap boundary inside the band is a numeric boundary.  (It is a
+graph-identical bug: the same node counts at `W=4` and `W=5`; the mixed-quant UD file is what exposes it.)
+**Fix:** floor the cap at `MMVQ_MAX_BATCH_SIZE` for every AMD lookup and size the MoE kernel's launch bound
+at the band.  Every call site is `MUL_MAT_ID`-only, so dense models cannot be affected.  Result: `W=1..8`
+one hash per split (each equal to that split's pre-fix `W=1` value), `n_max 7` **+16-18 %**, and
+`llama-batched-bench` `pl=5..8` **+14-26 %** — upstream's caps were costing exactly the speculative-verify
+widths on RDNA4.
 
-## 17. The MoE shared-expert epilogue is band-uniform too (2026-09-11, block-13 amendment)
+## 16. Cause 3: the QSA dense decode arm was `n_tokens == 1`
 
-After §15, Qwen3.6-35B-A3B was still strictly `W=1 ac8825358d9adfda` vs `W>=2 bd138ad2326fbbf2`: the
-fused shared-expert down epilogue (`dst = down(swiglu) * sigmoid(gate(x)) + moe_out + ffn_residual`) was
-gated `down_mm->src[1]->ne[1] == 1 && gate_mm->src[1]->ne[1] == 1` (decode only) with an in-code note
-that the fused gate reduction does not reproduce the standalone mmvq/MUL_MAT order.
+The indexer has three arms (dense+store below the selection width, the dense arch policy, the sparse top-k
+selection) and arm 2 was gated on `n_tokens == 1`.  From the first decode graph (`n_kv = 2304 > 2051`)
+`--spec-type none` took the dense arm and `draft-mtp` took the sparse one — the same state, two attention
+regimes, purely from the batch width.  **Fix:** `QSA_DECODE_BAND = 8` (arm 2 takes `n_tokens <= band`);
+prefill keeps the sparse arm.  `plain == n_max 3 == n_max 7` = `804de0576868`.  The band became
+depth-derived in §32.
 
-**Fix**: the kernels are now token-generic and the **whole band takes the fused path** (keeping the
-+3.1 % decode win instead of discarding it):
-* `shexp_gate_sigmoid` — one warp per token, the token index only selecting the input column;
-* `shexp_down_gated_q8_0` — one block per `(output row, token)`, addressing the epilogue operands at the
-  token's offset;
-* **`nwarps` is pinned to the single-token value** (`calc_nwarps(type, 1, table_id)`): `calc_nwarps`
-  returns 4 for `ncols_dst 1..4` but 2 for `5..8`, and `nwarps` sets `blocks_per_iter`, i.e. the
-  reduction order — the same trap as §15's cap.  Pinning it is what makes every width bit-identical;
-* the fusion arm accepts `1 <= ne[1] <= MMVQ_MAX_BATCH_SIZE`; `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1`
-  still selects the unfused reference.
+## 17. The MoE shared-expert epilogue is band-uniform too
 
-**Measured**: default probe `W = 1,2,3,4,8` all `ac8825358d9adfda` (the pre-fix fused value); with the
-kill-switch all `bd138ad2326fbbf2` (uniform unfused = the pre-fix `W>=2` value); qwen4exp unaffected
-(`plain == n3 == 804de0576868`).  The asterisk is gone: MoE decode and verify take one arithmetic, so
-`n_max <= 7` covers MoE.  The epilogue's later column-blocked restructure (2026-09-12) repaid the
-band's `pl=8` cost — see **§24**.
+The fused down epilogue was gated decode-only, with an in-code note that the fused gate reduction does not
+reproduce the standalone `mmvq` order.  **Fix:** the kernels are token-generic (one warp per token; one
+block per `(output row, token)`) and the whole band takes the fused path with **`nwarps` pinned to the
+single-token value** — `calc_nwarps` returns 4 for `ncols_dst 1..4` but 2 for `5..8`, and `nwarps` sets
+`blocks_per_iter`, i.e. the reduction order.  `W = 1,2,3,4,8` all `ac8825358d9adfda`;
+`GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` gives the uniform unfused reference.  The band's `pl=8` cost was
+repaid structurally in §24.
 
-Narrative: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §17.
+## 18. The QSA sparse gfx1151 width-dependences did not reproduce
 
-## 18. The QSA *sparse* regime on gfx1151: the MTP-export logits ULP and the q8_0/q5_0 residual are both root-caused and fixed (2026-09-12; extended 2026-09-12 (6); closed 2026-09-12 (12); gfx1151-validated 2026-09-12 (14))
+Re-measured with the current delivery, neither recorded width-dependence holds: the fused indexer score is
+byte-identical to the per-op chain, and the residual split was **§25's** RDNA3_5 single-token mmvq fusion
+(reproduced exactly with `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1`).  Default gfx1151 configs are
+pure (dense decode on every KV type; deep sparse decode at ~74K on f16 and q8_0).  The remaining forced-arm
+q8_0 shallow residual was root-caused to (a) the `embeddings_nextn` export deferral (§28) and (b) the
+flattened indexer score crossing `MMVF_MAX_BATCH_SIZE` (§29) — both fixed, gfx1151 re-validated
+2026-09-12 (14).
 
-§18 previously recorded **two** width-dependences in the QSA sparse regime, measured 2026-09-11 during
-the cause-3 hunt (on the 3-GPU gfx1201 box, with the sparse arm forced by
-`LLAMA_QSA_DENSE_DECODE_UNTIL=0`) — i.e. **before** the 2026-09-12 block-13 RDNA3_5 mmvq-fusion
-amendment (§25).  Re-measured on gfx1151 with the current delivery, **neither reproduces**:
+## 19. Purity first: the measured trade
 
-1. **The fused indexer score is byte-identical to the per-op chain.**  A 512-token forced-sparse A/B
-   (qwen4exp UD-IQ4_XS, f16 KV, `P=5000`) gives the *same* text for the fused score (default),
-   the per-op chain (`GGML_CUDA_QSA_INDEXER_SCORE=0`) and the no-derived-cache form
-   (`GGML_CUDA_QSA_INDEXER_CACHE=0`) — `0d29890e0f04` for both widths in all three (bf16 the same,
-   `945f89766e3c`).  The positive control (`GGML_CUDA_QSA_INDEXER_CACHE=2`, the unfilled-pool probe)
-   *does* move the W=1 text, proving the fused path is the one running.  The "not byte-identical"
-   claim does not hold on gfx1151.
-2. **The residual split was the block-13 mmvq fusion.**  Forced sparse, f16, `P=5000`: the current
-   delivery is `plain == n3 = cb2912b186b9`, and the pre-fix behaviour reproduces exactly with the
-   opt-in `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1` (`plain 471ea250f8e2` vs `n3
-   cb2912b186b9`) — the "706-char prefix then divergence" was the dense gate+up+GLU / weighted-down
-   single-token fusion non-byte-identity (§25), not the indexer machinery.
+**A purity fix may cost a few percent of raw non-MTP throughput.  That is not a gate failure.**  The
+asymmetry is structural: the draft's proposals *are* decode steps, so any arithmetic difference between
+decode and verify shows up as draft-vs-verify disagreement, and lost acceptance costs a multiple of
+whatever the "faster" path saved.
 
-**Default gfx1151 configs are pure** (plain == `draft-mtp n_max 3` byte-identical): shallow dense
-decode on every tested KV type (q8_0 included, `e8f8bba3942b`), and deep sparse decode at ~74K (f16
-`83e0ed0f0f80`, q8_0 `7205399d367d` — the maintainer's `-ctk q8_0` serving config).  The 64K crossover
-therefore stays: there is no purity driver to make gfx1151 dense-decode at every depth.
+* the shared-expert band fix (§17) cost ~2.4 % at `pl=8` and **raised MoE acceptance 0.51 → 0.817**
+  (167.3 t/s vs plain 96.9, **+73 %**);
+* the QSA decode-arm fix (§16) cost ~1.5-2 % at `pl=5/6` and gave **+28 %** (63.9 vs 50.1 t/s).
 
-**One residual, q8_0-only and prompt-dependent (open).**  With the arm *forced* sparse at shallow
-context, qwen4exp + `-ctk q8_0` diverges on one prompt (`/tmp/p5000.txt`: `plain a57bc13bbf2a` vs
-`n3 3124adfd2b94`), reproducibly; f16/bf16/q4_0/q4_1/iq4_nl and q8_0 on other prompts are pure, and
-the default deep q8_0 config is pure.  `LLAMA_QSA_SPARSE_FA=0` does **not** reconcile it (so the
-standard masked-FA path is affected too, not just the fused `fattn-qsa` kernel), `LLAMA_QSA_OFF=1`
-does, and `GGML_CUDA_DISABLE_FUSION=1` / `GGML_CUDA_GDN_CHUNKED=0` each perturb it to purity.  It is
-tracked as TODO item 4.
+**Gate for a purity fix:**
 
-**Extended the same day (2026-09-12 (6)) — it is *not* a width dependence.**  A multi-step,
-teacher-forced replay (new instrument `archive/work/strix-halo/qsa-item4/mstep.cpp`) of the plain greedy sequence
-in the exact residual config is **bit-pure at every verify width** — 200 positions, `W = 1..8`, with a
-spec-like batch+rollback schedule (`RB`), with deliberately unrelated tokens in the rolled-back rows
-(`JUNK`), and with `n_rs_seq` 0 vs 2/3 — the recurrent snapshot rollback restore is exact and the
-rolled-back content does not leak.  The divergence has a sharp **binary toggle at `--spec-draft-n-max`
-2** (`n_max 1` pure at 31.1 t/s, i.e. MTP genuinely active; `n_max 2/3/5/7` all identical, first diff at
-char 458).  Ruled out: `n_rs_seq`, `n_outputs_max` (`1 + n_max`), CUDA-graph capture
-(`GGML_CUDA_GRAPH_OPT=0`), and the chunked-GDN prefill boundary — the boundary is a real hazard (moving
-it by one token changes the greedy text) and it is why `GGML_CUDA_GDN_CHUNKED=0` moves the *plain* stream
-at char 49, but an instrumented `gated_delta_net.cu` shows the actual chunked-GDN call sequence is
-**identical** between the two runs (144 calls, same sizes).  So those two "reconciles" are perturbations,
-not localisers.  The one measurable *structural* plain-vs-MTP difference on this model is that the MTP
-driver turns on the target's `embeddings_nextn` (`common/speculative.cpp:1431`), which makes qwen4exp's
-last-layer output gather defer (`gather_now` in `src/models/qwen4exp.cpp`) and shifts the **prefill's
-last-position logits by a ULP** (`ad3acaa7…` vs `b624a79f…`) — a real logits-level violation of the
-`plain == draft-mtp` guarantee, but on its own it does not flip the replayed greedy tokens, so it is the
-leading partial cause, not the whole story.  The residual is therefore a **driver-level (plain-vs-MTP)
-divergence**; the next step is a faithful mini-MTP driver (target + draft + real proposals + driver
-rollback, per-step target-logit dump), because everything cheaper is exhausted.  Repro + instruments:
-`archive/work/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md`.
+1. **correctness** — `plain == draft-mtp` across the whole band (`n_max <= 7`) on every supported KV type,
+   or a documented reason why the regime is unreachable by default;
+2. **MTP** — pos-1 acceptance >= ~0.45 and `draft-mtp` >= `plain` at the default depth (`n_max 3`); a fixed
+   high depth may lose (that is over-drafting, not a regression);
+3. **perf** — no hard requirement at the wide verify widths: record the delta, file the optimisation
+   follow-up, land the purity fix first, and prefer the side whose arithmetic is the **decode** side.
 
-**Closed 2026-09-12 (12).**  The faithful driver was built on the **real** server loop (a temporary
-target-logits dump in `tools/server/server-context.cpp`, the in-process engine `llama-cli` actually
-runs — not the standalone speculative example, whose raw-prompt input EOGs immediately).  It pins
-the first divergence exactly: at target position **4432** the accepted token is identical (381) but
-the target logits' argmax flips **264 -> 9859**, so this is a QSA-indexer **selection/state**
-divergence, not a forward width dependence.  Excluded on the current tip by direct measurement:
-forward width (the `mstep` W=1..8 replay is bit-pure), the GDN rollback bound and the checkpoint
-restore (forcing `n_rs_seq = 16` so every rollback takes the plain `seq_rm` path still diverges;
-`test-recurrent-state-rollback` PASS), `n_outputs_max`, CUDA-graph capture, the chunked-prefill
-boundary, the fused indexer score / derived cache (both bypassed with a quantized key cache), and
-the sparse FA kernel (`LLAMA_QSA_SPARSE_FA=0` also diverges — the shared dense masked path is hit).
-The only reconcilers are `LLAMA_QSA_OFF=1` (the user affordance) and `GGML_CUDA_GDN_CHUNKED=0`
-(a trajectory perturbation).  Sub-item **(a)** is fixed in the block-14 seventh amendment — the
-`embeddings_nextn` export no longer defers the logits gather (see §28) — and the prefill ULP no
-longer exists.  Sub-item **(b)** — forced-arm (`LLAMA_QSA_DENSE_DECODE_UNTIL=0`), shallow — was then
-**root-caused and fixed** by the gfx1201 investigation (2026-09-12 (13), block-14 eighth amendment,
-§29): the flattened indexer score (`ne11 = 4 * n_tps`) crossed `MMVF_MAX_BATCH_SIZE` at `n_tps = 3`,
-putting the verify batch on MMF while decode stayed on MMVF.  **gfx1151 cross-check validated
-2026-09-12 (14):** the forced-sparse text residual is gone (`a57bc13bbf2a` both, was n3
-`3124adfd2b94`, first diff char 458), all eight native KV types are pure at n_max 1/2/3/5/7, and
-`mstep` `W = 1,2,3,4,5,8` is 0 mismatches with decode's `Thash` unchanged.  Evidence/records:
-`archive/work/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md`, `archive/work/strix-halo/qsa-item4/` (harness).
+**Corollary:** a "win" measured before a purity fix may have been measured with a width-dependent path.
 
-## 19. Purity first: the measured trade (2026-09-11, policy)
+**Addendum (2026-10-20, r93) — a shape-scoped launch parameter must be forwarded to every kernel that
+reproduces that launch.**  The fused single-token kernels (`ssm_gate_beta`, `ssm_conv_l2_gatebeta`,
+`shexp_down_gate`, the `rms_norm`→Q8_1 fold, the gate/bias folds) each *replace* a dense mmvq weight
+launch, so they must call the same selector (`calc_nwarps_weight(type, ncols, table, long_k, <row scope>)`).
+A scope applied to the plain launch but not the fused one runs `W=1` at one warp count and `W=2..8` at
+another (measured: 35B-A3B 0.150, gemma-26B **3.35** on the width probe).  The scope was the `!has_fusion`
+exclusion in the `archive/work/nwarps/` candidate — not a missing reduction-mapping derivation.  The host
+must compute the value once and pass it to both the launch dims and the kernel template (§20).
 
-**A purity fix may cost a few percent of raw non-MTP throughput.  That is not a gate failure.**
-The gate is bit-identical decode/verify plus MTP acceptance/throughput, and the 2026-09-11 work
-measured why the order of those priorities is not a matter of taste:
+## 20. A newly enabled KV-cache type is a new kernel family
 
-* the MoE shared-expert band fix (§17) **costs** ~2.4 % at the widest verify batch (`pl=8` 332.8 vs
-  341.0 with the unfused chain; `pl=4` −0.9 %, `pl=1` flat) — and it **raised MoE `draft-mtp`
-  acceptance from 0.51 to 0.81707** (167.3 t/s vs plain 96.9, **+73 %**), because the verify batch now
-  computes what the draft's single-token decode steps compute;
-* the QSA decode-arm fix (§16) **costs** ~1.5-2 % at `pl=5/6` — and it makes `plain == draft-mtp`
-  byte-identical with `n_max 3` pos-1 acceptance 0.615 at 63.9 t/s vs plain 50.1 (**+28 %**).
+Each newly reachable (K,V) diagonal gets its own `W = 1..8` sweep on every split, its own
+`plain == draft-mtp` text gate, its own MTP acceptance reading, and (per §21) the oracle and perplexity
+comparison.
 
-The asymmetry is structural: the draft model's proposals *are* decode steps, so any arithmetic
-difference between decode and verify shows up as draft-vs-verify disagreement, and lost acceptance
-costs a multiple of whatever the "faster" path saved in the kernel it changed.  A few percent of
-attention/GEMM throughput cannot pay for a lower acceptance rate.
+* **On gfx1201 the enabled types are band-uniform by construction** — a quantized cache always takes TILE
+  with the launcher's F16 staging (that is F1, §14).  The new diagonal instances exist for the other
+  backends and for predicate consistency.
+* **A type the model's *other* attention ops cannot read is a correctness trap.**  qwen4exp + a quantized
+  cache + `-sm tensor` aborted in the meta splitter because the graph kept building the fused sparse QSA
+  op for a type its kernel cannot read, so that op was never split.  Block 14 now takes the dense masked
+  path when the cache type is not QSA-native.  When a type is enabled for one op, check **every** op that
+  consumes the cache, in every split mode.
 
-**Gate for a purity fix** (replace any previous "must not regress" wording):
+## 21. A shared staging tile makes a block head-homogeneous
 
-1. **correctness**: `plain` vs `draft-mtp` byte-identical across the whole band (`n_max <= 7`), on
-   every supported KV type, or a documented reason why the affected regime is unreachable by default;
-2. **MTP**: acceptance at **pos 1** >= ~0.45 and `draft-mtp` throughput >= `plain` at the default
-   depth (`n_max 3`); a fixed high depth (`n_max 7+`) may lose — that is over-drafting, not a
-   regression (see `benchmarks/mtp-adaptive-methodology.md`);
-3. **perf**: no *hard* requirement at the wide verify widths.  If a fix costs > ~1 % anywhere, record
-   the delta and file the optimisation follow-up (e.g. TODO's column-blocked shared-expert kernel),
-   but land the purity fix first — and if a choice exists, prefer the side whose arithmetic is the
-   *decode* side, since that is what the draft reproduces.
+The QSA kernel gives one block up to `QSA_MAX_HEADS = 16` query heads (one warp each) and stages **one**
+K/V tile for all of them, with each thread adding *its own head's* K/V offset.  That is only valid while
+every q-head in the block maps to the same K/V head.  qwen4exp is 24 q-heads / 2 kv-heads = **gqa 12 < 16**,
+so heads 12..15 wrote the *second* K/V head's rows into the same smem slots.  The chunking is now
+`min(QSA_MAX_HEADS, gqa_ratio)`.
 
-Corollary for tuning: an apparent "win" measured before a purity fix (e.g. a dense/sparse crossover
-depth, or a fusion's "+x % decode") may have been measured with a *width-dependent* path, which is
-exactly what happened to the gfx1151 QSA crossover below.
+**The general rule:** whenever several heads/sequences/rows share one staged buffer, the block's work
+partition must be homogeneous in every index that the *staging* reads but the *compute* does not re-apply.
 
-### A shape-scoped launch parameter must be forwarded to every kernel that reproduces that launch (2026-10-20, r93)
+**Why nothing caught it:**
 
-`nwarps` / `rows_per_block` / VDR are chosen per weight shape, which is width-uniform **only** if every
-kernel that computes the same tensor uses the same value.  The fused single-token kernels
-(`ggml_cuda_op_ssm_gate_beta`, `ggml_cuda_op_ssm_conv_l2_gatebeta`, `ggml_cuda_op_shexp_down_gate`, the
-rms_norm→Q8_1 fold, the gate/bias folds) each *replace* a dense mmvq weight launch, so they must call
-the same selector (`calc_nwarps_weight(type, ncols, table, long_k, <row scope>)`).  A scope that is
-applied to the plain launch but not to the fused one runs `W = 1` at one warp count and `W = 2..8` at
-another — a decode-vs-verify impurity with exactly the symptom this rulebook exists to catch
-(measured: 35B-A3B 0.150, gemma-26B **3.35** on the `W = 1..8` probe).  The ksplit K loop
-(`kbx = tid/(qi/vdr) + m*blocks_per_iter`) is a fixed per-thread residue class, so a *correctly
-forwarded* per-shape value needs no further derivation.  The scope was the `!has_fusion` exclusion in
-the `archive/work/nwarps/` candidate, not a missing reduction-mapping derivation; the host must still compute
-the value once and pass it to both the launch dims and the kernel template (§20).  Record:
-`archive/work/nwarps/`.
+1. **Width purity cannot see it** — the bug is perfectly width-uniform (every width takes the same wrong
+   rows).  An internal consistency gate can prove widths agree with *each other*, never that they agree
+   with the definition of the op.
+2. **The probe was blind to the op** — `GGML_OP_FLASH_ATTN_QSA` is only built above the indexer selection
+   width (`indexer_top_k + r - 1` = 2051) and the probe's `n_ctx` is 2048.  Run the QSA gate with
+   `LLAMA_QSA_DENSE_SHORTCUT=0 LLAMA_QSA_DENSE_DECODE_UNTIL=0`.
+3. **MTP acceptance points the wrong way** — draft and target run the same wrong attention, so the
+   corrupted pair is self-consistent and accepts *more* (0.65 vs 0.49).  Acceptance is a quality signal
+   only when both sides are known-good.
+4. **What does catch it:** the **CPU reference** (`test_flash_attn_qsa`, 18 cases across KV types, cache
+   widths, head sizes and `n_tps` — old kernel NMSE ~1.0, fixed < 5e-4) and the **dense masked path as an
+   oracle** (PPL 7.3269 old vs 6.5306 dense; fixed 6.5267).  Keep the oracle in the test suite.
 
-## 20. A newly enabled KV-cache type is a new kernel family (2026-09-11, F3 step 1)
+## 22. `iq4_nl`: the type is not the only thing an enablement touches
 
-The band guarantee is a property of *every* op on the decode/verify path, and a KV-cache type is one
-of the inputs that selects an op.  `q4_1`/`q5_0`/`q5_1` were enabled as FlashAttention cache types on
-2026-09-11 (block 08; `GGML_CUDA_FA_ALL_QUANTS` was the only way to reach them before, and that flag
-also permits *mixed* K/V pairs).  Each newly reachable (K,V) diagonal is therefore treated exactly
-like a new kernel family: it gets its own `W = 1..8` sweep on every split (plus `RS=0`/`RS=from_w`),
-its own `plain == draft-mtp` text gate and its own MTP acceptance reading before it is offered.
+`iq4_nl` is a first-class FA cache type; the full checklist (§20) ran: pure everywhere, text
+`acd18ad2d55c` (tensor) / `a38a6e2d8efa` (layer), MTP pos-1 0.757, `FLASH_ATTN_QSA` 22/22.
 
-Two consequences worth recording:
+Three lessons that generalise:
 
-* **On gfx1201 the enabled types are band-uniform by construction** — with a quantized cache the whole
-  band takes `BEST_FATTN_KERNEL_TILE` with the launcher's f16 staging (`need_f16_K/V = 1`), and the
-  guard that made that true is block 08's F1 fix (§14).  A quantized cache never reaches the vec
-  family on this arch, so the new diagonal instances exist for the *other* backends (where the chooser
-  still picks VEC for small `n_q`) and for consistency with the predicate.
-* **A type the model's *other* attention ops cannot read is a correctness trap, not just a
-  performance one.**  qwen4exp + a quantized cache + `-sm tensor` aborted in the meta splitter
-  (`GGML_BACKEND_SPLIT_AXIS_UNKNOWN` on the `attn_gated` MUL): the graph kept building the fused sparse
-  QSA op for a type its kernel cannot read (f16/bf16/q8_0 only), so that op was never split across the
-  devices while the attention gate still was.  Block 14 now takes the dense masked path whenever the
-  cache type is not QSA-native.  The lesson generalises: when a cache type is enabled for one
-  attention op, check every op that consumes the cache in that graph (and every split mode).
+* **A type rejected by the FA probe hides *unreachable code paths*.**  The non-contiguous staging
+  converter never listed `iq4_nl`, and `launch_fattn` calls it unconditionally when K/V is a *view* — so
+  the enablement turned a dormant `nullptr` into a null-pointer call on the first token (found by
+  `test-backend-ops -o FLASH_ATTN_EXT`, whose 336 `iq4_nl` cases had only ever been skipped).  When a
+  predicate starts accepting a type, assume its coverage in every consumer is stale.
+* **"The type is 3.4x slower" is a statement about the pre-state, not the type** — that number was the
+  no-FA path; with FA it is within 2 % of f16 on dense models.  Record the pre-state *with the regime*.
+* **A type-specific cost can live outside the type's kernels** — the qwen4exp `iq4_nl` prefill delta is
+  host/launch-side (`rocprofv3 --kernel-trace` + a full-graph dump; identical kernel sums and an identical
+  1010-node graph).  Prove it with a profile before optimising.
 
-## 21. A shared staging tile makes a block head-homogeneous (2026-09-11, block-14 amendment; and the two instruments that found it)
+## 23. A silently dead chain: the shadowed variable
 
-The QSA kernel (`ggml/src/ggml-cuda/fattn-qsa.cu`) gives one block up to `QSA_MAX_HEADS = 16` query
-heads (one warp each) and stages **one** K/V tile into shared memory for all of them: the cooperative
-gather is issued by every thread of the block, and each thread adds *its own head's* K/V offset
-(`nb12*(head/gqa_ratio)`) before it writes the shared rows.  That is only valid while every q-head in
-the block maps to the **same K/V head** - which the old `head_base += QSA_MAX_HEADS` chunking silently
-assumed.  qwen4exp is 24 q-heads / 2 kv-heads = **gqa 12 < 16**, so a 16-warp block covered heads
-0..15 and heads 12..15 wrote the *second* K/V head's rows into the same smem slots: 16 of 24 heads
-attended over a tile that mixed both heads' V rows.  The chunking is now
-`min(QSA_MAX_HEADS, gqa_ratio)` heads per block (a no-op at `gqa_ratio >= 16`).
+An *outer* `ggml_tensor * kq_mask_top_k = nullptr;` was shadowed by a new local inside the mask chain, so
+the dense masked arm attended with **no mask at all** (random-text PPL `1.0205` broken vs `19.0589`
+healthy; qwen4exp `1.0558` vs `6.49-6.55`).
 
-**This is the general rule, not a QSA detail:** whenever several heads/sequences/rows share one
-staged buffer, the block's work partition must be homogeneous in every index that the *staging* reads
-but the *compute* does not re-apply.  QSA applies the head only to Q (and to K/V, before staging), so
-the head is exactly such an index.
+1. **A graph tensor with no consumer is silently dropped** — the chain was unreachable from the output, so
+   it was never emitted, the packed mask was never allocated, and its `if (self_kq_mask->buffer)` fill guard
+   skipped filling it.  "Created in the graph" proves nothing about being *filled*.
+2. **When an executed-graph dump is *missing* nodes, suspect the graph builder, not the allocator.**
+3. **`-Wshadow` would have caught this class outright** (see `archive/work/shadow-warnings/`).
+4. **The leak instrument to reach for first is random text** — a model that can see the target predicts
+   even noise; repetitive text scores ≈1 in a healthy build too.
 
-### Why nothing caught it (and the two instruments that do)
+## 24. The cost of a band amendment can be structural, not arithmetic
 
-1. **Width purity cannot see it.**  The bug is perfectly *width-uniform*: every `W = 1..8` takes the
-   same arm, the same tile composition and the same wrong rows, so the primary instrument of every
-   earlier QSA finding (the `W=1..8` logits-purity matrix) reports a clean, self-consistent band.  An
-   *internal* consistency gate is necessary but never sufficient: it can only prove that widths agree
-   with **each other**, not that they agree with the definition of the op.
-2. **The probe was blind to the op.**  The QSA op is only built above the indexer selection width
-   (`indexer_top_k + r - 1` = 2051 for qwen4exp) or when the dense-shortcut/decode gates are off; the
-   probe's context is `n_ctx = 2048` (max `P = 2040`), so the *default* probe configuration never
-   executed `GGML_OP_FLASH_ATTN_QSA` at all.  The matrix becomes meaningful only with
-   `LLAMA_QSA_DENSE_SHORTCUT=0 LLAMA_QSA_DENSE_DECODE_UNTIL=0` (force the selection path at every
-   width) - which is now how the QSA kernel's purity gate is run.
-3. **MTP acceptance points the wrong way here.**  The draft context and the main context run the same
-   wrong attention, so the corrupted pair is *self-consistent* and accepts **more** than the correct
-   pair (0.65 vs 0.49): acceptance is a quality signal only when both sides are known-good, never when
-   the same defect sits in both.
-4. **The instruments that do catch it** (both added in the same amendment):
-   * a **CPU reference for the op** - `ggml_compute_forward_flash_attn_qsa` already implemented
-     f16/bf16/q8_0 and now the four nibble types too, and a new `test_flash_attn_qsa` case in
-     `tests/test-backend-ops.cpp` compares the GPU kernel against it over the KV types, both cache-
-     type widths (gqa 1 and gqa 8), the three head sizes, `n_tps = 1` and `4` and the sliced+combined
-     walk (**18 cases**; the old kernel scores NMSE ~1.0, the fixed one < 5e-4);
-   * the **dense masked path as an oracle** - `LLAMA_QSA_SPARSE_FA=0` computes the *same* attention
-     (the same top-k cells, unmasked, through the well-tested FA kernels), so the sparse/dense
-     perplexity over one token stream is a directly comparable quality metric.  On 3x R9700
-     (`-sm layer`, 8 x 4096 tokens) the old kernel is **7.3269 +/- 0.151** against the dense
-     **6.5306 +/- 0.132** (+12 %), and the fixed kernel **6.5267 +/- 0.132** - i.e. the fix recovers
-     exactly the oracle.  The same table for `q4_1` (6.5787 vs 6.5805) and `q5_0` (6.5444 vs 6.5375)
-     validates the newly enabled quantized paths.
+The §17 amendment's `pl=8` −2.4 % was the *launch shape* (`grid = (nrows, ncols)`, one block per
+(output row, token): the down-weight row re-read per token and both barriers, the cross-warp reduction and
+the epilogue duplicated per token), not the invariant.  A `ncols_dst`-templated kernel with the token loop
+inside the k-block loop made it **+3.1 %** with zero numerical change.
 
-The corollary for this project's gate list: for any *fused* op, a purity sweep is not a correctness
-gate.  Pair it with an independent oracle (a CPU/reference implementation, or a well-tested
-alternative path computing the same math) and keep the oracle in the test suite, not just in a
-one-off measurement.
+1. **Band-uniformity constrains the arithmetic, not the launch shape.**  When a band fix costs a few
+   percent, ask whether the cost is the *invariant* or the *shape* it was implemented with.
+2. **The strongest control for "this changes nothing" is two binaries, not one hash** — keep both
+   `libggml-hip.so` builds of the tip and swap them (`tools/sobench.sh`), so the two builds agree *with
+   each other* at every gate.
+3. **A no-op at the gate config can still be a large wall-clock win** — measure both.
+4. **Check the premise of your own control** — the assumed "plain" reference model did take the RDNA4
+   routed-compact MMQ dispatch (`rocprofv3`: 480 launches per `pp512`/`ub512`), so the usable control was
+   the dispatch's *reach*, not the model choice.
 
-## 22. `iq4_nl` (F3 step 2, 2026-09-11 (10)): the type is not the only thing an enablement touches
+## 25. The RDNA3_5 single-token-only mmvq fusions are not decode/verify bit-identical
 
-`iq4_nl` is now a first-class FA cache type (block 08's fifth amendment + block 14's fifth), so §20
-applies in full: the diagonal gets its `W = 1..8` sweep on every split and model, the
-`plain == n_max 3 == n_max 7` text gate, the MTP acceptance reading, and - the part §21 added - the
-CPU/backend-op oracle and the perplexity-vs-dense comparison.  Results: pure everywhere, text
-`acd18ad2d55c` (tensor) / `a38a6e2d8efa` (layer) with the f16/`q4_1` controls unmoved, MTP pos-1
-0.757, `FLASH_ATTN_QSA` 22/22 (`iq4_nl` at D=128/gqa=8 **and** at the model geometry D=256/gqa=12),
-perplexity sparse 6.5244 vs dense 6.4930.
-
-Three things this enablement taught that generalise:
-
-* **A type rejected by the FA probe hides *unreachable code paths*, not just slow ones.**  The
-  non-contiguous staging converter (`ggml_get_to_fp16_nc_cuda`) had never listed `iq4_nl`, and
-  `launch_fattn` calls its result unconditionally when K/V is a *view* - i.e. an enablement can turn a
-  dormant `nullptr` into a null-pointer call on the first token.  It was the **backend-op suite** that
-  found it (`-o FLASH_ATTN_EXT` SIGSEGV in `launch_fattn`), because that suite already contained 336
-  `iq4_nl` cases that had only ever been *skipped*.  When a predicate starts accepting a type, assume
-  the type's coverage in *every* consumer of that predicate is stale and run the whole suite.
-* **"The type is 3.4x slower" is a statement about the pre-state, not the type.**  The `iq4_nl`
-  pre-state (2269.8 pp512 / 48.5 tg32 on the 4B) was the *no-FA-at-all* path; with FA it is
-  7931.8/95.0, i.e. within 2 % of f16 on dense models.  Record the pre-state *with the regime*
-  attached, or the old number becomes a false expectation (this amendment's brief predicted exactly
-  this correction, and the qwen4exp numbers needed the same care).
-* **A type-specific cost can live outside the type's kernels - prove it with a profile before
-  optimizing.**  On qwen4exp `iq4_nl` costs ~8-12 % of prefill versus f16/`q4_0`/`q4_1` at pp8192+
-  (`q4_0` has the identical 18-byte layout and is flat), which looks like a dequant problem.  It is
-  not: `rocprofv3` puts the QSA kernel's `iq4_nl` instantiation within 1.3 % of `q4_0`'s (same
-  VGPR/LDS/occupancy), the dequant kernels at an identical 1.2 ms, the traced kernel *sum* lower, and
-  the *executed graph* identical (1010 nodes, 0 diff) - so the delta is host/launch-side.  The
-  instrument that settles it is `rocprofv3 --kernel-trace` + a `[GD]`-style full-graph dump (both
-  cheap); the trap is to "optimize" the dequant on a hunch and call the result a fix.  Follow-up filed
-  in `TODO.md`.
-* **A change in one op can be visible only through another type.**  The Block 15 beta re-cut turned
-  out to break its own oracle arm (`LLAMA_QSA_SPARSE_FA=0`, PPL ~1.05 for *every* type) - a defect no
-  same-seed/MTP gate can see, and one that only surfaced because this session's gate list runs the
-  perplexity oracle as a matter of course.  Keep the oracle in the list, even when its answer is
-  expected to be "unchanged".
-
-## 23. A silently dead chain: the shadowed variable (2026-09-11 (11), Block 15 dense-arm blocker)
-
-Block 15's V2/V3 refactor added an *outer* `ggml_tensor * kq_mask_top_k = nullptr;` in `build_attn_qsa`
-while the mask chain inside the new `if (kq_mask != nullptr) { … }` wrapper kept its own
-`ggml_tensor * kq_mask_top_k = ggml_set_rows(…)` — a **new local** that shadowed the outer one.  The
-chain was built, but the attention read the outer `nullptr`, so the dense masked arm attended with **no
-mask at all**: a full causal leak (random text PPL `1.0205` broken vs `19.0589` healthy; qwen4exp PPL
-`1.0558` vs the delivery's `6.49-6.55`).
-
-Four lessons that generalise:
-
-1. **A graph tensor with no consumer is silently dropped** — the chain was unreachable from the output,
-   so `ggml_build_forward_expand` never emitted it, the allocator left the packed mask unallocated, and
-   the input's own `if (self_kq_mask->buffer)` fill guard then skipped filling it.  "The input is created
-   in the graph" proves nothing about it being *filled*, and an unfilled mask is indistinguishable from a
-   correct one until you measure quality (a defensive assert is worth considering for the beta).
-2. **When an executed-graph dump is *missing* nodes, suspect the graph builder, not the allocator** —
-   the delivery consumed `attn_inp_kq_mask` 36 times and emitted the `FILL`/`SET_ROWS` chain; the beta
-   consumed it **zero** times and emitted **no** `FILL`.  Dead code is absent from the graph by
-   construction; that is the signature.
-3. **`-Wshadow` would have caught this class outright** — the fork does not enable it; enabling it (at
-   least for `src/`) would make the failure mode a compile error.  The fix itself is one token.  See the
-   2026-09-12 `-Wshadow` audit (`archive/work/shadow-warnings/`).
-4. **The leak instrument to reach for first is random text.**  A model that can see the target predicts
-   even noise: `llama-perplexity -f /tmp/rand-text.txt --chunks 1 -c 2560 -b 2560 -ub 2560` gives the
-   broken build `1.0205` and a healthy one `19.0589`.  Natural or repetitive text is a *bad* leak
-   detector (a repetitive prompt scores ≈1 in a healthy build too).  Keep both the dense-masked oracle
-   and the random-text probe: they answer different questions ("is the fused path as good as the dense
-   one?" vs "is the attention causal?").
-
-Narrative: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §23.
-
-## 24. The cost of a band amendment can be structural, not arithmetic (2026-09-12)
-
-The 2026-09-11 fused shared-expert epilogue band amendment (§17) bought MoE decode/verify purity with a
-*measured* cost: `llama-batched-bench` `pl=8` 461.0 t/s fused vs 472.7 unfused (−2.4 %), because the band
-was served by `grid = (nrows, ncols)` — one block per `(output row, token)` — so the down-weight row was
-re-read per token and the block's two barriers, cross-warp reduction and epilogue were duplicated per
-token.  That shape is the *absent-minded* half of the amendment, not a requirement of it: the token only
-selects input/output columns, so the band can live **inside** the block.  Three lessons:
-
-1. **Band-uniformity constrains the arithmetic, not the launch shape.**  What the invariant needs is that
-   each token's per-thread accumulation order and cross-warp reduction order are the ones the
-   single-token kernel used — which survives any restructuring that keeps that order per token (here: a
-   `ncols_dst`-templated kernel with the token loop inside the k-block loop, per-token accumulators, the
-   weight block read once per `(row, k-block)`, `nwarps` still pinned because it sets `blocks_per_iter`).
-   When a band fix costs a few percent, first ask whether the cost is the *invariant* or the *shape* it
-   was implemented with.  Here it was the shape, and repaying it turned `pl=8` from −2.4 % into +3.1 %
-   with **zero** numerical change.
-2. **The strongest control for a "this must change nothing" claim is two binaries, not one hash.**  A
-   documented gate hash reproduced by the new build only shows the new build is *as documented*; keeping
-   both `libggml-hip.so` builds of the same tip and swapping them in (`tools/sobench.sh`'s idiom) shows
-   the two builds agree *with each other* at every gate — probe `W = 1..8` fused and under the kill-switch,
-   the §5 model matrix, the §19 `plain == n_max 3 == n_max 7` text gate, MTP acceptance, the backend
-   suites.  That is what makes "no-op at the gate config" a fact rather than a hope.
-3. **A no-op at the gate config can still be a large win in wall clock** — the two are independent
-   measurements and both are required.  Contrariwise, an *arithmetic* change that happens to keep a hash
-   stable at one width is not purity; the band is the unit of purity, so the A/B must span `W = 1..8`.
-
-Related: a band/dispatch exercise must also *check the premise of its own control*.  Item 6's probe assumed
-a Q4_K MoE model did not take the RDNA4 routed-compact MMQ dispatch and could serve as the "plain"
-reference; `rocprofv3 --kernel-trace` showed it takes it (480 `mul_mat_q_routed_compact<(ggml_type)12,
-32>` launches per `pp512`/`ub512`), and that `GGML_CUDA_DISABLE_MMQ_ROUTED=1` disables only the compact
-*enumeration* — the per-expert J selection stays in both arms.  The usable control was the dispatch's
-*reach* (0 compact launches at decode, i.e. prefill-only), not the model choice.  A control you have not
-measured is not a control.
-
-## 25. The RDNA3_5 single-token-only mmvq fusions are not decode/verify bit-identical (2026-09-12, block-13 amendment)
-
-The block-13 band work (§15, §17, the dense `ncols==1` ksplit alignment, the `MUL_MAT_ID` dispatch fix)
-made the **standalone** mmvq path band-uniform for `W = 1..8`.  On RDNA3_5 (gfx1151) two
-**single-token-only** fusions still route `W=1` through fused kernels that do not reproduce the
-standalone arithmetic, so a 1-token decode and an n-token speculative verify of the same layer compute
-different bits — this is the issue-25 record's "block-13 `n_q=1` short-K mmvq variance", localised:
-
-* the **dense gate+up+GLU mmvq fusion** — `mul_mat_vec_q<..., ncols=1, has_fusion=true>`; `mmvq.cu`
-  restricts fusion to `ncols_dst == 1` (`GGML_ASSERT(!has_fusion && "fusion only supported for
-  ncols_dst=1")`), so it fires at `W=1` only.  The matchers and `ggml_cuda_should_fuse_mul_mat_vec_q`
-  are **upstream at the fork point**; block 13's mmvq item-split rewrite changed the `n_q=1` path they
-  route through.
-* the **MoE weighted-down tail** `ggml_cuda_mul_mat_id_weighted_rdna3_5` — RDNA3_5-only, single-token by
-  its shape fingerprint (`ggml_nelements(y) == 640 * n_used`).  Kernel/`_ok` added by block 13, matcher
-  by block 14.
-
-Measured (qwen4exp UD-IQ4_XS, `P=100`, f16, gfx1151, probe `logits-dump-kv.cpp`):
+Two fusions route `W=1` through kernels that do not reproduce the standalone arithmetic: the **dense
+gate+up+GLU** fusion (`mmvq.cu` restricts fusion to `ncols_dst == 1`) and the **MoE weighted-down tail**
+(RDNA3_5-only, single-token by shape fingerprint).  Measured (qwen4exp UD-IQ4_XS, f16, gfx1151):
 
 | config | `W=1` | `W=8` |
 |---|---|---|
@@ -939,752 +425,340 @@ Measured (qwen4exp UD-IQ4_XS, `P=100`, f16, gfx1151, probe `logits-dump-kv.cpp`)
 | `GGML_CUDA_DISABLE_WEIGHTED_DOWN=1` | `8d036a7b8c8a5ce5` | `453eaa618738273d` |
 | dense-GLU fusion disabled | `969940599c5426e9` | `453eaa618738273d` |
 | **both disabled** | **`453eaa618738273d`** | **`453eaa618738273d`** |
-| `GGML_CUDA_DISABLE_FUSION=1` | `5a7e4c21e86e34c2` | `5a7e4c21e86e34c2` |
 
-Each fusion moves `W=1` independently; only both together make it equal to the `W=8` standalone
-reference.  `GGML_CUDA_DISABLE_MMVQ_MAT` (all dense `MUL_MAT` mmvq fusions) + weighted-down off also
-reconciles, so the whole gap is inside the mmvq fusion family.  A fusion trace confirms the `W=1`-only
-arms as exactly `n=21 MUL_MAT_ID(ffn_moe_down)` and `n=3 MUL_MAT(ffn_gate)`.  The other `W=1`-only arms
-(dual-output K/V, SSM conv-input, GDN `ssm_gate_beta`, L2-norm pair) are bit-identical to their unfused
-reference and stay enabled, as does the `MUL_MAT_ID` gate+up+GLU (it fires at every width and is
-band-uniform).
+**Fix:** skip both on RDNA3_5 unless `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1` (A/B).  Post-fix
+`W = 1,2,4,8` is one hash per config (qwen4exp f16 `453eaa61`, q8_0 `113696b9`, MoE `18999a78`); the
+gfx1201 path is untouched.  **Cost** ≈ −0.9 % `tg128` on qwen4exp, prefill flat (§19's trade).  The
+follow-up that would restore it: make the fused `ncols_dst == 1` kernel reproduce the standalone reduction
+instead of skipping the fusion.
 
-**Fix** (block 13, folded 2026-09-12): skip both on RDNA3_5 unless
-`GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1` (A/B).  The dense GLU is guarded at the six
-`{op,op,GLU}`/`{op,bias,op,bias,GLU}` matchers in `ggml_cuda_try_fuse` (with `ids != nullptr` keeping
-the `MUL_MAT_ID`/MoE fusions on), and the weighted-down in `ggml_cuda_mul_mat_id_weighted_rdna3_5_ok`.
+**Scope:** this is *within* the 8-wide band — it broke draft-vs-verify purity at `n_max <= 7`.
 
-**Validation** (post-fix, `W = 1,2,4,8` one hash per config): qwen4exp f16 `453eaa61`, q8_0 `113696b9`,
-MoE 35B-A3B `18999a78`; the 27B dense (`e165ef98`) was already pure and is unchanged; the gfx1201 path
-is untouched (`GGML_CUDA_CC_IS_RDNA3_5`-only).  **Cost** ≈ −0.9 % `tg128` on qwen4exp (25.53 vs 25.77
-t/s), prefill flat — the §19 trade.  The optimisation follow-up that would restore it is to make the
-fused `ncols_dst==1` kernel reproduce the standalone reduction (pin `nwarps`/`rps`/item-split) instead
-of skipping the fusion.
+## 26. A regime policy is only pure if the band takes one arm — including the prefill half
 
-**Scope note.**  This is *within* the 8-wide band, unlike §11's `n_max <= 7` bound: it broke draft-vs-
-verify purity for qwen4exp and the MoE even at `n_max <= 7` (the dense GLU also affects pure-attention
-models, which is the Gemma4-12B `W1-W3 = 1.016` line in the issue-25 record).  The band edge above 8 is
-unchanged: FA's tile→WMMA switch (`Q->ne[1] > 8`) and the `MMVQ_MAX_BATCH_SIZE` mmvq→MMQ crossover.
+**An arm may only be selected from state that is identical for every graph computing the same sequence
+position: the `n_tokens` *band* (`<= QSA_DECODE_BAND` vs above) and `n_kv`.**  The prefill arm is defined
+as `n_tokens > band && n_kv < threshold`, disjoint from the decode arm by construction.  An arm gated on
+`n_tokens == 1` is what broke it in §§16/32.
 
-## 26. A regime policy is only pure if the *band* takes one arm — including the prefill half (2026-09-12 (9))
+**The prefill arm ships disabled, and that is its purity guarantee:** `LLAMA_QSA_DENSE_PREFILL_UNTIL`
+defaults to `0` = QSA prefill always (the documented arch policy), so the delivered default selects one
+arm at every depth and no reference hash moves.  Verified byte-identical to the pre-amendment build
+(f16 `0fc4910d5824`, q8_0 `e8f8bba3942b` on gfx1151).
 
-§§11/16-18 are about the decode/verify band; the same structural rule governs the *prefill* side of the
-QSA arch policy, which block 14's 2026-09-12 (sixth) amendment made depth-configurable
-(`qsa_dense_prefill_until`; `patches/README.md`, record
-`archive/work/strix-halo/qsa-item9/RECORD-2026-09-12-qsa-prefill-crossover.md`).
+Corollaries if it is ever enabled: a regime knob is a quality knob and the default is the arbiter; a
+self-limiting arm cannot lose at depth (long prefill keeps the faster sparse chunks).
 
-The invariant, in the form a review can check: **an arm may only be selected from state that is
-identical for every graph that computes the same sequence position — the `n_tokens` *band*
-(`<= QSA_DECODE_BAND` vs above it) and `n_kv`.**  The prefill arm is therefore defined as
-`n_tokens > QSA_DECODE_BAND && n_kv < threshold`, i.e. disjoint from the decode arm by construction,
-so a W=1 decode and a W=(`--spec-draft-n-max` + 1) verify step still take the same arm; a prefill
-chunk of `<= 8` tokens is indistinguishable from a verify batch, so it takes the decode arm (that is
-the design).  An arm gated on `n_tokens == 1` — the shape of the original cause-1/cause-3 defects —
-is what breaks it, and the same trap applies to any new depth-keyed policy: key it on the band, not
-on the exact width.
+## 27. A rollback bound is a purity bound
 
-**The prefill arm ships disabled, and that is its purity guarantee.**  `qsa_dense_prefill_until`
-defaults to `0` = QSA prefill always, which is the documented 2026-09-07 arch policy on both arches
-("prefill is always QSA"; Soar wins from ~8K monotonically to +181 % @160K) — so the delivered default
-selects one arm for prefill at every depth and no reference hash moves.  It is an opt-in A/B knob
-(`LLAMA_QSA_DENSE_PREFILL_UNTIL`), and switching it on is a deliberate regime change whose default
-would have to be justified with an **at-depth** measurement: the 2026-09-07 record explicitly rejects
-the whole-prompt banner shape, which is exactly what a first attempt at a default used (the record
-carries those numbers, flagged non-comparable, as a description of the knob rather than evidence).
+Only the **sequential** GDN kernel writes the `K = n_rs_seq + 1` snapshot planes; the whole-batch chunked
+kernel writes slot 0 only, so it is safe for a batch only if that batch is never rolled back into.  The
+original constant ("a batch longer than `max(K, 16)` cannot be a verify batch") was false for ngram-style
+long drafts, so the bound now comes from the widest speculator draft:
+`n_rs_batch = common_speculative_n_max() + 1`, consumed as
+`GDN_CHUNKED_MIN_TOKENS = max(K > 16 ? K : 16, n_rs_batch)`.  A whole-batch rollback also needs a
+**pre-batch plane** (`0 < n_tokens < K`), which the graph copies into slot `n_tokens`.
 
-Verified on the amended tip (gfx1151): the default is byte-identical to the pre-amendment build —
-f16 `plain == n_max 3` = `0fc4910d5824` (632 chars) and q8_0 `plain == n_max 7` = `e8f8bba3942b`
-(626 chars, the recorded pre-amendment shallow q8_0 value) — and the `mstep` width probe is 0
-mismatches at W=4 (the W=8 38-mismatch item-4 residual class is unaffected and its position list is
-identical with and without the knob, which is how it was separated from this change).
+**Current state (r91, 2026-10-19).**  The bound is **enforced, not observed**: `common` sets
+`cparams.n_rs_batch = common_speculative_n_max() + 1` over **every** speculator type (draft
+simple/mtp/adaptive/eagle3/dflash/dspark *and* ngram simple/map/mod/cache, so ngram-mod's default n_max 64
+gives 65), `llama_context` floors it at `n_rs_seq + 1`, and the GDN op's threshold is floored at it — so a
+speculative verify batch can never take the chunked path.  The campaign's "ngram is an exposure" claim was
+wrong.  The remaining source of a partial rollback is a **non-speculator** rewind into a prefill batch
+(server cancel / `--cache-reuse`), which block 10's fixed-`D` sequential tail covers: the last
+`D = max(K>16?K:16, n_rs_batch)` tokens of a single-sequence prefill batch run the sequential kernel in the
+same launch (`GGML_CUDA_GDN_TAIL=0` is the A/B; probe NMSE 0.65 → 1e-3).  The **issue-#131 warning** was a
+stale per-sequence tracker entry (block 03 now folds every ubatch in).  Record:
+`archive/work/rs-rollback-boundary/RESOLUTION.md`.
 
-Two corollaries worth keeping for whenever such an arm *is* enabled:
+**Rules:** every batch that can be rolled back into must run the kernel that writes the snapshots it will
+read; derive the bound from the speculator, not from the snapshot depth; keep the guard as a real
+invariant check.
 
-* **A regime knob is a quality knob, and the default is the arbiter.**  Below a crossover the sparse
-  arm is both an approximation and (in the whole-prompt measurement) slower, so a dense arm there is
-  not obviously wrong — but "the arm is faster in my measurement shape" is not the same as "the
-  project's default should change", which is why the shipped value is the policy.
-* **A self-limiting arm cannot lose at depth.**  The arm only ever covers chunks whose `n_kv` is still
-  below the threshold, so a long prefill keeps the sparse chunks that measured faster (sparse wins
-  pp32768 by 17.4 % when it is *all* sparse) while the shallow ones go dense.  That property is what
-  would make a future at-depth-justified default safe rather than a crossover gamble.
+## 28. An export-only tail must not redefine the logits path
 
-## 27. A rollback bound is a purity bound: the batch you roll back into must be written by the kernel whose snapshots you read (2026-09-12 (10))
+An extra graph output (the MTP draft's `t_h_nextn`) may add work but must not move the arithmetic of the
+*logits* path.  The trap: an unmasked export needs a hidden row for **every** token, so the last layer's
+output-row gather was deferred until after the export was taken — and the last-layer tail then ran on the
+full prefill ubatch instead of the gathered rows, shifting the prefill's last-position logits by a ULP
+(`ad3acaa7…` vs `b624a79f…`).
 
-The recurrent (GDN) rollback keeps `K = n_rs_seq + 1` snapshot planes, and only the **sequential** GDN
-kernel writes them (slot `s` = the state `s` tokens back).  The **whole-batch chunked** prefill kernel
-writes slot 0 only, so it is safe for a batch only if that batch is never rolled back into.  Block 02
-originally expressed that as a constant: "a batch longer than `max(K, 16)` cannot be a speculative
-verify batch", which held only while every speculator's maximum draft was bounded by `n_rs_seq`
-(sized from `speculative.draft.n_max`).  It was **false** for ngram-style long drafts: with ngram-mod
-able to draft 64 tokens, a 65-token verify batch took the chunked path and a small tail rollback then
-restored a plane that batch never wrote - a silent, finite-but-wrong recurrent state.
+**Fix (block 10):** always gather the output rows before the tail (exactly what `--spec-type none` does)
+and build a **second, full-row tail** whose only consumer is `t_h_nextn`, only when the export is on and
+the chunk drops rows.  It must be expanded explicitly (`ggml_build_forward_expand`) — `ggml_set_output()`
+alone does not add a tensor to the graph.
 
-The invariant to check in any future change here: **every batch that can be rolled back into must run
-the kernel that writes the snapshots it will read.**  The bound therefore has to come from the
-*speculator's* maximum draft, not from the snapshot depth - `n_rs_batch =
-common_speculative_n_max() + 1`, consumed as `GDN_CHUNKED_MIN_TOKENS = max(K > 16 ? K : 16,
-n_rs_batch)`.  Consequences worth keeping:
+**Generalise:** when a graph gains an output read by a different consumer, check the batch width of every
+node the logits traverse, and prefer "compute the logits path exactly as the plain arm does, then compute
+the export separately".
 
-* **Default configs are unaffected**, so this is not a purity trade for the delivery: no speculator
-  gives `n_rs_batch = 1` and MTP `n_max 7` gives 8, both below the 16 floor, so the chunked path keeps
-  its whole-batch, K-independent shape and the recorded hashes do not move (verified: 27B
-  `plain == draft-mtp n_max 7` = `e164f09af338`, qwen4exp `plain` = `0fc4910d5824`, unchanged; 27B
-  pp2048/8192 within noise).  Only a long-draft speculator's verify batches move to the sequential
-  kernel - and for those the alternative is corruption, so correctness decides (§19's trade).
-* **A whole-batch rollback needs a pre-batch plane.**  The sequential kernel writes slots
-  `0..min(n_tokens,K)-1`, so a rollback of exactly the whole batch needs slot `n_tokens`, which no
-  kernel wrote: the graph now copies the pre-batch ssm and conv state there when `0 < n_tokens < K`
-  (`delta-net-base.cpp`).  That is what `test-recurrent-state-rollback`'s `multi_seq_split_replay`
-  exercises - it failed with `max diff 6.5366, first at seq 0 pos 16` before and matches with
-  `max diff 0` after (both cache fills) on this box.
-* **The guard stays a real invariant check.**  `llama_memory_recurrent::seq_rm` compares the last
-  ubatch's per-seq token count against `n_rs_batch` (not `n_rs_seq + 1`), so it still warns - once -
-  if a future change lets a rollback cross a batch boundary.
+## 29. A flattened batch is not a token count
 
-## 28. An export-only tail must not redefine the logits path (2026-09-12 (12), block-14 amendment (seventh))
+The "keep a verify batch on the MMVF family" guard keys on the matmul's `ne11`, which is the token count
+only while N is the token count.  The QSA indexer score carries the **indexer heads** in N, so its `ne11`
+is `4 * n_tps`: from `n_tps = 3` decode stayed on MMVF (`ne11 = 4`) while the verify batch fell to MMF
+(`ne11 = 12`), and the families accumulate differently.
 
-**The invariant:** an extra graph output (here the MTP draft's `t_h_nextn`) may add work, but it must
-not move the arithmetic of the *logits* path.  The trap is a shared tail whose batch width is chosen
-for the export: an unmasked `embeddings_nextn` export needs a hidden row for **every** token, so
-`src/models/qwen4exp.cpp` deferred the last layer's output-row gather (`gather_now`) until after
-`t_h_nextn` was taken — and the last layer's hyper-connection combine + ffn tail then ran on the full
-prefill ubatch instead of the gathered output rows.  The wide ffn's reduction order depends on the
-batch width, so the prefill's last-position logits shifted by a ULP (`ad3acaa75d19ddf2` vs
-`b624a79f19b1b1f0`) — a real logits-level violation of `plain == draft-mtp`, invisible to the text
-gates (the ULP did not flip the sampled token) and only observable in a per-step logits dump.
+**Signature:** bit-identical to decode for many steps, then one divergence at a fixed position (a
+selection flip, not drift); the greedy text may stay equal, so only a per-step logits replay (`mstep`)
+sees it.
 
-**The fix (block 14, seventh amendment):** the last layer now **always** gathers its output rows
-before the tail — exactly what `--spec-type none` does — and builds a **second, full-row tail** whose
-only consumer is `t_h_nextn`, and only when the export is on and the chunk actually drops rows
-(`n_outputs < n_tokens`, i.e. a prefill; a decode/verify batch drops none, so nothing is duplicated
-there).  The separate tail is not on the logits path, so it must be expanded explicitly
-(`ggml_build_forward_expand(gf, h_nextn)`); `ggml_set_output()` alone does not add a tensor to the
-graph.
+**Fix (block 10):** `MMVF_MAX_BATCH_SIZE_FLAT` (`= 32`) with `mul_mat_vec_f` instantiated for
+`ncols_dst` 9..32.  **Rule:** the band guard's "batch size" must be the **maximum flattened N** the op can
+produce in the band; audit any matmul whose N is a per-token × per-head/expert/group product.
 
-**Why the gates missed it until now:** the `plain == draft-mtp` text gates compare *sampled tokens*,
-and a one-ULP logits shift only matters when the argmax is within a ULP of a tie.  The instrument that
-sees it is a teacher-forced per-step logits replay with the export toggled (`mstep` `NEXTN=1` in
-`archive/work/strix-halo/qsa-item4/`), which went from 1 mismatch at `pos = 4293` to 0.  Generalise: when a
-graph gains an extra output that is read by a *different* consumer, check the batch width of every
-node the logits traverse — and prefer "compute the logits path exactly as the plain arm does, then
-compute the export separately" over "compute once and gather for the logits".  The cost is one extra
-tail at output-row width (cheap; a prefill has ~1 output row), and the non-export paths are
-byte-identical by construction.
+## 30. A support predicate decides the *layout*, and the layout decides an address-gated fusion
 
-## 29. A flattened batch is not a token count (2026-09-12 (13), block-14 amendment (eighth))
+A CUDA `GET_ROWS` predicate required `ne[0] % QK_K == 0`, so a 128-wide `iq4_nl` indexer-key gather was
+rejected and that node ran on the CPU (13 host round trips per prefill graph, GPU busy/span 0.62 vs 0.96).
+Widening it re-addressed the whole compute buffer, and the MoE-router `topk_moe` fusion is selected by
+**buffer-address overlap** — so the model output moved (`c0d44c479ee1` → `14a1a3f257f4`) even though the
+moved op itself is bit-exact.
 
-The decode/verify band guarantee is a property of **every op** on the path, and the engine's
-"keep a verify batch on the decode (MMVF) family" guard
-(`ggml_cuda_mul_mat`: `ne11_mmvf = ne11 <= MMVF_MAX_BATCH_SIZE ? 1 : ne11`) keys on the matmul's
-`ne11`.  That is correct while `ne11` is the token count.  The QSA indexer score is the counterexample:
-its matmul carries the **indexer heads** in the N dimension, so its `ne11` is
-`n_idx_h * n_tps` (**`4 * n_tps`** for qwen4exp).  From `n_tps = 3` the guard stopped rescuing it:
-decode (`n_tps = 1`, `ne11 = 4`) stayed on MMVF, the verify batch (`ne11 = 12`) fell through to MMF,
-and the two families accumulate the truncated dot product differently.  The indexer score then differed
-by a ULP and flipped a top-k near-tie.
+**Rules:** a support predicate is a correctness surface for *layout*, not only for reachability — when you
+widen one, re-run the full gate set, the observable can move in a *different* op.  And an
+address-overlap-driven fusion whose arithmetic is not bit-identical makes the output allocation-dependent
+(pre-existing upstream behaviour; the delivery's own invariants are unaffected because coverage is
+width-uniform within a config).
 
-**Signature to recognise it by:** the forward is *exactly* bit-identical to decode for many steps and
-then diverges once, at a fixed position (here target position 4395, 102 tokens in) - a selection flip,
-not drift.  The greedy **text** may stay equal for a given prompt, so this is a logits-level
-`plain != draft-mtp` violation that text gates cannot see; `mstep` (`archive/work/strix-halo/qsa-item4/`) is the
-instrument, and W=2 pure / W>=3 impure is the clean boundary.
+**Instrument:** `GGML_SCHED_DEBUG=1` prints the per-graph split count, `=2` the per-node backend — cheaper
+than a profiler for "which op left the GPU".  Both need **`-lv 5`** (`-lv 4` prints nothing).
 
-**Instruments that localised it** (worth reusing): a `rocprofv3 --kernel-trace` diff of the two widths -
-the only exclusive kernels were ncols-templated MMVF/ksplit variants, and the score moved from
-`mul_mat_vec_f<float,float,8,64>` (N=8) to no MMVF instantiation at N=12; and a temporary "force the
-fallback family for every F32 matmul" diagnostic, which made the band pure again and confirmed
-"one family across the band" as the fix (the reverse - forcing MMVF at every width - was already the
-intent of the guard).
+## 31. An address-selected fusion must be bit-identical to the path it replaces
 
-**The fix (block 14, eighth amendment):** `MMVF_MAX_BATCH_SIZE_FLAT` (`MMVF_MAX_BATCH_SIZE * 4 = 32`)
-and the guard widened to it, with `mul_mat_vec_f` instantiated for `ncols_dst` 9..32.  The band stays
-on the *decode* family, which is the side the draft's single-token decode reproduces (the §19 rule).
-`ne11 <= 8` and `ne11 > 32` are unchanged, so ordinary decode/verify and prefill are untouched.
+The fused MoE router (`ggml_cuda_op_topk_moe`) is selected by buffer-address overlap but was **not**
+bit-identical to the generic `soft_max → argsort → get_rows → norm` chain, so the output was a function of
+the allocation plan.  Three fixes make it transparent:
 
-**The general rule:** the band guard's "batch size" must be the **maximum flattened N** the op can
-produce in the band, not the token count.  Any matmul whose N is a product of a per-token factor and a
-per-head (or per-expert, per-group) factor is a candidate; audit it the same way a newly enabled KV
-type is audited (§20) - one family, W = 1..8, on every split.
+* **softmax reduction order** — the generic path's per-"virtual warp" butterfly then cross-warp phase, not
+  one flat butterfly over `l + i*32` (36 % of random 512-value rows differed by up to 2.4e-7 relative);
+* **normalization** — accumulate in `reduce_rows_f32` order and **divide**, not multiply by `1/sum`;
+* **argsort tie-break** — the generic CUDA bitonic sort is non-stable; the fused argmax broke ties by
+  smaller index and CUB's sort is stable.  The bitonic comparator now breaks ties by index (ties are real:
+  4 occurred in one qwen4exp run).
 
-## 30. A support predicate decides the *layout*, and the layout decides the fusion (2026-09-13, block-08 amendment (sixth))
+**Rules:** a fusion selected by memory addresses must be numerically transparent; a non-stable sort is a
+latent fusion hazard; verify with the kill-switch (`fused == GGML_CUDA_DISABLE_TOPK_MOE_FUSION=1` for every
+native KV type on both split modes), not just `plain == draft-mtp` (both paths are internally width-uniform).
 
-The 2026-09-13 `iq4_nl` `GET_ROWS` fix (TODO item 3) is a support-predicate bug, not an arithmetic one:
-the CUDA `GET_ROWS` case required `ne[0] % QK_K == 0` for the 32-value sub-block types, so a 128-wide
-`iq4_nl` indexer-key gather was rejected and the scheduler ran that single node on the CPU.  That is a
-**performance** defect (13 host round trips per qwen4exp prefill graph, GPU busy/span 0.62 vs 0.96), but
-it also changes the *allocation*: removing the host split re-addresses the whole compute buffer, and
-`ggml_cuda_check_fusion_memory_ranges()` selects the MoE-router `topk_moe` fusion by buffer-address
-overlap.  The fused router is **not** bit-identical to the generic chain (a temporary
-`GGML_CUDA_DISABLE_TOPK_MOE_FUSION` A/B moved the qwen4exp `iq4_nl` greedy text `14a1a3f257f4` ->
-`086df944f6af`), so the model output moved with the layout (`c0d44c479ee1` -> `14a1a3f257f4`) even though
-the moved op itself is bit-exact against the CPU at every width.
+## 32. A decode/verify band policy must scale with the configured draft depth
 
-**Two rules to take from it:**
-
-* **A support predicate is a correctness surface for *layout*, not only for reachability.**  When you
-  widen a predicate the op's execution backend can change (CPU -> GPU), which relocates every tensor in
-  the graph.  Re-run the full gate set, not just the op's own backend-op test - the observable can move
-  in a *different* op.
-* **An address-overlap-driven fusion whose fused arithmetic is not bit-identical to the generic chain
-  makes the output allocation-dependent.**  That is pre-existing upstream behaviour (filed as TODO item
-  19); the delivery's own invariants (width `W = 1..8`, `plain == draft-mtp`, the control hashes) are
-  unaffected because the coverage is width-uniform within a config, but the absolute text of a config
-  is not a property of the numbers alone.
-
-**Instrument that localised it:** `GGML_SCHED_DEBUG=1` prints the per-graph split count (`iq4_nl` 142 vs
-`q4_0` 22) and `=2` prints the per-node backend (`node #611 (GET_ROWS) ... CPU#cache_idx_k_l3`) - cheaper
-and more direct than a profiler for "which op left the GPU".  Both need **`-lv 5`** (the dump is
-`GGML_LOG_DEBUG`; `-lv 4` prints nothing, which has cost a debugging session).
-
-## 31. An address-selected fusion must be bit-identical to the path it replaces (2026-09-13, block-08 amendment (seventh))
-
-Item 30's follow-up (TODO item 19): the fused MoE router (`ggml_cuda_op_topk_moe`) was **not**
-bit-identical to the generic `soft_max -> argsort -> get_rows -> norm` chain, and the fusion is selected
-by `ggml_cuda_check_fusion_memory_ranges()`'s **buffer-address overlap** test - so the model output was a
-function of the allocation plan.  The fused kernel is now made to reproduce the generic arithmetic
-exactly:
-
-* **Softmax reduction order.**  The generic `soft_max_f32` launches one thread per column and reduces
-  with `block_reduce`: a per-warp butterfly over each consecutive 32-column group, then a cross-warp
-  butterfly over the per-warp results.  The fused kernel held column `l + i*32` in lane `l`, so its
-  single flat butterfly was a different association (36 % of random 512-value rows differ by up to
-  2.4e-7 relative).  The fix does the generic per-"virtual warp" `warp_reduce_sum(vals[i])` phase first
-  and the cross-warp phase second.  Max is exact under any order, so it needed no change.
-* **Normalization.**  The generic chain is `sum_rows -> clamp -> div`; the fused kernel accumulated the
-  winners in their own lanes and multiplied by `1/sum`.  It now sums in the `reduce_rows_f32` order
-  (`warp_reduce_sum(lane j < n_expert_used ? output_weights[0] : 0)`, lane `j` = selection `j`'s weight)
-  and **divides**.
-* **Argsort tie-break.**  The generic CUDA argsort is a non-stable bitonic network, so for exact ties its
-  top-k set/order is a function of the network, not the index - while the fused iterative argmax breaks
-  ties by the smaller index, and the CUDA CUB `argsort` path (`SortPairsDescending`) is stable too.  The
-  bitonic comparator now breaks ties by index, so all three agree.  Ties are real here: 4 occurred in
-  one 3.3k-prefill + 64-token qwen4exp run.
-
-**Rules to take from it:**
-
-* **A fusion whose selection depends on memory addresses must be numerically transparent** - the fused
-  kernel has to reproduce the chain it elides, or the same numbers give different text depending on the
-  allocator.  "Within a config, the coverage is width-uniform" is not enough; an unrelated layout change
-  can flip the coverage between runs.
-* **A non-stable sort is a latent fusion hazard.**  The bitonic argsort and the CUB argsort are two
-  implementations of the same op that already disagreed on ties; making the bitonic path stable (and
-  consistent with CUB) is a correctness improvement, not a tuning choice.  The CPU `std::sort`
-  comparator leaves ties unspecified, so no cross-backend tie contract is broken, and the backend-op
-  `ARGSORT` case is tie-free by construction.
-* **Verify with the kill-switch, not the hashes.**  The gate is `fused == GGML_CUDA_DISABLE_TOPK_MOE_FUSION=1`
-  (and == force-fuse) for every native KV type on both split modes; `plain == draft-mtp` alone would
-  have passed with either path (both are internally width-uniform).  The force-fuse probe
-  (`GGML_CUDA_TOPK_MOE_IGNORE_ALIAS`, temporary) additionally covers the call sites the address guard
-  would otherwise skip.
-
-## 32. A decode/verify band policy must scale with the configured draft depth (2026-09-13, issue #30, block-14 amendment)
-
-**Claim.**  `QSA_DECODE_BAND = 8` matched the qwen4exp dense decode arm to the `n_max <= 7` verify, but
-it was a fixed constant while the verify width is `n_max + 1`.  Once the draft-depth clamp moved from 7
-to 15, a depth-8..15 verify became a 9..16-token batch: above the indexer selection width
-(`indexer_top_k + r - 1` = 2051) the W=1 decode took the **dense** arm while the verify fell through to
-the **sparse** top-k selection — the "triggers after ~2051 tokens" qwen4exp depth-15 divergence.  This is
-the same *class* as §26 (a regime policy is only pure if the whole band takes one arm), re-opened because
-the band was pinned to a compile-time constant instead of the configured draft depth.
-
-**Evidence (real qwen4exp IQ4_XS, 3x R9700 `-sm tensor`, f16, `P=2500 > 2051`, token-0 logits).**
+`QSA_DECODE_BAND = 8` was a fixed constant while the verify width is `n_max + 1`.  Once the clamp moved
+from 7 to 15, a depth-8..15 verify became a 9..16-token batch: above the indexer selection width
+(`indexer_top_k + r - 1` = 2051) the W=1 decode took the dense arm and the verify fell to sparse — the
+"diverges after ~2051 tokens" qwen4exp depth-15 bug.
 
 | build | `W = 1..8` | `W = 9..16` |
 |---|---|---|
-| pre-fix | `643a8166d8dad677` | `1354757f9daf03db` (== the `LLAMA_QSA_DENSE_DECODE_UNTIL=0` forced-sparse hash) |
-| post-fix | `643a8166d8dad677` | `05be2f7f30dbc426` (the dense arm; the base kernel-family impurity of §11 remains) |
-
-The dummy `qwen4exp-moe` isolates it cleanly (no matmul-family flip at these sizes): pre-fix W=1..8
-`5009c55bca5e01ca` vs W=9..16 `596ec8bf7461da1a`; post-fix all W=1..16 `5009c55bca5e01ca`, and pure for
-all eight native KV types.  With the QSA arm routed to sparse on **both** sides
-(`LLAMA_QSA_DENSE_DECODE_UNTIL=0`) the width matrix is pure, so the fix does not weaken the sparse arm.
-
-**Fix.**  `qsa_decode_band = max(QSA_DECODE_BAND, cparams.n_rs_batch)`; the decode arm uses
-`n_tokens <= qsa_decode_band` and the prefill arm `n_tokens > qsa_decode_band`, keeping them disjoint.
-`cparams.n_rs_batch` (`common_speculative_n_max() + 1`, the recurrent rollback bound) is exactly the
-widest batch that can be a verify, so the arm now tracks the configured depth.  Default configs
-(`n_max 3` -> `n_rs_batch 4`; `n_max 7` -> `8`) leave the band at 8 and are byte-identical to the
-pre-amendment build, so every recorded reference hash holds.
-
-**Rules to take from it:**
-
-* **A band constant must be derived from the quantity it is matching.**  `QSA_DECODE_BAND = 8` was
-  correct only while the clamp made 8 the maximum verify width; it silently rotted when the policy
-  changed.  The verify width is `n_rs_batch`, so use it.
-* **A bug that only fires past a regime threshold needs the threshold crossed in the test.**  The
-  1..8-width probe was green because below 2051 the `shortcut` arm covers every width; the divergence
-  appears only for a `W > 8` verify with `n_kv >` the selection width.  The regression is the real-model
-  width matrix at `P > 2051` (`archive/work/wip-archive/recurrent-rewind-depth/`), not the short-context probe.
-* **A depth-policy change has to re-run the width matrix for every model family the band touches.**
-  The clamp relaxation was validated on the recurrent snapshot machinery (deterministic sweep) and on
-  qwen4exp's QSA arm; the residual `W=9` difference on all models is the documented §11 kernel-family
-  trade, not a defect.
-
-## 33. A purity (or throughput) gate must run the content the axis intends, long enough to reach steady state (2026-09-13)
-
-**Claim.**  The four-axis adaptive-MTP gate was first run with the model's default reasoning mode and at
-`-n 256`.  Both invalidated it, in opposite directions:
-
-* **Reasoning.**  Qwen3.8 emits a thinking trace for instruction-like prompts, so the "code" axis at the
-  template default never reached any Python (at `-n 256`) and the "prose" axis answered as a request.
-  The code acceptance read 0.56 instead of 0.89-0.92; the gate was measuring the thinking trace.
-* **Length.**  `-n 256` measures the drafter/adaptive-controller warm-up, not the mode.  The code axis at
-  adaptive ceiling 12 read **-5%** vs fixed `n3` at `-n 256` (mean accepted length 4.32) and **+28%** at
-  `-n 3000` (mean length 7.02).  The ranking inverted.
-
-**Why it matters for purity specifically.**  Purity above `n_max 7` is a probabilistic near-tie
-property, so it needs enough tokens to hit a near-tie *and* the content the axis is meant to produce.
-At `-n 256` all four axes matched plain; at `-n 3000` reasoning and recall stayed byte-identical while
-prose and code diverged -- the documented above-7 kernel-family trade, made visible only by the longer
-run.  A short purity check can therefore report "pure" while the real workload is not.
-
-**Rules to take from it:**
-
-* **Run the gate at a length that matches the workload** (`-n 3000` here; `-n 2000` floor).  A short run
-  is a correctness smoke test (output non-empty, acceptance > 0), never a performance or purity verdict.
-* **Pin the content mode** (`--reasoning off` for P/C/K, `on` for R) for every gate that compares
-  builds or depths; a workload that is not actually produced cannot be measured.
-* **A spot test that passes is not evidence that a long run passes** -- the same class of blind spot as
-  §11's "text equality is evidence for purity, never against divergence".
-
-Results: `benchmarks/2026-09-13-adaptive-mtp-4-axis-n12.md`; protocol: gate rule 0 in
-`benchmarks/mtp-adaptive-methodology.md`; prompts: `prompts/README.md`.
-
-## 34. A K/V staging policy is a decode-depth policy (and can be the margin for a high-context load) (2026-09-14, issue #30, block-15 amendment)
-
-**Claim.**  The block-15 `V4`/`V5` native-staging arms were documented and shipped as a *memory* feature
-(they remove the F16 staging scratch), with decode "unaffected".  That framing was incomplete: for a
-**quantized** K/V the F16 staging pass is a **whole-cache conversion that runs on every decode step and
-scales with `n_kv`**, so it is a *decode-depth* cost, and the choice of staging source is a decode-depth
-policy.  It can also be the difference between loading and not loading a high-context MTP config.
-
-**Evidence (1 GPU, gfx1201, 27B UD-Q4_K_XL, `-fa auto`).**  With V4 opt-in off, delivery q8_0 `tg64`
-d65536 was 18.92 t/s (66.1 % of its d0 rate) vs stock's 22.43 (80.1 %).  Turning native q8_0 staging on
-(and adding the missing q4_0 arm) gives **23.29** (80.7 %) for ~1.2 % prefill; q4_0 19.72 -> **22.82**
-(68.9 % -> 79.2 %, stock 21.03 / 75.9 %).  The values are **bit-identical** to the staging conversion
-(same-seed text), so this is a pure speed/memory change, and `W = 1..8` stays one logits hash on every
-supported type.  The same ~744 MiB/GPU scratch was the **260 MiB margin** the adaptive-MTP draft context
-was short at `-c 196608` q8_0 / ceiling 12, so the default now loads at the default 4 slots
-(`GGML_CUDA_FA_KV_NATIVE=0` reproduces the OOM).
-
-**Rules.**
-
-* **A native staging arm must reproduce the launcher's conversion bit-for-bit** (q8_0's
-`dequantize_block_q8_0_f16`, q4_0's `dequantize_block_q4_0`) — otherwise the recorded reference hashes
-move.  Gate it with the same-seed text gate first, the width matrix second, and the MTP acceptance third.
-* **The activation policy is per type class.**  Native staging is the default for the sub-F16 quants
-(q8_0/q4_0/q4_1/q5_0/q5_1/iq4_nl), where the F16 pass is the cost; bf16 already has a native tile/vec
-path, so its MMA-scratch arm (V5) stays opt-in.  `GGML_CUDA_FA_KV_NATIVE` is a three-state policy
-(unset = auto, 1 = force on, 0 = force the staging path), so the old behaviour is one env away.
-* **A memory win can be a load-time win.**  When a config fails to load by a few hundred MiB, the fix
-may be elsewhere in the same graph (here the staging scratch), not in the buffer named by the OOM.
-Measure the *total* budget, not the failing allocation.
-* The remaining headroom lever and the opt-in f32 -> bf16 snapshot trade (a purity trade to be *measured*,
-not assumed) are filed in `archive/work/issue-30-mtp-decode-regression/RECURRENT-SNAPSHOT-BUDGET.md`.
-
-## 35. A prefill kernel config must be arch- and split-keyed (2026-09-14, issue #30, block-04 amendment)
-
-**Claim.**  The head-256 WMMA config row and the `ncols2` rule were single values applied to *every*
-RDNA arch and *every* split mode.  Both were wrong as globals:
-
-* The `ncols=64` row was a **gfx1151 (Strix Halo) "halo row"** (`nbatch_fa 32`, `nbatch_V2 64`,
-  `Q_in_reg=false`), but the launcher uses `ncols=64` for *every* `n_q > 8` attention on gfx1201 too —
-  ~1.5x per attention cell, i.e. the delivery's prefill slope was ~51 % steeper than stock and only
-  showed at depth (delivery won at 4K, crossed at ~64K, lost at 150K).
-* The `ncols2` rule is a **compute-vs-bandwidth** trade: a whole card is compute-bound and prefers
-  `ncols2` that divides the GQA ratio (no wasted lanes); a tensor split is per-GPU bandwidth-bound and
-  prefers the wider `ncols2` (fewer K/V re-reads).  One value cannot serve both.
-
-**Rules to take from it.**
-
-* **A config tuned on one arch is not a config for the family.**  Key it on the arch (`RDNA3_5`/`RDNA4`
-  macros on the device, `GGML_CUDA_CC_IS_RDNA3_5(cc)` on the host — and they must agree).
-* **A regime (whole-card vs tensor-parallel) is a first-class axis**, not a constant; the frontend knows
-  the split mode, so pass it explicitly.  Here: `ggml_set_fa_tensor_parallel` (set in `llama_context`
-  from `split_mode() == LLAMA_SPLIT_MODE_TENSOR && n_cuda_dev > 1`).  Note `llama_model::n_devices()` is
-  **1** under tensor split (the meta device wraps the GPUs) — count the CUDA sub-devices instead.
-* **An `op_params` socket is not a reliable channel**: the graph is copied before execution and the copy
-  loses it (the builder's write was visible, the chooser read the default).  Pass through the
-  model/context layer.
-* **The instrument has a blind spot**: `-sm tensor` hides single-card regressions (its parallelism masks
-  per-cell cost).  Screen a prefill change with the `t = a + b*n` slope fit at pp8-48K and **always
-  measure one card as well**.
-
-Results and the full matrix: `archive/work/issue-30-mtp-decode-regression/MEASUREMENTS.md` §D; `WORKLOG.md`
-2026-09-14 (later); `patches/README.md` (2026-09-14 block-04 section).
-
-## 36. §14's `W=1..8` purity is a *measured* claim, not a guarantee — relax it for the coarse quants (2026-09-14, issue #30)
-
-**Finding.**  §14 deleted the VEC/TILE family split for a quantized K/V, and that part holds — on AMD the
-chooser's fallback returns TILE unconditionally, so the whole `n_q <= 8` band is TILE, and (verified
-2026-09-15 by dumping the launcher state at every width, see below) the **KV split is width-invariant
-too**.  What remains is a **logits-level band edge** between `n_q = 1` and `n_q >= 2` that only becomes
-visible as a near-tie flip, i.e. when the values land near a rounding boundary.  Measured on the 4B
-(gfx1201; `P` = prefill length, `W` = decode batch width, one logits hash per `W=1..8`, prose prompt;
-2026-09-15, after the item-2 arms):
-
-| K/V | P=192 | P=200 | P=208 | P=224 | P=256 |
-|---|---|---|---|---|---|
-| f16 | pure | pure | pure | pure | pure |
-| bf16 | pure | **edge** | pure | pure | pure |
-| q8_0 | pure | pure | pure | pure | pure |
-| q4_0 | pure | pure | pure | **edge** | **edge** |
-| q4_1 | pure | **edge** | pure | pure | pure |
-| q5_0 | pure | pure | pure | pure | pure |
-| q5_1 | pure | pure | pure | pure | pure |
-| iq4_nl | pure | pure | pure | pure | pure |
-
-A **"edge"** is a genuine logits-level band edge, not a token-level one.  Measured at (P=200, `W=1` vs
-`W=4`, 4B, gfx1201): bf16 -> `argmax 9146` in both, top-1 **23.6626 vs 23.6770** (delta 0.014), top-2
-margin **2.24 vs 2.32**; q4_1 -> `argmax 9146` in both, delta 0.064, margin 2.73 vs 2.64.  So the greedy
-token is unchanged and the top-2 margin dwarfs the delta — it is a *hash* difference, not a decoding
-difference.  It is **pre-existing and independent of the native arms**: reproduced byte-identically with
-`GGML_CUDA_FA_KV_NATIVE=0` (the pure F16 staging path) and unchanged by the prefill-staging split.  The
-four small quants are measured **pure at all five P** here — arming them (item 2) moved their `W=1` path
-from the F16 tile to the native tile, so their pre-2026-09-15 entries (a q4_1 edge at P=200) are
-superseded, not contradicted.
-
-**What is *not* the cause (verified 2026-09-15).**  A temporary launcher dump (`GGML_CUDA_FA_DEBUG2`,
-snippet in `archive/work/issue-30-mtp-decode-regression/tools/fattn-launch-dump.patch`) shows the decode calls at
-every width in the band have **identical** reduction structure — 4B, bf16, `P=200`, cache padded to 256:
-
-| | `n_q=1` | `n_q=2` | `n_q=4` |
-|---|---|---|---|
-| `ntiles_x` / `ntiles_dst` | 1 / 4 | 2 / 8 | 4 / 16 |
-| `parallel_blocks` (the KV split) | **8** | **8** | **8** |
-| `blocks_num` | (1,8,4) | (2,8,4) | (4,8,4) |
-| `ncols1`/`ncols2`/`nwarps`/`nbatch_fa` | 1/4/4/32 | same | same |
-| `ntiles_KV`/`ntiles_z_gqa`/`stream_k` | 8/1/0 | same | same |
-
-So the KV-split tree, the number of online-softmax rescale steps over KV *tiles* and the fixup condition
-are all width-invariant — block 00's `ntiles_dst_eff` fix covers the whole band, and the tile path never
-enters the stream-K branch (`stream_k=0`).  `ncols1 = 1` also means the tile has **no phantom query
-columns**: a 1-row tile computes exactly one query per x-tile and pads nothing, so an earlier note here
-attributing the edge to "the `n_q = 1` launch running its whole `cols_per_block`" was **wrong** and is
-withdrawn.  The only quantity that changes with `W` is `ntiles_x` (the number of independent query
-tiles), which is per-tile independent.
-
-**Leading hypothesis (not proven).**  That leaves the FA path's *values*: the mask-derived KV support
-range (`i_sup`) is a per-tile bound, so a 1-row tile can process one fewer KV tile than a `>= 2`-row tile
-at the same cache length (the padded tail only the later rows can attend to), changing the last bits
-through the online-softmax rescales.  This fits everything observed — inside the FA kernel, mechanism
-type-independent, visibility a rounding-boundary lottery that depends on where the cache padding falls
-(hence P=200 yes, P=208 no).  Note that "f16 is pure at P=200" is **not** evidence that the FA path is
-the wrong place: the mechanism is probably type-independent, and a pure hash only means the perturbation
-did not move a logit bit in that kernel's arithmetic.  Isolating it would need an op-level A/B (hash the
-attention output rather than the logits) — deliberately not done, see the decision below.
-
-**Decision (2026-09-15, maintainer).**  **Won't fix.**  The reward is unmeasurable — the greedy token never
-moved, MTP acceptance is bit-identical across the arms (`0.96712` at `n_max 8`, `0.93186` at `n_max 15`),
-and the perturbation is 0.014-0.064 logits against a top-2 margin of 2.2-2.7, one to two orders of
-magnitude *below* the error the coarse KV quantization itself imposes.  The plausible fix (make every
-width process the same KV range) adds work to the single-token decode — the latency-critical width — for
-nothing, and it is the same class of retrofit §19 records as costing 0.5-9 % on whichever axis it touches
-and recurring with every new single-token-tuned kernel.  The **trigger to revisit is an *argmax* change**
-(a quality event); a hash change with a 2.2+ margin is not one.
-
-**Doctrine (2026-09-14, maintainer decision; sharpened 2026-09-15 by the table above).**  Tier by
-*coherence*, not by bits, and be explicit about *which* level the guarantee is at:
-
-* **The contract the delivery actually guarantees is a text/acceptance-level one**: for **f16, bf16 and
-  q8_0** the greedy text is bit-identical across the whole decode/verify band (`plain == draft-mtp` for
-  `n_max <= 7`, MTP acceptance unchanged), and that is *tested*, not merely measured.
-* **Logits-level band purity is a measurement, and it is stated as one.**  For f16/bf16/q8_0 it held at
-  every (prompt, P) tested **except bf16 at P=200 on the 4B**, which is recorded above — with the argmax
-  unchanged.  A new single-token-tuned kernel can add another such edge anywhere, so the delivery
-  re-measures this table on the prompt/P grid rather than promising the grid cannot move.
-* **For the small quants (q4_0, q4_1, q5_0, q5_1, iq4_nl) we make a good-faith effort**: their values are
-  bit-identical to the reference conversion (the dequant matches `convert.cu`, which is what the op-test
-  oracle checks) and the kernel family is uniform across the band, but we do **not** promise logits-level
-  purity; a near-tie may flip, and the flip stays argmax-stable as above.
-* **Why**: at those quantizations the K/V cache is already the dominant long-context coherence loss, so
-  the discrepancy a near-tie flip makes reproducible is the same order as the error the quantization
-  itself introduces.  Guaranteeing bit-identity there buys a promise about a regime the model should not
-  be run in, at a real and *recurring* engineering cost — every new single-token-tuned fusion recreates a
-  band, and the retrofits measured here each cost 0.5–9 % on the axis they touched (or had to disable the
-  fusion outright).  A user who needs long-context coherence — and with it the strongest purity — uses
-  f16/bf16/q8_0 K/V; the small quants are a memory valve, documented as best-effort.
-* Consequence, the same one §19 already states for `n_max > 7`: once the cache is coarse, `plain` and
-  `draft-mtp` may disagree on a near-tie.
-
-Evidence: `archive/work/issue-30-mtp-decode-regression/MEASUREMENTS.md` §G; the 2026-09-15 per-quant grid and the
-item-2 arms are §I (`results/2026-09-15-purity-native-arms-{a,b,c,d}.txt` -
-gfx1201, `results/2026-09-15-item2-purity-halo.txt` - gfx1151, where **all eight types are pure at
-P=256**).
-
-## 37. A fully-masked KV group is an exact no-op; skipping it must stay prefill-only (2026-09-26, issue #48)
-
-**Claim.**  A KV group whose kq-mask entries are all `-INF` for every query row contributes
-`exp(-inf - max) = 0` to the online softmax, leaves `KQ_max` unchanged and adds exact zeros to
-`KQ_rowsum`/`VKQ`; skipping it is therefore **bit-identical**, not merely equivalent.  The issue-#48 skip
-(`GGML_CUDA_FA_MASK_SKIP`, default on) is gated on `Q->ne[1] > 8` for the packed mask and on the derived
-`cell_pos` (already prefill-only), so the decode/verify band's round-robin KV split and the §10/§11
-width-purity invariants are untouched — verified with the 27B `draft-mtp` acceptance and text unchanged.
-
-**Why it is needed.**  A `--kv-unified` cache puts the other slots' cells inside the attention range;
-they are fully masked for the current sequence but every prefill ubatch used to process them.
-`flash_attn_mask_to_KV_max` trims only the **tail** (and is not even launched at `-ub 512`, because of
-its `Q->ne[1] >= 1024 || Q->ne[3] > 1` gate), so the interior blocks were never removed.
-
-**The gate.**  The classification must be per (Q stream, query tile, 256-cell group) on the packed
-path: continuous batching puts more than one sequence in a ubatch, so rows of one query tile can belong
-to different sequences and a batch-wide test would never fire there.  The derived path stays batch-wide
-because `kq_mask_derivable()` guarantees a single sequence and stream.
-
-**Evidence.**  `test-backend-ops -o FLASH_ATTN_EXT` **6354/6354** on both the MMA and tile paths, with
-deterministic contiguous interior-hole cases on the derived and packed paths (plus multi-stream, ALiBi,
-the `n_q = 9..16` wide-verify band and an odd query count) — before the tests were added the random
-masks only planted 128x64 `-INF` blocks, smaller than one 256-cell group, so the packed skip was never
-exercised.  `-kvu` B=4 prefill +22 % (MMA) / +72 % (tile); concurrent-server total prefill -7.6 % (MMA)
-/ -21 % (tile); single-stream prefill within noise; 27B `draft-mtp` acceptance 0.59331 / adaptive
-0.58129 and generated text `832aed3d869d` byte-identical with the skip on or off.  Record:
-`WORKLOG.md` (2026-09-26 r10), `patches/README.md`.
-
-## 38. The purity guarantee is scoped to a fixed batch; concurrent serving is not deterministic (2026-09-26)
-
-**Claim.**  The delivery's bit-identity invariants (the `W = 1..8` decode/verify band, `plain ==`
-`draft-mtp`, `native == staging`) hold for a **fixed** batch configuration: the same tokens, in the same
-order, on the same device, produce the same logits.  They do **not** promise that a *concurrent server*
-is run-to-run deterministic, and it is not: the batch composition (which other requests are in flight,
-and in which ubatch they land) changes the kernel and reduction order, so a greedy near-tie can flip.
-
-**Evidence (2026-09-26).**  Same prompt, same seed, `-np 2 --kv-unified`, two concurrent requests,
-three fresh server runs: the same request yielded different content hashes across runs, and the two
-slots' outputs tracked the batch grouping.  It reproduces on **one GPU** with no all-reduce, so it is
-not the hybrid AR and not `-sm tensor`; and two **sequential** requests on the same server were
-byte-identical across three runs (`e9d0d22658` every time).  It is therefore inherent to continuous
-batching (an upstream property), not something the delivery introduced.
-
-**Consequence.**  Never use a concurrent-server text hash as a purity gate or a bisection oracle —
-pin the request schedule (sequential, or a fixed arrival order) and compare that, or use
-`test-backend-ops` for the op-level guarantees.  The archived investigation is
-`archive/work/unified-cache-decode/`.
-
-**Refined 2026-10-11 (issue #134 / TODO #52 part C); made exact and CLOSED 2026-10-19.**  The cause is
-narrower than "continuous batching": it is **unified KV** specifically.  `--no-kv-unified` with the same concurrent schedule is
-fully reproducible, because each sequence then owns a contiguous region starting at cell 0, so the
-flash-attention reduction grid is anchored per sequence.  Under `--kv-unified` a sequence's logits
-depend on the physical **set** of KV cells it occupies in the shared stream.  The **exact rule** is: the
-result is a function of the sequence's KV cells' tile indices **modulo the per-launch KV-split period**
-`pb × nbatch_fa`, where `pb` is `parallel_blocks` for the decode/verify tile kernel (chosen from
-`ntiles_KV = ceil(n_kv/nbatch_fa)`, i.e. from the *shared* view length) and the fixed band `P`
-(`nsm`, or `(3*nsm)/4` for 2-byte K/V) otherwise.  The kernel takes KV iterations round-robin by
-`pb` and `flash_attn_combine_results` sums the partials linearly in block order, so a shift by exactly
-one period is **bit-identical** and any smaller shift can change the rounding.  Measured on r91
-(gfx1151, 4B Q8_0): offsets 32/64/96/128 (all tile-aligned) give four different hashes, while every
-offset is bit-identical to `offset + 960` (`pb` 30 × `nbatch_fa` 32); 35B-A3B (`pb` 60) is identical
-under `+1920`.  The decisive variable in the server case is the **decode head**: every new token takes
-the shared head, so its residue class follows the co-resident session's allocation history.  It
-reproduces on unmodified upstream, so it is upstream-inherent, not a delivery defect.  **Workaround:
-`--no-kv-unified` when strict reproducibility is required.**  The proposed cheap fix (chunk sessions by
-the band width / align prompt starts) is **refuted** — the quantum is the period, not the tile, and
-prompt-start alignment cannot pin the decode head.  A sufficient fix (period-granular per-sequence cell
-*ownership*: whole period blocks per session, its head inside its own block, ~30-38 MiB of reserved
-cells per live session on the tested models) is an upstream allocator redesign with no throughput win
-and is deliberately not implemented.  **CLOSED 2026-10-19**; record:
-[`archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md`](archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md)
-(evidence, tools and the validation plan for a future fix).
-
-**Correction 2026-10-16 (issue #151 follow-up).**  This covers the `--kv-unified` case only.  The
-reporter additionally sees a start-to-start greedy flip with HIP graphs on, under both `--kv-unified`
-and `--no-kv-unified`.  We could **not** reproduce it on Linux/ROCm 7.14: fresh-process decode-logit
-probes are bit-identical across starts, graphs on and off (r69 revalidation,
-`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).  Under `--no-kv-unified` the
-concurrent repeats are reproducible but solo differs from concurrent (a cross-sequence batching
-effect, not the cell set).  The reported flip is most likely the known Windows-only per-start flip
-(the r25 rope/set_rows fix, and the external hipBLASLt solution selection).  Tracked as TODO #67.
-
-**No performance angle.**  Making concurrent serving deterministic would require either pinning the
-batch shape/grouping or carrying the per-sequence-region (period-granular ownership) redesign; neither is
-a throughput win, and the field symptom is only a rounding-level near-tie flip, so there is nothing to
-gain by fixing it now.
-The one performance-relevant knob is batching efficiency, which is orthogonal.  This is the reason the
-campaign was closed without a fix (2026-10-19).
-
-## 39. A decode-only fusion must match the standalone launch it replaces (2026-09-28, r18)
-
-**Claim.**  A CUDA fusion that fires **only** in one width of the decode/verify band (here `ne[1] == 1`,
-i.e. single-token decode) must reproduce the arithmetic of the standalone kernel it replaces at that
-width, or the band is not width-uniform: `plain` and `draft-mtp` diverge as soon as a near-tie is
-reached.  Invariant 1 ("one arm, chosen from the `n_tokens` band, never from the exact width") is violated
-by construction by a `ne[1] == 1` gate unless the fused kernel is bit-identical to the unfused chain.
-
-**The bug** (found 2026-09-28 while validating the `archive/work/moe-expert-cache/` expert cache).  Block 08's
-`ggml_cuda_op_ssm_gate_beta` fuses the qwen35moe alpha/beta Q8_0 projections + their softplus/sigmoid
-gating chain, but only at `alpha_w->src[1]->ne[1] == 1`.  Block 13 later added `calc_nwarps_weight()`
-(2026-09-12 (18)) - the standalone dense mmvq *weight* launch picks the wide block (8 warps) for Q8_0 with
-`K < 4096` - while the decode-only fusion kept plain `calc_nwarps()` (1 warp).  So the W=1 fused kernel and
-the W>=2 unfused chain reduced K with different warp counts.  (The comment above `calc_nwarps_weight`
-claiming the fusion ops must keep `calc_nwarps` predates this: it is right for the *band-internal* fusions,
-e.g. `shexp_down_gate`, whose `nwarps` pins a single-token reduction over the whole band, and wrong for a
-decode-only one.)
-
-**Symptom.**  Qwen3.6-35B-A3B Q8_0 (`n_embd` 2048 < 4096), delivered `-ncmoe 99` path, fusions on: r17
-`none = 6744006631df`, `n3 = 431bbf3a1605` - not byte-identical, first difference ~200 tokens (a
-paraphrase: "not the first engineer and not the last" vs "not first and not last among the engineers").
-Fusions off is pure (`6b5dfe0de946`), and the cache campaign's force-copy A/B proved it was not the expert
-cache reading stale bytes.  Only `GGML_CUDA_DISABLE_SSM_GATE_BETA=1` restored purity - every other fusion
-moves the arithmetic *uniformly* at both widths, so no other kill-switch can equalise `none` and `n3`.
-
-**Fix (r18, block 13).**  `ggml_cuda_op_ssm_gate_beta` now selects
-`calc_nwarps_weight(GGML_TYPE_Q8_0, 1, get_device_table_id(cc), long_k)` with `long_k = src1->ne[0] >= 4096`
-- exactly the standalone launch's selector.  The fused decode is then bit-identical to the unfused verify
-chain and the fusion stays ON.  It is a **no-op for `K >= 4096`**, so the long-K models keep the pinned
-single-token order and are unchanged (verified on the 4B: `GGML_CUDA_DISABLE_SSM_GATE_BETA` on/off hashes
-equal).
-
-**Result.**  `none == n1 == n3 == n7 == 431bbf3a1605` (300 tokens) and `none == n3` over 1000 tokens on the
-delivered path; MTP acceptance unchanged (0.77654, pos-1 0.883); `MUL_MAT_ID` / `GATED_DELTA_NET` /
-`SSM_CONV` backend ops 2/2; the 4B coherence gate byte-unchanged.  `v16-84e76d8a2-r18`, tip `135ce8b73`,
-tree `df3f6ec94`.
-
-**Rule.**  Any new decode/verify fusion whose matcher has a width condition (`ne[1] == 1`, `ne[2] == 1`,
-`n_tokens == 1`) must either be bit-identical to its unfused chain at that width (preferred - this one) or
-serve the whole band (`shexp_down_gate`).  A `ne[1] == 1` fusion that does neither is a latent
-width-impurity on every model where it fires.
-
-## 40. A thread count is a scheduling parameter, not a numerical one (2026-09-28, r19)
-
-Block 06's r19 amendment lets the CPU run a graph with a *different* thread count depending on what the
-graph contains: the offloaded-MoE decode is now capped at `max(1, hardware_concurrency()/2)` instead of
-being serialised on one thread (the r17 heuristic's behaviour).  That is only permissible because the CPU
-backend's op decomposition never lets the thread count change a result - every output element is reduced
-by exactly one thread, so narrowing or widening the pool changes *when* work happens, not *how* it adds up.
-
-Evidence: the delivered `-ncmoe 99` path (Qwen3.6-35B-A3B Q8_0, 300 tokens, seed 42, fusions ON) is
-byte-identical at `-t 1`, `-t 8`, `-t 12` and `-t 16`, with `GGML_CPU_MOE_OFFLOAD_THREADS=0` and `=12`, and
-with `GGML_CPU_DISABLE_TINY_GRAPH_SINGLE_THREAD=1` - all `431bbf3a1605` - and `--cpu-mask` does not move it
-either.  The block-13 `calc_nwarps_weight` family (§39) is the contrast: it changes the *K-split inside an
-op*, so it did need the full width re-validation.
-
-**Rule.**  A change that only selects a thread count (for a graph, a backend, or an op) is a perf change
-and does not need a purity re-run; a change that moves a reduction boundary, a `vec_dot`, or a K-split
-*inside* an op does.  State which one a patch is before claiming it is purity-neutral.
-
-## 41. A runtime, address-selected fusion is a cross-process purity risk; a compile-time one is not (2026-09-29, r24/r25, issue #58 item D -> issue #67)
-
-Issue #58 item D: on the reporter's Windows / ROCm 10 box, Q6_K greedy output swaps one near-tie across
-fresh `llama-server` starts (~1 in 8-12) while staying deterministic within a start.  This is the §30/§31
-mechanism again - `ggml_cuda_check_fusion_memory_ranges()` decides a fusion from **buffer-address
-overlap**, so a fusion that is not bit-transparent makes the output a function of the allocation plan.
-The `topk_moe` router was the MoE instance and was made bit-identical; this is a dense-model instance.
-
-**Reproduced at the logits level** (gfx1201 / ROCm 7.14, `Qwen3.8-27B-Q6_K`, `prompts/recall.txt`,
-`test-logits-width-probe`, P=256, W=1 row-0 hash):
-
-| build / switch | W=1 row-0 hash |
-|---|---|
-| default | `f6d62323d9339541` |
-| `GGML_CUDA_DISABLE_FUSION=1` | `3ab223a4f08afd6e` |
-| all address-gated fusions off (temporary probe) | `3ab223a4f08afd6e` |
-| `GGML_CUDA_DISABLE_ROPE_SET_ROWS=1` | `3ab223a4f08afd6e` |
-| `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1` | `f6d62323d9339541` (no change) |
-| the other per-fusion switches (conv, norm-rows, pair, q8_1, gdn-gate, rms-scale, ...) | `f6d62323d9339541` (no change) |
-| `GGML_CUDA_DISABLE_GRAPHS=1` / `GGML_CUDA_FA_KV_NATIVE=0` | `f6d62323d9339541` (no change) |
-| 20 fresh default process starts | `f6d62323d9339541` (20/20) |
-
-So the only lever is fusion, and specifically the address-overlap-gated subset.  The upstream
-`ROPE -> VIEW -> SET_ROWS` fusion (`ggml_cuda_should_fuse_rope_set_rows`, upstream #16884) is the trigger
-here: disabling just it reproduces the all-fusions-off hash, while disabling the sibling
-`RMS_NORM + MUL + ROPE` fusion does not.  On Linux / ROCm 7.14 the layout is stable enough that 20 starts
-agree; the reporter's per-start flip is expected wherever the allocator moves, because the guard then
-selects the fused or unfused rounding at startup and swaps the near-tie.
-
-The exact arithmetic of the fused kernel has now been separated from the layout side-effect, and it is
-the **fused kernel**, not the allocator: a canonicalised per-graph dump of the whole allocation plan
-(node addresses, aliasing, buffer sizes) is byte-identical between the two configs, so the `add_alloc_deps`
-pass needs no rope entry.  A device-side dump of the exact failing element shows both template
-instantiations compute the same `x0`/`x1`/`cos`/`sin` and the same float result `beb67000`
-(-0.3563232421875, exactly the f16 midpoint), yet `<float,__half>` stored -0.3562 while `<float,float>` +
-`k_set_rows` stored -0.3564: clang contracts the two instantiations' multiply-adds differently, and one
-element of the 256x1024 prefill write crosses the rounding boundary.  **Fixed in r25** with
-`#pragma clang fp contract(off)` at the top of `ggml/src/ggml-cuda/rope.cu`, so every rope instantiation
-uses the same rounding; the W=1 hash is now `60e77916673db071` for both configs and the 4B same-seed gate
-is unchanged.  The two kill switches from r24 (`GGML_CUDA_DISABLE_ROPE_SET_ROWS=1`,
-`GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`) stay for bisection.  See `WORKLOG.md` 2026-09-29 (r25).
-
-**Closure (2026-10-03): §41 is a two-part finding, and the residual flip is hipBLASLt.**  The r25 fix
-above removes the rope-fusion component, but the reporter still saw a per-start flip on Windows / ROCm 10
-(only 1 in 80 with all fusions off, so fusions alone did not explain it).  The remainder was localized to
-**hipBLASLt solution selection** in ROCm: the F32 `ssm_alpha`/`ssm_beta` `mul_mat` at 512 prefill columns
-goes through `hipblasSgemm` -> `rocblaslt_matmul` and picks a per-process solution
-(`HIPBLASLT_LOG_MASK=160`: reference pair `140231`/`140232` vs deviating pair `140216`/`140217`), so the
-whole run diverges at startup.  It reproduces on stock upstream with none of these patches; this is
-[ROCm/rocm-libraries#12126](https://github.com/ROCm/rocm-libraries/issues/12126), with
-`ROCBLAS_USE_HIPBLASLT=0` as the workaround.  Issue #67 is closed as external (see `WORKLOG.md`
-2026-10-03 and `README.md` "Cross-start determinism on ROCm (issue #67)").  The rule below stands on its
-own for the rope-fusion defect; the cross-start *symptom* had two independent causes.
-
-**Rule.**  A per-type *compile-time* constant may move the rounding path uniformly across widths and
-starts (§4/§19); a *runtime* selection that reads allocator addresses may not.  If a fusion's
+| pre-fix | `643a8166d8dad677` | `1354757f9daf03db` (= the forced-sparse hash) |
+| post-fix | `643a8166d8dad677` | `05be2f7f30dbc426` (the dense arm) |
+
+**Fix:** `qsa_decode_band = max(QSA_DECODE_BAND, cparams.n_rs_batch)`; default configs leave the band at 8
+and are byte-identical to the pre-amendment build.
+
+**Rules:** derive a band constant from the quantity it is matching; a bug that only fires past a regime
+threshold needs the threshold crossed in the test (the 1..8 probe was green because below 2051 the shortcut
+arm covers every width); a depth-policy change re-runs the width matrix for every model family it touches.
+
+## 33. A gate must run the content the axis intends, long enough to reach steady state
+
+The four-axis adaptive-MTP gate was first run with the model's default reasoning mode at `-n 256`, which
+invalidated it in both directions: the "code" axis never reached code (it measured the thinking trace,
+acceptance 0.56 instead of 0.89-0.92), and `-n 256` measures warm-up, not the mode (code axis −5 % at 256
+vs **+28 %** at 3000 — the ranking inverted).  Purity above `n_max 7` is a probabilistic near-tie property,
+so it needs enough tokens to hit one.
+
+**Rules:** run the gate at a length matching the workload (`-n 3000`, `-n 2000` floor); pin the content
+mode (`--reasoning off` for P/C/K, `on` for R); a spot test that passes is not evidence a long run passes.
+
+## 34. A K/V staging policy is a decode-depth policy
+
+The V4/V5 native-staging arms were documented as a *memory* feature with decode "unaffected".  For a
+quantized K/V the F16 staging pass is a **whole-cache conversion that runs every decode step and scales
+with `n_kv`** — so the staging source is a decode-depth policy and can be the load margin: 27B q8_0
+`tg64` d65536 18.92 → **23.29 t/s** for ~1.2 % prefill, and the same ~744 MiB scratch was the **260 MiB**
+the draft context was short at `-c 196608`.
+
+**Rules:** a native staging arm must reproduce the launcher's conversion bit-for-bit (same-seed text, then
+the width matrix, then acceptance); the policy is per type class (native is the default for sub-F16 quants,
+bf16's MMA-scratch arm stays opt-in; `GGML_CUDA_FA_KV_NATIVE` is three-state: unset = auto, 1 = force on,
+0 = force staging); a memory win can be a load-time win — measure the *total* budget, not the failing
+allocation.
+
+## 35. A prefill kernel config must be arch- and split-keyed
+
+Two globals were wrong: the `ncols=64` row was a gfx1151 "halo row" applied on gfx1201 too (delivery
+prefill slope ~51 % steeper than stock, crossing at ~64K), and `ncols2` is a compute-vs-bandwidth trade —
+a whole card is compute-bound and prefers a divisor of the GQA ratio, a tensor split is per-GPU
+bandwidth-bound and prefers the wider value.
+
+**Rules:** key the config on the arch with host/device agreement; treat the split regime as a first-class
+axis and pass it explicitly (`ggml_set_fa_tensor_parallel`, set from `split_mode() == TENSOR &&
+n_cuda_dev > 1` — `llama_model::n_devices()` is **1** under tensor split, so count CUDA sub-devices);
+`op_params` is not a reliable channel (the graph copy loses it); `-sm tensor` hides single-card
+regressions, so screen with a `t = a + b*n` slope fit **and** measure one card.
+
+## 36. §14's `W=1..8` purity is a measured claim — relax it for the coarse quants
+
+The kernel-family part holds (on AMD the whole band is TILE and the KV split is width-invariant).  What
+remains is a **logits-level band edge** between `n_q = 1` and `n_q >= 2` that shows up only as a
+rounding-boundary lottery (measured edges: bf16 at P=200, q4_0 at P=224/256, q4_1 at P=200 on the 4B).
+At the measured edge the argmax is unchanged and the delta is 0.014-0.064 against a top-2 margin of 2.2-2.7,
+i.e. one to two orders below the error the coarse cache itself imposes.  Pre-existing and independent of
+the native arms; the launcher dump shows the reduction structure is identical at every width, so the
+cause is in the FA path's *values* (leading hypothesis: the mask-derived KV support range), not proven.
+
+**Decision (maintainer, 2026-09-15): won't fix.**  The reward is unmeasurable (greedy token never moved,
+acceptance bit-identical), and the fix adds work to the latency-critical single-token width.  The trigger
+to revisit is an **argmax change** (a quality event); a hash change with a 2.2+ margin is not one.
+
+**Doctrine, tiered by coherence:**
+
+* **f16 / bf16 / q8_0** — the guaranteed contract is a **text/acceptance** one, and it is *tested*: the
+  greedy text is bit-identical across the band (`plain == draft-mtp` for `n_max <= 7`, acceptance
+  unchanged).  Logits-level purity held at every (prompt, P) tested **except bf16 at P=200 on the 4B**.
+* **q4_0 / q4_1 / q5_0 / q5_1 / iq4_nl** — a good-faith effort: values bit-identical to the reference
+  conversion and a uniform kernel family, but **no logits-level promise**; a near-tie may flip, argmax
+  stays.  The cache is already the dominant long-context loss at these quantizations, and every retrofit
+  measured cost 0.5-9 % on the axis it touched.  Use f16/bf16/q8_0 when you need long-context coherence.
+
+## 37. A fully-masked KV group is an exact no-op
+
+A KV group whose kq-mask entries are all `-INF` contributes exact zeros and leaves `KQ_max`/`KQ_rowsum`/
+`VKQ` unchanged, so skipping it is **bit-identical**.  `GGML_CUDA_FA_MASK_SKIP` (default on) is gated on
+`Q->ne[1] > 8` for the packed mask (and the derived `cell_pos` path is already prefill-only), so the
+decode/verify band's round-robin KV split and the width-purity invariants are untouched.
+
+**Why it is needed:** a `--kv-unified` cache puts the other slots' fully-masked interior cells inside the
+attention range, and `flash_attn_mask_to_KV_max` only trims the tail (and is not even launched at `-ub
+512`).  **The gate:** the classification must be per (Q stream, query tile, 256-cell group) on the packed
+path (continuous batching mixes sequences in a ubatch) and batch-wide on the derived path.  `FLASH_ATTN_EXT`
+**6354/6354**, `-kvu` B=4 prefill +22 % (MMA) / +72 % (tile), acceptance and text byte-identical.
+
+## 38. The guarantee is scoped to a fixed batch; `--kv-unified` serving is not deterministic
+
+The bit-identity invariants hold for a **fixed** batch.  They do not promise that a *concurrent server* is
+run-to-run deterministic, and it is not — the batch composition changes the kernel and reduction order.
+It reproduces on **one GPU** with no all-reduce, so it is not the hybrid AR or `-sm tensor`; sequential
+requests on the same server are byte-identical.
+
+**The exact rule (closed 2026-10-19):** it is **unified KV** specifically.  A sequence's result is a function
+of its KV cells' tile indices **modulo the per-launch KV-split period** (`pb × nbatch_fa`; `pb` is
+`parallel_blocks` for the tile kernel, derived from the *shared* view length, and the fixed band `P`
+otherwise).  A shift by exactly one period is bit-identical; any smaller shift can flip a near-tie.
+Under `--kv-unified` every new **decode** token takes the shared head, so the residue follows the
+co-resident session's allocation history.  Measured on r91 (gfx1151): period 960 cells on the 4B, 1920 on
+35B-A3B, both verified bit-identical under a one-period shift.  It reproduces on unmodified upstream, so
+it is upstream-inherent.  The cheap fix (chunk sessions by band width / align prompt starts) is
+**refuted** — the quantum is the period, not the tile.  A sufficient fix (period-granular per-sequence cell
+ownership, ~30-38 MiB per live session on the tested models) is an upstream allocator redesign with no
+throughput win and is deliberately not implemented.
+
+**Consequence:** **use `--no-kv-unified` when strict reproducibility is required**; never use a
+concurrent-server text hash as a purity gate or a bisection oracle.  The reporter's separate HIP-graphs
+start-to-start flip (surviving `--no-kv-unified`) is **not** this root, was not reproduced on Linux, and is
+tracked as TODO #67.  Record:
+`archive/work/kv-cell-offset-nondeterminism/RESOLUTION.md`.
+
+## 39. A decode-only fusion must match the standalone launch it replaces
+
+A fusion that fires only in one width of the band (here `ne[1] == 1`) must reproduce the arithmetic of the
+standalone kernel at that width, or the band is not width-uniform.  Block 08's `ssm_gate_beta` fused the
+qwen35moe alpha/beta Q8_0 projections at `ne[1] == 1` but kept plain `calc_nwarps()` (1 warp) while the
+standalone dense weight launch uses `calc_nwarps_weight()` (8 warps for Q8_0 with `K < 4096`) — so `W=1` and
+`W>=2` reduced K with different warp counts.  Symptom: 35B-A3B `-ncmoe 99` `none = 6744006631df` vs
+`n3 = 431bbf3a1605`, diverging ~200 tokens in.
+
+**Fix:** select `calc_nwarps_weight(GGML_TYPE_Q8_0, 1, table, long_k = ne[0] >= 4096)` — exactly the
+standalone selector; a no-op for `K >= 4096`.  `none == n1 == n3 == n7 == 431bbf3a1605`, acceptance
+unchanged.
+
+**Rule:** any new decode/verify fusion whose matcher has a width condition (`ne[1] == 1`, `ne[2] == 1`,
+`n_tokens == 1`) must either be bit-identical to its unfused chain at that width (preferred) or serve the
+whole band (`shexp_down_gate`).  A `ne[1] == 1` fusion that does neither is a latent width-impurity
+everywhere it fires.
+
+## 39b. The MoE expert-cache band follows the routed MMVQ band
+
+(Originally mis-numbered `§39`.)  The cache took over a routed `MUL_MAT_ID` only for `<= 8` tokens, but the
+cache serves such a batch only through the routed-expert **MMVQ** kernel, and since the extended routed
+band landed that kernel serves **16** columns on RDNA4 — so 12-16-token verify batches were stranded on
+the host path with the arena unused.
+
+**Fix:** the band is `moe_cache_max_tok_dev(device)`, the narrowest `get_mmvq_mmid_max_batch` over the
+device's quantized types (never below 8): **16 on RDNA4**, 8 on RDNA3 (where the 16-wide band is incorrect
+on gfx1100) and NVIDIA.  It has a single owner through a `moe_cache_band` backend iface hook, so the
+scheduler's band decisions and the Meta `moe_cache_update` cannot disagree.  `GGML_MOE_CACHE_MAX_TOK=8`
+restores the old band.
+
+**Purity:** nothing changes inside `n_max <= 7` (`none == draft-mtp n7` byte-identical to pre-r31), and at
+the newly served widths (9-16) the arithmetic is the same routed MMVQ kernel all-VRAM already used, so the
+band-16 cache path is bit-identical to all-VRAM at `n_max 8`.
+
+## 40. A thread count is a scheduling parameter, not a numerical one
+
+The CPU backend's op decomposition never lets the thread count change a result — every output element is
+reduced by exactly one thread — so narrowing or widening the pool changes *when* work happens, not *how* it
+adds up.  The r19 offloaded-MoE decode cap is byte-identical at `-t 1/8/12/16`, with
+`GGML_CPU_MOE_OFFLOAD_THREADS=0/12`, with `GGML_CPU_DISABLE_TINY_GRAPH_SINGLE_THREAD=1` and under
+`--cpu-mask`.
+
+**Rule:** a change that only selects a thread count (graph, backend or op) is a perf change and needs no
+purity re-run.  A change that moves a reduction boundary, a `vec_dot`, or a K-split *inside* an op does.
+State which one a patch is before calling it purity-neutral.  (§39's `calc_nwarps_weight` is the contrast.)
+
+## 40b. A reserve/measure graph must match its memory context's stream count
+
+(Originally mis-numbered `§40`.)  `build_attn_mha` splits the query by the cache's stream dim
+(`n_stream = k->ne[3]`) and `ggml_flash_attn_ext` asserts `q->ne[3] == k->ne[3]`; a graph built against a
+memory context whose stream count differs cannot be made valid (the query view truncates, the attention
+output has zero tokens).
+
+**Fix:** the TODO #42 post-prefill re-reserve passed a hard-coded `n_seqs = 1` while holding the current
+ubatch's context, so a multi-sequence decode reserved a 1-sequence graph and `llama-batched-bench -npl 4`
+aborted.  It now uses `max(1, ubatch.n_seqs)`.  Single-sequence (MTP) reserves are unaffected.
+
+## 41. A runtime, address-selected fusion is a cross-process purity risk; a compile-time one is not
+
+Reproduced at the logits level (27B Q6_K, P=256, W=1 row-0): the only lever on the reporter's per-start
+flip was the **address-overlap-gated fusion subset**, specifically the upstream `ROPE → VIEW → SET_ROWS`
+fusion (disabling just it reproduced the all-fusions-off hash; disabling its sibling did not).  The
+arithmetic was then separated from the layout side-effect: a canonicalised per-graph allocation dump is
+byte-identical between the configs, both instantiations compute the same `x0`/`x1`/`cos`/`sin` and the
+same float result — but `<float,__half>` stored -0.3562 while `<float,float>` + `k_set_rows` stored
+-0.3564, because clang contracts the two instantiations' multiply-adds differently and one element of the
+prefill write crosses an f16 rounding boundary.  **Fixed in r25** with `#pragma clang fp contract(off)` in
+`ggml/src/ggml-cuda/rope.cu` (W=1 hash `60e77916673db071` for both configs).
+
+**The residual per-start flip is hipBLASLt solution selection in ROCm** (the F32 `ssm_alpha`/`ssm_beta`
+`mul_mat` at 512 prefill columns picks a per-process solution, reference pair `140231`/`140232` vs
+deviating `140216`/`140217`).  It reproduces on stock upstream; this is
+[ROCm/rocm-libraries#12126](https://github.com/ROCm/rocm-libraries/issues/12126), workaround
+`ROCBLAS_USE_HIPBLASLT=0`.  Issue #67 is closed as external.
+
+**Rule:** a per-type *compile-time* constant may move the rounding path uniformly across widths and starts;
+a *runtime* selection that reads allocator addresses may not.  If a fusion's
 `ggml_cuda_check_fusion_memory_ranges()` outcome can change with the allocator, its fused kernel must be
-bit-identical to the chain it replaces - otherwise the same weights, seed and prompt can emit different
-text across process restarts.
+bit-identical to the chain it replaces.
 
-## 39. The MoE expert-cache band follows the routed MMVQ band (2026-10-08, r31, PR #115)
+## 42. A width gate is not a purity rule: extending a fused chain *down* to one token
 
-The MoE expert cache took over a routed `MUL_MAT_ID` only for batches of `<= 8` tokens.  The cache serves
-such a batch only through the routed-expert **MMVQ** kernel (it reads the arena through the slot remap;
-MMQ/MMF do not), and since the extended routed MMVQ band landed (block 10/13) that kernel serves **16**
-columns on RDNA4.  A literal 8 therefore stranded 12-16-token MTP verify batches (3+ concurrent streams
-at `n_max 3`, or a single stream at `n_max >= 8`) on the host path - ids readback, full device sync and a
-copy of every used expert - with the arena unused.
-
-**Fix (block 06, r31).**  The band is now `moe_cache_max_tok_dev(device)`, the narrowest
-`get_mmvq_mmid_max_batch` over the device's quantized types (never below the historical 8): 16 on RDNA4,
-and 8 on RDNA3 (where the 16-wide routed band is incorrect on gfx1100) and NVIDIA.  It has a single owner
-through a new `moe_cache_band` backend iface hook (the Meta backend reports the narrowest over its
-devices; no hook = 8), so the scheduler's band decisions and the Meta `moe_cache_update` can never
-disagree with the CUDA cache.  `GGML_MOE_CACHE_MAX_TOK=8` restores the old band.  `alloc_all_locked()`'s
-`n_tok <= 8` is untouched (it keys the compute-buffer drop, not the cache band).
-
-**Purity.**  Nothing changes inside the `n_max <= 7` guarantee: `none` and `draft-mtp n-max 7` are
-byte-identical to the pre-r31 build (`sha 92daa37ab115`), and B=4/B=8 batched decode is unchanged.  At the
-newly served widths (9-16 tokens) the guarantee never covered the operation: the arithmetic is the same
-routed MMVQ kernel the all-VRAM build already used, so the band-16 cache path is bit-identical to all-VRAM
-at `n_max 8` (`sha b1a0ddf528c7`) and the kill-switch restores the pre-r31 text exactly.  Full numbers:
-`archive/work/moe-cache-band16/README.md`, `WORKLOG.md` 2026-10-08 (r31).
-
-## 40. A reserve/measure graph must match its memory context's stream count (2026-10-08, r32, issue #48)
-
-`build_attn_mha` splits the query by the cache's stream dim (`n_stream = k->ne[3]`) before flash
-attention, and `ggml_flash_attn_ext` asserts `q->ne[3] == k->ne[3]`.  A graph built against a memory
-context whose stream count differs from the ubatch it was built for therefore cannot be made valid: the
-query view truncates (`q->ne[2]/n_stream == 0`) and the attention output has zero tokens.
-
-**Fix (block 06).**  The TODO #42 post-prefill re-reserve in `llama_context::process_ubatch` passed a
-hard-coded `n_seqs = 1` while holding the current ubatch's memory context, so a multi-sequence decode
-reserved a 1-sequence graph against an `n`-stream cache and `llama-batched-bench -npl 4` aborted in
-`ggml_reshape_3d` (from `build_qkvz`).  The reserve now uses `max(1, ubatch.n_seqs)`, matching the
-context.  Single-sequence (MTP) reserves are unaffected, and the multi-stream throughput is unchanged
-(16-token MoE batch 705.7 t/s vs r31's 702.5).  See `WORKLOG.md` 2026-10-08 (r32).
-
-## 42. A width gate is not a purity rule: extending a fused chain *down* to one token (2026-10-17, r78)
-
-Two of the r78 block-10 fusions extend an existing fused chain or move a launch, and both keep §39's rule
-("a decode-only fusion must match the standalone launch it replaces"):
+Two r78 block-10 fusions extend an existing chain or move a launch, and both keep §39's rule:
 
 * **ADD + `rms_norm_q8_1` at one token (PR #174).**  The matcher excluded `ne[1] <= 1` because the
-  *attention* residual ADD is folded into the output projection's mmvq epilogue at one token.  The *FFN*
-  residual ADD is not (its producer is `moe_weighted_reduction` / a non-matmul), so it ran as a standalone
-  `k_bin_bcast` and then the norm.  The fused kernel's values are the unfused pair's (same per-warp
-  reduction, same Q8_1 rounding), and the claim is measured, not assumed: same-seed text is
-  **byte-identical** to r77 with and without the fusion (dense 27B `sha 7ef45a05dcfe`, MoE 35B-A3B
-  `sha e726a23ca0cc`, `-n 3000`, q8_0 KV, `none == draft-mtp n3`), the `W=1..8` probe is unchanged
-  (row-0 hash identical), and the prefill-logit gate is unchanged.  The lesson is the converse of §19:
-  a band gate (`ne[1] > 1`) can be a *superset* of the shapes a fusion is safe for, and widening it
-  needs its own measurement rather than reusing the band's.
-* **The KV-rotation FWHT in the rope kernel, and the projection Q8_1 in the attention-output FWHT
-  (PR #172).**  Both are bit-identical by construction (the transform is the same helper compiled under
-  the same contraction mode; the Q8_1 write is `quantize_q8_1`'s own reduction and rounding under the
-  mmvq launcher's own cache key) and both are measured: the `W=1..8` probe at P=512/3584 returns the r77
-  hashes with maxdiff 0, the Gemma4 prefill-logit gate against an r77-recorded base is
-  **0.000000 / 100.000 %** (the fused rope runs at prefill too), and the greedy text is identical with
-  and without `GGML_CUDA_GRAPH_OPT=1`.
+  *attention* residual ADD is folded into the output projection's mmvq epilogue at one token — but the
+  *FFN* residual ADD is not (its producer is not a matmul).  The fused kernel's values are the unfused
+  pair's, and it is measured: same-seed text byte-identical to r77 (dense 27B `7ef45a05dcfe`, MoE 35B-A3B
+  `e726a23ca0cc`, `-n 3000`, `none == draft-mtp n3`), width probe unchanged, prefill-logit unchanged.
+  The lesson is the converse of §19: a band gate can be a *superset* of the shapes a fusion is safe for,
+  and widening it needs its own measurement.
+* **KV-rotation FWHT in the rope kernel, and the projection Q8_1 in the attention-output FWHT (PR #172).**
+  Bit-identical by construction (same helper, same contraction mode; the Q8_1 write is `quantize_q8_1`'s
+  own reduction under the mmvq launcher's own cache key) and measured: width probe maxdiff 0 at
+  P=512/3584, Gemma4 prefill-logit **0.000000 / 100.000 %**, greedy text identical with and without
+  `GGML_CUDA_GRAPH_OPT=1`.
 
-Reachability is part of the claim.  #172 fires only for NORMAL/NEOX rope with the norm+mul+rope chain
-(Gemma4 and, for the Q8_1 half, gpt-oss-20b on this box); on `rope_multi` models it does nothing, so a
-"purity + speed" claim taken from one model does not transfer to another.  PR #173 (folding the q8_0 K/V
-cache `SET_ROWS` into the same kernel) was rejected for r78 for exactly this reason -- its matcher
+**Reachability is part of the claim.**  #172 fires only for NORMAL/NEOX rope with the norm+mul+rope chain
+(Gemma4, and gpt-oss-20b for the Q8_1 half); on `rope_multi` models it does nothing, so a "purity + speed"
+claim from one model does not transfer.  PR #173 was rejected for r78 for exactly this reason — its matcher
 cannot fire on any model here, so no correctness result about it could be produced at all.

@@ -11,48 +11,12 @@ support, and an attention-memory campaign that frees several GiB of VRAM.
 whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning value, or a diagnostic.
 
 It ships as **12 patches** (block 00 + blocks 01-11) for a clean llama.cpp checkout at the fork point
-**`097cf33d9`** (upstream master).  Each block is a self-contained `git am` commit, so you can apply the
-whole set or pick the ones you want.  The current release is **`v12-097cf33d9-r91`**; it **closes the
-recurrent rollback-boundary campaign** -- the issue-#131 warning was a **stale per-sequence tracker entry**
-(**block 03**: every ubatch is now folded in, so a sequence that verified in a non-final ubatch keeps its
-own shape; gfx1201 1 warning -> 0, text identical), and the chunked GDN prefill now **writes its rollback
-snapshots** (**block 10**: the last `D = max(K>16?K:16, n_rs_batch)` tokens of a single-sequence prefill
-batch run the sequential kernel in the same launch -- `GGML_CUDA_GDN_TAIL=0` restores the old behaviour;
-prefill-only, no extra memory, pp2048 -0.58 %, decode flat).  r91 also **refuses the MoE expert arena on a
-shared host/device memory pool** (**block 09**: an APU no longer AUTO-sizes an arena/slab over host RAM;
-`MOE_EXPERT_CACHE_UNIFIED=1` + explicit MIB + explicit slab reserve is the opt-in), a no-op on a discrete
-GPU.  The previous release, `v12-097cf33d9-r90`, **fixed the
-run-to-run nondeterminism of `GGML_CUDA_ASYNC_INPUT` and turned it on by default** (**block 10**, no new
-block; follow-up to **PR #182**, `@briansp2020`).  The two `set_tensor_async` / `set_tensor_2d_async` paths
-copied out of the caller's *live* pinned host buffer, and the scheduler uses them for a CPU split's output,
-which the next ubatch rewrites; with the host running ahead the copy could read the next ubatch's bytes, a
-rare single-graph corruption that propagated to the end of the chunk.  Both paths now snapshot through the
-pinned upload ring (unconditionally), so `GGML_CUDA_ASYNC_INPUT=0` is now only a kill-switch.  Worth
-**+9.3 %** decode at 35B-A3B 2-GPU tensor-split (`llama-bench` tg400) and **+5.2 %** on 27B MTP n3 2-GPU
-end-to-end, flat on one card; byte-identical greedy text, width purity and prefill logits against the
-recorded base.  r89 folded PR #182's batched uploads into the same block, and r90 fixed the capture-time
-nondeterminism that had kept `GGML_CUDA_ASYNC_INPUT` opt-in, so it is default-on now
-(`GGML_CUDA_ASYNC_INPUT=0` is the kill-switch; record in `archive/work/async-input-graph-ordering/`).
-Before it, r88 folded the RDNA2 (gfx1030)
-flash-attention gate fixes of PR #181 into **block 05** (bf16 F16-staging scratch sizing, the decode-band
-`q_h2` launch argument, and an RDNA2-gated last-tile guard tail; reported and validated by `@slavap` on a
-Radeon Pro V620 + RX 7900 XTX, and inert on gfx1100/gfx1151/gfx1201: identical text, KLD 0.000000).
-Before it, r87 fixed the r86 second-request regression (r85's drop reference recorded the wide prefill region, so an equally-wide second
-prefill never released the wide compute layout or re-armed the expert-cache arena: decode fell to ~half
-speed from request 2 and a GPU fault followed by request 5; **block 09** now forces the drop on every
-wide -> narrow transition).  r86 folds in the two
-promotion candidates: the **slab transient absorption** (the controlled prefill transients -- H2D ring, FA
-staging, QSA3/GDN scratch, the workspace pool's large temporaries -- now live in the slab, the MTP draft is
-loaded and measured before the slab is sized, a graph capture is never started while the wide band is armed,
-and the default headroom is `640 + 128 x n_gpu` MiB) and the **Meta hot-path dispatcher restoration** (block
-00: the pre-#170 split-state shape with the #170 resolution in a `noinline, cold` helper).  It also carries
-r85's slab narrow band, r84's graph-allocator layout fix (issue #183), r82's `--fit` host-layer fix and r81's
-rope + FWHT / GDN norm work.  Gate records: `WORKLOG.md` 261019.002 and 261019.001.
-
-The dated release history — every block amendment, issue fix and measurement, r1 through the
-current release — is in [`WORKLOG.md`](WORKLOG.md), newest first.  `release.json` is the single
-source of truth for the current release (fork point, canonical tip/tree, block count, per-artifact
-hashes).
+**`097cf33d9`** (upstream master).  Each block is one `git am` commit, and the series is linear (a block
+assumes its predecessors), so the set is applied whole.  The current release is **`v12-097cf33d9-r93`**: the release
+identity (fork point, canonical tip/tree, block count and per-artifact sha256) is
+[`release.json`](release.json), and the release note for it -- and for every earlier `rN` -- is the top of
+[`WORKLOG.md`](WORKLOG.md) (newest first; it is the only dated record).  This README describes the set,
+not the changelog.
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
@@ -64,8 +28,9 @@ bash <path-to-this-repo>/scripts/apply-all.sh --include-beta .   # 12 blocks + b
 ```
 
 - One-line summary of each block: [The 12 blocks](#the-12-blocks-v20)
+- What each block contains, its knobs and its purity notes: [`patches/README.md`](patches/README.md)
 - The folded `mmb`/QSA campaign: [The `mmb` campaign is in the delivery](#the-mmb-campaign-is-in-the-delivery)
-- Apply details, env knobs, server config: [`patches/README.md`](patches/README.md)
+- Every environment variable, with its default and class: [`ENVIRONMENT.md`](ENVIRONMENT.md)
 - **Running a model bigger than your VRAM on one card** (`-ncmoe` + the MoE expert cache, with the
   measured config tables and the measurement method): [`COMMUNITY-CONFIG.md`](COMMUNITY-CONFIG.md)
 - What changed recently: [`WORKLOG.md`](WORKLOG.md)
@@ -74,7 +39,7 @@ bash <path-to-this-repo>/scripts/apply-all.sh --include-beta .   # 12 blocks + b
 ## Releases
 
 Frozen deliveries are published as GitHub Releases and tagged in this repo
-(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r59`**; the `v16-*`
+(the tag is the release identity: `v12-<fork-point>-r<N>`, e.g. **`v12-097cf33d9-r93`**; the `v16-*`
 tags are the historical 16-block set.  `r1` is the
 re-base of the set onto that fork point and every later `rN` is a dated change recorded in
 [`WORKLOG.md`](WORKLOG.md), newest first).
@@ -145,25 +110,30 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 ```
 ├── README.md              # this file: overview + consumer workflow
 ├── AGENTS.md              # working guide for LLM agents in this repo
-├── MANIFESTS.md           # apply order, per-block verification, validation history
-├── BASELINE.md            # fork point, patch provenance, drift policy
-├── GREEDY-PURITY.md       # purity rulebook: index, invariants, per-finding claims (read before shipping)
-│                          #   narratives/evidence for the closed cases: archive/docs/GREEDY-PURITY-FINDINGS.md
-├── WORKLOG.md             # dated delivery records (newest first; README points here)
+├── MANIFESTS.md           # apply order + the verification contract (release gates per block)
+├── BASELINE.md            # fork point, what the patches are, how they are cut, drift policy
+├── TODO.md                # forward-looking tracker: open items, limitations, parked ideas only
+├── GREEDY-PURITY.md       # purity rulebook: invariants + one summary entry per finding (read before shipping)
+│                          #   narratives/evidence: archive/docs/GREEDY-PURITY-FINDINGS.md (same § numbers)
+├── WORKLOG.md             # dated delivery records (newest first; the only release history)
+├── ENVIRONMENT.md         # every env var the set adds or repoints, with its default and class
+├── CONTAINERS.md          # the ROCm container images + the off-host build watcher
+├── COMMUNITY-CONFIG.md    # running a model bigger than VRAM (`-ncmoe` + the expert cache)
 ├── rdna-boosts-all.patch  # convenience: the entire 12-patch net as ONE patch
-├── patches/               # the delivery set: 0000-0015
+├── patches/               # the delivery set: 0000-0011 (one `git am` block each)
 │   └── README.md          # apply instructions + block-12 env knobs + server config
-├── scripts/
+├── scripts/               # apply / regenerate / validate / publish tooling; index: scripts/README.md
 │   ├── apply-all.sh       # the verified apply flow (git am; automatic -3 fallback on drift; --include-beta)
 │   ├── gate-prefill-logits.sh  # prefill-logit KLD release gate (issue #113)
+│   ├── gate-per-block-build.sh # a clean `all` build per block commit
 │   └── make-patches.sh    # regenerates the set from the fork (~/llama.cpp)
 ├── benchmarks/            # benchy methodology + v1/v2 results + graphs (dated records)
 ├── prompts/               # versioned, hash-stable test prompts (sha256-recorded; never edited in place)
 ├── wiki/                  # source for the GitHub wiki (Home, MTP & Adaptive MTP, Quick Reference); see wiki/README.md
-├── wip/                   # ACTIVE exploration docs / handoffs (currently only: nwarps/)
+├── wip/                   # ACTIVE exploration only, never applied; index: wip/CAMPAIGNS.md
 ├── beta/                  # promotion-candidate patches pending a beta test (NOT part of the delivery;
 │                          #   apply with `apply-all.sh --include-beta`; currently empty, see beta/README.md)
-├── upstream/              # upstream-PR candidates (UPSTREAM-PR-*.md + .patch) + their index
+├── upstream/              # upstream-PR candidates: one sub-directory each (README.md + patch) + index
 └── archive/               # the rest: archive/work/ (closed experiments + the archived wip/ trees) + archive/docs/ (history)
 ```
 
@@ -174,7 +144,7 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 
 ## The 12 blocks (V2.0)
 
-`v12-097cf33d9-r52` (net tree `8b177a7b…`).  Each row is one `git am` commit.
+`release.json` (V2.0; the current release).  Each row is one `git am` commit.
 
 | patch | subject | concern |
 |-------|---------|---------|
@@ -183,10 +153,10 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 | `0002` | **adaptive MTP draft depth** (`--spec-type draft-mtp-adaptive`) | old-01; + opt-in MTP prompt-tail ingest and the last-row prompt copy (r52) |
 | `0003` | **chunked gated-delta-net prefill** (bf16/WMMA GDN) | old-02; + the per-sequence rollback tracker folds in every ubatch and `LLAMA_RS_ROLLBACK_DEBUG` (r91) |
 | `0004` | **BF16 KV cache + native-BF16 flash attention** | old-03 |
-| `0005` | **flash-attention band / native quantized K-V / derived kq mask** | old-04 FA + the old-15 FA work |
+| `0005` | **flash-attention band / native quantized K-V / derived kq mask** | old-04 FA + the old-15 FA work; + the 2-byte arm joins the 32-column band block and the head-512 MMA row is retuned (r92) |
 | `0006` | **MMB quantized prefill GEMM** | old-08 MMB |
-| `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57 |
-| `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52) |
+| `0007` | **k-quant boosts** (mmvq VDR, Q6_K MMQ, Q1_0, grid pad) | old-10 + old-04 MMQ + old-15 Q1_0/grid/PR57; + the RDNA3_0 per-shape mmvq `nwarps` (r93) |
+| `0008` | **fused kernels** (conv1d/RMS/top-k MoE/verify fusions + fused MoE gate+up+GLU) | old-08 fusions + old-13 fused MoE + old-15 PR63/114; + `topk_moe` sorted-key argmax (r52); + the RDNA3_0 per-shape mmvq `nwarps` (r93) |
 | `0009` | **host-resident MoE** (iface, scheduler, Meta, movable-boundary slab, cache engine, prefill cache staging) | old-06 MoE + old-09b + old-11 + old-13 engine + old-15 hooks/arena; + the arena-host staging engine and its residency snapshot (r83); + the slab drop reference (r85); + the slab transient absorption common half and the derived draft reserve (r86) |
 | `0010` | **qwen4exp** (model, hyper-connections, lazy reader, QSA/indexer) | old-14 + old-15 HC16/policy; + short-K MoE rows-per-block (r52); + the `stage_from_cache` hook (r83); + the slab narrow band (r85); + the slab transient absorption CUDA/slab half (r86); + the async graph-input ring and its r90 split-input snapshot fix (default-on); + the fixed-D sequential GDN snapshot tail (r91, `GGML_CUDA_GDN_TAIL=0`) |
 | `0011` | **campaign remainder** (CPU wins, backend iface fills, DFlash, FA build grouping, mmap reclaim) | old-14 QSA + old-15 W1-W3 + old-06/15 mmap reclaim + old-16; + the pre-loaded draft-model ownership handoff (r86) |
@@ -197,60 +167,8 @@ predicates (`fattn-rdna.cuh`), and the four `ggml-cuda.cu` TUs (`ggml-cuda-try-f
 `ggml-cuda-slab.cu`, `ggml-cuda-moe-cache-hooks.cu`, `ggml-cuda-arena.cu`; `ggml-cuda.cu` 9819 → 6370
 lines).
 
-<details>
-<summary>Historical: the pre-V2.0 16-block notes (provenance/edit history only)</summary>
-
-### The 16 blocks
-
-| patch | what |
-|-------|------|
-| `0000` | **structural and architecture fixes** — FA small-batch KV-split width invariance (issue #25) + Vulkan masked-V/freed-cell fixes (dead columns never read V). The base every later block applies on top of. |
-| `0001` | adaptive MTP draft depth (`--spec-type draft-mtp-adaptive`) |
-| `0002` | fused chunked gated-delta-net prefill kernel (bf16/WMMA, arch-segregated gfx12/gfx11) |
-| `0003` | BF16 KV cache + native-BF16 flash-attn (+ the HIP masked-V/freed-cell fixes since 2026-09-10) |
-| `0004` | RDNA4 WMMA flash-attn + Q6_K mmq prefill perf (WMMA path also runs on RDNA3.0/3.5, tuned head limits) |
-| `0005` | CPU bit-identical decode/verify batches |
-| `0006` | **general system-operations bucket** — the delivery's **catch-all** for changes that fit no other block: the FA instance build-time work, `--fit` under `-sm tensor`, the host-buffer input layer, the tiny-CPU-split single-thread fix and (r12) the op-offload **H2D staging ring** + tensor-split op-offload.  Named for what it is since r12; the original host-buffer revert content is long gone (upstream reverted #24233 in #28604).  Amended r13 (issue #52): the tiny-CPU-split heuristic now counts what a graph *reads* — not only its node outputs — so a CPU-offloaded FFN chunk keeps the full thread pool |
-| `0007` | meta device-wrapper skip |
-| `0008` | fused-core prefill kernels + GPU bit-identical results (needs blocks 03+04; amended 2026-09-07 with the mul_mat+add through-view shape guard, PR #15). **Now folds the `mmb` (bf16-WMMA dequant weight GEMM) core, the RDNA4 fragment port / per-arch tuning, and the GDN/PLE conv1d + narrow-row RMS-norm prefill fusions** (absorbed from the former `archive/work/mmb-general` campaign). |
-| `0009` | meta-buffer compute-container headroom |
-| `0010` | k-quant-boosts: Q4_K/Q5_K/Q6_K/Q8_0 mmvq VDR (+ q8_1 quantize-cache fusions; adds a dedicated RDNA3.5 mmvq table) |
-| `0011` | skip CUDA graphs for multi-token PRE-FILL (decode keeps graph replay) |
-| `0012` | **hybrid HIP all-reduce** — custom internal AR for the small-tensor decode path, per-size hybrid dispatch vs RCCL, RDNA4-only gate (bounded in-kernel spin since 2026-08-30 fix round; builds without RCCL) |
-| `0013` | **fused MoE gate+up+GLU MMQ + mmvq short-K item-split** — prefill fused expert MMQ (RDNA4 + RDNA3_5 + RDNA3_0, Q3_K/Q4_K/Q5_K/Q8_0/Q6_K, env opt-out `GGML_CUDA_DISABLE_MOE_MMQ_FUSION`) + decode item-split (rpb 2/4/8) merged with the upstream has_fusion mmvq path |
-| `0014` | **qwen4exp / Qwen3.8-Flash-Next support** — QSA sparse FA (default) + fused indexer top-k, HC_MIX/HC_COMBINE fused decode ops, managed lazy reader, MTP draft-head, WS4 hyperconn prefill fusions, QSA decode campaign + per-arch dense/QSA decode policy (promoted from `beta/qwen4exp`; see `patches/README.md` block-14 notes). The masked-V/freed-cell fixes it once carried now live in blocks 00 (Vulkan) and 03 (HIP). |
-| `0015` | **attention-memory wins (block 15)** — promoted 2026-09-12 from `archive/work/block-15-campaign-wins/`: **V3** derived kq mask (`LLAMA_KQ_MASK_DERIVED`, on by default), **V4** native q8_0 + **V5** native bf16 K/V in the FA kernels (both behind `GGML_CUDA_FA_KV_NATIVE`, opt-in default 0), **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived QSA per-block bias + visibility (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), **W3** keys-only QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), **W4** ggml-alloc unused-view release (no gate; A/B revert in `archive/work/block-15-campaign-wins/ab/`).  ~3.4 GiB/GPU + ~1.2 GiB host saved on qwen4exp, ~800 MiB/GPU + ~800 MiB host on dense models, at ~1.3 % prefill / ~0.3 % decode. **Now also folds the qwen4exp/QSA/HC/indexer campaign** (`qsa3` packed-block WMMA attention, fused indexer top-k + prefill score fusions, HC16 native-BF16 producers, `hc_gate_mix`, sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the host-buffer/CPU/meta fixes) — the former `archive/work/mmb-general` work.  Also carries the r14-r21 **MoE expert-cache** work: auto sizing, host-pinned expert buffers, the op-offload H2D staging path, the compute-buffer slack, the fail-soft arena yield, the per-layer uniform slot re-size (`t.slots` fix), the `MTP_DRAFT_N_UBATCH` cap, and the cli-only wide-prefill drop.  **r22 adds the movable-boundary slab allocator** (ONE slab per device, reserved and mapped once, split by a movable boundary: compute buffer below, MoE arena above, HIP never called at runtime) which SUPERSEDES the per-allocation VMM pool (removed) and the fail-soft arena yield, sizes the arena on a decode-band pass, right-sizes the compute reserve to the observed workload, and makes the wide-prefill drop default-on for servers too — the TODO #42 abort is gone. **r27 folds PR #114's four qwen4exp decode fusions:** the latency-scheduled BF16 `hc_mix` up/collapse (`GGML_HC_UP_V2=0`), `HC_COMBINE` fused into that norm (`GGML_CUDA_FUSE_HC_COMBINE_MIX=0`), the shared-expert `sigmoid`-`mul`-`add` gate (`GGML_CUDA_FUSE_SIGMOID_MUL_ADD=0`), and the GDN `beta` sigmoid folded into the sequential kernel (`GGML_CUDA_FUSE_GDN_BETA_SIGMOID=0`); +2.4 % decode on qwen4exp, byte-identical text. |
-
-> **The delivery is `0000`–`0015` (16 patches).**  Block `0016` was added in
-> `v16-a55e952b8-r45` (the contributor decode/latency PRs) and **folded back into the 0000-0015 set in
-> `v16-a55e952b8-r46`**: host-side/system work into `0006`, small-message all-reduce into `0012`, the
-> decode/latency remainder (and issue #133) into `0015`.  (`v16-a55e952b8-r16` had briefly shipped a
-> *different* `0016`/`0017` pair — op-offload staging redirect and per-device tensor-split guard — which
-> r17 folded into `0006`/`0013`/`0015`; that old pair is unrelated.)
-
-> **Block 15 (attention-memory wins) is part of the delivery since
-> 2026-09-12** (`patches/0015`, promoted from
-> `archive/work/block-15-campaign-wins/`; a fresh set is now **16 patches**,
-> blocks 00-15).
-
-> **Greedy-purity note (read before shipping):** on the K-split decode
-> paths, block 10 (`0010`) is the only patch that changes decode numerics on
-> ANY architecture — its VDR kernels reorder the fp32 reduction. Compute
-> outputs are not bit-identical to a build without it (max logit diff 0.184
-> vs 0.203 for flash-attn on/off; greedy streams are deterministic within a
-> build but can flip across configs). This is a different rounding path, not
-> a correctness change. If you require 100% greedy purity across builds, do
-> not install `0010-…k-quant-boosts…patch` — it is one line to drop from
-> `scripts/apply-all.sh`. Full discussion:
-> [`GREEDY-PURITY.md`](GREEDY-PURITY.md). **Block-13 caveat (2026-09-02):**
-> block 13 rewrites the small-batch mmvq decode kernel and is a second
-> decode-numerics source on the rows that run it (short-K K<4096 ncols==1
-> rows, MoE projections; ncols 2..8 and long-K rows were restored to the
-> pre-block-13 K-split kernel by the 2026-09-02 fix). Excluding block 10 no
-> longer reproduces stock bits exactly on those rows — see
-> GREEDY-PURITY.md §9.
-
-</details>
+The **pre-V2.0 16-block notes** (provenance and edit history of the old block numbering) are in
+[`archive/docs/pre-v2-block-notes.md`](archive/docs/pre-v2-block-notes.md).
 
 ## Consumer workflow
 
@@ -304,13 +222,15 @@ campaign — the former 28-patch `archive/work/mmb-general/` set — is **folded
 blocks**, so the normal workflow above is all there is to apply.  There is **no separate beta layer
 any more**:
 
-* **block 08** absorbs the `mmb` core, the RDNA4 fragment port and per-arch tuning, and the
-  GDN/PLE conv1d + narrow-row RMS-norm prefill fusions;
-* **block 06** (the catch-all system-operations bucket) absorbs the host-buffer input layer and the tiny-CPU-split
-  single-thread fix;
-* **blocks 13/14** absorb the `mmb` fusion stand-downs and the extended MMVQ routed band;
-* **block 15** absorbs `qsa3`, the fused indexer top-k + prefill score fusions, HC16, `hc_gate_mix`,
-  sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the meta/CPU backend fixes.
+* **block 08** absorbs the `mmb` core, the RDNA4 fragment port and per-arch tuning, the
+  GDN/PLE conv1d + narrow-row RMS-norm prefill fusions, the `mmb` fusion stand-downs and the extended
+  MMVQ routed band;
+* **block 09** absorbs the host-buffer input layer and the tiny-CPU-split single-thread fix (the system
+  work of the old catch-all block 06);
+* **block 10** absorbs the deferred `mmb` pair-fusion stand-down and the qwen4exp group (the old block 14);
+* **block 11** absorbs `qsa3`, the fused indexer top-k + prefill score fusions, HC16, `hc_gate_mix`,
+  sparse MTP-draft attention, the sparse-QSA/derived-indexer defaults, and the meta/CPU backend fixes
+  (the old block 15 remainder).
 
 Applying the 12 patches to the fork point in [`release.json`](release.json) therefore reproduces the
 **full campaign tree** in one pass:
@@ -537,9 +457,9 @@ was retired when the delivery moved to the flat patch set on `main`.
 
 Some blocks are candidates for upstream contribution to
 [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp); others are
-expected to stay fork-local. Block 12's internal all-reduce is gated to
+expected to stay fork-local. The internal all-reduce (**block 01** in V2.0 numbering) is gated to
 RDNA4 pending community verification on RDNA3 pairs. See `MANIFESTS.md`
-for per-block verification and `BASELINE.md` for provenance.
+for the verification contract and `BASELINE.md` for provenance.
 
 
 ## Community Acknowledgements

@@ -1,5 +1,8 @@
 # `ggml-cuda`: use `__builtin_amdgcn_perm` for the Q1_0 table lookups
 
+> **Upstream candidate** · status: prepared 2026-10-11; applies clean to `a55e952b8`; bit-identical (16.7M randomized cases); **no Q1_0 model locally**, so no speed claim · not filed.
+> Delivery: **block 07** (Q1_0) · patch: [`UPSTREAM-PR-q1-0-amd-perm.patch`](UPSTREAM-PR-q1-0-amd-perm.patch) (this directory).
+
 ## What
 
 `vec_dot_q1_0_q8_1` (`ggml/src/ggml-cuda/vecdotq.cuh`) and `ggml_cuda_mmq_load_tiles_q1_0`

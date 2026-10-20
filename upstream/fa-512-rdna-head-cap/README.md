@@ -1,5 +1,8 @@
 # upstream: let RDNA4 use the WMMA flash-attention kernel for head 512 (Gemma 4 global layers)
 
+> **Upstream candidate** · status: prepared 2026-10-19; applies clean to `097cf33d9` and builds and runs there (ROCm 10.1.0, gfx1201) · not filed.
+> Delivery: **block 05** (r92, issue #188) — the fork keeps its own tuned 512 row · patch: [`UPSTREAM-PR-fa-512-rdna-head-cap.patch`](UPSTREAM-PR-fa-512-rdna-head-cap.patch) (this directory).
+
 **Candidate, not filed.** Prepared 2026-10-19 from the r92 campaign for
 [`stew675/llama-cpp-rdna-boosts` issue #188](https://github.com/stew675/llama-cpp-rdna-boosts/issues/188)
 (reported by `@DanoPTT`, upstream

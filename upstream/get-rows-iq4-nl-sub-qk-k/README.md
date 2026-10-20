@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-cuda — `GET_ROWS` on an `iq4_nl` row that is not a whole QK_K super-block
 
+> **Upstream candidate** · status: prepared 2026-09-13; applies clean to `790cf51aa`; validated on gfx1201, no NVIDIA hardware · not filed.
+> Delivery: **block 08** · patch: [`UPSTREAM-PR-get-rows-iq4-nl-sub-qk-k.patch`](UPSTREAM-PR-get-rows-iq4-nl-sub-qk-k.patch) (this directory).
+
 **Status:** prepared 2026-09-13; applies clean to master `790cf51aa` (`git apply --check`); validated on
 gfx1201/ROCm 7.14 against the delivery (block 08, sixth amendment).  Not filed.
 

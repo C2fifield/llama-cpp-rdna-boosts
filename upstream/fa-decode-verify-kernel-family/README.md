@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-cuda: keep the decode/verify band on one flash-attention kernel family
 
+> **Upstream candidate** · status: written and validated against the delivery (3x gfx1201, NVIDIA/Ada arm included) · not filed.
+> Delivery: **block 05** (the F1 decode/verify band rule; written as the old block-08 amendment) · patch: [`UPSTREAM-PR-fa-decode-verify-kernel-family.patch`](UPSTREAM-PR-fa-decode-verify-kernel-family.patch) (this directory).
+
 **Status:** candidate, written and validated against the delivery (canonical tip `1bcf4e82d`); not yet
 filed.  Per the scope policy in `AGENTS.md` ("RDNA first, other backends uninjured"), the fork lands
 only the AMD-reachable half of this fix and leaves the NVIDIA arms to this PR — that is a deliberate
@@ -54,7 +57,7 @@ single-token throughput; a split band costs greedy equivalence, which spec decod
   obvious bug fix.
 * The same class of defect exists in the surrounding width-dependent choices (`8/ncols2`, `16/ncols2`
   instantiation switches, `ntiles_dst`-derived split counts); the tile-launcher one was fixed in the
-  fork by `ntiles_dst_eff` (see `UPSTREAM-PR-fa-kv-split-width.md`, already written up here).
+  fork by `ntiles_dst_eff` (see `../fa-kv-split-width/README.md`, already written up here).
 * **Why the NVIDIA arm here matters more since 2026-09-11:** the delivery now enables
   `q4_1`/`q5_0`/`q5_1` as flash-attention KV types (`GGML_CUDA_FA_ALL_QUANTS` is no longer required;
   see the block-08 notes and `GREEDY-PURITY.md` §20) and adds their three diagonal vec instances.  On
@@ -88,4 +91,4 @@ banner will fabricate differences — strip both).
 
 Re-create the branch from current upstream master, re-apply
 `UPSTREAM-PR-fa-decode-verify-kernel-family.patch` (it applies cleanly to upstream `9113cc188`),
-re-run the repro, and reference the sibling `UPSTREAM-PR-fa-kv-split-width.md` candidate.
+re-run the repro, and reference the sibling `../fa-kv-split-width/README.md` candidate.

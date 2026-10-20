@@ -1,5 +1,8 @@
 # UPSTREAM-PR: make the CUDA fused MoE router bit-identical to the generic chain (and the argsort stable)
 
+> **Upstream candidate** · status: prepared 2026-09-13; applies clean to `790cf51aa`; validated on gfx1201 · not filed.
+> Delivery: **block 08** (the fused MoE router bit-identity amendment) · patch: [`UPSTREAM-PR-moe-router-tie-break.patch`](UPSTREAM-PR-moe-router-tie-break.patch) (this directory).
+
 **Status:** prepared 2026-09-13; applies clean to master `790cf51aa` (`git apply --check`); validated on
 gfx1201/ROCm 7.14 against the delivery (block 08, seventh amendment).  Not filed.
 

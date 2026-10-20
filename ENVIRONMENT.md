@@ -2,9 +2,9 @@
 
 Scope: everything **this repo adds or repurposes**, plus the upstream variables and the non-ggml
 runtime variables (HIP/ROCm) that materially affect how this delivery behaves.  Defaults are taken from
-the `rdna-boosts` tree at release `v12-097cf33d9-r52` (V2.0; the pre-r52 values were unchanged from the
-            16-block set, which was a pure re-organization); the table was generated from the code, not from
-memory (see [Maintaining this file](#maintaining-this-file)).
+the `rdna-boosts` tree at the current release (`release.json`; every default stated here is the shipped
+one, and a row that changed after the V2.0 cut names the `rNN` that changed it), and the table is generated
+from the code, not from memory (see [Maintaining this file](#maintaining-this-file)).
 
 ## How to read this
 

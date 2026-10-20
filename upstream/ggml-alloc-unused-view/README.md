@@ -1,5 +1,8 @@
 # Upstream-PR proposal — ggml alloc: release view sources whose views are never consumed
 
+> **Upstream candidate** · status: prepared 2026-09-10; repro + `test-alloc`/`test-batch-alloc` verified on unadulterated master `9cf3bf256` · not filed.
+> Delivery: **block 00** (the `ggml-alloc` view release) · patch: [`UPSTREAM-PR-ggml-alloc-unused-view.patch`](UPSTREAM-PR-ggml-alloc-unused-view.patch) (this directory).
+
 Status: PREPARED 2026-09-10.  Verified against **unadulterated master** (`9cf3bf256`): the patch
 applies clean (`git apply --check`), the repro fails before / passes after, and the allocator tests
 pass (see Validation).  Not yet filed.  Patch file: `UPSTREAM-PR-ggml-alloc-unused-view.patch`
@@ -32,7 +35,7 @@ graph.
 
 ## The repro
 
-`../archive/work/arch-independent-memory/repro/ggml-alloc-unused-view.c` — self-contained, CPU backend, public
+`../../archive/work/arch-independent-memory/repro/ggml-alloc-unused-view.c` — self-contained, CPU backend, public
 `ggml_gallocr_*` API, 12 layers x 4 MiB.  `argv[1]=1` builds the idiom (dangling side-effect copies),
 `argv[1]=0` consumes the copies.  Build/run recipe in the file header.
 

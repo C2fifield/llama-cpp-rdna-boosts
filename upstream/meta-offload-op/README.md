@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-backend-meta: let the tensor split op-offload host weights (and serve byte ranges on mirrored tensors)
 
+> **Upstream candidate** · status: prepared 2026-09-27; measured standalone on pristine master (505.49 → 1690.26 t/s) · not filed.
+> Delivery: **block 09** (op-offload H2D staging) · patch: [`UPSTREAM-PR-meta-offload-op.patch`](UPSTREAM-PR-meta-offload-op.patch) (this directory).
+
 **Status:** prepared 2026-09-27; `git apply --check` clean on master **`84e76d8a2`**; **built and measured
 standalone on pristine master + this patch** (gfx1201, 2× R9700, ROCm 7.14): `505.49 -> 1690.26 t/s`
 (`llama-bench -sm tensor -ncmoe 99 -fa 1 -p 8192 -b 8192 -ub 8192`).  Not filed.

@@ -17,7 +17,9 @@ llama.cpp checkout at the fork point named in `release.json`. This repo is NOT t
 lives at `~/llama.cpp`; its `rdna-boosts` branch is re-cut from `patches/` on every release and
 force-pushed to the personal fork so it never goes stale (see the Pushing policy). `patches/` is the
 deliverable; `scripts/` is the apply/regenerate/validate flow; `README.md`
-is the consumer overview; `MANIFESTS.md` and `BASELINE.md` are dated history; `GREEDY-PURITY.md` is
+is the consumer overview; `MANIFESTS.md` is the apply order + verification contract, `BASELINE.md` the
+provenance + drift policy (both are contracts now — their dated history is in `archive/docs/`);
+`GREEDY-PURITY.md` is
 the purity rulebook.
 
 ## Report findings before shipping (MANDATORY)
@@ -74,17 +76,18 @@ amendment, or a note in the relevant record).
 | `README.md` | consumer overview + workflow (start here) |
 | `ENVIRONMENT.md` | **every environment variable** the delivery adds or repoints — default, and whether it is a kill-switch (default-on, set to disable), an opt-in, a tuning value or a diagnostic. Read it before adding a variable or changing a default |
 | `release.json` | **delivery single source of truth** (fork point, canonical tip/tree, block count, per-artifact sha256) — read by `apply-all.sh`, `validate-set.sh` and CI; regenerate with `scripts/make-release.sh`, never hand-edit hashes |
-| `MANIFESTS.md` | apply order, per-block verification, validation history |
-| `BASELINE.md` | fork point, patch provenance, drift policy |
+| `MANIFESTS.md` | apply order + the verification contract (release gates, per-block verification, failure handling). Its dated validation history is in `archive/docs/validation-history.md` |
+| `BASELINE.md` | fork point, what the patches are, how they are cut, drift policy. Its dated baseline/re-base records are in `archive/docs/baseline-history.md` |
+| `TODO.md` | **forward-looking only**: open items, items waiting on someone else, accepted limitations, parked ideas. A closed item is one `WORKLOG.md` entry — never a TODO entry. `#NN` numbers are permanent handles and are never reused |
 | `GREEDY-PURITY.md` | the purity rulebook (index + invariants + per-finding claims); dated narratives/evidence are in `archive/docs/GREEDY-PURITY-FINDINGS.md` under the same `§` numbers |
-| `patches/` | **the delivery set** (0000-0011: block 00 + blocks 01-11) + apply README; block-by-block notes live in `patches/README.md` (the dated notes below the V2.0 header use the pre-V2.0 16-block numbering) |
-| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `build-containers.sh` (the image build itself), `container-watch.sh` (the off-host release watcher, run on `radiance`), `cleanup-ghcr.py` (GHCR version retention; called by `build-containers.sh --push`), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes) |
+| `patches/` | **the delivery set** (0000-0011: block 00 + blocks 01-11) + `README.md`, the per-block reference (what each block contains, its knobs, its purity notes). The dated amendment notes moved to `archive/docs/patch-notes-history.md` |
+| `scripts/` | `apply-all.sh` (the tested apply flow, strict tree check + `git am -3` fallback), `gate-prefill-logits.sh` (the prefill-logit KLD release gate, issue #113), `gate-per-block-build.sh` (a clean `all` build per block commit), `gate-qwen4exp-quant-coherence.sh`, `check-gpu-faults.sh` (reads the kernel journal and scans a llama log for **real** GPU faults, filtering the echoed prompt lines — never grep a log for `page fault`/`slab` by hand), `make-patches.sh`, `make-release.sh`, `validate-set.sh` (checksums + fresh-tarball strict apply, runs in CI), `build-containers.sh` (the image build itself), `container-watch.sh` (the off-host release watcher, run on `radiance`), `cleanup-ghcr.py` (GHCR version retention; called by `build-containers.sh --push`), `extract-generated.py` (hashes llama-cli generated text; a naive sed/grep slice does not reproduce the hashes), `check-windows-paths.sh` (fails on a path that Windows cannot check out). **Index: `scripts/README.md`** |
 | `rdna-boosts-all.patch` | the entire 12-patch net as ONE patch (fork point only) |
 | `benchmarks/` | dated bench records + methodology; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) and **`prefill-logit-methodology.md` = the prefill-logit KLD gate** (run before shipping any prefill-kernel change or release) |
 | `prompts/` | versioned, hash-stable test prompts; sizes/token counts/**sha256** in `prompts/README.md`. A shipped prompt is **never edited in place** (add a new file); a result is only valid against the prompt hash it names |
 | `wip/` | **ACTIVE** exploration docs/tools — **NOT part of the delivery**; see the WIP rule. Each campaign is a self-contained handover under its own `README.md` (no `wip/README.md`); the open set is indexed in `wip/CAMPAIGNS.md` |
 | `beta/` | **promotion-candidate patches** staged for a beta test — **NOT part of the delivery**. Each candidate is `<name>/` with `README.md` (what/why/status), `BETA-TESTING.md` (the tester's apply + gate checklist) and `<name>.patch` cut against the current `release.json` tree. Nothing here is applied by default: `scripts/apply-all.sh --include-beta` applies `beta/*/*.patch` on top of the verified release tree for a tester. A confirmed or refuted candidate moves to `archive/work/` and is recorded in `WORKLOG.md` |
-| `upstream/` | **upstream-PR candidates** (self-contained changes for unadulterated `ggml-org/llama.cpp`), each `UPSTREAM-PR-*.md` + `.patch`; see its README |
+| `upstream/` | **upstream-PR candidates** (self-contained changes for unadulterated `ggml-org/llama.cpp`), one sub-directory per candidate (`README.md` + `UPSTREAM-PR-<name>.patch`); the index is its `README.md`. None is part of the delivery |
 | `archive/docs/` | moved-out historical records (validation/baseline history, the pre-cleanup AGENTS.md) — reference only |
 | `archive/work/` | closed experiments and campaigns, preserved for future re-evaluation (mmb/qsa3, moe-expert-cache, issues/PRs, …) — reference only |
 | `baseline/*` branches, `block/*` tags | **historical** pre-block-12 checkpoints — do not use for the current delivery |
@@ -101,7 +104,7 @@ no tuning, no validation, no waiting on hardware there.
 
 - An AMD-only fix may land without its non-AMD counterpart as long as the non-AMD paths stay
   consistent (no aborts, no uninstantiated pairs) and the difference is documented (see the F1 chooser
-  example in `upstream/UPSTREAM-PR-fa-decode-verify-kernel-family.*`).
+  example in `upstream/fa-decode-verify-kernel-family/`).
 - New KV-cache types / instances / predicates **are** kept cross-backend consistent — an inconsistent
   set is a crash on whichever backend reaches it (`GREEDY-PURITY.md` §20). That is correctness, not
   scope creep.
@@ -494,18 +497,27 @@ bulk-delete throttle (secondary rate limit) is a warning, not a failure; re-run 
 - Do not mix the historical `baseline/*` branches or `block/*` tags with the current `patches/`.
 - Do not push anything from the `~/llama.cpp` checkout except the release-time `rdna-boosts` refresh
   to the personal fork (see the Pushing policy). Never push to upstream `ggml-org/llama.cpp`.
-- Do not present old docs as current: MANIFESTS/BASELINE and the dated records are history; current
-  claims are the header sections + `patches/README.md` + `release.json`.
+- Do not present old docs as current: `MANIFESTS.md`/`BASELINE.md` are contracts, their dated history
+  is in `archive/docs/`; current claims are their current-state headers + `patches/README.md` +
+  `release.json` + the newest `WORKLOG.md` entry.
 - Do not add new WIP experiments to the delivery set, and **never apply anything from `wip/`** or
   `archive/work/` unless the user explicitly asks for that specific item.
 
 ## Editing the docs
 
 The docs have a freshness problem by design: historical records are kept, and the CURRENT state lives
-in the header sections (`patches/README.md`, `README.md`, `release.json`, the top of
-MANIFESTS/BASELINE) plus the newest `WORKLOG.md` entry. When you change the delivery, update those
-headers and add a new dated `WORKLOG.md` entry (newest first) — never edit dated validation records in
-place.
+in the current-state headers (`patches/README.md`, `README.md`, `MANIFESTS.md`, `BASELINE.md`,
+`release.json`) plus the newest `WORKLOG.md` entry. When you change the delivery, update those headers
+and add a new dated `WORKLOG.md` entry (newest first) — never edit dated validation records in place.
+
+**Each top-level doc has one job — keep it that way.**  `README.md` describes the *set* (what it is, how
+to apply it, what a consumer needs); `MANIFESTS.md` is the apply order + verification contract;
+`BASELINE.md` is provenance + the drift policy; `GREEDY-PURITY.md` is the rulebook (claim, rule, numbers
+per `§N`, with the narratives in `archive/docs/GREEDY-PURITY-FINDINGS.md`); `TODO.md` is
+**forward-looking only** (open, waiting, accepted-limitation, parked — a closed item is one `WORKLOG.md`
+entry, never a TODO entry); `ENVIRONMENT.md` is the variable catalogue.  **Release narrative belongs in
+`WORKLOG.md` and nowhere else** — do not paste a release summary into `README.md`, `BASELINE.md` or
+`MANIFESTS.md`; point at `WORKLOG.md` instead.
 
 **WORKLOG dated headers use `YYMMDD.VVV`** (e.g. `## 261011.005 (r47) -- ...`).  `YYMMDD` is the
 real local calendar date and `VVV` is a per-date, monotonically increasing 3-digit sequence number in

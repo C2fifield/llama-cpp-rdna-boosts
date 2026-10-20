@@ -265,6 +265,6 @@ deleted with no stub; its lone residual was re-seeded as `q1-0-byte-perm/` (prom
 `dflash-multiseq/` (PR #144) was folded into the delivery (blocks 00/10/11) and `fa-stage-prealloc/`
 (issue #138, from `beta/`) into blocks 09/10; their records now live under
 `archive/work/dflash-multiseq/` and `archive/work/fa-stage-prealloc/`. The upstream `MUL_MAT_ID`
-duplicate-ids fix was completed and published as `upstream/UPSTREAM-PR-mul-mat-id-dup.{md,patch}`
+duplicate-ids fix was completed and published as `upstream/mul-mat-id-dup/`
 (the delivery ships pure on it), with its record under `archive/work/upstream-mul-mat-id-dup/`.
 See `WORKLOG.md` 261013.003 (r53).

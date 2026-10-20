@@ -1,5 +1,8 @@
 # UPSTREAM-PR: ggml-backend-meta — resolve unallocated aliases in the split state, and report a failed sub-allocation instead of aborting
 
+> **Upstream candidate** · status: prepared 2026-10-18 from issue #170; applies clean to `097cf33d9` and builds there; validated at 24 GiB-card parity · not filed.
+> Delivery: **block 00**; the fork-local companion (gate the meta `offload_op` hook to `MUL_MAT_ID`) is **block 09** · patch: [`UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch`](UPSTREAM-PR-meta-split-unalloc-alias-and-alloc-fail.patch) (this directory).
+
 **Status:** prepared 2026-10-18; applies clean (`git apply --check`) and **builds** on the fork point
 `097cf33d9` (ROCm 10.1.0, gfx1201). **Not filed.**
 
@@ -81,7 +84,7 @@ yielding its arena.
 ## Validation (gfx1201, 2 x R9700, ROCm 10.1.0, delivery tree)
 
 The reporter's configuration is reproducible on a 32 GiB card by holding 8192 MiB per device so the
-card presents a 7900 XTX's free-memory figure (`../archive/work/issue-170-meta-alloc/vram_fill.cpp`).
+card presents a 7900 XTX's free-memory figure (`../../archive/work/issue-170-meta-alloc/vram_fill.cpp`).
 
 * **Before:** abort at `ggml-backend-meta.cpp:711` during the warmup decode with the reporter's minimal
   command; abort at `:2287` for the KV/weight/compute OOM cases.

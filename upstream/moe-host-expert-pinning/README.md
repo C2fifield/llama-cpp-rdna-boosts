@@ -1,5 +1,8 @@
 # UPSTREAM-PR: keep host-resident MoE expert weights pinned (don't downgrade `MUL_MAT_ID` to the mmap)
 
+> **Upstream candidate** · status: prepared 2026-09-27; applies clean to master `84e76d8a2`; validated on 2x R9700 (+83 % `-sm tensor -ncmoe 99` pp8192, bit-identical text) · not filed.
+> Delivery: **block 09** (host-resident MoE) · patch: [`UPSTREAM-PR-moe-host-expert-pinning.patch`](UPSTREAM-PR-moe-host-expert-pinning.patch) (this directory).
+
 **The change.** `src/llama-model-loader.cpp`'s `select_weight_buft` has an "avoid using a host buffer when
 using mmap" guard that replaces the pinned host buffer type with the CPU (mmap'd) buffer type for every
 upstream buffer type when the model is memory-mapped.  That is right for tensors the CPU reads, but a
