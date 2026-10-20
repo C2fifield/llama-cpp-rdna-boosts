@@ -1,4 +1,4 @@
-From 8ce8f687e9ee46ad83433f62abe40c0fb60d1444 Mon Sep 17 00:00:00 2001
+From 117b47f9b4d75cc142befa1b5fd87209c2b5e736 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -96,6 +96,29 @@ Fold (r96, PR #189, briansp2020): the meta backend's `get_tensor_async` shares t
 split arithmetic instead of asserting `offset == 0` and one segment, so a caller can batch many
 per-device reads behind one synchronize (a context checkpoint's per-sequence cells).  Calls that worked
 before issue the same copies as before.
+
+Fold (r99, TODO #56): the scheduler must invoke the copy callback again, so the upstream
+`llama_moe_cache` (`--moe-cache-mib`) works.  This block's rewrite of `ggml_backend_sched_copy_input` kept no
+`sched->callback_copy` call, and that call is the only thing in the tree that drives
+`llama_moe_cache::copy()`: the slot map stayed `0xff` (-1) while the graph had already swapped the routed op's
+`src0` for the cache bank and its ids for `GET_ROWS(slot_map, ids)`, so `MUL_MAT_ID` indexed the bank with -1
+(wrong values where the page below the bank is mapped, an HSA page fault where it is not).  The call is
+restored at base's position (after the wait-before-overwrite) and in the branch with no `MUL_MAT_ID`
+consumer, which is where the slot map lands (its consumer is a `GET_ROWS`); the delivery's own expert branch
+(device gather, cache take-over, pruning) is byte-for-byte unchanged, so no host expert table can reach the
+callback.  `llama_context::sched_copy_experts` now answers only for the upstream cache: its per-op
+staging/pruning copy has been dead since this block's scheduler took that over, and would double-stage every
+host expert table if it ever ran again.
+
+Inert unless `--moe-cache-mib` is set (`moe_cache` is then null and the callback returns false).  Gates
+(gfx1201, ROCm 10.1.0): `test-llama-archs -s 42` **375/375** (was 373/375; `deepseek2`'s `MoE cache` row
+2.10e-10, the upstream base's own value, was 4.02e-03), also 375/375 with `GGML_CUDA_ASYNC_INPUT=0`;
+host-expert greedy text byte-identical to r98 (35B-A3B `-ncmoe 40`); prefill-logit KLD 0.000000 / 100.000 %.
+The upstream cache's large-batch `copy_experts()` arm stays unreached (this block's scheduler owns that
+pruning); values are identical either way, so it is a missing upstream optimisation on a path the delivery
+serves with its own cache, not a correctness gap.  `--moe-cache-mib` is now correct but slower than
+`MOE_EXPERT_CACHE_MIB` on this box (decode 50.1 -> 37.8 t/s on 35B-A3B `-ncmoe 40`), so it stays documented
+as "works, not recommended".
 ---
  (file*).moe-heatmap                           |  Bin 0 -> 704 bytes
  common/CMakeLists.txt                         |    2 +
@@ -115,7 +138,7 @@ before issue the same copies as before.
  ggml/src/ggml-alloc.c                         |   85 +-
  ggml/src/ggml-backend-impl.h                  |  213 +
  ggml/src/ggml-backend-meta.cpp                | 1347 ++++-
- ggml/src/ggml-backend.cpp                     | 1186 +++-
+ ggml/src/ggml-backend.cpp                     | 1199 +++-
  ggml/src/ggml-blas/ggml-blas.cpp              |    7 +
  ggml/src/ggml-cann/ggml-cann.cpp              |    7 +
  ggml/src/ggml-cpu/amx/amx.cpp                 |    3 +
@@ -148,8 +171,8 @@ before issue the same copies as before.
  ggml/src/ggml-zdnn/ggml-zdnn.cpp              |    7 +
  ggml/src/ggml-zendnn/ggml-zendnn.cpp          |    7 +
  include/llama.h                               |   58 +
- src/llama-context.cpp                         |  332 +-
- src/llama-context.h                           |   27 +
+ src/llama-context.cpp                         |  421 +-
+ src/llama-context.h                           |   42 +-
  src/llama-cparams.h                           |   11 +
  src/llama-ext.h                               |   11 +
  src/llama-kv-cache.cpp                        |    7 +-
@@ -163,7 +186,7 @@ before issue the same copies as before.
  src/llama.cpp                                 |   16 +-
  tools/cli/cli.cpp                             |    6 +
  tools/llama-bench/llama-bench.cpp             |   65 +-
- 66 files changed, 14069 insertions(+), 436 deletions(-)
+ 66 files changed, 14089 insertions(+), 533 deletions(-)
  create mode 100644 (file*).moe-heatmap
  create mode 100644 common/draft-reserve.cpp
  create mode 100644 common/draft-reserve.h
@@ -3788,7 +3811,7 @@ index 8ad9cacb2..e6594f194 100644
  
  bool ggml_backend_is_meta(ggml_backend_t backend) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index ffbcba366..7c63422db 100644
+index ffbcba366..77d85fb0e 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -21,8 +21,21 @@
@@ -4731,7 +4754,7 @@ index ffbcba366..7c63422db 100644
          // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
          if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
              ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
-@@ -1834,31 +2612,281 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+@@ -1834,31 +2612,294 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
              ggml_backend_synchronize(split_backend);
          }
          ggml_backend_tensor_copy(input, input_cpy);
@@ -4988,6 +5011,19 @@ index ffbcba366..7c63422db 100644
          } else {
 -            ggml_backend_synchronize(split_backend);
 +            wait_before_overwrite();
++            // upstream `llama_moe_cache` (`--moe-cache-mib`): its slot map is a host weight that a
++            // GET_ROWS reads, so it lands here (it has no MUL_MAT_ID consumer).  The copy callback
++            // plans the slots, uploads the missing experts and fills the slot map.  Without this
++            // call the map is never written (it stays 0xff = -1 over the whole tensor) and the
++            // cached layer's MUL_MAT_ID indexes the expert bank with -1, i.e. reads one expert
++            // below the bank: a silent wrong result where that address is mapped (gfx1201, mean
++            // NMSE 4.02e-03 on test-llama-archs' `MoE cache` row) and a GPU memory fault where it
++            // is not (gfx1151, async-input off).  The delivery's own host-expert staging/pruning
++            // above owns every expert table, so the callback only ever answers for the slot map.
++            if (sched->callback_copy != NULL && ggml_backend_sched_is_host_weight(input) &&
++                sched->callback_copy(split_backend, input, input_cpy, &split->graph, sched->callback_copy_user_data)) {
++                return;
++            }
 +            // A device-to-device input copy runs on the SOURCE backend's stream (cuda cpy_tensor_async), so it is
 +            // not ordered after work already queued on the split backend - including an outbound copy of an
 +            // earlier split's output, issued on this backend's stream AFTER that split's event was recorded.  With
@@ -5033,7 +5069,7 @@ index ffbcba366..7c63422db 100644
      }
  }
  
-@@ -1867,12 +2895,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1867,12 +2908,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
      struct ggml_backend_sched_split * splits = sched->splits;
  
      int prev_backend_id = -1;
@@ -5049,7 +5085,7 @@ index ffbcba366..7c63422db 100644
          // ensure the previous split's async work has completed before we start
          // this split, the allocator may have reused buffer regions across splits
          if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
-@@ -1887,12 +2918,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1887,12 +2931,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
          // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
          for (int input_id = 0; input_id < split->n_inputs; input_id++) {
              if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
@@ -5064,7 +5100,7 @@ index ffbcba366..7c63422db 100644
              }
          }
  
-@@ -1940,6 +2971,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1940,6 +2984,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
              ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
          }
  
@@ -5079,7 +5115,7 @@ index ffbcba366..7c63422db 100644
          prev_backend_id = split_backend_id;
      }
  
-@@ -1959,14 +2998,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -1959,14 +3011,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
  
      struct ggml_backend_sched * sched = (ggml_backend_sched *) calloc(1, sizeof(struct ggml_backend_sched));
  
@@ -5096,7 +5132,7 @@ index ffbcba366..7c63422db 100644
      sched->debug_realloc = GGML_SCHED_DEBUG_REALLOC ? atoi(GGML_SCHED_DEBUG_REALLOC) : sched->debug_realloc;
  
      sched->n_backends = n_backends;
-@@ -2003,7 +3042,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -2003,7 +3055,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
          sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
          GGML_ASSERT(ggml_backend_supports_buft(backends[b], sched->bufts[b]));
  
@@ -5112,7 +5148,7 @@ index ffbcba366..7c63422db 100644
              for (int c = 0; c < sched->n_copies; c++) {
                  sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
              }
-@@ -2012,6 +3058,65 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -2012,6 +3071,65 @@ ggml_backend_sched_t ggml_backend_sched_new(
  
      sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
      sched->op_offload = op_offload;
@@ -5178,7 +5214,7 @@ index ffbcba366..7c63422db 100644
  
      ggml_backend_sched_reset(sched);
  
-@@ -2026,6 +3131,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+@@ -2026,6 +3144,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
          for (int c = 0; c < sched->n_copies; c++) {
              ggml_backend_event_free(sched->events[b][c]);
          }
@@ -5189,7 +5225,7 @@ index ffbcba366..7c63422db 100644
      }
      ggml_gallocr_free(sched->galloc);
      ggml_free(sched->ctx);
-@@ -2090,6 +3199,17 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
+@@ -2090,6 +3212,17 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
      return true;
  }
  
@@ -5207,7 +5243,7 @@ index ffbcba366..7c63422db 100644
  bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
      GGML_ASSERT(sched);
      GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
-@@ -2127,6 +3247,8 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
+@@ -2127,6 +3260,8 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
          }
      }
  
@@ -5216,7 +5252,7 @@ index ffbcba366..7c63422db 100644
      return ggml_backend_sched_compute_splits(sched);
  }
  
-@@ -2591,6 +3713,9 @@ ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void) {
+@@ -2591,6 +3726,9 @@ ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void) {
              /* .get_alloc_size      = */ NULL, // defaults to ggml_nbytes
              /* .get_alloc_size_n    = */ NULL,
              /* .is_host             = */ ggml_backend_cpu_buffer_type_is_host,
@@ -5226,7 +5262,7 @@ index ffbcba366..7c63422db 100644
          },
          /* .device  = */ NULL, // FIXME ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
          /* .context = */ NULL,
-@@ -2616,6 +3741,9 @@ static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void) {
+@@ -2616,6 +3754,9 @@ static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void) {
              /* .get_alloc_size      = */ NULL, // defaults to ggml_nbytes
              /* .get_alloc_size_n    = */ NULL,
              /* .is_host             = */ ggml_backend_cpu_buffer_type_is_host,
@@ -15745,7 +15781,7 @@ index 0eab7fec5..0c99fa0d5 100644
  
      LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 9b9f14297..a9c011103 100644
+index 9b9f14297..f8b8e616b 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -462,9 +462,10 @@ llama_context::llama_context(
@@ -16089,7 +16125,109 @@ index 9b9f14297..a9c011103 100644
  
      // store the n_outputs as it is, and restore it afterwards
      // TODO: not sure if needed, might simplify in the future by removing this
-@@ -3938,6 +4196,52 @@ void llama_context::perf_reset() {
+@@ -2988,8 +3246,6 @@ ggml_status llama_context::graph_compute(
+         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+     }
+ 
+-    copy_experts.reset();
+-
+     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+@@ -3003,85 +3259,13 @@ ggml_status llama_context::graph_compute(
+ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data) {
+     auto * lctx = static_cast<llama_context *>(user_data);
+ 
+-    // the slot maps of the MoE cache
+-    if (lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph)) {
+-        return true;
+-    }
+-
+-    auto & st = lctx->copy_experts;
+-
+-    // the ids must be computed before the split starts, so only the first node of the split is considered
+-    if (ggml_graph_n_nodes(graph) == 0) {
+-        return false;
+-    }
+-    const ggml_tensor * node = ggml_graph_node(graph, 0);
+-    if (node->op != GGML_OP_MUL_MAT_ID || node->src[0] != dst) {
+-        return false;
+-    }
+-
+-    const ggml_tensor * ids = node->src[2];
+-    if (ggml_nelements(ids) == 0) {
+-        return true;
+-    }
+-
+-    const int64_t n_expert    = src->ne[2];
+-    const size_t  expert_size = src->nb[2];
+-
+-    if (ids != st.ids || (int64_t) st.used.size() != n_expert) {
+-        st.ids_data.resize(ggml_nbytes(ids)/sizeof(int32_t));
+-        ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
+-        ggml_backend_synchronize(backend);
+-
+-        st.used.assign(n_expert, false);
+-        for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
+-            for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
+-                const int32_t id = st.ids_data[i1*ids->nb[1]/sizeof(int32_t) + i0*ids->nb[0]/sizeof(int32_t)];
+-                GGML_ASSERT(id >= 0 && id < n_expert);
+-                st.used[id] = true;
+-            }
+-        }
+-
+-        st.ids = ids;
+-    }
+-
+-    // group consecutive experts and copy them together
+-    for (int64_t first = 0; first < n_expert; ) {
+-        if (!st.used[first]) {
+-            first++;
+-            continue;
+-        }
+-        int64_t last = first;
+-        while (last + 1 < n_expert && st.used[last + 1]) {
+-            last++;
+-        }
+-
+-        // the experts in the MoE cache are copied from device memory, the others are uploaded
+-        int64_t next = first;
+-        for (int64_t e = first; e <= last && lctx->moe_cache; ) {
+-            const int64_t n = lctx->moe_cache->copy_experts(backend, src, dst, e, last);
+-            if (n == 0) {
+-                e++;
+-                continue;
+-            }
+-            if (next < e) {
+-                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
+-            }
+-            e   += n;
+-            next = e;
+-        }
+-
+-        // copy a bit extra to ensure there are no NaNs in the padding of the last expert, this is necessary for MMQ in the CUDA backend
+-        const size_t offset  = next*expert_size;
+-        const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
+-        const size_t size    = (last + 1 - next)*expert_size + padding;
+-        if (size > 0) {
+-            ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, size);
+-        }
+-
+-        first = last + 1;
+-    }
+-
+-    return true;
++    // The slot maps of the upstream `llama_moe_cache` (`--moe-cache-mib`): plan the slots, upload
++    // the missing experts and fill the slot map, so the GET_ROWS that follows reads fresh slot ids.
++    // This is the ONLY thing this callback answers for.  The used-expert staging and pruning of
++    // the delivery's own host-expert paths (op-offload / expert cache / slab) lives in the
++    // scheduler (`ggml_backend_sched_copy_input`), which is the sole owner of that machinery --
++    // keeping a second copy of it here would double-stage every host expert table.
++    return lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph);
+ }
+ 
+ llm_graph_cb llama_context::graph_get_cb() const {
+@@ -3938,6 +4122,52 @@ void llama_context::perf_reset() {
      // note: the reallocation counters are not reset - they track the lifetime totals for this context
  }
  
@@ -16142,7 +16280,7 @@ index 9b9f14297..a9c011103 100644
  llama_memory_breakdown llama_context::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
      for (const auto & [buft, size] : model.memory_breakdown()) {
-@@ -3948,22 +4252,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
+@@ -3948,22 +4178,38 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
              ret[buft].context += size;
          }
      }
@@ -16183,7 +16321,7 @@ index 9b9f14297..a9c011103 100644
          }
      }
      return ret;
-@@ -4120,6 +4440,7 @@ void llama_context::opt_epoch_iter(
+@@ -4120,6 +4366,7 @@ void llama_context::opt_epoch_iter(
  
              // the optimizer graph is allocated outside sched, so the next decode must rebuild
              gf_res_prev_active = nullptr;
@@ -16191,7 +16329,15 @@ index 9b9f14297..a9c011103 100644
              res->reset();
  
              auto * gf = model.build_graph(gparams);
-@@ -4252,6 +4573,7 @@ llama_context_params llama_context_default_params() {
+@@ -4150,7 +4397,6 @@ void llama_context::opt_epoch_iter(
+                     ggml_backend_tensor_set(labels, &onef, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
+                 }
+             }
+-            copy_experts.reset();
+             ggml_opt_eval(opt_ctx, result);
+             if (callback) {
+                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
+@@ -4252,6 +4498,7 @@ llama_context_params llama_context_default_params() {
          /*.op_offload                  =*/ true,
          /*.swa_full                    =*/ true,
          /*.kv_unified                  =*/ false,
@@ -16200,7 +16346,7 @@ index 9b9f14297..a9c011103 100644
          /*.n_sampler                   =*/ 0,
          /*.ctx_other                   =*/ nullptr,
 diff --git a/src/llama-context.h b/src/llama-context.h
-index b4422e92a..0a0fb39aa 100644
+index b4422e92a..228304bc5 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -58,6 +58,11 @@ struct llama_context {
@@ -16236,21 +16382,37 @@ index b4422e92a..0a0fb39aa 100644
      std::vector<int32_t> output_ids; // map batch token positions to ids of the logits and embd buffers
  
      struct swap_info {
-@@ -375,6 +387,13 @@ private:
+@@ -375,22 +387,14 @@ private:
  
      ggml_backend_sched_ptr sched;
  
+-    bool sched_need_reserve = true;
+-
+-    // state of sched_copy_experts, reset before each graph compute
+-    struct copy_experts_info {
+-        const ggml_tensor *  ids = nullptr;
+-        std::vector<int32_t> ids_data;
+-        std::vector<bool>    used;
+-
+-        void reset() {
+-            ids = nullptr;
+-            ids_data.clear();
+-            used.clear();
+-        }
+-    };
 +    // The MTP draft context alternates a no-output ingest graph and a 1-token draft-step graph every cycle; with
 +    // one scheduler each switch re-splits and re-allocates the graph.  The graphs with outputs run on a second
 +    // scheduler, so both stay allocated and are reused.  It is swapped into `sched` only while a decode or encode
 +    // runs (LLAMA_DRAFT_SCHED2=0: off).
 +    ggml_backend_sched_ptr sched_alt;
 +    bool                   sched_alt_in_use = false;
-+
-     bool sched_need_reserve = true;
  
-     // state of sched_copy_experts, reset before each graph compute
-@@ -421,6 +440,7 @@ private:
+-    copy_experts_info copy_experts;
++    bool sched_need_reserve = true;
+ 
+     // graph reallocations during inference where the backend assignments did not change, split by whether the
+     // graph size is the same as the previously scheduled one (unexpected) or different
+@@ -421,6 +425,7 @@ private:
      llm_graph_result_ptr gf_res_reserve;
  
      llm_graph_result * gf_res_prev_active = nullptr;
@@ -16258,7 +16420,7 @@ index b4422e92a..0a0fb39aa 100644
  
      // host buffer for the model output (logits and embeddings)
      ggml_backend_buffer_ptr buf_output;
-@@ -430,6 +450,13 @@ private:
+@@ -430,6 +435,13 @@ private:
  
      bool has_evaluated_once = false;
  

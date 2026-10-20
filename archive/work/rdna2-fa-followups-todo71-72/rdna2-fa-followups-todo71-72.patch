@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SixVolts <rigel@sixvolts.org>
+Date: Sun 19 Oct 2026 20:00:00 -0700
+Subject: [PATCH] rdna2: TODO 71/72 follow-ups - shared tile K/V type selection and
+ checked tail for the last unchecked tile
+
+TODO 71: the tile kernel's K/V type was chosen by hand in two places (the
+instantiation and the F16 scratch sizing); they drifted three times. Both now
+call one ggml_cuda_fattn_tile_type(K, V, cc), so the allocator and the launcher
+agree by construction.
+
+TODO 72: the ncols2 > 1 tile branch loads KV tiles without OOB checks, so its
+last tile can read up to nbatch_fa - 1 rows past the KV data. In a real model
+that stays inside the KV cache tensor's slack, but an exact-size operand can
+reach the neighbouring allocation. On RDNA2 the last tile now takes the checked
+form (zero-fills the tail rows, keeps them out of the softmax); every other
+target is untouched. Measured on the V620: register usage (VGPR/AGPR/scratch)
+unchanged on all 70 flash_attn tile instantiations.
+
+The 511-row converted-operand guard tail (r88) is kept; its comment now
+documents the derivation (nbatch_fa <= 256 by static_assert, over-read <=
+nbatch_fa - 1, 511 = 2 x 256 - 1).
+
+Signed-off-by: SixVolts <rigel@sixvolts.org>
+---
+diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
+index 4d4a47652..3db9c30ba 100644
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -133,14 +133,18 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
+ 
+     // RDNA2 only (`guard_tail` = GGML_CUDA_CC_IS_RDNA2, see the callers): the ncols2 > 1 tile branch
+     // loads the KV tiles without out-of-bounds checks (the checked tail iteration doubled the code
+-    // and spilled registers on gfx1030), so the last tile reads up to nbatch_fa - 1 rows past the
+-    // last K/V row.  For the staged F16 cache that slack has always existed inside the KV cache
+-    // allocation, but the converted buffers above are exact size and sit at the very end of the
+-    // node's allocation, so there it read into the next allocation (sentinel clobber / illegal
+-    // memory access on gfx1030).  Reserve a guard tail of 511 rows after each converted operand: the
+-    // nbatch_fa config field is 9 bits wide (the config table itself asserts <= 256), so half of
+-    // this is margin.  Every other backend keeps its previous allocation sizes -- its reads have
+-    // stayed inside the KV cache slack.
++    // and spilled registers on gfx1030), so its last tile can read past the last K/V row.  The bound:
++    // nbatch_fa is a 9-bit config field, but GGML_CUDA_FATTN_TILE_CONFIG_CASE static_asserts
++    // nbatch_fa <= 256 (and nbatch_K <= 256); the K tile loads I = nbatch_fa rows and each V chunk
++    // loads nbatch_V rows with static_assert(nbatch_fa % nbatch_V == 0), so every unchecked load is
++    // bounded by nbatch_fa and the real over-read is at most nbatch_fa - 1 <= 255 rows.  511 =
++    // 2 x 256 - 1, i.e. a 2x margin.  For the staged F16 cache that slack has always existed inside
++    // the KV cache allocation, but the converted buffers above are exact size and sit at the very
++    // end of the node's allocation, so there it read into the next allocation (sentinel clobber /
++    // illegal memory access on gfx1030): reserve the guard tail after each converted operand.
++    // Since TODO 72 the last tile of that branch also takes the checked form on RDNA2, so this tail
++    // is the belt-and-braces for the converted operands, not their only protection.  Every other
++    // backend keeps its previous allocation sizes -- its reads have stayed inside the KV cache slack.
+     if (guard_tail) {
+         constexpr int64_t guard_rows = 511;
+         if (need_f16_K && K->type != GGML_TYPE_F16) {
+diff --git a/ggml/src/ggml-cuda/fattn-rdna.cuh b/ggml/src/ggml-cuda/fattn-rdna.cuh
+index 818c30451..c8ec53622 100644
+--- a/ggml/src/ggml-cuda/fattn-rdna.cuh
++++ b/ggml/src/ggml-cuda/fattn-rdna.cuh
+@@ -293,6 +293,24 @@ static inline ggml_type ggml_cuda_fattn_native_ggml_type(const int native_type)
+     }
+ }
+ 
++// TODO 71: the tile kernel has ONE K/V type parameter, and its selection used to be kept by hand in
++// two places -- the instantiation (ggml_cuda_flash_attn_ext_tile_case_type, fattn-tile.cu) and the
++// F16 scratch sizing (ggml_cuda_flash_attn_ext_get_alloc_size, fattn.cu).  They drifted three times
++// (the missing q4_0 arm, the mixed-K/V NaNs, the missing RDNA2 bf16 scratch), so the selection is
++// this one function now: "the allocator and the launcher agree" is a property of the code, not of a
++// comment.  bf16 only where the hardware reads it natively; otherwise the native dequant arm (the
++// per-operand predicates are the same ones the launcher asks, and they fall back to NONE, i.e. F16,
++// outside FAST_FP16 / outside the activation policy); BF16 without native support is staged to F16
++// by the launcher, so it maps to the F16 instantiation.
++static inline ggml_type ggml_cuda_fattn_tile_type(const ggml_tensor * K, const ggml_tensor * V, const int cc) {
++    if (K->type == GGML_TYPE_BF16 && V->type == GGML_TYPE_BF16 && bf16_mma_hardware_available(cc)) {
++        return GGML_TYPE_BF16;
++    }
++    const int tile_native = ggml_cuda_fattn_tile_kv_native_type(K, V);
++    return (tile_native == FATTN_KV_NATIVE_BF16) ? GGML_TYPE_F16
++                                                 : ggml_cuda_fattn_native_ggml_type(tile_native);
++}
++
+ // Decode/verify band (n_q <= 8) on RDNA4: the whole GQA group is folded into one block
+ // (ncols2 = 8) via the WMMA kernel instead of the tile kernel's ncols2 = 2, which fetches and
+ // dequantizes every K/V element once per head pair (3x for GQA 6).  This is the default; the env var
+diff --git a/ggml/src/ggml-cuda/fattn-tile.cu b/ggml/src/ggml-cuda/fattn-tile.cu
+index 85792b52c..c6ddd9d9d 100644
+--- a/ggml/src/ggml-cuda/fattn-tile.cu
++++ b/ggml/src/ggml-cuda/fattn-tile.cu
+@@ -6,45 +6,42 @@ static void ggml_cuda_flash_attn_ext_tile_case_type(ggml_backend_cuda_context &
+     const ggml_tensor * K = dst->src[1];
+     const ggml_tensor * V = dst->src[2];
+ 
+-    // The tile kernel reads BF16 K/V natively only on hardware with native BF16 support.
+-    if (bf16_mma_hardware_available(ggml_cuda_info().devices[ggml_cuda_get_device()].cc) &&
+-            K->type == GGML_TYPE_BF16 && V->type == GGML_TYPE_BF16) {
+-        // BF16 K/V is read natively and accumulated in FP32.
+-        ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_BF16>(ctx, dst);
+-        return;
+-    }
++    // TODO 71: the tile kernel's K/V type is chosen by the same ggml_cuda_fattn_tile_type the
++    // allocator (ggml_cuda_flash_attn_ext_get_alloc_size) uses, so the instantiation and the F16
++    // scratch the launcher may stage into cannot disagree.
++    const ggml_type tile_type = ggml_cuda_fattn_tile_type(K, V, ggml_cuda_info().devices[ggml_cuda_get_device()].cc);
+ 
++    switch (tile_type) {
++        case GGML_TYPE_BF16:
++            // BF16 K/V is read natively and accumulated in FP32 (native-BF16 hardware only).
++            ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_BF16>(ctx, dst);
++            return;
+ #ifdef FAST_FP16_AVAILABLE
+-    // V4 / issue #30 item 2: q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl K/V are dequantized while staging
+-    // the tiles, so no F16 copy of the cache is needed.  The predicate is shared with
+-    // ggml_cuda_flash_attn_ext_get_alloc_size (which sizes the node's staging scratch) and with the
+-    // launcher's kv_native_kernel argument, so the three cannot disagree.
+-    switch (ggml_cuda_fattn_tile_kv_native_type(K, V)) {
+-        case FATTN_KV_NATIVE_Q8_0:
++        case GGML_TYPE_Q8_0:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q8_0>(ctx, dst);
+             return;
+-        case FATTN_KV_NATIVE_Q4_0:
++        case GGML_TYPE_Q4_0:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q4_0>(ctx, dst);
+             return;
+-        case FATTN_KV_NATIVE_Q4_1:
++        case GGML_TYPE_Q4_1:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q4_1>(ctx, dst);
+             return;
+-        case FATTN_KV_NATIVE_Q5_0:
++        case GGML_TYPE_Q5_0:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q5_0>(ctx, dst);
+             return;
+-        case FATTN_KV_NATIVE_Q5_1:
++        case GGML_TYPE_Q5_1:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q5_1>(ctx, dst);
+             return;
+-        case FATTN_KV_NATIVE_IQ4_NL:
++        case GGML_TYPE_IQ4_NL:
+             ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_IQ4_NL>(ctx, dst);
+             return;
++#endif // FAST_FP16_AVAILABLE
+         default:
+-            break;
++            // F16, F32 and the other quantized K/V are read as F16; BF16 without native support is
++            // converted to F16 by the launcher.
++            ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_F16>(ctx, dst);
++            return;
+     }
+-#endif // FAST_FP16_AVAILABLE
+-
+-    // F16, F32, quantized K/V are read as F16; BF16 is converted to F16 by the launcher.
+-    ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_F16>(ctx, dst);
+ }
+ 
+ void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+diff --git a/ggml/src/ggml-cuda/fattn-tile.cuh b/ggml/src/ggml-cuda/fattn-tile.cuh
+index f660df0b8..087c85200 100644
+--- a/ggml/src/ggml-cuda/fattn-tile.cuh
++++ b/ggml/src/ggml-cuda/fattn-tile.cuh
+@@ -1557,11 +1557,27 @@ static __global__ void flash_attn_tile(
+                 stride_K2, stride_V2, stride_mask, derived, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0, kv_q8);
+         }
+     } else {
+-        // Branch without out-of-bounds checks.
++        // Branch without out-of-bounds checks.  The last tile may extend past k_VKQ_max, where the
++        // unchecked loads would read up to nbatch_fa - 1 rows past the KV data.  In a real model that
++        // stays inside the KV cache tensor's slack, but an exact-size operand (test-backend-ops) can
++        // reach the neighbouring allocation.  On RDNA2 the last tile therefore takes the checked form
++        // (zero-fills the tail rows and keeps them out of the softmax; the ncols2 == 1 branch has
++        // always checked its tail).  The checked form used to run for the whole loop and spilled
++        // registers on gfx1030, which is why this branch avoided it -- as a single tail tile its cost
++        // is measured in TODO 72.  Every other target keeps this branch as it was.
+         for (int k_VKQ_0 = blockIdx.y*nbatch_fa; k_VKQ_0 < k_VKQ_max; k_VKQ_0 += gridDim.y*nbatch_fa) {
+             if (kq_blocks != nullptr && fattn_kq_group_masked(kq_blocks_tile, k_VKQ_0/nbatch_fa, nbatch_fa)) {
+                 continue;
+             }
++#if defined(RDNA2)
++            if (k_VKQ_0 + nbatch_fa > k_VKQ_max) {
++                constexpr bool oob_check_tail = true;
++                flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check_tail, type_KV>
++                    (Qg_base, q_row, Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp,
++                    stride_K2, stride_V2, stride_mask, derived, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0, kv_q8);
++                continue;
++            }
++#endif // defined(RDNA2)
+             constexpr bool oob_check = false;
+             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check, type_KV>
+                 (Qg_base, q_row, Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp,
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index 8917bdd3c..cb49fbae2 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -847,29 +847,14 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
+ 
+     switch (kernel) {
+         case BEST_FATTN_KERNEL_TILE: {
+-            // The tile kernel has ONE K/V type parameter, chosen in this order by
+-            // ggml_cuda_flash_attn_ext_tile_case_type: bf16 (only where the hardware reads it
+-            // natively), else q8_0, else q4_0, else F16.  Anything that does not match the chosen
+-            // type is staged to F16 by the launcher, so the node's scratch exists iff `type_KV != F16`
+-            // for that operand.  This must stay in lockstep with the launcher and with that
+-            // instantiation, or the scratch is either missing (the kernel then reads the raw cache as
+-            // F16 -- see the mixed K/V NaNs) or wasted.  The q4_0 arm was missing here, so a q4_0
+-            // cache kept reserving the whole F16 scratch the launcher no longer uses.
+-            ggml_type tile_type;
+-            if (K->type == GGML_TYPE_BF16 && V->type == GGML_TYPE_BF16 &&
+-                    bf16_mma_hardware_available(ggml_cuda_info().devices[device].cc)) {
+-                tile_type = GGML_TYPE_BF16;
+-            } else {
+-                // FATTN_KV_NATIVE_NONE maps to F16, i.e. the staged type.  FATTN_KV_NATIVE_BF16 is
+-                // staged to F16 here as well: the native BF16 tile is only selected by the first branch
+-                // above (bf16_mma_hardware_available).  On hardware without native BF16 tensor cores
+-                // (e.g. RDNA2/gfx1030) the tile kernel is the F16 instantiation and the launcher converts
+-                // the bf16 K/V to F16, so the scratch must be reserved (otherwise the conversion writes
+-                // past the node's allocation into the neighbouring buffer).
+-                const int tile_native = ggml_cuda_fattn_tile_kv_native_type(K, V);
+-                tile_type = (tile_native == FATTN_KV_NATIVE_BF16) ? GGML_TYPE_F16
+-                                                                  : ggml_cuda_fattn_native_ggml_type(tile_native);
+-            }
++            // TODO 71: the same ggml_cuda_fattn_tile_type the instantiation
++            // (ggml_cuda_flash_attn_ext_tile_case_type) chooses, so the scratch exists exactly when
++            // the launcher stages into it.  The bf16 arm reaches beyond RDNA2:
++            // bf16_mma_hardware_available is also false on RDNA1 and on pre-Ampere NVIDIA / older
++            // MUSA, where the tile is the F16 instantiation and the launcher converts -- the scratch
++            // must be reserved there too (otherwise the conversion writes past the node's allocation
++            // into the neighbouring buffer).
++            const ggml_type tile_type = ggml_cuda_fattn_tile_type(K, V, ggml_cuda_info().devices[device].cc);
+             need_f16_K = K->type != tile_type;
+             need_f16_V = V->type != tile_type;
+         } break;

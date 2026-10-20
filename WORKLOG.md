@@ -1,5 +1,79 @@
 # WORKLOG - dated delivery records
 
+## 261020.011 (r99) -- TODO #56 fixed (upstream MoE cache callback) and PR #198 (RDNA2 FA follow-ups) promoted
+
+**Release `v12-097cf33d9-r99`**: base `097cf33d9`, canonical tip `6adf0b802`, net tree
+`72d8b21d0dc82525c26f97df77cfa22da7a8cafa`, **12 blocks**.  Blocks 05 and 09 amended, no new block.
+
+### TODO #56 -- the scheduler never invoked the copy callback (block 09) -- FIXED
+
+The delivery's rewritten `ggml_backend_sched_copy_input` kept no `sched->callback_copy` call, and that call
+is the only thing in the tree that drives `llama_moe_cache::copy()`.  With `--moe-cache-mib` set the slot map
+therefore stayed `0xff` (-1) while the graph had already swapped the routed op's `src0` for the cache bank and
+its ids for `GET_ROWS(slot_map, ids)`, so `MUL_MAT_ID` indexed the bank with `-1`: a silent wrong value where
+the page below the bank is mapped (gfx1201, NMSE 4.02e-03) and an HSA page fault where it is not (gfx1151;
+gfx1201 with `GGML_CUDA_ASYNC_INPUT=0`).
+
+Base's call is restored at base's position (after the wait-before-overwrite) and in the branch with no
+`MUL_MAT_ID` consumer, which is where the slot map lands (its consumer is a `GET_ROWS`); the delivery's own
+expert branch (device gather, cache take-over, pruning) is byte-for-byte unchanged, so no host expert table
+can reach the callback.  `llama_context::sched_copy_experts` now answers only for the upstream cache: its
+per-op staging/pruning body and `copy_experts_info` state are deleted (dead since block 09's scheduler took
+that over, and they would double-stage every host expert table now that the callback is wired).
+
+Gates (gfx1201, canonical r99 build): `test-llama-archs -s 42` **375/375** (r98 373/375), also 375/375 with
+`GGML_CUDA_ASYNC_INPUT=0`; the `deepseek2` `MoE cache` row reads **2.10e-10** (the upstream base's own value)
+where r98 read 4.02e-03; host-expert greedy text identical to r98 (35B-A3B `-ncmoe 40`, `4ae79b6e45fc`);
+prefill-logit KLD 0.000000 / 100.000 %.  Inert unless `--moe-cache-mib` is set.
+
+Accepted, recorded in the archive record: the upstream cache's large-batch `copy_experts()` arm stays
+unreached (values identical either way, so a missing upstream optimisation rather than a correctness gap),
+and `--moe-cache-mib` is now correct but slower than `MOE_EXPERT_CACHE_MIB` on this box (decode 50.1 -> 37.8
+t/s on 35B-A3B `-ncmoe 40`), so it is documented as "works, not recommended".  **TODO #56 is closed.**
+Record: `archive/work/todo-56-moe-cache-callback/` (with a `RESOLUTION.md`; the `wip/` entry is deleted, no
+stub left behind).
+
+### PR #198 `rdna2-fa-followups-todo71-72` (`@slavap`) -- PROMOTED into block 05
+
+Two RDNA2 (gfx1030) follow-ups from the review of PR #181, plus the arch-independent half they needed:
+
+- **One tile K/V type selection (TODO 71).**  The tile kernel's K/V type was chosen by hand in two places
+  (the instantiation in `fattn-tile.cu`, the F16 scratch sizing in `fattn.cu`) and had drifted three times.
+  Both now call one `ggml_cuda_fattn_tile_type(K, V, cc)` in `fattn-rdna.cuh`, so "the allocator and the
+  launcher agree" is a property of the code.
+- **Checked tail for the last unchecked tile (TODO 72), RDNA2 only.**  The `ncols2 > 1` branch's last tile
+  takes the already-compiled `oob_check = true` form, so an exact-size operand cannot reach the neighbouring
+  allocation.
+- **The 511-row guard tail is kept**, with its derivation documented (`nbatch_fa <= 256` static-asserted, so
+  the over-read is at most 255 rows; 511 = 2 x 256 - 1).  Comment only, no allocation size changes anywhere.
+
+**Folded, not accepted as the PR's `patches-rdma2/` add-on channel.**  A parallel patch directory with its
+own `release-rdma2.json` and `apply-rdma2.sh` would be a second delivery that `release.json`,
+`apply-all.sh`, `validate-set.sh`, CI and the container images would none of them see; RDNA2 work has been
+folded into block 05 before (PR #181 in r88, PR #165 in the r64-era set).
+
+**Non-RDNA2 reach proven inert before folding** (the maintainer's rule: the three supported arches must not
+move unless that is proven):
+
+| delta | reach | proof |
+|---|---|---|
+| `fattn-tile.cuh` checked tail | gfx103x device pass only | `RDNA2` is defined only for `__gfx103x__` (`vendors/hip.h`); the added block is inside `#if defined(RDNA2)` |
+| `fattn-common.cuh` | comments only | the `if (guard_tail)` code is untouched |
+| `fattn-rdna.cuh` / `fattn-tile.cu` / `fattn.cu` (host) | all arches | 1:1 with the previous selection order; instantiation set unchanged (96 tile objects); four tile TUs compile to **0 differing gfx1201 instructions** (108k-168k instructions each) |
+
+Gates on gfx1201: `test-backend-ops -o FLASH_ATTN_EXT` 6391/6391 with identical per-case results,
+prefill-logit KLD 0.000000 / 100.000 %, greedy text identical to r98, `validate-set.sh` green, per-block build
+green for both amended blocks.  A `gfx1201;gfx1030` dual-target build compiles the RDNA2 arm.  The RDNA2
+runtime gate is the reporter's (V620 gfx1030 and a 7900 XTX gfx1100: FLASH_ATTN_EXT 6389/6389, MUL_MAT
+2444/2444).  Record: `archive/work/rdna2-fa-followups-todo71-72/`.
+
+### Docs
+
+`patches/README.md` block 05 (fetch-ahead already there; the tile-type helper and the RDNA2 tail added) and
+block 09 (the restored callback); `TODO.md` loses #56; `wip/CAMPAIGNS.md` records both promotions;
+`release.json` regenerated (`make-patches.sh` + `make-release.sh`); `validate-set.sh` green (strict `git am`
+from a fresh 097cf33d9 tarball, 12 blocks, tree `72d8b21d`).
+
 ## 261020.010 (r98) -- PR #195 (q8_0 FA fetch-ahead) promoted into block 05; PR #194 declined
 
 **Release `v12-097cf33d9-r98`**: base `097cf33d9`, canonical tip `aafd389b0`, net tree

@@ -20,7 +20,6 @@ is the signature of a stub, not of a campaign.
 
 | directory | what | status |
 |---|---|---|
-| [`todo-56-moe-cache-callback/`](todo-56-moe-cache-callback/README.md) | **TODO #56 root-caused and fixed**: the delivery's rewritten `ggml_backend_sched_copy_input` never invoked `sched->callback_copy`, so the upstream `llama_moe_cache` (`--moe-cache-mib`) never wrote its slot map — the cached layer's `MUL_MAT_ID` then indexed the bank with `-1` (silent wrong values on gfx1201, HSA fault on gfx1151 / with async input off), and a real 35B-A3B `-ncmoe 40 --moe-cache-mib` decode faulted.  Fix = restore the callback in the no-`MUL_MAT_ID`-consumer branch + delete the dead duplicate pruning in `sched_copy_experts`; `test-llama-archs` 373/375 -> **375/375** on gfx1151, delivery-path greedy text byte-identical, no pp/tg delta.  **Self-contained: the patch is included and `git am`s onto r97 cleanly (result tree `520c8489`).** | **FIXED + VALIDATED (gfx1151); patch included, handed to the main host for integration into block 09** |
 | [`three-gpu-performance/`](three-gpu-performance/README.md) | **3-GPU decode is slower than 2-GPU** — MTP and plain, partial and **fully resident** (the former `archive/work/mtp-3gpu-decode/`, closed at r55, **revived** 2026-10-16).  Fresh measurement: 2-GPU 84.4 vs 3-GPU 56.9 t/s at 100 % residency, while 3-GPU prefill is fastest.  Step 0 is to re-run the r55 harness on r73; then the full {2,3} x {plain,MTP} x {partial,fully-resident} x {tensor,layer} grid, then profile the all-reduce / identity path / tensor-split gather | **OPEN (revived 2026-10-16); measurement first** |
 | [`dflash-meta-split-impl/`](dflash-meta-split-impl/README.md) | the **real fix** behind the r54 clean rejection: a Meta distributed `TOP_K` (or a split→mirrored gather) so the DFlash2 selector's `ggml_top_k` can reduce a vocab-split input under `-sm tensor` (TODO #58 follow-up) | **OPEN (seeded 2026-10-13), scoping + design** |
 | [`fp8-support/`](fp8-support/README.md) | native FP8 E4M3 for RDNA4 | PARKED (2026-09-26) — rebased and building, fully RDNA4-gated, but **gate 2 failed** (the fp8 4B is 0.69x Q8_0 where cllm had 1.16x, because the delivery's MMB/GEMM work made Q8_0 +32 % and the fp8 WMMA path did not follow).  Resume actions are in `PLAN.md`.  Not closed — paused behind the delivery work |
@@ -30,6 +29,24 @@ is the signature of a stub, not of a campaign.
 | [`ngram-mod-host-experts/`](ngram-mod-host-experts/README.md) | `ngram-mod` + `draft-mtp-adaptive` roughly halves decode when the MoE experts are host-resident (`-ncmoe`/`-cmoe`, expert cache active); plain `draft-mtp-adaptive` restores the expected rate | **OPEN (seeded 2026-10-14), scoping + measurement** |
 | [`moe-cache-coverage/`](moe-cache-coverage/README.md) | **how much of the routing distribution the arena can hold and how well admission uses it** (renamed from `moe-arena-defrag` 2026-10-17).  P0 (heat-map correctness) shipped in r80; next is the offline routing-trace replayer, then a per-layer capacity quota | **OPEN (renamed + retargeted 2026-10-17)** — the defrag premise was refuted by measurement: the arena is ~100 % allocated in slots (0.51 % truncation) and eviction churn is 3.0 % of reaches, so compaction wins ≤ 0.5 % of bytes.  The same review found the **MoE heat map doubling per flush** (fixed in r80) and showed the Strata hit-rate gap is accounting + arena size, not fragmentation (equal basis: 91.9 % vs 90.6 %).  Plan: P1 offline routing-trace replayer, P2 per-layer capacity quota (0.3-0.5 pts on a clean map, the only strictly-in-arena win), P3 metric parity; arena size handed to `archive/work/slab-transient-absorption/`.  See [`FINDINGS-2026-10-17-coverage-vs-defrag.md`](moe-cache-coverage/FINDINGS-2026-10-17-coverage-vs-defrag.md) |
 
+**Promoted (r99, 2026-10-20).**  PR #198 (`@slavap`, `rdna2-fa-followups-todo71-72`) was promoted into
+**block 05**: one shared tile K/V type selection (the instantiation and the F16 scratch sizing can no longer
+disagree, TODO 71) and an RDNA2-gated checked tail for the last unchecked tile (TODO 72).  Folded rather
+than accepted as the PR's proposed `patches-rdma2/` add-on channel, which `release.json`, `apply-all.sh`, CI
+and the container images would none of them see.  The non-RDNA2 reach was proven inert before folding (the
+checked tail is inside `#if defined(RDNA2)`, the comment hunk is comment-only, the host selection is 1:1 with
+the previous order, the tile instantiation set is unchanged and four tile TUs compile to identical gfx1201
+ISA).  Record: `archive/work/rdna2-fa-followups-todo71-72/`.  See `WORKLOG.md` 261020.011.
+
+**Promoted (r99, 2026-10-20).**  `todo-56-moe-cache-callback/` left `wip/` and is archived at
+`archive/work/todo-56-moe-cache-callback/` with a `RESOLUTION.md`; **TODO #56 is closed**.  The delivery's
+rewritten `ggml_backend_sched_copy_input` never called `sched->callback_copy`, the only driver of the
+upstream `llama_moe_cache` (`--moe-cache-mib`), so its slot map stayed -1 and the cached layer's
+`MUL_MAT_ID` indexed the bank one expert below it (silent wrong values on gfx1201, an HSA fault on gfx1151).
+Folded into **block 09**: base's callback call restored in the no-`MUL_MAT_ID`-consumer branch, and the
+dead duplicate pruning in `sched_copy_experts` deleted.  `test-llama-archs -s 42` **375/375** (was 373/375),
+host-expert greedy text byte-identical, prefill-logit unchanged.  The PR #198 review for the same release is
+recorded below.  See `WORKLOG.md` 261020.011.
 **Promoted (r98, 2026-10-20).**  PR #195 (`@overdoingism`, `rdna4-band-fetch-ahead`) was promoted into
 **block 05**: with q8_0 K and V read in place (decode/verify, head 256) the RDNA4 band runs a kernel
 variant that fetches the next K/V batches into registers ahead of use and orders only shared memory at

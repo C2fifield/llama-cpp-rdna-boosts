@@ -237,6 +237,12 @@ almost all of them `template-instances/*.cu`.
   also waits for every outstanding global load and would drain the fetches.  Two generated translation
   units of its own (so the kernels without it compile to the same gfx1201 ISA), default on.  The
   instantiation rule the two generated files follow is in **Facts that span blocks**, below.
+* **One tile K/V type selection + an RDNA2 checked tail (r99, PR #198)**: `ggml_cuda_fattn_tile_type(K, V, cc)`
+  is the single source for both the tile instantiation and the F16 scratch sizing (they had drifted three
+  times: the missing q4_0 arm, the mixed-K/V NaNs, the missing RDNA2 bf16 scratch).  On RDNA2 the last tile
+  of the unchecked `ncols2 > 1` branch takes the already-compiled `oob_check = true` form, so an exact-size
+  operand (test-backend-ops) cannot read into the neighbouring allocation; every other target compiles the
+  branch unchanged.  The 511-row guard tail stays with its derivation documented.
 * **Fully-masked KV group skip** (`GGML_CUDA_FA_MASK_SKIP`, prefill only) — exact zeros, bit-identical.
 * **Hygiene**: the `(512, 512, 32)` RDNA MMA row retuned to a 4-warp shape (issue #188, Gemma-4 head-512
   prefill), the RDNA2 (gfx1030) gate fixes of PR #181, the masked-V HIP fixes, and the FA staging arena
@@ -369,6 +375,14 @@ whatever VRAM is left.
   read's split arithmetic instead of asserting `offset == 0` and one segment, so a caller can batch many
   per-device reads behind one `synchronize`.  Calls that worked before issue the same copies as before.
   The caller is block 11's batched state save.
+* **The copy callback is invoked again, so the upstream MoE cache works** (r99, TODO #56).  This block's
+  rewrite of `ggml_backend_sched_copy_input` kept no `sched->callback_copy` call, and that call is the only
+  driver of `llama_moe_cache::copy()`: with `--moe-cache-mib` set the slot map stayed `-1` while the graph had
+  already swapped the routed op's `src0` for the cache bank, so `MUL_MAT_ID` indexed one expert below the bank
+  (wrong values on gfx1201, an HSA fault on gfx1151).  Base's call is restored at base's position and in the
+  branch with no `MUL_MAT_ID` consumer (where the slot map lands); the delivery's own expert branch is
+  unchanged.  `sched_copy_experts` answers only for the upstream cache now.  Inert unless
+  `--moe-cache-mib` is set; the upstream engine is correct but slower than `MOE_EXPERT_CACHE_MIB`.
 * **The host-expert account keys a real device only** (r97): `moe_host_expert_account` skips a host
   buffer type that carries no device.  `ggml_backend_cpu_buffer_type()` is the plain **pageable** CPU
   buffer and has `.device = NULL` upstream (the FIXME in `ggml-backend.cpp`), so a CPU-only run, or

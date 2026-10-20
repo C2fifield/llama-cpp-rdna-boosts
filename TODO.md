@@ -275,53 +275,6 @@ in the README "Recommended configuration" section.  Working home
 per-op host-expert upload, the MoE cache band and verify graph recapture, the staging-ring width; bisect
 plan in that README).
 
-## 56. `test-llama-archs -a deepseek2` GPU memory fault with host experts + `--moe-cache-mib` — CORRECTNESS
-
-Opened 2026-10-12 (maintainer decision 2026-10-12: recorded as a known issue).  `test-llama-archs -a
-deepseek2` (the only arch the upstream test gives a host-expert / MoE-cache config) aborts with a GPU
-memory access fault during the `deepseek2 / MoE cache` config's first decode:
-
-```
-kernel: void mul_mat_vec_f<float, float, 1, 64, false, true>(...)   # multi-token MUL_MAT_ID
-Memory access fault ... faulting addr: 0x7f…  (a HOST/pinned range)
-```
-
-The MUL_MAT_ID kernel reads the pinned host expert table (`ROCm_Host`) past its mapping.  Bisected with
-fixed seed `-s 42`: upstream base `097cf33d9` **PASS 7/7**; v2 reorg block 08 `a32c95a6e` **PASS**; block 09
-`4463f18c7` (`slab-moe`) **FAULT**; the reference tip `84058162b` **also FAULTS** with the identical
-signature.  A **pre-existing defect inside the block-09 MoE stack** (pinned host-expert loader / Meta /
-scheduler / cache hooks), not a reorg or block-10 artifact.
-
-The test's cache is the **upstream** engine (`ctx_params.moe_cache_size` / `--moe-cache-mib`), not the
-delivery's `MOE_EXPERT_CACHE_MIB` engine — which is why `GGML_CUDA_SLAB=0`, `MOE_EXPERT_CACHE_MIB=0`,
-`MOE_EXPERT_CACHE_FILL=0`, `GGML_CUDA_DISABLE_FUSION=1` and `GGML_CUDA_GRID_STALL_PAD=0` are all inert
-here (the grid-pad / `nrows`-guard and `batched_reduce` hypotheses are excluded).
-
-**gfx1201 / ROCm 10.1 re-check (r97, 3x R9700).**  This matters more than it used to: until r97 the
-`deepseek2` arch test could not reach these rows on gfx1201 at all (it aborted at context creation on the
-device-less host-buft accounting, then at graph build on the reserve stream count), so the fault was only
-ever seen on `gfx1151`.  With both of those fixed the rows now run here, and the failure mode is a **numeric
-mismatch, not a fault**: `MoE cache` and `MoE cache, layer split` read NMSE **4.02e-03** (base `097cf33d9`:
-2.10e-10, 7/7 pass) and the run completes.  The rows are otherwise insensitive to the delivery's own knobs
-(`MOE_EXPERT_CACHE_MIB=0`, `GGML_CUDA_SLAB=0`, `GGML_SCHED_STAGE=0`, `GGML_SCHED_MOE_DUP_SPLIT=0`,
-`GGML_MOE_CACHE_STAGE=0`, `GGML_MOE_CACHE_MAX_TOK=1`, `GGML_CUDA_DISABLE_FUSION=1` all give the same
-4.02e-03), and `test-backend-ops -o MUL_MAT_ID` is 947/947 — i.e. still the block-09 plumbing around the
-upstream engine, now with a small deterministic error instead of a fault.
-
-**The fault DOES reproduce on gfx1201** — with `GGML_CUDA_ASYNC_INPUT=0` (the async graph-input ring off):
-the same `MoE cache` row dies with the recorded signature
-(`HSA_STATUS_ERROR_MEMORY_FAULT`, `mul_mat_vec_f<float, float, 1, 64, false, true>`, faulting address in a
-host/pinned range) instead of returning 4.02e-03, and the run is aborted.  That arm only became usable in
-r97 (it used to die earlier in `ggml_cuda_async_input_copy_locked`, see `WORKLOG.md` 261020.008), so this is
-the first gfx1201 reproduction of the recorded fault.  Both arms therefore point at the same block-09
-defect: an out-of-bounds/stale read of the pinned host expert table by the routed `MUL_MAT_ID` kernel, which
-is silently tolerated (wrong values) on the default path and faults when the input staging differs.
-
-**Fix direction:** root-cause the delivery's backend plumbing that the upstream `llama_moe_cache` engine
-rides on (scheduler routed-expert rebalance / merged per-layer MoE split, Meta delegation, the pinned
-`ROCm_Host` loader, `stage_*`/preflight), under the `--moe-cache-mib` + `--host-experts` path.  Full
-diagnosis: `archive/work/patch-block-reorg/PHASE1-STATUS.md` §15.
-
 ## 55. Remove the full pinned `ROCm_Host` master when `--host-experts pool` is on — MEMORY
 
 Opened 2026-10-11; scoping.  The r49 mmap reclaim (block 06) removed the mmap half of the `-ncmoe` host
