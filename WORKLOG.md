@@ -1,5 +1,83 @@
 # WORKLOG - dated delivery records
 
+## 261020.006 (r95) -- rdna3-verify-fusions promoted: the verify-band fusions on RDNA3_0 too (PR #192 + PR #193)
+
+**Release `v12-097cf33d9-r95`**: base `097cf33d9`, canonical tip `fe1befcf7`, net tree
+`5129694738a265725473fb173ad0cbfedc472c98`, **12 blocks**.  Blocks 09 and 10 amended, no new block, no
+new environment variable.  Campaign record: `archive/work/rdna3-verify-fusions/` (moved out of `wip/`
+with this release; its `wip/CAMPAIGNS.md` row is gone, no stub).
+
+**What landed.**  Two contributor PRs from `@briansp2020` that grant **RDNA3_0 (gfx1100-1102)** the
+two..eight-token verify-band fusions that had been RDNA4-only since r78.  **Block 09** takes the batched
+f32 `GGML_OP_CPY` run (`cpy-batch.cu`/`.cuh`: up to 16 consecutive same-layout copies as one launch,
+element copies in `ggml_cpy`'s flat order).  **Block 10** takes the Q8_1 pre-quantize fusions through
+`ggml_cuda_should_fuse_mul_mat_vec_q(..., verify_band)` -- the single predicate all three share (residual
+`ADD` + `rms_norm` -> Q8_1, plain `rms_norm` -> Q8_1, gated unary -> Q8_1, plus the `GLU` -> Q8_1 mark)
+-- and the direct GDN conv for 2..255-token verify batches (`gdn-conv.cu`'s `verify_ok`), which keeps its
+pre-existing single-device restriction.  Comment updates in `ggml-cuda.cu`/`ggml-cuda-try-fuse.cu` ride
+along.  Every gate reads `(RDNA4 || RDNA3_0)`, so RDNA4 and every other backend keep the path they had;
+**RDNA3_5 is excluded** by the macro (`0x1100 <= cc < 0x1150`), and only host-side predicates changed --
+no device-code path was touched.
+
+**Fold.**  `git blame` on the pre-fold 12-block tip confirmed ownership (no lines had moved):
+`cpy-batch.*` -> block 09, the other four files -> block 10, each with a `Fold (r95):` note.  Blocks 00-08
+came out as **identical commit objects** and block 11's delta is byte-identical, so the fold cannot have
+changed anything else.  The pre-fold tree (r94 + the two contributor commits) and the folded tree are
+both `5129694738a265725473fb173ad0cbfedc472c98`.  Regenerated with `make-patches.sh` +
+`make-release.sh`; `validate-set.sh` green (checksums, strict 12/12 `git am` on a fresh tarball, applied
+tree `5129694738`).
+
+**Release gates.  gfx1100 (RX 7900 XTX, ROCm 10.1.0-gfx1100), the platform the change targets** -- all
+arms are same-binary A/B (default vs `GGML_CUDA_FUSE_Q8_1_VERIFY=0 GGML_CUDA_FUSE_GDN_CONV_VERIFY=0
+GGML_CUDA_FUSE_CPY_BATCH=0`, i.e. the r94 path):
+
+- `test-logits-width-probe` `W=1..8`, `q8_0` KV: **6/6 cells PASS, worst maxdiff 0, default == all-off**
+  -- 27B P=256 `c37241bd00c1d561`, 27B P=3584 `86541410b7c618b0`, 30B-A3B P=256 `899608bf91600e1b`,
+  30B-A3B P=3584 `63ee46bb518130a7`, 35B-A3B P=256 `423a5f353f0a0e45`, 35B-A3B P=3584
+  `6cdc0c5a6601264d`.  The four hashes the candidate note recorded reproduce exactly.
+- greedy text, 400 tokens, seed 42, temp 0: `none == draft-mtp n3` on 27B prose (`0f57c09e9ce2`),
+  35B-A3B prose (`4111be939ff4`) and 27B code (`cfcc349aaa5a`).
+- four-axis adaptive-MTP gate, `-n 3000`, reasoning pinned (27B Q4_K_M, 12k ctx, q8_0 KV), default vs
+  all-off: **R +3.6 % (71.3/68.8), P +3.3 % (92.6/89.6), C +3.8 % (99.1/95.5), K +3.7 % (108.3/104.4)**,
+  and the phase-switching prompt **+3.9 % (76.8/73.9)** -- no axis regresses.  Acceptance on the R axis
+  (`--log-verbosity 4`): **0.52065** (1828/3511), mean len 2.56, acc per pos (0.722, 0.500, 0.340), far
+  above the ~0.45 pos-1 floor, so no draft-vs-verify divergence.
+- `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8`, q8_0 KV, 3 interleaved rounds (27B UD-IQ3_S -- the
+  Q4_K_M arm OOMs a single 24 GiB card at the rs cache): **B=1 flat** (49.45/49.49 vs 49.60/49.50),
+  **B=4 +3.2/+3.4 %** (139.5/139.8 vs 135.1/135.2), **B=8 +2.2/+2.8 %** (178.1/178.2 vs 173.3/174.4).
+- `gate-prefill-logits.sh --ab "<all three off>"`: mean KLD **-0.000000**, same-top-p **100.000 %** (PASS).
+- `test-backend-ops -b ROCm0 -o RMS_NORM,ADD,MUL_MAT,CPY,CONCAT,SSM_CONV`: **3130/3130**, 2/2 backends.
+- `check-gpu-faults.sh` over every log plus the kernel journal: clean.
+
+**gfx1201 (RDNA4), must be byte-identical to r94** -- coherence `1c5d32ac537d` (r94 binary == folded
+binary == the r94 record); width probe 27B Q8_0 `0183b188feb7435c` (P=256) and `469018da1cb5f614`
+(P=3584), identical r94 vs folded, PASS maxdiff 0; `gate-prefill-logits.sh` **0.000707 / 98.755 %** for
+both binaries (identical); `test-backend-ops` subset 3130/3130; GDN model + MTP under
+`-sm tensor -ncmoe 40` (the config where `cpy_batch` fires 1350 times) text `6586f4fafda3` identical;
+faults clean.  Nothing leaked.
+
+**gfx1151 (RDNA3_5), must be inactive** -- both trees built; coherence `1c5d32ac537d` for r94 and
+folded; width probe 35B-A3B Q3_K_M P=256: r94 == folded == folded-all-off `5de85975d341f80f`, PASS
+maxdiff 0; prefill-logit (9B Q6_K, ctx 512 x 40 chunks) **0.000000 / 100.000 %** on both trees; MTP n3
+text `ddfdb23c0607` identical, the only `GDN_CONV_DIRECT` line is the pre-existing `C=8192 T=512` prefill
+conv (identical in both), and `GGML_CUDA_FUSE_CPY_BATCH_DEBUG=1` prints **no** `cpy_batch` run.  All three
+fusions are inert as designed.
+
+**Per-block build** -- `gate-per-block-build.sh --changed-from r94-ref`: blocks 00-08 unchanged (identical
+commits), 09/10/tip selected and built: **3/3, 0 failed**.
+
+**Accepted open gaps (maintainer decision, 2026-10-20).**  The batched f32 CPY half is **not**
+single-device restricted and is an actively used multi-device path: on 3x gfx1201 with the GDN model +
+MTP, `GGML_CUDA_FUSE_CPY_BATCH_DEBUG=1` shows **450 `cpy_batch` runs under `-sm layer` and 1350 under
+`-sm tensor`**, default-on.  No RDNA3_0 multi-GPU box exists in the fleet (fingon is one gfx1100 plus a
+gfx1036 iGPU, halo is gfx1151), so **RDNA3_0 multi-device was not measured**; the decision is to ship
+default-on because the code is arch-identical and the RDNA4 multi-device path is heavily exercised, and
+**community members running multiple gfx1100 cards will report**.  **gfx1101-gfx1102 are inside the arch
+predicate but were not explicitly validated** (neither the author nor this release tested them).  Record:
+`archive/work/rdna3-verify-fusions/RESOLUTION.md`.
+
+**PR responses.**  Both PRs are commented with the release, the gates and the open gaps, and closed.
+
 ## 261020.005 (r94) -- publication record (tag, CI, fork refresh, worker image build)
 
 **`v12-097cf33d9-r94` is published.**  Annotated tag `2241ac5e3…` on commit `a74836e`; delivery `main`

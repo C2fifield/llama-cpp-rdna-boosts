@@ -12,11 +12,12 @@ Details never live here: they live in `AGENTS.md`, `patches/README.md`, `MANIFES
 still means the same subject after that item is closed and removed from this file.  New items append.
 
 **Current state:** the **12-block V2.0 set** (block 00 + blocks 01-11) at fork point **`097cf33d9`**,
-release **`v12-097cf33d9-r94`**.  `release.json` is the source of truth for the tip/tree and hashes; the
+release **`v12-097cf33d9-r95`**.  `release.json` is the source of truth for the tip/tree and hashes; the
 top of `WORKLOG.md` is the newest record.
 
 | # | subject | kind | status |
 |---|---|---|---|
+| **79** | RDNA3_0 verify-band fusions: no multi-device measurement, and gfx1101/gfx1102 untested | platform validation | open (shipped default-on in r95; needs a 2+ card gfx1100 box) |
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | open |
 | **72** | the unchecked `ncols2 > 1` tile load can over-read a natively-read K/V operand | correctness | open (RDNA2 only) |
@@ -40,6 +41,33 @@ top of `WORKLOG.md` is the newest record.
 Accepted limitations that are deliberately **not** fixed are listed at the end — do not re-report them.
 
 ---
+
+## 79. RDNA3_0 verify-band fusions: the multi-device arm and gfx1101/gfx1102 are unmeasured — PLATFORM VALIDATION
+
+**Status: open, accepted limitation.  Shipped default-on in r95 on the maintainer's decision**
+(`WORKLOG.md` 261020.006, record `archive/work/rdna3-verify-fusions/RESOLUTION.md`).  Not a suspected
+defect: the change is arch-identical code behind a host predicate and every single-GPU gate is green
+(gfx1100 `W=1..8` maxdiff 0 on six model/prefix cells, `none == draft-mtp`, same-binary kill-switch
+identity, prefill-logit KLD 0.000000).
+
+Two gaps, both needing hardware the fleet does not have:
+
+1. **RDNA3_0 multi-device.**  The batched f32 `GGML_OP_CPY` fusion is **not** single-device restricted and
+   it is an actively used multi-device path: on 3x gfx1201 with the GDN model + MTP,
+   `GGML_CUDA_FUSE_CPY_BATCH_DEBUG=1` shows **450 runs under `-sm layer` and 1350 under `-sm tensor`**.
+   The RDNA4 multi-device path is therefore heavily exercised, but the same code on a 2+ card gfx1100
+   box was never run.  What to run: a GDN model with MTP (`draft-mtp`, n-max 3) under both `-sm tensor`
+   and `-sm layer`, plus `test-logits-width-probe` with `SPLIT=tensor`, comparing default against
+   `GGML_CUDA_FUSE_CPY_BATCH=0`.  `fingon` is one gfx1100 plus a gfx1036 iGPU and `halo` is gfx1151, so
+   neither is a valid host.  Community members running multiple gfx1100 cards are expected to report.
+   If a multi-device failure does appear, `GGML_CUDA_FUSE_CPY_BATCH=0` is the immediate workaround and
+   restricting that fusion to `get_device_count() <= 1` on RDNA3_0 is the local fix.
+2. **gfx1101 / gfx1102.**  `GGML_CUDA_CC_IS_RDNA3_0` covers `0x1100 <= cc < 0x1150`, so gfx1101 (RX
+   7800 XT / 7700) and gfx1102 (RX 7600) take the same fusions, but neither the PR author nor the r95
+   release ran them.  There is no such card in the fleet.  The same `W=1..8` probe and kill-switch A/B
+   is the check if one becomes available.
+
+**Do not re-report as a bug without one of those runs.**
 
 ## 78. DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix
 

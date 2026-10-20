@@ -1,4 +1,4 @@
-From cae09f81e2b8d094a03531b7083a9d8dce9a1245 Mon Sep 17 00:00:00 2001
+From 933a8de28f2158f39ebbaf07e2d82b5c3bb829cb Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -74,6 +74,12 @@ explicit `GGML_CUDA_SLAB_RESERVE_MIB` (bounded by construction).  A discrete GPU
 gfx1201 35B-A3B `-ncmoe 40` loads with identical preflight/SLAB_INIT/arena lines; coherence and
 the prefill-logit gate are unchanged (guard == `MOE_EXPERT_CACHE_MIB=0`).
 Record: archive/work/umem-arena-guard/.
+
+Fold (r95): rdna3-verify-fusions (PR #193, briansp2020): the batched f32 CPY run is admitted
+on RDNA3_0 as well (GGML_CUDA_CC_IS_RDNA3_0 alongside GGML_CUDA_CC_IS_RDNA4; RDNA3_5 stays
+out).  One launch for up to 16 same-layout copies, element copies in ggml_cpy's flat order:
+bit-identical.  The fusion is inactive where a split's concurrent events are live, and
+GGML_CUDA_FUSE_CPY_BATCH=0 still turns it off.
 ---
  common/CMakeLists.txt                         |    2 +
  common/arg.cpp                                |   21 +-
@@ -99,7 +105,7 @@ Record: archive/work/umem-arena-guard/.
  ggml/src/ggml-cpu/ggml-cpu.cpp                |  205 +-
  ggml/src/ggml-cuda/CMakeLists.txt             |    6 +
  ggml/src/ggml-cuda/common.cuh                 |  625 +-
- ggml/src/ggml-cuda/cpy-batch.cu               |  108 +
+ ggml/src/ggml-cuda/cpy-batch.cu               |  109 +
  ggml/src/ggml-cuda/cpy-batch.cuh              |    9 +
  ggml/src/ggml-cuda/ggml-cuda-vmm.h            |   87 +
  ggml/src/ggml-cuda/ggml-cuda.cu               | 2494 +++++++-
@@ -140,7 +146,7 @@ Record: archive/work/umem-arena-guard/.
  src/llama.cpp                                 |   16 +-
  tools/cli/cli.cpp                             |    6 +
  tools/llama-bench/llama-bench.cpp             |   65 +-
- 65 files changed, 14001 insertions(+), 400 deletions(-)
+ 65 files changed, 14002 insertions(+), 400 deletions(-)
  create mode 100644 common/draft-reserve.cpp
  create mode 100644 common/draft-reserve.h
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
@@ -6157,10 +6163,10 @@ index 0354d673d..bb8794527 100644
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cu b/ggml/src/ggml-cuda/cpy-batch.cu
 new file mode 100644
-index 000000000..fbdcdc213
+index 000000000..18baf8cab
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cu
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,109 @@
 +#include "cpy-batch.cuh"
 +
 +namespace {
@@ -6226,7 +6232,8 @@ index 000000000..fbdcdc213
 +} // namespace
 +
 +int ggml_cuda_cpy_batch(ggml_backend_cuda_context & ctx, ggml_cgraph * cgraph, const int i) {
-+    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) return 0;
++    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
++    if (!cb_on() || !(GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3_0(cc))) return 0;
 +    ggml_tensor * first = cgraph->nodes[i];
 +    if (!cb_member(first)) return 0;
 +    // the run: copies with the first one's layouts, possibly separated by no-op view nodes (consumed with the run)
@@ -6271,13 +6278,13 @@ index 000000000..fbdcdc213
 +}
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cuh b/ggml/src/ggml-cuda/cpy-batch.cuh
 new file mode 100644
-index 000000000..867c8010d
+index 000000000..ab3d8065a
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cuh
 @@ -0,0 +1,9 @@
 +#pragma once
 +#include "common.cuh"
-+// Batched copy (RDNA4; GGML_CUDA_FUSE_CPY_BATCH=0 turns it off): runs a run of consecutive f32 GGML_OP_CPY nodes that
++// Batched copy (RDNA4 / RDNA3_0; GGML_CUDA_FUSE_CPY_BATCH=0 turns it off): runs a run of consecutive f32 GGML_OP_CPY nodes that
 +// share the source shape / strides and the destination shape / strides (only the data addresses differ) as one launch, e.g. the
 +// per-position DeltaNet conv-state snapshots of a speculative verify batch (one copy per drafted position and layer).  Element
 +// copies in ggml_cpy's flat order: bit-identical.

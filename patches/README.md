@@ -352,6 +352,15 @@ whatever VRAM is left.
 * Host-side: mmap reclaim (`LLAMA_LOAD_RELEASE_MMAP`), rear-fill host layers
   (`LLAMA_HOST_EXPERTS_FROM_END`), `--host-experts pool` (`MOE_HOST_POOL_MIB`), a second draft scheduler
   (`LLAMA_DRAFT_SCHED2`), compute-buffer drop/re-reserve, and the CPU MoE-offload thread cap.
+* **The batched f32 CPY run** (`cpy-batch.cu` / `.cuh`, r95): a run of up to 16 consecutive same-layout
+  f32 `GGML_OP_CPY` nodes (the per-position DeltaNet conv-state snapshots of a speculative verify batch
+  are the motivating shape) as **one launch**, element copies in `ggml_cpy`'s flat order, so
+  bit-identical.  Admitted on **RDNA4 and RDNA3_0 (gfx1100-1102; gfx1101-gfx1102 not explicitly
+  validated)**, `GGML_CUDA_FUSE_CPY_BATCH=0` disables it, and the marker `GGML_CUDA_FUSE_CPY_BATCH_DEBUG=1`
+  prints every run.  `ggml_cuda_cpy_batch_try_fuse` (block 10) is the caller; the fusion is skipped while
+  a split's concurrent events are live, but it still fires heavily on a multi-device graph (measured
+  ~450 runs under `-sm layer` / ~1350 under `-sm tensor` per 60-token MTP run on 3x gfx1201).
+  RDNA3_0 multi-device is an **open, accepted gap** (no RDNA3_0 multi-GPU box).
 * **The appended device-iface fills.**  Every `ggml_backend_device_i` / `ggml_backend_i` entry this set adds
   (`stage_gather`, `slab_ring_set`, `slab_narrow_floor`, `slab_reserve_wide`, `slab_narrow2_floor`,
   `slab_compute_narrow2`, `slab_compute_plain`, the slab-ring hooks, `moe_cache_*`) is wired here as a real
@@ -401,6 +410,16 @@ fusions.
 * **The fusion dispatcher** (`ggml-cuda-try-fuse.cu`): the matcher arms moved out of `ggml-cuda.cu`.
 * **Rope/FWHT fusions** (M-RoPE and NEOX, with the q8_0 K/V cache `SET_ROWS` folded in), the paired GDN
   q/k norms, and the `ADD + rms_norm_q8_1` one-token fusion (`GREEDY-PURITY.md` §42).
+* **The verify-band arch extension** (r95, PR #192 + PR #193):
+  `ggml_cuda_should_fuse_mul_mat_vec_q(..., verify_band = true)` admits **RDNA3_0** as well as RDNA4 via
+  one `verify_band_arch` term.  That predicate is the single gate the three 2..8-token Q8_1
+  pre-quantize fusions share — residual `ADD` + `rms_norm` → Q8_1, plain `rms_norm` → Q8_1, and gated
+  unary → Q8_1 (plus the `GLU` → Q8_1 mark) — so one change admits all of them; their kernels are
+  row-generic and write the values `quantize_q8_1` writes, so `W = 1..8` stay bit-identical.
+  `gdn-conv.cu`'s `verify_ok` takes the same `(RDNA4 || RDNA3_0)` form, so the direct GDN conv covers
+  the 2..255-token verify batches too and keeps its pre-existing single-device restriction.
+  `GGML_CUDA_FUSE_Q8_1_VERIFY=0` / `GGML_CUDA_FUSE_GDN_CONV_VERIFY=0` still disable them; RDNA3_5 is
+  excluded by the macro (`0x1100 <= cc < 0x1150`).
 * **Async graph-input ring**: batched uploads + lazy done event (PR #182), and the r90 fix that snapshots
   the source through the pinned ring — the scheduler uses `set_tensor_async` for a *CPU split's* output,
   which the next ubatch rewrites, so a direct copy from the caller's live pointer could read the next

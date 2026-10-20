@@ -94,8 +94,8 @@ on the tip.
 | 06 | `test-backend-ops -o MUL_MAT` (MMQ cases) + prefill A/B | pass; prefill not slower at depth |
 | 07 | `test-backend-ops -o MUL_MAT`/`MUL_MAT_ID` (K-quant cases); `llama-perplexity` before/after | pass; **PPL must be unchanged** (it is a numerics change, not a quality change) |
 | 08 | `test-backend-ops -o MUL_MAT_ID`; MoE decode + `llama-batched-bench -npl 1,4,8`; width probe on a MoE model | pass; one hash across the band; verify widths not slower than stock-relative |
-| 09 | host-expert coherence (`-ncmoe`/`-cmoe`), `test-llama-archs`, `MOE_EXPERT_CACHE_VALIDATE=1` | pass; no `////`, no fault; cache-on == cache-off text |
-| 10 | `test-backend-ops -o FLASH_ATTN_QSA` (18/18 minimum); `test-llama-archs -a qwen4exp`; sparse-vs-dense perplexity ratio (`LLAMA_QSA_SPARSE_FA=0`); `scripts/gate-qwen4exp-quant-coherence.sh` | pass; ratio close to 1 |
+| 09 | host-expert coherence (`-ncmoe`/`-cmoe`), `test-llama-archs`, `MOE_EXPERT_CACHE_VALIDATE=1`; for the batched f32 CPY: `test-logits-width-probe` default vs `GGML_CUDA_FUSE_CPY_BATCH=0` | pass; no `////`, no fault; cache-on == cache-off text; probe maxdiff 0 and identical hashes |
+| 10 | `test-backend-ops -o FLASH_ATTN_QSA` (18/18 minimum); `test-llama-archs -a qwen4exp`; sparse-vs-dense perplexity ratio (`LLAMA_QSA_SPARSE_FA=0`); `scripts/gate-qwen4exp-quant-coherence.sh`; for the verify-band fusions: `test-logits-width-probe` default vs `GGML_CUDA_FUSE_Q8_1_VERIFY=0` + `GGML_CUDA_FUSE_GDN_CONV_VERIFY=0` | pass; ratio close to 1; probe maxdiff 0 and identical hashes (`GREEDY-PURITY.md` §11) |
 | 11 | dense coherence + the block's own arm (DFlash/CPU/mmap): `-ncmoe` peak-RSS check with and without the reclaim | identical text; RSS as recorded in `patches/README.md` |
 
 ## Failure handling (agent instruction)

@@ -58,7 +58,7 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 | **§8** | practical guidance: how to reproduce stock bits, and how to A/B | doctrine |
 | **§9** | the fused-MoE `mmvq` rewrite is a **second** decode-numerics source | doctrine |
 | **§10** | block 00 makes the verify width irrelevant on the small-batch FA path | doctrine |
-| **§11** | the guarantee is `n_max <= 7`; the causes are one fixed AR dispatch and one deliberate kernel switch | current |
+| **§11** | the guarantee is `n_max <= 7`; the causes are one fixed AR dispatch and one deliberate kernel switch, and since r95 the RDNA3_0 band takes the same fusions | current |
 | **§12** | the guarantee depends on the KV-cache type | fix + trade |
 | **§13** | qwen4exp's hyper-connection band is `1 <= nt <= 8` | fix |
 | **§14** | F1: the FA chooser spanned VEC and TILE inside the band — one family now | fix |
@@ -215,6 +215,33 @@ evidence *for* purity, never *against* divergence — near-ties are rare).  Abov
 acceptance + MTP-vs-plain throughput; adaptive MTP's `n_max = 12` is deliberately outside.  Upstream is
 worse: on `9cf3bf256` (CPU) it diverges at the first width step.
 
+**RDNA3_0 joins the band (r95).**  The boundary above is about the *kernels* a width selects, not about
+an architecture, so RDNA3_0 (gfx1100-1102) takes the same verify-band fusions RDNA4 has had since r78:
+the 2..8-token Q8_1 pre-quantize fusions (through the one `ggml_cuda_should_fuse_mul_mat_vec_q(...,
+verify_band)` predicate all three share), the direct GDN conv for 2..255-token batches, and the batched
+f32 `GGML_OP_CPY` run.  It is a **purity** claim, not only a performance one, and it is measured at the
+widths:
+
+| gfx1100, `KV=q8_0`, default vs all three fusions off | row 0, `W=1..8` | verdict |
+|---|---|---|
+| 27B UD-Q4_K_M, P=256 | `c37241bd00c1d561` (both arms) | PASS, worst maxdiff 0 |
+| 27B UD-Q4_K_M, P=3584 | `86541410b7c618b0` (both arms) | PASS, worst maxdiff 0 |
+| 30B-A3B Q4_K_M, P=256 | `899608bf91600e1b` (both arms) | PASS, worst maxdiff 0 |
+| 30B-A3B Q4_K_M, P=3584 | `63ee46bb518130a7` (both arms) | PASS, worst maxdiff 0 |
+| 35B-A3B Q4_K_M, P=256 | `423a5f353f0a0e45` (both arms) | PASS, worst maxdiff 0 |
+| 35B-A3B Q4_K_M, P=3584 | `6cdc0c5a6601264d` (both arms) | PASS, worst maxdiff 0 |
+
+Same-binary kill-switch identity: default, `GGML_CUDA_FUSE_Q8_1_VERIFY=0`,
+`GGML_CUDA_FUSE_GDN_CONV_VERIFY=0`, `GGML_CUDA_FUSE_CPY_BATCH=0` and all three off give the same per-`W`
+hashes in every cell above; greedy text at 400 tokens is identical for `none` and `draft-mtp n3` (27B
+prose `0f57c09e9ce2`, 35B-A3B prose `4111be939ff4`, 27B code `cfcc349aaa5a`); prefill-logit is mean KLD
+`-0.000000` / same-top-p `100.000 %`; and acceptance does not move (R axis `0.52065`, acc per pos
+(0.722, 0.500, 0.340)).  RDNA3_5 stays excluded (`0x1150` is outside `GGML_CUDA_CC_IS_RDNA3_0`) and was
+verified inert on gfx1151 (same `W=1..8` hashes as r94 and as all-off, no `cpy_batch` run, no
+`GDN_CONV_DIRECT` for the verify band).  **gfx1101-gfx1102 are inside the predicate but are not
+explicitly validated**, and RDNA3_0 multi-device is an accepted open gap (`TODO.md` #79,
+`archive/work/rdna3-verify-fusions/RESOLUTION.md`).
+
 Record: `archive/work/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md` Part 3; narrative
 `archive/docs/GREEDY-PURITY-FINDINGS.md` §11.
 
@@ -313,6 +340,17 @@ whatever the "faster" path saved.
    follow-up, land the purity fix first, and prefer the side whose arithmetic is the **decode** side.
 
 **Corollary:** a "win" measured before a purity fix may have been measured with a width-dependent path.
+
+**Addendum (2026-10-20, r95) — admitting an architecture to a band is a purity claim, so it is gated at
+the widths.**  Extending the verify-band fusions to RDNA3_0 (PR #192 + PR #193) is not a perf-tuning
+change: it decides *which arithmetic the RDNA3_0 verify batch runs*, so the deliverable evidence is the
+`W = 1..8` probe, not a throughput number.  The design that made it safe is that every fusion was
+already **bit-identical to the path it replaces** — the Q8_1 pre-quantize kernels write the values
+`quantize_q8_1` writes, the GDN conv keeps its 4-tap order and `silu` with the snapshot tail still
+materialised, and the batched CPY copies in `ggml_cpy`'s flat order — so no kernel had to change, only
+the arch predicate.  Gate any future arch admission the same way: one predicate, the probe on every
+model class the band reaches, `none == draft-mtp`, and the same-binary kill-switch identity.  Numbers
+and hashes: §11; record `archive/work/rdna3-verify-fusions/RESOLUTION.md`.
 
 **Addendum (2026-10-20, r93) — a shape-scoped launch parameter must be forwarded to every kernel that
 reproduces that launch.**  The fused single-token kernels (`ssm_gate_beta`, `ssm_conv_l2_gatebeta`,

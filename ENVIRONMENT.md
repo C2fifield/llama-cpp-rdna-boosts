@@ -352,6 +352,20 @@ behaviour); the fused kernel's values are those of the unfused `k_bin_bcast` + `
 the same-seed text is byte-identical either way.  Not reached on Qwen3.6-35B-A3B, whose residual add is
 already consumed by the fused shared-expert output epilogue.
 
+**Arch scope of the three verify-band switches (r95).**  `GGML_CUDA_FUSE_Q8_1_VERIFY`,
+`GGML_CUDA_FUSE_GDN_CONV_VERIFY` and `GGML_CUDA_FUSE_CPY_BATCH` gate the **verify band** (2..8-token
+Q8_1 pre-quantize fusions, the direct GDN conv for 2..255-token batches, and the batched run of up to 16
+same-layout f32 `GGML_OP_CPY` nodes) on **RDNA4 and RDNA3_0 (gfx1100-1102)**.  They were RDNA4-only
+until r95 (PR #192 + PR #193); gfx1101-gfx1102 are inside the arch predicate but are **not explicitly
+validated**, and **RDNA3_5 is excluded** (`GGML_CUDA_CC_IS_RDNA3_0` is `0x1100 <= cc < 0x1150`).
+Every one of them is a default-on kill-switch: `=0` restores the pre-r95 RDNA3_0 path.  The three are
+bit-identical to the paths they replace (gfx1100 `W = 1..8` width-probe maxdiff 0, greedy text identical
+for `none` and `draft-mtp n3`, prefill-logit KLD 0.000000 / 100.000 %); the GDN conv keeps its
+pre-existing single-device restriction, the batched CPY does not, and RDNA3_0 multi-device
+(`-sm tensor` / `-sm layer`) is a recorded open gap — the batched CPY fires ~450 times (`-sm layer`) /
+~1350 times (`-sm tensor`) per 60-token MTP run on 3x gfx1201, so that arm is exercised on RDNA4 but
+not measured on RDNA3_0.
+
 ### 7.2 `GGML_CUDA_DISABLE_*` — value-gated (`=1` disables, `0` keeps it on)
 
 `GGML_CUDA_DISABLE_FUSED_ADDMUL`, `GGML_CUDA_DISABLE_FUSION`, `GGML_CUDA_DISABLE_GDN_CPY`,

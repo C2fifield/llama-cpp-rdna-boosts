@@ -41,6 +41,22 @@ was identified and costed (~one period of reserved cells per live session: 960 c
 1920 = 37.5 MiB on the 35B-A3B) but deliberately not implemented: an upstream allocator redesign with no
 throughput win.  Workaround stands: `--no-kv-unified`.  Issue #134 stays upstream-inherent.
 
+**Promoted (r95, 2026-10-20).**  `rdna3-verify-fusions/` left `wip/` for `archive/work/rdna3-verify-fusions/`
+with a `RESOLUTION.md`.  PR #192 + PR #193 (`@briansp2020`) grant **RDNA3_0 (gfx1100-1102)** the
+verify-band fusions that were RDNA4-only: the 2..8-token Q8_1 pre-quantize fusions and the direct GDN
+conv verify path go to **block 10**, the batched f32 `GGML_OP_CPY` run to **block 09**.  Default-on; the
+three existing kill switches (`GGML_CUDA_FUSE_Q8_1_VERIFY`, `_GDN_CONV_VERIFY`, `_CPY_BATCH`) turn them
+off and no new variable was added.  Measured on gfx1100 against the r94 path: `W = 1..8` probe maxdiff 0
+on six model/prefix cells with the same-binary kill-switch identity, `none == draft-mtp n3` text
+identical, 4-axis adaptive MTP at `-n 3000` **R +3.6 % / P +3.3 % / C +3.8 % / K +3.7 % / phase-switching
++3.9 %**, batched B=1 flat with B=4 +3.2 % / B=8 +2.2 %, prefill-logit KLD -0.000000 / 100.000 %,
+`test-backend-ops` 3130/3130.  gfx1201 is byte-identical to r94 and gfx1151 is inert (verified).  Two
+accepted gaps ship with it: RDNA3_0 **multi-device** is unmeasured (the batched CPY is not
+single-device restricted and fires ~450/1350 times per MTP run under `-sm layer`/`-sm tensor` on RDNA4),
+and **gfx1101-gfx1102 are inside the arch predicate but not explicitly validated** — `TODO.md` #79.
+That campaign was the only `wip/` entry added by the review branch, so the open set here is otherwise
+unchanged (no stub was created or removed).  See `WORKLOG.md` 261020.006.
+
 **Promoted (r79, 2026-10-17).**  PR #167 (`rdna3-mmvq-moe-q4k-vdr4`) was promoted into **blocks
 07/10**: the MoE expert kernel takes `vec_dot_q4_K_q8_1_vdr4_dense`, **default on RDNA3_0**
 (+0.83 % tg256, +1.4/+1.9/+2.7 % batched B=1/4/8, 4-axis MTP R/C/K/phase-switching

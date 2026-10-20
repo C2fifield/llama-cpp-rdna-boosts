@@ -11748,10 +11748,10 @@ index 77fd28894..b80d78443 100644
          case GGML_TYPE_Q5_1:
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cu b/ggml/src/ggml-cuda/cpy-batch.cu
 new file mode 100644
-index 000000000..fe1c21606
+index 000000000..a2575b4c1
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cu
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,119 @@
 +#include "cpy-batch.cuh"
 +
 +namespace {
@@ -11817,7 +11817,8 @@ index 000000000..fe1c21606
 +} // namespace
 +
 +int ggml_cuda_cpy_batch(ggml_backend_cuda_context & ctx, ggml_cgraph * cgraph, const int i) {
-+    if (!cb_on() || !GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) return 0;
++    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
++    if (!cb_on() || !(GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3_0(cc))) return 0;
 +    ggml_tensor * first = cgraph->nodes[i];
 +    if (!cb_member(first)) return 0;
 +    // the run: copies with the first one's layouts, possibly separated by no-op view nodes (consumed with the run)
@@ -11872,13 +11873,13 @@ index 000000000..fe1c21606
 +}
 diff --git a/ggml/src/ggml-cuda/cpy-batch.cuh b/ggml/src/ggml-cuda/cpy-batch.cuh
 new file mode 100644
-index 000000000..3a0278fdd
+index 000000000..f00a6c0ef
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/cpy-batch.cuh
 @@ -0,0 +1,10 @@
 +#pragma once
 +#include "common.cuh"
-+// Batched copy (RDNA4; GGML_CUDA_FUSE_CPY_BATCH=0 turns it off): runs a run of consecutive f32 GGML_OP_CPY nodes that
++// Batched copy (RDNA4 / RDNA3_0; GGML_CUDA_FUSE_CPY_BATCH=0 turns it off): runs a run of consecutive f32 GGML_OP_CPY nodes that
 +// share the source shape / strides and the destination shape / strides (only the data addresses differ) as one launch, e.g. the
 +// per-position DeltaNet conv-state snapshots of a speculative verify batch (one copy per drafted position and layer).  Element
 +// copies in ggml_cpy's flat order: bit-identical.
@@ -21941,10 +21942,10 @@ index 000000000..cd9b1d3b4
 \ No newline at end of file
 diff --git a/ggml/src/ggml-cuda/gdn-conv.cu b/ggml/src/ggml-cuda/gdn-conv.cu
 new file mode 100644
-index 000000000..972ec0a7c
+index 000000000..28b83ec7c
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/gdn-conv.cu
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,165 @@
 +#include "gdn-conv.cuh"
 +#include "unary.cuh"
 +#include <cstdlib>
@@ -22013,10 +22014,11 @@ index 000000000..972ec0a7c
 +    if (st->ne[0] != 3 || st->ne[1] != C || st->ne[2] != 1 || st->ne[3] != 1 || !ggml_is_contiguous(st)) return false;
 +    if (tr->ne[0] != T || tr->ne[1] != C || tr->view_offs != 0) return false;
 +    if (cc->ne[0] != T + 3 || cc->ne[1] != C || cc->ne[2] != 1 || cc->ne[3] != 1 || !ggml_is_contiguous(cc)) return false;
-+    // On RDNA4 the 2..255-token batches (the speculative verify step) take the fused path too; otherwise their CONCAT is a
++    // On RDNA4 and RDNA3_0 the 2..255-token batches (the speculative verify step) take the fused path too; otherwise their CONCAT is a
 +    // generic non-contiguous copy per layer.  Same kernels, bit-identical.  GGML_CUDA_FUSE_GDN_CONV_VERIFY=0 turns it off.
 +    static const bool conv_verify = getenv("GGML_CUDA_FUSE_GDN_CONV_VERIFY") == nullptr || atoi(getenv("GGML_CUDA_FUSE_GDN_CONV_VERIFY")) != 0;
-+    const bool verify_ok = conv_verify && T >= 2 && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ggml_cuda_get_device()].cc);
++    const int  cc_verify = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
++    const bool verify_ok = conv_verify && T >= 2 && (GGML_CUDA_CC_IS_RDNA4(cc_verify) || GGML_CUDA_CC_IS_RDNA3_0(cc_verify));
 +    if ((T < 256 && !verify_ok) || C % 256 != 0) return false;
 +    if (i + 1 >= cgraph->n_nodes || cgraph->nodes[i + 1]->op != GGML_OP_VIEW || cgraph->nodes[i + 1]->view_src != cc) return false;
 +    int64_t tail_from = T + 3; int conv = -1;
@@ -24224,7 +24226,7 @@ index 000000000..27a1cc605
 +}
 diff --git a/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
 new file mode 100644
-index 000000000..214b5d110
+index 000000000..27e750629
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda-try-fuse.cu
 @@ -0,0 +1,2540 @@
@@ -25691,7 +25693,7 @@ index 000000000..214b5d110
 +    }
 +
 +    // GLU -> Q8_1 (GGML_CUDA_FUSE_GLU_Q8_1=0: off): an F32 GLU whose next node (or the one after a reshape) is a verify-band
-+    // mmvq matmul over it is marked here (RDNA4 only, through ggml_cuda_should_fuse_mul_mat_vec_q(mm, true)); the regular
++    // mmvq matmul over it is marked here (RDNA4 / RDNA3_0 only, through ggml_cuda_should_fuse_mul_mat_vec_q(mm, true)); the regular
 +    // GLU launcher then also writes the matmul's Q8_1 blocks into the quantize cache, which the matmul finds.
 +    // GLU -> Q8_1 marking (owned by mmvq.cu).
 +    ggml_cuda_glu_q8_1_mark(*cuda_ctx, cgraph, i);
@@ -26955,7 +26957,7 @@ index 000000000..0ea165eef
 +void   ggml_cuda_slab_reserve_wide(int device, size_t bytes);
 +size_t ggml_cuda_slab_seed_floor(int device);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 957908f65..0ace1a3af 100644
+index 957908f65..2794e7132 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,5 +1,6 @@
@@ -29402,7 +29404,7 @@ index 957908f65..0ace1a3af 100644
 -        return false;
 -    }
 +// verify_band: callers that only pre-fill the mmvq Q8_1 activation cache (norm -> Q8_1, gated unary -> Q8_1)
-+// and leave the matmul itself unchanged.  Their kernels are row-generic, so on RDNA4 the verify band
++// and leave the matmul itself unchanged.  Their kernels are row-generic, so on RDNA4 and RDNA3_0 the verify band
 +// (2..8 tokens) takes them too; the quantized values are the ones quantize_q8_1 would write, so W = 1..8
 +// stay bit-identical.  GGML_CUDA_FUSE_Q8_1_VERIFY=0 turns it off.
  
@@ -43502,7 +43504,7 @@ index 000000000..f7b0ffe05
 +    }
 +}
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 0714ae3bb..f5335782f 100644
+index 0714ae3bb..15653d31f 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -1,4 +1,5 @@
@@ -45880,7 +45882,7 @@ index 0714ae3bb..f5335782f 100644
  void ggml_cuda_op_mul_mat_vec_q(
      ggml_backend_cuda_context & ctx,
      const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
-@@ -1595,3 +2733,721 @@ void ggml_cuda_op_mul_mat_vec_q(
+@@ -1595,3 +2733,722 @@ void ggml_cuda_op_mul_mat_vec_q(
  
      GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
  }
@@ -46060,10 +46062,11 @@ index 0714ae3bb..f5335782f 100644
 +    if (cc <= GGML_CUDA_CC_PASCAL) {
 +        return false;
 +    }
-+    //we only support fusion for ncols_dst = 1 (the RDNA4 verify band too for verify_band callers)
++    //we only support fusion for ncols_dst = 1 (the RDNA4 / RDNA3_0 verify band too for verify_band callers)
 +    static const bool q8_1_verify = getenv("GGML_CUDA_FUSE_Q8_1_VERIFY") == nullptr || atoi(getenv("GGML_CUDA_FUSE_Q8_1_VERIFY")) != 0;
++    const bool verify_band_arch = GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3_0(cc);
 +    if (tensor->op == GGML_OP_MUL_MAT && dst->ne[1] != 1 &&
-+            !(verify_band && q8_1_verify && GGML_CUDA_CC_IS_RDNA4(cc) && dst->ne[1] <= MMVQ_MAX_BATCH_SIZE)) {
++            !(verify_band && q8_1_verify && verify_band_arch && dst->ne[1] <= MMVQ_MAX_BATCH_SIZE)) {
 +        return false;
 +    }
 +
