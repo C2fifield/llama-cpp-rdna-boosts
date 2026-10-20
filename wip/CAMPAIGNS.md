@@ -36,9 +36,10 @@ variant that fetches the next K/V batches into registers ahead of use and orders
 its barriers.  Default-on (`GGML_HIP_FA_BAND_FETCH_AHEAD=0` is the kill switch), bit-identical everywhere
 it fires, two generated translation units of its own so the non-variant kernels keep their compiled code.
 Measured +0.7 % decode at 8K and +2.4 % at 110K context, prefill unchanged.  The PR arrived as a branch
-under its own `wip/rdna4-band-fetch-ahead/`, never as an entry here, so the open set was not touched and
-no stub was created or removed; its record is at `archive/work/rdna4-band-fetch-ahead/` with a
-`RESOLUTION.md`.  See `WORKLOG.md` 261020.010.
+under its own `wip/rdna4-band-fetch-ahead/`, and that branch is now merged onto `main` for authorship
+(commit `b950be14f`) with the directory moved to `archive/work/rdna4-band-fetch-ahead/` (its
+`RESOLUTION.md` records the promotion), so nothing was ever listed here and no stub was created or
+removed.  See `WORKLOG.md` 261020.010.
 
 **Declined (r98, 2026-10-20).**  PR #194 (`@briansp2020`, `set-tensor-async-ring`) was reviewed and **not**
 promoted.  It keeps r90's `set_tensor_async` snapshot guarantee (verified: 100.000 % on the FINDINGS-2026-10-
