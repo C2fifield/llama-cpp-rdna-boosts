@@ -1,4 +1,4 @@
-From 9bf8d7cb539a7fb2685aac23c467f55e06be8626 Mon Sep 17 00:00:00 2001
+From d44f9330408155731ca4c1aed63d9bcf7d9aa616 Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 18:27:59 -0500
 Subject: [PATCH 09/11] rdna-boosts: block 09: host-resident MoE (iface,
@@ -97,6 +97,7 @@ split arithmetic instead of asserting `offset == 0` and one segment, so a caller
 per-device reads behind one synchronize (a context checkpoint's per-sequence cells).  Calls that worked
 before issue the same copies as before.
 ---
+ (file*).moe-heatmap                           |  Bin 0 -> 704 bytes
  common/CMakeLists.txt                         |    2 +
  common/arg.cpp                                |   21 +-
  common/common.cpp                             |  130 +-
@@ -154,7 +155,7 @@ before issue the same copies as before.
  src/llama-kv-cache.cpp                        |    7 +-
  src/llama-mmap.cpp                            |   37 +-
  src/llama-mmap.h                              |    5 +
- src/llama-model-loader.cpp                    |  285 +-
+ src/llama-model-loader.cpp                    |  305 +-
  src/llama-model-loader.h                      |   37 +-
  src/llama-model.cpp                           |  120 +-
  src/llama-model.h                             |    4 +
@@ -162,7 +163,8 @@ before issue the same copies as before.
  src/llama.cpp                                 |   16 +-
  tools/cli/cli.cpp                             |    6 +
  tools/llama-bench/llama-bench.cpp             |   65 +-
- 65 files changed, 14049 insertions(+), 436 deletions(-)
+ 66 files changed, 14069 insertions(+), 436 deletions(-)
+ create mode 100644 (file*).moe-heatmap
  create mode 100644 common/draft-reserve.cpp
  create mode 100644 common/draft-reserve.h
  create mode 100644 ggml/src/ggml-cuda/cpy-batch.cu
@@ -171,6 +173,18 @@ before issue the same copies as before.
  create mode 100644 ggml/src/ggml-cuda/moe-expert-cache.cu
  create mode 100644 ggml/src/ggml-cuda/moe-expert-cache.h
  create mode 100644 ggml/src/ggml-moe-weighted-reduction.h
+
+diff --git a/(file*).moe-heatmap b/(file*).moe-heatmap
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f497b5457bbc753b01509fd81d884c2457c2444
+GIT binary patch
+literal 704
+zcmebE2r*=2U|?Wkzz#riNjceihI(mfdGRUv<$3X`6$Qn5<*AwJ870{DpaTbxKm*7m
+z+Ja{!Sm7gx+byqg1qL2qh9tKaiTxMJtjz)pXyKWjSdtoFT0mlug2R)68OavffT0kc
+E06u3R^#A|>
+
+literal 0
+HcmV?d00001
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
 index 2b307c59d..395cb43fd 100644
@@ -16440,7 +16454,7 @@ index 6c6393d57..8cce74993 100644
  
      void seek(size_t offset, int whence) const;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 238ab0ba1..798110c70 100644
+index 238ab0ba1..f40f2c1b0 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -10,10 +10,18 @@
@@ -16501,7 +16515,7 @@ index 238ab0ba1..798110c70 100644
      if (!fname.empty()) {
          // Load the main GGUF
          struct ggml_context * ctx = NULL;
-@@ -1113,6 +1139,40 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
+@@ -1113,6 +1139,60 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
      return true;
  }
  
@@ -16511,6 +16525,14 @@ index 238ab0ba1..798110c70 100644
 +// tensor across them; under `-sm layer`/single-GPU the host buffer already carries the layer's real device.
 +// (Before this, every `-sm tensor` shard was keyed to device 0, which reserved the expert-cache arena on
 +// device 0 only.)
++//
++// A host buffer type does not have to carry a device: `ggml_backend_cpu_buffer_type()` has
++// `.device = NULL` upstream (the FIXME in ggml-backend.cpp), so a plain CPU placement (a CPU-only
++// run, or `--override-tensor exps=CPU`) yields a null buft device.  Key the account to the layer's
++// real device in that case (the test harness's host-expert override is exactly this shape: the CPU
++// buffer type on a GPU layer), and skip it entirely when there is no device at all -- a CPU-only
++// model has no device to reserve a staging ring or expert-cache arena on, and inserting a null key
++// made `llama_context` abort in `ggml_backend_dev_memory`.
 +static void moe_host_expert_account(std::map<ggml_backend_dev_t, size_t> & acc,
 +        const std::string & name, size_t bytes, ggml_backend_buffer_type_t buft,
 +        const buft_list_t * buft_list_layer) {
@@ -16536,13 +16558,25 @@ index 238ab0ba1..798110c70 100644
 +            return;
 +        }
 +    }
++    // Only a PINNED host master is served by the host-expert machinery: the slab arena, the H2D
++    // staging ring and the expert cache all read the master in place from a device kernel, which
++    // needs a mapped (pinned) buffer.  `ggml_backend_cpu_buffer_type()` is the plain PAGEABLE CPU
++    // buffer and carries no device upstream (the FIXME in ggml-backend.cpp), so a CPU-only run or
++    // `--override-tensor exps=CPU` lands here: do not account it.  Accounting it with a null key
++    // aborted in `ggml_backend_dev_memory()` (a CPU-only model could not even create a context),
++    // and keying it to the layer device would reserve a slab ring/arena for a master this path
++    // copies (the upstream `llama_moe_cache` engine) instead of reading in place.  A pinned host
++    // buft always carries its device, so it is unaffected.
++    if (buft_dev == nullptr) {
++        return;
++    }
 +    acc[buft_dev] += bytes;
 +}
 +
  struct ggml_tensor * llama_model_loader::create_tensor(
          const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
          const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
-@@ -1216,7 +1276,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1216,7 +1296,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          const buft_list_t * buft_list;
          switch (info.layer) {
              case LLM_TENSOR_LAYER_INPUT:
@@ -16554,7 +16588,7 @@ index 238ab0ba1..798110c70 100644
                  break;
              case LLM_TENSOR_LAYER_OUTPUT:
                  buft_list = buft_list_output;
-@@ -1231,15 +1294,103 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1231,15 +1314,103 @@ struct ggml_tensor * llama_model_loader::create_tensor(
  
          ggml_backend_buffer_type_t buft = nullptr;
  
@@ -16662,7 +16696,7 @@ index 238ab0ba1..798110c70 100644
                          if (use_mmap) {
                              static std::once_flag once;
                              std::call_once(once, [] {
-@@ -1267,8 +1418,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1267,8 +1438,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // avoid using a host buffer when using mmap
@@ -16678,7 +16712,7 @@ index 238ab0ba1..798110c70 100644
              auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
              if (!cpu_dev) {
                  throw std::runtime_error("no CPU backend found");
-@@ -1326,7 +1483,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1326,7 +1503,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          ggml_set_name(&t_meta, tn.str().c_str());
  
          ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
@@ -16692,7 +16726,7 @@ index 238ab0ba1..798110c70 100644
          ggml_context * ctx = ctx_for_buft(buft);
          ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
          ggml_set_name(ret, tn.str().c_str());
-@@ -1364,6 +1526,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1364,6 +1546,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
      if (buft == nullptr) {
          return nullptr;
      }
@@ -16702,7 +16736,7 @@ index 238ab0ba1..798110c70 100644
  
      ggml_context * ctx = ctx_for_buft(buft);
  
-@@ -1407,6 +1572,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
+@@ -1407,6 +1592,15 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
      }
  }
  
@@ -16718,7 +16752,7 @@ index 238ab0ba1..798110c70 100644
  void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps) {
      // note: read_lazy also requires mmap; this condition make sure it's usable even when --load-mode is not set to mmap
      if (use_mmap || lazy.any()) {
-@@ -1426,11 +1600,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+@@ -1426,11 +1620,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                  }
              }
  
@@ -16735,7 +16769,7 @@ index 238ab0ba1..798110c70 100644
              if (mlock_mmaps) {
                  std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
                  mlock_mmap->init(mapping->addr());
-@@ -1446,6 +1623,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+@@ -1446,6 +1643,13 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
      }
  }
  
@@ -16749,7 +16783,7 @@ index 238ab0ba1..798110c70 100644
  void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const {
      GGML_ASSERT(!mappings.empty());
      const auto & mapping = mappings.at(idx);
-@@ -1504,6 +1688,8 @@ bool llama_model_loader::load_all_data(
+@@ -1504,6 +1708,8 @@ bool llama_model_loader::load_all_data(
      }
      GGML_ASSERT(size_data != 0 && "call init_mappings() first");
  
@@ -16758,7 +16792,7 @@ index 238ab0ba1..798110c70 100644
      std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
  
      // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
-@@ -1542,6 +1728,20 @@ bool llama_model_loader::load_all_data(
+@@ -1542,6 +1748,20 @@ bool llama_model_loader::load_all_data(
              return nullptr;
          }
  
@@ -16779,7 +16813,7 @@ index 238ab0ba1..798110c70 100644
          if (buft != ggml_backend_dev_buffer_type(dev)) {
              LLAMA_LOG_DEBUG("%s: buffer type %s is not the default buffer type for device %s for async uploads\n", func,
                  ggml_backend_buft_name(buft), ggml_backend_dev_name(dev));
-@@ -1557,6 +1757,21 @@ bool llama_model_loader::load_all_data(
+@@ -1557,6 +1777,21 @@ bool llama_model_loader::load_all_data(
          }
  
          auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
@@ -16801,7 +16835,7 @@ index 238ab0ba1..798110c70 100644
          if (!host_buft) {
              LLAMA_LOG_DEBUG("%s: no host buffer type found for device %s\n", func,
                  ggml_backend_dev_name(dev));
-@@ -1662,11 +1877,31 @@ bool llama_model_loader::load_all_data(
+@@ -1662,11 +1897,31 @@ bool llama_model_loader::load_all_data(
                      lmlock->grow_to(weight->offs + n_size);
                  }
  
@@ -16836,7 +16870,7 @@ index 238ab0ba1..798110c70 100644
              }
          } else {
              const auto & file = files.at(weight->idx);
-@@ -1746,6 +1981,15 @@ bool llama_model_loader::load_all_data(
+@@ -1746,6 +2001,15 @@ bool llama_model_loader::load_all_data(
              }
          }
  
@@ -16852,7 +16886,7 @@ index 238ab0ba1..798110c70 100644
          size_done += n_size;
      }
  
-@@ -1777,11 +2021,20 @@ bool llama_model_loader::load_all_data(
+@@ -1777,11 +2041,20 @@ bool llama_model_loader::load_all_data(
          // unmap offloaded tensors and metadata
          if (use_mmap) {
              for (uint32_t idx = 0; idx < mappings.size(); idx++) {

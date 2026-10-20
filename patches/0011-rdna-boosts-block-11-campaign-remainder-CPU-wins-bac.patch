@@ -1,4 +1,4 @@
-From 2fc3b2f5324091c5c439d110076e0767d0ff569c Mon Sep 17 00:00:00 2001
+From b37a3b5adc1b2da17403f8b82e4556fe8d6e2b2f Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 20:15:39 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
@@ -730,7 +730,7 @@ index ea54cfe44..a7d8182c3 100644
      const int qk = QK8_0;
      const int nb = n / qk;
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index e26fd5095..f7840ee7c 100644
+index c9ecef563..2f754726d 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -240,7 +240,7 @@ static int ggml_backend_cpu_moe_offload_cap(void) {
@@ -828,7 +828,7 @@ index b4d3e470c..8798940c0 100644
  
  static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index f2abdc634..173c878d4 100644
+index ea4325233..ee231898e 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,3 +1,6 @@
@@ -850,7 +850,7 @@ index f2abdc634..173c878d4 100644
  
      cparams.ctx_type          = params.ctx_type;
      cparams.rope_scaling_type = params.rope_scaling_type;
-@@ -705,8 +713,108 @@ llama_context::llama_context(
+@@ -714,8 +722,108 @@ llama_context::llama_context(
              moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs, backend_buft, cparams.moe_cache_size);
          }
  
@@ -959,7 +959,7 @@ index f2abdc634..173c878d4 100644
          if (!cparams.flash_attn) {
              if (ggml_is_quantized(params.type_v)) {
                  throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
-@@ -1670,6 +1778,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+@@ -1679,6 +1787,12 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
  
      GGML_ASSERT(lid <= model.hparams.n_layer());
  
@@ -972,7 +972,7 @@ index f2abdc634..173c878d4 100644
      cparams.embeddings_layer_inp[lid] = enable;
  
      // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
-@@ -1897,6 +2011,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1913,6 +2027,41 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          }
      }
  
@@ -988,7 +988,7 @@ index f2abdc634..173c878d4 100644
 +    if (!slab_narrow_pinned && !model.moe_host_expert_bytes.empty() &&
 +            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
 +        slab_narrow_pinned = true;
-+        const uint32_t n_rs_seqs = std::max<uint32_t>(1, ubatch.n_seqs);
++        const uint32_t n_rs_seqs = std::max<uint32_t>(1, dsv4_cache ? ubatch.n_seqs : ubatch.n_seqs_unq);
 +        size_t narrow_sizes[16] = {0};
 +        if (graph_reserve(cparams.n_rs_batch, n_rs_seqs, cparams.n_rs_batch, mctx, /*split_only=*/true,
 +                          narrow_sizes, kq_mask_packed_reachable()) != nullptr) {
@@ -1014,7 +1014,7 @@ index f2abdc634..173c878d4 100644
      // wip/slab-ring-region: the H2D staging ring is one meta-unit with the WIDE (prefill) compute layout.
      // It is armed for a wide pass (>= the staging gate floor, 64 tokens) and disarmed for a narrow one, so
      // a decode-only stretch returns its hole to the arena.  This runs BEFORE the drop's cache re-arm, so a
-@@ -1905,14 +2054,35 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1921,14 +2070,35 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
      // while the ring is used on every wide pass.  `ring_set` is a no-op when the state already matches.
      if (!model.moe_host_expert_bytes.empty() && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
          const bool ring_arm = ubatch.n_tokens >= 64;
@@ -1050,7 +1050,7 @@ index f2abdc634..173c878d4 100644
      }
      if (drop_now) {
          ggml_backend_sched_drop_buffers(sched.get());
-@@ -3684,15 +3854,130 @@ private:
+@@ -3700,15 +3870,130 @@ private:
      size_t size_written = 0;
  };
  
@@ -1185,7 +1185,7 @@ index f2abdc634..173c878d4 100644
          }
      }
  
-@@ -3735,6 +4020,8 @@ private:
+@@ -3751,6 +4036,8 @@ private:
          size_t offset;
      };
      std::vector<write_info> winfos;
@@ -1194,7 +1194,7 @@ index f2abdc634..173c878d4 100644
  };
  
  class llama_io_read_host : public llama_io_read_i {
-@@ -4150,6 +4437,43 @@ private:
+@@ -4166,6 +4453,43 @@ private:
      const llama_memory_buffers & mbufs;
  };
  
@@ -1238,7 +1238,7 @@ index f2abdc634..173c878d4 100644
  size_t llama_context::state_get_size() {
      llama_io_write_dummy io(false);
      try {
-@@ -4161,7 +4485,7 @@ size_t llama_context::state_get_size() {
+@@ -4177,7 +4501,7 @@ size_t llama_context::state_get_size() {
  }
  
  size_t llama_context::state_get_data(uint8_t * dst, size_t size) {
@@ -1247,7 +1247,7 @@ index f2abdc634..173c878d4 100644
      try {
          return state_write_data(io);
      } catch (const std::exception & err) {
-@@ -4201,7 +4525,7 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
+@@ -4217,7 +4541,7 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
      if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
          io = std::make_unique<llama_io_write_device>(dst, size, mem_storage[seq_id]);
      } else {

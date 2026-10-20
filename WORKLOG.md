@@ -1,5 +1,98 @@
 # WORKLOG - dated delivery records
 
+## 261020.008 (r97) -- halo arch-independent fixes (CPU-only MoE, QSA CPU form, reserve sequence count) + two defects they exposed
+
+**Release `v12-097cf33d9-r97`**: base `097cf33d9`, canonical tip `b37a3b5ad`, net tree
+`f81213c4dcb057636ef6afdfef7e4c4907a4d83f`, **12 blocks**.  Blocks 09 and 10 amended, no new block.
+
+**What landed (gfx1151 handover, rebased onto r96 and folded per block).**
+
+* **Block 09 — the host-expert account keys a real device only.**  `moe_host_expert_account` inserted
+  `acc[buft_dev]` unconditionally, and `ggml_backend_cpu_buffer_type()` has `.device = NULL` upstream, so a
+  CPU-only model (or `--override-tensor exps=CPU`) keyed a null device and `llama_context` aborted in
+  `ggml_backend_dev_memory()` while auto-sizing the staging ring.  The fix **skips a host buft that carries
+  no device** rather than keying the layer's device: a pageable master is not served by this block (the
+  arena, ring and cache read the master in place from a device kernel, which needs pinned memory) — it is
+  copied by the upstream `llama_moe_cache` engine, so it must stay unaccounted.  A pinned host buft always
+  carries its device, so every `-ncmoe`/`-cmoe` path is unchanged.  (The handover patch keyed the *layer's*
+  device instead; that also fixes the abort but reserves a ring/arena for a master this block then cannot
+  use, and it measured identical on every arch-test row — the skip is the tighter rule.)
+* **Block 10 — the QSA derived-visibility form is gated on the acting backend.**  The CPU reference
+  implements the mask form of `FLASH_ATTN_QSA` only, but the sparse path allocated `cell_vis`/`q_vis`
+  (`src[5]`/`src[6]`) even on a CPU layer and aborted.  CPU `supports_op` now refuses the derived form
+  (there is no CPU kernel for it), and `qwen4exp` probes the form the graph will actually build
+  (`qsa_derived_vis_supported`), falling back to the dense masked path when the device cannot run it.
+  This is also what closes **#57**: the `qwen4exp` CPU row's `Mixed batch` reads **3.32e-14**, the same as
+  the upstream base (`deepseek2`'s CPU `Mixed batch` is 1.11e-09, also the base's value).
+* **Block 10 — the rollback/narrow reserve uses the real sequence count.**  The synthetic reserve used
+  `ubatch.n_seqs` (a *shape* value: 64 for a 64-token single-sequence ubatch) as the sequence count, so it
+  built a 64-stream 4-D kq mask against a single-stream query and `deepseek2` aborted in
+  `ggml_flash_attn_ext` (`q->ne[3] % mask->ne[3]`).  It now uses `ubatch.n_seqs_unq`, except for the dsv4
+  compressed cache (`LLM_ARCH_DEEPSEEK4`, and DFLASH with `dsv4_hc_mult > 0`), whose raw attention needs
+  the per-stream index fanout shape and which therefore keeps `ubatch.n_seqs` — exactly its previous
+  behaviour.  A side-effect-free reserve for that cache remains a follow-up.  The one line that lived in
+  **block 11** code (the r96 early narrow floor probe) was folded there, not into block 10.
+
+**Two defects the fixes above exposed, and what was done about them.**
+
+* **`test-llama-archs -a deepseek4` was wrong under `-sm tensor` (found on gfx1201, FIXED here).**  Block 10
+  flipped `cparams.fused_dsv4_hc_post` from on to off (the `hc_combine_norm` chain measured +0.9..+1.8 %
+  prefill on one gfx1151 device).  That chain is **not correct across a tensor split**: its broadcasts are
+  split-state sensitive, and `deepseek4`'s `Meta` row read NMSE **1.74e-01** (2 GPUs 1.25e-01; 1 GPU and
+  `-sm layer` bit-identical to the CPU reference).  Bisected to that single line (reverting
+  `src/llama-context.cpp` alone fixed it; the fused op gives 6.5e-06, and the whole delivery's
+  `ggml-cuda`, `llama-kv-cache`, `llama-model`, split-state and kernel changes were all excluded by
+  file-level reverts + a per-node dump).  The default is now split-mode aware: the **op** whenever a Meta
+  device is in play, the faster chain on one device; `LLAMA_FUSED_DSV4_HC_POST` still forces either arm.
+  `deepseek4` is 5/5 (Meta 6.53e-06), `qwen4exp` 5/5, `deepseek2` unchanged.
+* **`deepseek2`'s `MoE cache` rows are now reachable on gfx1201 and fail numerically (TODO #56).**  Before
+  this release the arch test aborted before those rows (context creation, then graph build), which is why
+  the memory fault was only ever seen on gfx1151.  Here they read NMSE **4.02e-03** and the run completes;
+  the base `097cf33d9` passes them (2.10e-10).  Everything the delivery owns is inert for these rows
+  (`MOE_EXPERT_CACHE_MIB=0`, `GGML_CUDA_SLAB=0`, `GGML_SCHED_STAGE=0`, `GGML_SCHED_MOE_DUP_SPLIT=0`,
+  `GGML_MOE_CACHE_STAGE=0`, `GGML_MOE_CACHE_MAX_TOK=1`), `test-backend-ops -o MUL_MAT_ID` is 947/947, and
+  the upstream cache implementation, `build_moe_cache_slots` and `sched_copy_experts` are byte-identical to
+  upstream — so this is still the block-09 plumbing around the upstream `llama_moe_cache` engine, i.e. #56
+  itself, recorded there with these numbers.  It is **not** caused by this set: it reproduces with the
+  accounting disabled and with only the block-09 fix applied.
+
+**A third defect, also fixed here: `GGML_CUDA_ASYNC_INPUT=0` was broken.**  The kill-switch arm died in
+`ggml_cuda_async_input_copy_locked` with `ROCm error: invalid resource handle` the first time a device was
+reused by a second context (`test-llama-archs -a deepseek4`'s `Meta` row, i.e. the first context on device 0
+after the per-device row's context was destroyed).  `ggml_cuda_async_input_flush_done` still early-returned
+on `!g_async_input_on`, but since r90 the pinned ring also carries the `set_tensor_async` /
+`set_tensor_2d_async` snapshots **unconditionally**, so context teardown left a *pending* done-event naming a
+stream that the destructor then destroyed and the next context recorded on the dead handle.  The flush is now
+unconditional (a no-op when nothing is pending), matching the done guard and `ggml_cuda_async_input_wait`.
+`deepseek4` with `GGML_CUDA_ASYNC_INPUT=0` is 5/5, Meta 6.53e-06 — identical to the default arm.
+**Side finding for #56:** with the kill-switch arm now working, `deepseek2`'s `MoE cache` row on gfx1201
+reproduces the **recorded HSA memory fault** (`mul_mat_vec_f<float, float, 1, 64, false, true>`, faulting
+address in a host/pinned range) instead of the 4.02e-03 numeric mismatch the default arm shows — so the
+upstream cache engine's over-read is real on this box too, and the async-input path is what changes its
+manifestation.  Both arms are recorded in `TODO.md` #56.
+
+**Tooling.**  `scripts/gate-per-block-build.sh` now defaults to `/opt/rocm-10.1.0-gfx120X` (env `ROCM_DIR`;
+the old `ROCM_714` is still honoured) and passes the joined `-isystem<rocm>/include` in `CMAKE_HIP_FLAGS`
+with the `flags.make` include-order guard — the same rule as `~/bin/build-llama-rocm`.  Without it the gate
+resolved HIP headers from Fedora's ROCm 7.1 `/usr/include`: on 10.1 every TU fails
+(`__ocml_exp10_f32` undeclared), on 7.14 it silently compiled the distro headers.  `ENVIRONMENT.md`'s
+`LD_LIBRARY_PATH` example now names the 10.1 tree; dated records were left alone.
+
+**Validation (gfx1201, 3x R9700, ROCm 10.1.0).**  `scripts/validate-set.sh` green (12 blocks, strict
+apply on a fresh tarball, tree `c2f1bc29…`); `scripts/gate-per-block-build.sh --changed-from 59d069467`
+3/3 (blocks 09/10/11 build `all`); `test-llama-archs -s 42` -> `qwen4exp` 5/5, `deepseek4` 5/5,
+`deepseek2` 5/7 (only TODO #56's two `MoE cache` rows); CPU-only `gpt-oss-20b -ngl 0 -n 4` generates (the
+pre-patch build still aborts at `ggml-backend.cpp:921`); `test-backend-ops -o FLASH_ATTN_QSA` 26/26 per
+ROCm backend + a direct `supports_op` probe showing the CPU still accepts the mask form and refuses the
+derived one while ROCm accepts both (so the GPU rows keep the sparse derived path); `gate-prefill-logits.sh`
+PASS (mean KLD 0.000707, same-top-p 98.755 %); dense 4B Q8_0 3-GPU tensor greedy text identical to the
+r96 build; 35B-A3B Q4_K_M `-sm layer -ncmoe 40` runs on the pinned accounting path (84.7 t/s tg).
+
+**Note for gate writers.**  `test-backend-ops` skips the CPU backend unconditionally (it only runs CPU in
+`MODE_GRAD`), so `-o FLASH_ATTN_QSA` does **not** exercise the CPU mask-form oracle; and
+`test-llama-archs -a qwen4exp` never reaches `qsa_derived_vis_supported` (the synthetic model builds no QSA
+derived path), so that test cannot confirm which QSA form the GPU takes — the `supports_op` probe does.
+
 ## 261020.007 (r96) -- sched-moe-dup-consumer + state-read-batch promoted (PR #186 + PR #189), and the `-sm layer` MTP corruption they fix
 
 **Release `v12-097cf33d9-r96`**: base `097cf33d9`, canonical tip `2fc3b2f53`, net tree

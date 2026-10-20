@@ -361,6 +361,16 @@ whatever VRAM is left.
   read's split arithmetic instead of asserting `offset == 0` and one segment, so a caller can batch many
   per-device reads behind one `synchronize`.  Calls that worked before issue the same copies as before.
   The caller is block 11's batched state save.
+* **The host-expert account keys a real device only** (r97): `moe_host_expert_account` skips a host
+  buffer type that carries no device.  `ggml_backend_cpu_buffer_type()` is the plain **pageable** CPU
+  buffer and has `.device = NULL` upstream (the FIXME in `ggml-backend.cpp`), so a CPU-only run, or
+  `--override-tensor exps=CPU`, used to insert a null key and abort in `ggml_backend_dev_memory()` when
+  the context auto-sized the staging ring — a CPU-only model could not create a context at all, and
+  `test-llama-archs -a deepseek4` aborted on its first row.  A pageable master is not served by this
+  block's machinery (the slab arena, the ring and the cache read the master in place from a device
+  kernel, which needs a pinned buffer): it is copied by the upstream `llama_moe_cache` engine instead,
+  so it must not be accounted.  Only a pinned host buft — which always carries its device — is
+  accounted, and the per-device distribution is unchanged.
 * `common/fit.cpp`: `--fit` reserves the arena and the slab headroom per device.
 * Host-side: mmap reclaim (`LLAMA_LOAD_RELEASE_MMAP`), rear-fill host layers
   (`LLAMA_HOST_EXPERTS_FROM_END`), `--host-experts pool` (`MOE_HOST_POOL_MIB`), a second draft scheduler
@@ -435,6 +445,18 @@ fusions.
   the 2..255-token verify batches too and keeps its pre-existing single-device restriction.
   `GGML_CUDA_FUSE_Q8_1_VERIFY=0` / `GGML_CUDA_FUSE_GDN_CONV_VERIFY=0` still disable them; RDNA3_5 is
   excluded by the macro (`0x1100 <= cc < 0x1150`).
+* **The DSV4_HC_POST arm is chosen by the split mode** (r97).  The `hc_combine_norm` chain spelled out
+  (scale → sigmoid → scale → repeat → mul → add → rms → mul) is faster than the op on **one** device
+  (+0.9..+1.8 % prefill on qwen4exp IQ4_NL, gfx1151) and stays the default there, but the chain's
+  broadcasts are split-state sensitive and it is **not correct under the Meta (tensor-split) device**:
+  `test-llama-archs -a deepseek4` on 3× gfx1201 read NMSE 1.74e-01 vs the CPU reference through the
+  chain and 6.5e-06 through the op.  `cparams.fused_dsv4_hc_post` therefore defaults to *on* whenever a
+  Meta device is in play and to *off* otherwise; `LLAMA_FUSED_DSV4_HC_POST` still forces either arm.
+* **The ring's teardown flush is unconditional** (r97): `ggml_cuda_async_input_flush_done` early-returned on
+  `!g_async_input_on`, but since r90 the ring also carries the `set_tensor_async` snapshots *unconditionally*,
+  so `GGML_CUDA_ASYNC_INPUT=0` left a pending done-event naming the stream the context destructor destroys
+  and the next context on that device recorded on the dead handle (`invalid resource handle`).  A no-op when
+  nothing is pending; both arms now give the same results.
 * **Async graph-input ring**: batched uploads + lazy done event (PR #182), and the r90 fix that snapshots
   the source through the pinned ring — the scheduler uses `set_tensor_async` for a *CPU split's* output,
   which the next ubatch rewrites, so a direct copy from the caller's live pointer could read the next

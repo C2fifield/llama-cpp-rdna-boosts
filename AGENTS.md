@@ -351,6 +351,18 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   decode replayed a graph whose KV `set_rows` source indices pointed into the released wide region and
   faulted with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`; `GGML_CUDA_DISABLE_GRAPHS=1` hid it.  Every
   shrink path taken at a drop still needs this; add it wherever a new one is introduced.
+- **The deepseek4/glm5-next `DSV4_HC_POST` arm is split-mode dependent (r97).**  `cparams.fused_dsv4_hc_post`
+  is the fused **op** whenever a Meta (tensor-split) device is in play and the primitive
+  `hc_combine_norm` chain on one device.  The chain is faster on one device (+0.9..+1.8 % prefill,
+  gfx1151) but is **not correct across a tensor split**: `test-llama-archs -a deepseek4` on 3x gfx1201
+  read NMSE 1.74e-01 through the chain vs 6.5e-06 through the op.  Do not make the chain unconditional
+  again without fixing its split-state handling; `LLAMA_FUSED_DSV4_HC_POST` forces either arm.
+- **A host buft with no device is never accounted as host experts (r97).**  `ggml_backend_cpu_buffer_type()`
+  has `.device = NULL` upstream; the account map, the slab, the H2D ring and the expert cache all need a
+  **pinned** master read in place by a device kernel, so a pageable placement (CPU-only, or
+  `--override-tensor exps=CPU`) is left to the upstream `llama_moe_cache` engine.  Keying a null device
+  aborted in `ggml_backend_dev_memory()`; keying the layer's device reserves a ring/arena the path cannot
+  use.  `patches/README.md` (block 09).
 - **Dense greedy purity:** `plain == draft-mtp` greedy text is kept for **f16/bf16/q8_0**; the coarse
   quants (q4_0/q4_1/q5_0/q5_1/iq4_nl) are relaxed to the **logits level** (argmax preserved, top-2
   margin >= 2.2). The FA chooser is TILE across the whole band. Re-run the 8-type x 5-length grid when

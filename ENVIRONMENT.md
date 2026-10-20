@@ -428,7 +428,7 @@ see `../WORKLOG.md` 261017.008).
 | `GGML_Q6_COMPACT_J` | tuning | Q6 compact-`J` variant. |
 | `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS` | off (**opt-in**, RDNA3.5 only) | the qwen4exp weighted-down single-token chain. |
 | `GGML_PAIR_OFF` / `GGML_PAIR_DENSE_OFF` / `GGML_PAIR_2X` | off | paired-kernel variants. |
-| `GGML_CUDA_SPLICE_GATHER`, `GGML_CUDA_SCALE_UNARY`, `GGML_CUDA_HC_MIX_BAND`, `GGML_CUDA_HC_MIX_PREQ`, `GGML_CUDA_DISABLE_HC_COMB`, `GGML_CUDA_DISABLE_HC_MIX`, `LLAMA_FUSED_HC_MIX`, `LLAMA_FUSED_HC_COMBINE`, `LLAMA_FUSED_DSV4_HC_PRE/POST`, `LLAMA_HC_MIX_BF16`, `GGML_CUDA_LIGHTNING_INDEXER4_GFX1100/GFX1201`, `GGML_LF_FAST_TOPK`, `LLAMA_INDEXER_NOBLOCK`, `LLAMA_INDEXER_NOGROUP` | off / default-on | model-specific fused chains. A/B only. |
+| `GGML_CUDA_SPLICE_GATHER`, `GGML_CUDA_SCALE_UNARY`, `GGML_CUDA_HC_MIX_BAND`, `GGML_CUDA_HC_MIX_PREQ`, `GGML_CUDA_DISABLE_HC_COMB`, `GGML_CUDA_DISABLE_HC_MIX`, `LLAMA_FUSED_HC_MIX`, `LLAMA_FUSED_HC_COMBINE`, `LLAMA_FUSED_DSV4_HC_PRE/POST`, `LLAMA_HC_MIX_BF16`, `GGML_CUDA_LIGHTNING_INDEXER4_GFX1100/GFX1201`, `GGML_LF_FAST_TOPK`, `LLAMA_INDEXER_NOBLOCK`, `LLAMA_INDEXER_NOGROUP` | off / default-on | model-specific fused chains. A/B only.  One of them has a **split-mode-dependent default** (r97): the deepseek4/glm5-next `DSV4_HC_POST` arm is the fused op whenever a **Meta (tensor-split) device** is in play, and the primitive `hc_combine_norm` chain otherwise — the chain is faster on one device but is not correct across a tensor split (NMSE 1.74e-01 vs the CPU reference through the chain, 6.5e-06 through the op; `patches/README.md` block 10).  `LLAMA_FUSED_DSV4_HC_POST=0/1` still forces either arm. |
 | `GGML_CUDA_DISABLE_VERIFY_GRAPHS`, `GGML_HIP_GRAPH_FORCE_UPDATE` | off | HIP graph-capture controls. |
 | `GGML_HC_UP_V2` | on | kill-switch | `0` restores the row-at-a-time BF16 `hc_mix` up/collapse kernel (r27); v2 is bit-identical and 4-21 % faster on the op. |
 | `GGML_CUDA_GRAPH_MEM_GEN` | on | kill-switch | `0` disables the per-device graph memory generation (r25): a graph that captured pool temporary / FA-staging / H2D-ring memory freed since is otherwise recaptured. |
@@ -523,7 +523,7 @@ These are not llama.cpp variables but they control how the delivery runs.
 | variable | notes |
 |---|---|
 | `HIP_VISIBLE_DEVICES` | which GPUs are visible, in order. Part of every validated command (`0,1` or `0,1,2`). |
-| `LD_LIBRARY_PATH` | must include the matching ROCm runtime libs, e.g. `/opt/rocm-7.14.1-gfx120X/lib`, or the build will not start. |
+| `LD_LIBRARY_PATH` | must include the matching ROCm runtime libs, e.g. `/opt/rocm-10.1.0-gfx120X/lib` (the canonical build tree), or the build will not start. |
 | `ROCR_VISIBLE_DEVICES` | lower-level alternative to `HIP_VISIBLE_DEVICES`; prefer `HIP_VISIBLE_DEVICES`. |
 | `GGML_CUDA_ENABLE_UNIFIED_MEMORY` | forces managed allocations; not used in this repo's validated configurations. |
 
