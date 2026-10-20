@@ -1,5 +1,27 @@
 # WORKLOG - dated delivery records
 
+## 261020.005 (r94) -- publication record (tag, CI, fork refresh, worker image build)
+
+**`v12-097cf33d9-r94` is published.**  Annotated tag `2241ac5e3…` on commit `a74836e`; delivery `main`
+pushed (`f7b7cdc -> a74836e`).  Workflows green: `Validate delivery set` (main and tag) and `Release patch
+set` (tag), which published the GitHub Release with `patches.tar.gz`, `rdna-boosts-all.patch`,
+`release.json` and `SHA256SUMS`.
+
+**Personal fork refreshed** (`git@github.com:stew675/llama.cpp.git`, fork only, never upstream).  A clean
+`apply-all.sh` at `097cf33d9` re-created `rdna-boosts` (strict 12/12, applied tree
+`40d43e3044051ea8168c02cd1a899877b5d8574d` = `release.json`); the branch tip is `cfb03b7ea`.  Pushed with
+`--force-with-lease=rdna-boosts:67adfdaf5…` (`67adfdaf5… -> cfb03b7ea`).  The applied tree is identical
+to the one the r94 gates ran on (coherence `1c5d32ac537d`, prefill-logit 0.000707 / 98.755 %, issue #187
+repro 3/3 clean; `WORKLOG.md` 261020.004), so no rebuild was needed for this step.
+
+**Container images.**  The `radiance` worker watcher (`scripts/container-watch.sh`) polls for the new
+`v12-*` tag and runs `build-containers.sh --rocm "7.14.1 10.1" --push --prune` off-host; no local container
+build was run.  Its log is `~/.cache/rdna-containers/build-v12-097cf33d9-r94.log` on that box.
+
+**Issue #187 reply.**  Posted after publication with the root cause, the fix, the r94 verification and two
+review notes for the reporter (PR #189 needs `#include <algorithm>` on this tree; the `-sm layer` arm
+did not reproduce here and should be retested on r94).
+
 ## 261020.004 (r94) -- issue #187 (captured graph replayed over a released slab work region) + the per-block boundary repair
 
 **Release `v12-097cf33d9-r94`**: base `097cf33d9`, canonical tip `c6b8107a3`, net tree
