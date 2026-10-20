@@ -407,6 +407,7 @@ see `../WORKLOG.md` 261017.008).
 | variable | default | notes |
 |---|---|---|
 | `GGML_CUDA_MMQ_J_MAX` | tuning | MMQ `J` tile width cap. |
+| `GGML_CUDA_MMVQ_RDNA3_SMALL_M` | `8192`, RDNA3_0 only — **kill-switch / tuning** (block 08) | row-count `M` band for the dense mmvq *weight* kernel's narrow (1-warp) block.  `Q4_0/Q4_1/Q5_0/Q5_1` always take it; `Q8_0` takes it for `2048 <= M <= this`; `Q6_K`/`IQ4_NL` never do.  `M` is the weight's row count, i.e. a tensor property, so all widths `W = 1..8` of a tensor take the same branch — and the three fusion kernels that reproduce a dense weight launch (`ggml_cuda_op_ssm_gate_beta`, `_ssm_conv_l2_gatebeta`, `_shexp_down_gate`) take the same value, which is the width-purity requirement (`GREEDY-PURITY.md` §19).  `0` restores the pre-2026-10-19 wide-block table (byte-identical to r91).  Measured on gfx1100: 35B-A3B MTP n3 **+10.7 %** (prose) / **+6.3 %** (code), gemma-26B `tg128` **+5.0 %**, 35B-A3B `tg128` @ d16384 **+1.7-2.0 %**, gemma-12B +0.4 %, 27B neutral; `W = 1..8` probe PASS on all four models and all eight KV types.  Record: `archive/work/nwarps/`. |
 | `GGML_Q6_COMPACT_J` | tuning | Q6 compact-`J` variant. |
 | `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS` | off (**opt-in**, RDNA3.5 only) | the qwen4exp weighted-down single-token chain. |
 | `GGML_PAIR_OFF` / `GGML_PAIR_DENSE_OFF` / `GGML_PAIR_2X` | off | paired-kernel variants. |

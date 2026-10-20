@@ -1,5 +1,140 @@
 # WORKLOG - dated delivery records
 
+## 261020.001 (r93) -- RDNA3_0 per-shape mmvq `nwarps` promoted (block 08); the `wip/nwarps` campaign closes
+
+**Release `v12-097cf33d9-r93`**: base `097cf33d9`, canonical tip `982cbf104`, net tree
+`260e6f49f41b9dbd18ce1b2d5214eba1917e8752`, **12 blocks** (block 08 amended, no new block).
+`validate-set.sh` green (strict 12/12 on a fresh tarball; base tree and applied tree match).
+
+**Fold.** The promoted patch (sha256 `55a7cd76…`, `archive/work/nwarps/patches/`) was applied as a
+13th commit on a clean apply at `release.json.base` and folded into **block 08** (the two policy
+headers, `mmvq-rdna.cuh` / `mmvq-rdna-params.cuh`, are block 08's; `mmvq.cu` is shared with 07/09/10).
+The 13-commit pre-fold tree and the folded 12-block tree are **identical** (`260e6f49f4…`); blocks
+09/10 replayed cleanly with both sides kept. `scripts/make-patches.sh` + `scripts/make-release.sh`
+regenerated `patches/`, `rdna-boosts-all.patch` and `release.json`; nothing was hand-edited.
+
+**What changed.** The dense mmvq weight kernel (`mul_mat_vec_q_ksplit`) picks `nwarps` per weight-tensor
+shape on RDNA3_0: `Q4_0/Q4_1/Q5_0/Q5_1` narrow (1 warp) at every row count, `Q8_0` narrow for
+`2048 <= M <= GGML_CUDA_MMVQ_RDNA3_SMALL_M` (default **8192**), `Q6_K`/`IQ4_NL` unchanged.  `M` is the
+weight's row count, so every width `W = 1..8` takes the same branch.  The row-scoped value is forwarded
+to the three fusion kernels that reproduce a dense weight launch (`ssm_gate_beta`,
+`ssm_conv_l2_gatebeta`, `shexp_down_gate`); excluding them was the original impurity (35B-A3B 0.150,
+gemma-26B **3.35** on the width probe).  `GGML_CUDA_MMVQ_RDNA3_SMALL_M=0` is the kill-switch and is
+byte-identical to the previous table.  Invariant recorded in `GREEDY-PURITY.md` §19; knob row in
+`ENVIRONMENT.md` §7.4.
+
+**Gates.**
+
+* **gfx1201 (scope check)** — compared against the **r92** delivery tree (the repo base is r92, not r91;
+r92 only changes block 05 FA).  Coherence text `sha=1c5d32ac537d` identical; the 27B `W=1..8` probe
+has all eight hashes identical; 4B PPL **10.0237 both**; prefill-logit **0.000707 / 98.755 %** (exactly
+r92).  No scope leak.  Object: `mmvq.cu.o` 14,451,208 → 16,385,752 B (+13.4 %), ksplit symbols
+2188 → 2640.
+* **gfx1151** — builds; coherence text identical; `test-recurrent-state-depth` per-arm FAIL/PASS set
+identical (**153** failures both, the recorded gfx1151 baseline); 35B-A3B Q3_K_M tg128 64.32 → 64.26 t/s
+(-0.09 %, noise).  RDNA3_5's table is untouched.
+* **gfx1100 (RDNA3_0)** — `test-logits-width-probe` PASS `maxdiff 0` on 35B-A3B Q4_K_M (row-0
+`9712377b5b34f8f3`, exactly the campaign), gemma-26B Q4_K_XL, gemma-12B Q8_0 and 27B Q4_K_M; 27B × all
+eight native KV types PASS; `=0` reproduces the delivery row-0 `7e21f25829185919`.  Decode (`tg128`,
+-r 3): 35B-A3B d16384 125.01 → **126.86** (+1.5 %), gemma-26B 125.55 → **130.80** (+4.2 %), gemma-12B
+d0 54.04 → **54.34** (+0.6 %), 27B d16384 40.11 → 40.12 (neutral).  Fixed-n3 MTP `-n 400` (the §4
+configuration): prose 199.6 → **222.6 t/s** (acceptance 0.653 → 0.750), code 235.5 → **248.3**
+(0.801 → 0.851) — reproduces `PROMOTION.md` §4 exactly.  PPL (wikitext-2, 64 × 2048) **5.7861 both**.
+Interleaved `llama-batched-bench -npl 1,4,8` (q8_0 KV): 27B flat at B=1/4/8; 35B-A3B B=8 **+5-7 %**,
+B=1/B=4 within noise.  Prefill-logit `--ab "GGML_CUDA_MMVQ_RDNA3_SMALL_M=0"`: **KLD 0.000000 /
+same-top-p 100.000 %** (prefill is a no-op, as expected).  Object 15,360,896 B; ksplit 2188 → 2640
+(+20.7 %).
+
+**Release caveat — the MTP prose axis is prompt-form-dependent.**  The four-axis adaptive gate
+(`-n 3000`, 35B-A3B Q4_K_M, reasoning pinned, chat template) is **not uniformly positive on prose**:
+cap 3 `191.7` vs `200.2` (-4.2 %), cap 7 `169.2` vs `187.4` (-9.7 %), acceptance 0.436 vs 0.526; at
+cap 12 prose is +2.3 % but that cap over-drafts this single-card MoE (acceptance 0.25-0.35 in both
+arms).  Reasoning is neutral at cap 3/7, code/recall are positive, and the phase-switching prompt is
+**+13.7 %** at cap 7.  The raw `-f` prose form (the §4 form) is positive: **+11.5 %** at `-n 400` and
+**+3.1 %** at `-n 3000`; the chat-template form is -7.2 % at `-n 400` and negative at long length.  The
+mechanism is the documented acceptance shift (the changed reduction order moves near-ties), and the
+result is deterministic (identical acceptance counts on repeat runs); plain decode is 121.8 t/s in the
+same config, so MTP still beats plain in both arms.  **Decision: ship default-on with this caveat
+recorded** — the purity, scope, PPL and prefill gates are all green, the §4 numbers reproduce, and the
+knob remains a one-line kill-switch for bisection.
+
+The always-narrow `Q4_0/Q4_1/Q5_0/Q5_1` arm still rests on gemma-26B alone (it reverses a 2026-08-28
+shallow sweep); the 35B-A3B is Q4_K/Q8_0, so dropping that arm would not change the prose finding.
+
+**Records.** `archive/work/nwarps/` (`README.md`, `PROMOTION.md`, `HANDOVER-PROMPT.md`, both patches);
+`wip/CAMPAIGNS.md` row removed, no stub; `patches/README.md` block-08 note; `ENVIRONMENT.md` §7.4;
+`GREEDY-PURITY.md` §19.
+
+## 261019.015 (no release) -- `wip/nwarps` promotion handover: default-on patch cut, fold recipe + per-box gates written
+
+**Handover ready for the main development host; nothing in the delivery changed.**  New
+`wip/nwarps/PROMOTION.md` + `HANDOVER-PROMPT.md`, and the second artifact
+`wip/nwarps/patches/per-shape-nwarps-rdna3-0-promoted.patch` (sha256 `55a7cd76…`, single commit,
+**default-on**).  The existing `…/per-shape-nwarps-rdna3-0.patch` (`eb32d36c…`) stays as the
+default-**off** A/B / beta / bisect variant; the two differ only in the `getenv` default.
+
+**The promoted state is validated, not just inverted.**  On gfx1100, with the environment unset, the
+promoted build reproduces the measured `GGML_CUDA_MMVQ_RDNA3_SMALL_M=8192` result exactly (35B-A3B
+`W = 1..8` probe row-0 hash `9712377b5b34f8f3`, PASS; `tg128` d16384 **127.26** t/s; gemma-26B
+**131.32** t/s) and `GGML_CUDA_MMVQ_RDNA3_SMALL_M=0` reproduces the r91 delivery (row-0
+`7e21f25829185919`, PASS), so the kill-switch is intact.  Both patches `git am` clean on a fresh
+worktree at the r91 tree `90507dfb5`.
+
+**Fold target.**  The change is three files under `ggml/src/ggml-cuda/`: `mmvq-rdna.cuh` and
+`mmvq-rdna-params.cuh` are **created by block 08**, and `mmvq.cu` is additionally touched by blocks
+07/09/10 — so the fold goes into block 08 (keep both sides on a replay conflict; the delivered tree is
+what ships).  `PROMOTION.md` carries the ready-to-paste `ENVIRONMENT.md` §7.4 kill-switch row, the
+`GREEDY-PURITY.md` §19/§25 invariant this campaign paid for ("a shape-scoped launch parameter must be
+forwarded to every kernel that reproduces that launch"), the block-08 `patches/README.md` note, and the
+gate list.  The key gate is free and decisive: **gfx1201 must be byte-identical to r91** (the scope is
+`table_id == MMVQ_PARAMETERS_RDNA3_0` only, so any diff on RDNA4 means the scope leaked).
+
+## 261019.014 (no release) -- `wip/nwarps` RESOLVED: the RDNA3_0 per-shape `nwarps` impurity was the *fusion exclusion*, not a missing reduction-mapping derivation
+
+**Campaign resolved (promotion pending the maintainer; record stays in `wip/nwarps/` until it is promoted or
+dropped).**  Patch `wip/nwarps/patches/per-shape-nwarps-rdna3-0.patch` (sha256 `eb32d36c…`, applies clean to
+the r91 tree `90507dfb5`, `git apply --check` + full apply verified on a fresh worktree), default **OFF** =
+byte-identical to the delivery (width-probe hashes unchanged at threshold 0).  gfx1100 (RX 7900 XTX), ROCm
+10.1.0, single GPU, built with `~/bin/build-llama-rocm`.
+
+**Root cause found.**  The candidate excluded the *fused* single-token launches
+(`small_m = … && !has_fusion && M <= threshold`), so for a scoped tensor the rms_norm→Q8_1 fold / SSM
+gate-beta / shared-expert-down fusion ran at the table's **8** warps at `W = 1` while the plain ksplit launch
+ran at **1** warp at `W = 2..8` — a decode-vs-verify K-split-order split, i.e. the impurity itself.  **No
+reduction-mapping re-derivation was needed**: the ksplit K loop is `kbx = tid/(qi/vdr) + m*blocks_per_iter`
+(a fixed per-thread residue class, independent of `ncols_dst` / `rows_per_block` / token index) and the
+warp + serial cross-warp trees are fixed for a given `nwarps`, so one value per shape *is* the width
+invariance requirement.  Fix: forward the row-scoped value to every launch of the tensor, including the
+three fusion kernels that reproduce a dense weight launch (`ssm_gate_beta`, `ssm_conv_l2_gatebeta`,
+`shexp_down_gate`) — the contract those kernels already document for `long_k`.
+
+**Purity (the blocker) — PASS everywhere** (`test-logits-width-probe` P=1024 ub=512 KV=f16).  All four
+models (35B-A3B Q4_K_M, gemma-26B Q4_K_XL, gemma-12B Q8_0, 27B Q4_K_M) PASS at the recommended `=8192`,
+and every *previously failing* cell is now `PASS maxdiff 0`: 35B 2048 (was 0.150), gemma-26B 4096 (was
+**3.35**), 27B 6144 (was 0.165), and 35B / gemma-26B / gemma-12B / 27B blanket 1e9 (27B was 0.166).
+27B × the eight native KV types at 8192: all PASS.  35B-A3B PPL 5.7861 both thresholds (per-chunk
+losses identical); greedy text coherent.
+
+**Retuned from measurement** (`tg128 -d 16384`, `r=3`): the 35B's win is its **M = 8192** Q8_0 shapes only
+(nothing below 8192: 2048/4096 are flat-to-negative), gemma-26B gains from Q4_0 at *every* row count
+(lm_head worth ~1.8 %), gemma-12B loses 2 % when **M = 15360** flips, 27B loses 0.6 % when its `M = 48 /
+1024` Q8_0 or its Q6_K/IQ4_NL shapes flip.  Shipped rule: `Q4_0/Q4_1/Q5_0/Q5_1` narrow always, `Q8_0`
+narrow for `2048 <= M <= GGML_CUDA_MMVQ_RDNA3_SMALL_M`, `Q6_K/IQ4_NL` unchanged.
+
+**Numbers at the recommended `=8192`:** 35B-A3B tg128 d16384 125.09/125.59 → 127.23/127.38 (**+1.7-2.0 %**);
+gemma-26B 125.14 → **131.45** (**+5.0 %**); gemma-12B d0 54.05 → 54.28 (+0.4 %); 27B d16384 40.14 → 40.16
+(neutral).  35B-A3B MTP n3 (`-n 400 --temp 0`, repeatable): prose 200.6 → **222.0 t/s (+10.7 %)**, code
+235.5 → **250.2 (+6.3 %)**; acceptance 0.653→0.750 / 0.801→0.851, so part of the MTP gain is an
+acceptance shift (a changed reduction order moves near-ties), while the plain-decode gains are kernel time
+only.  **The old record's `+2.1 % MTP / +9 % blanket` figures are superseded** — they were measured with the
+impure patch.
+
+**Cost.**  The template axis is `if constexpr`-gated to the 7 RDNA3_0 wide types and `ncols_dst <= 8`:
+`mmvq.cu.o` 13.64 → 15.36 MiB (+12.6 %), `mul_mat_vec_q_ksplit` symbols 2188 → 2640 (+20.7 %) vs
++41 %/+100 % for the ungated original.  **Promotion recipe** (knob default-on + `GGML_CUDA_MMVQ_RDNA3_SMALL_M=0`
+kill-switch, then the W-probe / four-axis MTP / PPL / batched-bench / prefill-logit gates) is §6 of
+`wip/nwarps/README.md`.
+
 ## 261019.012 (no release) -- the unified-KV cell-offset campaign closes: the quantum is the FA KV-split period, and the shared decode head is the variable
 
 **Campaign closed (no delivery change).**  `wip/kv-cell-offset-nondeterminism/` ->

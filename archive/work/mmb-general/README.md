@@ -102,7 +102,7 @@ the sparse MTP-draft attention, the QSA derived-indexer/crossover defaults, the 
 state, the host-buffer input layer, the meta `graph_optimize` fix, the extended MMVQ band, and the
 tiny-CPU split-graph fix.  Ten of the closing patches were **folded into** the core patches whose
 code they extend (`0002`, `0004`, `0005`, `0007`, `0008`); the rest are appended in original order.
-The experimental per-M `nwarps` rule stays **moved out** in [`../../wip/nwarps/`](../../wip/nwarps/)
+The experimental per-M `nwarps` rule stays **moved out** in [`../nwarps/`](../nwarps/)
 because it is default-OFF and breaks the `W=1..8` width-purity contract.
 
 **Per-arch state at promotion:** gfx1151 = the development target (needs the beta re-validation);

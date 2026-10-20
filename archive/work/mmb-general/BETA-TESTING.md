@@ -35,7 +35,7 @@ defaulted on, cross-build equality against the delivery no longer holds by desig
 
 The three patches added by the gfx1100 port cannot reach gfx1151 by construction (0011 is an additive
 predicate widening; 0012 is an `if (GGML_CUDA_CC_IS_RDNA3_0(cc))` arm; the per-M `nwarps` experiment
-was **moved out** of this set into `wip/nwarps/`).  Everything else is either RDNA4-gated in the
+was **moved out** of this set into `archive/work/nwarps/`).  Everything else is either RDNA4-gated in the
 per-arch table or arch-neutral.  Re-validating confirms that reasoning.
 
 ## 1. Apply and build

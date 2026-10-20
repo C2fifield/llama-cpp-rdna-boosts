@@ -715,6 +715,22 @@ Corollary for tuning: an apparent "win" measured before a purity fix (e.g. a den
 depth, or a fusion's "+x % decode") may have been measured with a *width-dependent* path, which is
 exactly what happened to the gfx1151 QSA crossover below.
 
+### A shape-scoped launch parameter must be forwarded to every kernel that reproduces that launch (2026-10-20, r93)
+
+`nwarps` / `rows_per_block` / VDR are chosen per weight shape, which is width-uniform **only** if every
+kernel that computes the same tensor uses the same value.  The fused single-token kernels
+(`ggml_cuda_op_ssm_gate_beta`, `ggml_cuda_op_ssm_conv_l2_gatebeta`, `ggml_cuda_op_shexp_down_gate`, the
+rms_norm→Q8_1 fold, the gate/bias folds) each *replace* a dense mmvq weight launch, so they must call
+the same selector (`calc_nwarps_weight(type, ncols, table, long_k, <row scope>)`).  A scope that is
+applied to the plain launch but not to the fused one runs `W = 1` at one warp count and `W = 2..8` at
+another — a decode-vs-verify impurity with exactly the symptom this rulebook exists to catch
+(measured: 35B-A3B 0.150, gemma-26B **3.35** on the `W = 1..8` probe).  The ksplit K loop
+(`kbx = tid/(qi/vdr) + m*blocks_per_iter`) is a fixed per-thread residue class, so a *correctly
+forwarded* per-shape value needs no further derivation.  The scope was the `!has_fusion` exclusion in
+the `archive/work/nwarps/` candidate, not a missing reduction-mapping derivation; the host must still compute
+the value once and pass it to both the launch dims and the kernel template (§20).  Record:
+`archive/work/nwarps/`.
+
 ## 20. A newly enabled KV-cache type is a new kernel family (2026-09-11, F3 step 1)
 
 The band guarantee is a property of *every* op on the decode/verify path, and a KV-cache type is one

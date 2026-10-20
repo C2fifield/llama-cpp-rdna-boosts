@@ -11,6 +11,35 @@ r51 entry in `../WORKLOG.md`; the old->new mapping and the full execution record
 > V2.0 block subjects are the ones in `git log`/`../WORKLOG.md` (261013.001), and the per-block
 > validation is `../MANIFESTS.md`.
 
+> **Current release `v12-097cf33d9-r93` (2026-10-20) -- RDNA3_0 per-shape `nwarps` for the dense mmvq weight kernel (`archive/work/nwarps/` promotion; block 08; no new block):**
+> canonical tip `982cbf104`, net tree `260e6f49f41b9dbd18ce1b2d5214eba1917e8752`; strict **12/12**
+> `git am` (`validate-set.sh` green on a fresh tarball).
+>
+> **block 08** (`ggml/src/ggml-cuda/mmvq.cu`, `mmvq-rdna.cuh`, `mmvq-rdna-params.cuh`) -- *the dense mmvq
+> weight kernel picks `nwarps` per weight-tensor shape on RDNA3_0*.  `mul_mat_vec_q_ksplit`'s wide
+> (8-warp) block is a large-M win and a small-M loss on RDNA3_0: `Q4_0/Q4_1/Q5_0/Q5_1` take the narrow
+> (1-warp) block at every row count, `Q8_0` for `2048 <= M <= GGML_CUDA_MMVQ_RDNA3_SMALL_M` (default
+> **8192**, `=0` restores the pre-2026-10-19 table, byte-identical to r91), `Q6_K`/`IQ4_NL` unchanged.
+> `M` is the weight's row count, so the choice is fixed per tensor and every width `W = 1..8` takes the
+> same branch.  The value is computed once on the host from `nrows_x` and passed to both the launch dims
+> and the kernel template, **and** to the three fusion kernels that reproduce a dense weight launch
+> (`ggml_cuda_op_ssm_gate_beta`, `_ssm_conv_l2_gatebeta`, `_shexp_down_gate`): excluding the fused
+> single-token launches was the original impurity (a scoped tensor ran the fusion at 8 warps for `W = 1`
+> and the plain ksplit at 1 warp for `W = 2..8`; 35B-A3B 0.150, gemma-26B **3.35** on the width probe).
+> The `small_m` template axis is `if constexpr`-gated to the seven RDNA3_0 wide types and
+> `ncols_dst <= 8`, so RDNA4/RDNA3_5 and every non-RDNA3_0 table are untouched (`mmvq.cu.o` on gfx1100
+> 13.64 -> 15.36 MiB, +12.6 %; `mul_mat_vec_q_ksplit` symbols 2188 -> 2640, +20.7 %).  The invariant is
+> `GREEDY-PURITY.md` §19 (a shape-scoped launch parameter must be forwarded to every kernel that
+> reproduces that launch).  Measured on gfx1100: 35B-A3B MTP n3 **+10.7 %** (prose) / **+6.3 %**
+> (code; acceptance 0.653 -> 0.750 / 0.801 -> 0.851, so part of the MTP gain is an acceptance shift),
+> 35B-A3B `tg128` @ d16384 **+1.7-2.0 %**, gemma-26B **+5.0 %**, gemma-12B +0.4 %, 27B neutral; `W =
+> 1..8` probe PASS on all four models and all eight native KV types; PPL unchanged.  **Caveat:** the
+> four-axis adaptive gate's *chat-template* prose axis is prompt-form-dependent (35B-A3B, `-n 3000`: -4.2 %
+> at cap 3, -9.7 % at cap 7, deterministic acceptance shift), while the raw `-f` form is +11.5 % at
+> `-n 400` and +3.1 % at `-n 3000`; code/recall/mixed are positive and reasoning neutral.  Shipped
+> default-on with the caveat recorded; `GGML_CUDA_MMVQ_RDNA3_SMALL_M=0` is the bisect handle.  Record:
+> `archive/work/nwarps/`.
+>
 > **Current release `v12-097cf33d9-r92` (2026-10-19) -- the FA band's 2-byte arm joins the 32-column block (TODO #27) and the head-512 prefill row is fixed (issue #188; block 05; no new block):**
 > canonical tip `47c5b2dd6`, net tree `da55e8282512084eae8f414c911cb4515be8e5cc`; strict **12/12**
 > `git am` (`validate-set.sh` green on a fresh tarball).

@@ -25,7 +25,7 @@ corresponding subset; the original 38-commit history is still in this repo's git
 **This is the BETA set: 28 patches covering gfx1151 + gfx1201 + gfx1100.**  Promoted from
 `wip/mmb-general` on 2026-09-21; the gfx1100 overlay patches are folded in as `0011`/`0012`, the
 `closing-the-gap` campaign was consolidated in as `0013`–`0028` (ten of its patches folded into the
-core), and the rejected per-M `nwarps` experiment lives in [`../../wip/nwarps/`](../../wip/nwarps/).
+core), and the rejected per-M `nwarps` experiment lives in [`../nwarps/`](../nwarps/).
 
 ```sh
 # base = the current r7 delivery tree (release.json: base 84e76d8a2, tree 7726e514284ea7393bb9097ce305dc5b6dacdb11)
@@ -261,7 +261,7 @@ and keeps the full type set — the split only narrows what RDNA4 accepts.  Deta
 > disturb gfx1201 — see [`combined-set-verification.md`](combined-set-verification.md).
 >
 > **Live question for the maintainer — RESOLVED 2026-09-21:** patch **0013** (the experimental per-M
-> `nwarps` scaffold) was **moved out of the set** to [`../../wip/nwarps/`](../../wip/nwarps/).  It was
+> `nwarps` scaffold) was **moved out of the set** to [`../nwarps/`](../nwarps/).  It was
 > default-OFF and documented as unshippable (it breaks `W=1..8` width purity on MoE models), yet it
 > **doubled** the `mul_mat_vec_q_ksplit` instantiation set on all three arches (object 8.5 -> 12 MiB,
 > +41 %; 828 -> 1656 ksplit symbols).  The impurity is now the tracked open work in that directory.

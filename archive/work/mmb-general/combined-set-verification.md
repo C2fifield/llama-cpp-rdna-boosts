@@ -1,7 +1,7 @@
 # The combined set — gfx1151 + gfx1201 + gfx1100 (2026-09-21)
 
 > **POSTSCRIPT — one patch was removed after this verification.**  The maintainer had the experimental
-> per-M `nwarps` patch (`0013`) **moved out** of the set to [`../../wip/nwarps/`](../../wip/nwarps/),
+> per-M `nwarps` patch (`0013`) **moved out** of the set to [`../nwarps/`](../nwarps/),
 > because it is default-OFF and breaks the `W=1..8` width-purity contract.  The 12-patch beta set was
 > then `bca69f23dd…` on r12 (this file's §2-§4 describe the intermediate 13-patch state, tree
 > `cd306e6b60…`, which is also verified).  Removing a default-OFF patch that no gfx1201 code path

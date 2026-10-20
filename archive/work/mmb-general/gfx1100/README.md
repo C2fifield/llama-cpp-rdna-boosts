@@ -3,7 +3,7 @@
 > **This overlay no longer exists as a separate step.**  At the `archive/work/mmb-general` promotion the two
 > shippable overlay patches were folded into the beta set: they are now `patches/0011` (qsa3 on
 > RDNA3_0) and `0012` (F32 split off on RDNA3_0) of the single 12-patch set.  The third — the
-> experimental per-M `nwarps` rule — was moved out to [`../../../wip/nwarps/`](../../../wip/nwarps/)
+> experimental per-M `nwarps` rule — was moved out to [`../../nwarps/`](../../nwarps/)
 > because it is default-OFF and breaks `W=1..8` width purity.
 >
 > Apply the beta set in one step: `git am <repo>/archive/work/mmb-general/patches/*.patch` (**12/12**, tree
