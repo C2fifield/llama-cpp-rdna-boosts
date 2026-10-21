@@ -1,4 +1,4 @@
-From ebd2dd9629a0de899ea0efb24547cdc7ef42404c Mon Sep 17 00:00:00 2001
+From 8670e459e32020a10fd2a99057d04c509dd2acaf Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
 Date: Mon, 12 Oct 2026 19:58:30 -0500
 Subject: [PATCH 10/11] rdna-boosts: block 10: qwen4exp (model,
@@ -604,10 +604,10 @@ index d83b3fb76..b47a1423e 100644
  
  bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
 diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
-index e6594f194..e2467ceb9 100644
+index e52a1a785..fd33ecdc6 100644
 --- a/ggml/src/ggml-backend-meta.cpp
 +++ b/ggml/src/ggml-backend-meta.cpp
-@@ -323,6 +323,10 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
+@@ -324,6 +324,10 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
      /* .moe_cache_set_host_pool   = */ nullptr,
      /* .moe_cache_set_host_source = */ nullptr,
      /* .slab_compute_plain   = */ ggml_backend_meta_device_slab_compute_plain,
@@ -618,7 +618,7 @@ index e6594f194..e2467ceb9 100644
  };
  
  bool ggml_backend_dev_is_meta(ggml_backend_dev_t dev) {
-@@ -342,6 +346,42 @@ ggml_backend_dev_t ggml_backend_meta_dev_simple_dev(ggml_backend_dev_t meta_dev,
+@@ -343,6 +347,42 @@ ggml_backend_dev_t ggml_backend_meta_dev_simple_dev(ggml_backend_dev_t meta_dev,
      return meta_dev_ctx->simple_devs[index];
  }
  
@@ -661,7 +661,7 @@ index e6594f194..e2467ceb9 100644
  ggml_backend_dev_t ggml_backend_meta_device(
          ggml_backend_dev_t * devs, size_t n_devs, ggml_backend_meta_get_split_state_t get_split_state, void * get_split_state_ud) {
      GGML_ASSERT(n_devs <= GGML_BACKEND_META_MAX_DEVICES);
-@@ -1303,6 +1343,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1304,6 +1344,40 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_FLASH_ATTN_EXT: {
                  split_state = handle_flash_attn_ext(src_ss);
              } break;
@@ -702,7 +702,7 @@ index e6594f194..e2467ceb9 100644
              case GGML_OP_FLASH_ATTN_BACK: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
-@@ -1331,6 +1405,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+@@ -1332,6 +1406,29 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
              case GGML_OP_DSV4_HC_POST: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ true);
              } break;
@@ -732,7 +732,7 @@ index e6594f194..e2467ceb9 100644
              case GGML_OP_UNARY: {
                  split_state = handle_generic(src_ss, /*scalar_only =*/ false);
              } break;
-@@ -2647,7 +2744,10 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
+@@ -2667,7 +2764,10 @@ static bool ggml_backend_meta_stage_input(ggml_backend_t backend, ggml_tensor *
          if (chunk_size_j == 0) {
              continue;
          }

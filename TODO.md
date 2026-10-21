@@ -12,7 +12,7 @@ Details never live here: they live in `AGENTS.md`, `patches/README.md`, `MANIFES
 still means the same subject after that item is closed and removed from this file.  New items append.
 
 **Current state:** the **12-block V2.0 set** (block 00 + blocks 01-11) at fork point **`097cf33d9`**,
-release **`v12-097cf33d9-r99`**.  `release.json` is the source of truth for the tip/tree and hashes; the
+release **`v12-097cf33d9-r100`**.  `release.json` is the source of truth for the tip/tree and hashes; the
 top of `WORKLOG.md` is the newest record.
 
 | # | subject | kind | status |
@@ -31,6 +31,7 @@ top of `WORKLOG.md` is the newest record.
 | **77** | segmented per-op expert upload is synchronous (gemma4 ~9 t/s) | performance | open (`wip/meta-segmented-upload-async/`) |
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **79** | RDNA3_0 verify-band fusions: no multi-device measurement, and gfx1101/gfx1102 untested | platform validation | open (shipped default-on in r95; needs a 2+ card gfx1100 box) |
+| **80** | meta split-state cache: 30+ lookups per node per re-allocation | performance | parked (`archive/work/issue-184-meta-r80r82/RESOLUTION.md` `§` headroom) |
 
 Accepted limitations that are deliberately **not** fixed are listed at the end — do not re-report them.
 
@@ -321,6 +322,20 @@ Two gaps, both needing hardware the fleet does not have:
 - **Not worth pursuing** (measured, no win): the decode fq-inline-quantize port (wash-to-negative — the
   tree already launches fewer kernels/step and sits at wall parity) and the GDN +72-launch 2-kernel split
   (cosmetic).
+
+## 80. Meta split-state cache: 30+ lookups per node per re-allocation — PERFORMANCE (parked)
+
+r100 removed the walk's heap churn (block 09, issue #184: `wstack`/`wseen` on a reused per-thread
+`monotonic_buffer_resource`).  What is left per graph re-allocation, on the reporter's 4-stream workload, is
+~165k cache hits -- **more than 30 per node** -- each a hash find on the tensor pointer plus a 336-byte
+`memcmp` of the cached `ggml_tensor` copy.
+
+Parked, not attempted: hashing the tensor bytes to skip the `memcmp` would cost about what the `memcmp`
+costs (336 B is ~11 vector words), so the lever is the lookup **count** (the recursion/pruning structure of
+`calculate_split_state` and the pre-warm walk), not the comparison.  Any change there needs the same proof
+the r100 change used: identical states under `GGML_META_SS_VERIFY=1`, identical greedy text and prefill
+KLD, and a same-binary A/B (`GGML_META_SS_SCRATCH=0` is the adjacent switch).  Measurements and the
+reporter's numbers: `archive/work/issue-184-meta-r80r82/RESOLUTION.md`.
 
 ## Where the current lists live
 

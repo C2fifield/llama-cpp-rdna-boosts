@@ -1,5 +1,79 @@
 # WORKLOG - dated delivery records
 
+## 261020.014 (r100) -- issue #184 fix promoted (split-state walk scratch); PR #177 re-reviewed and still declined
+
+**Release `v12-097cf33d9-r100`**: base `097cf33d9`, canonical tip `db675e2db`, net tree
+`4775fc92b9007b279062ad43a63150a8a2ebe7db`, **12 blocks**.  Block 09 amended, no new block.  One new
+environment variable, a kill switch (`GGML_META_SS_SCRATCH`, default on).
+
+### Issue #184 (`@briansp2020`) -- the split-state pre-warm walk allocates no heap nodes -- FIXED
+
+The first phase (r86-candidate, `261018.010`) answered the reported r80 -> r82 3.5 % 4-stream regression:
+not reproducible here (<= 0.4 %, sign unstable, 224 B of `.text`, no inlining change).  The reporter then
+took the cold-helper direction himself and measured the remaining cost at the right place: **the walk's
+containers**.  Per graph re-allocation his timers show ~2800 pre-warm walks, ~150k visited tensors, ~4.7k
+split states and **94 % of the `malloc` calls under `ggml_gallocr_alloc_graph` in `wseen`'s inserts** (one
+heap node per visited tensor plus the rehash and the frees); a `std::pmr::monotonic_buffer_resource` over a
+reused 1 MiB per-thread buffer took his re-allocation from 21.1 to 16.0 ms, four concurrent streams +5.0 %,
+TTFT -26 ms, output identical.
+
+**Landed (block 09, 22 lines):** `wstack`/`wseen` are `std::pmr::vector` / `std::pmr::unordered_set` over a
+reused `thread_local` 1 MiB `monotonic_buffer_resource`, released at the top of each walk;
+`GGML_META_SS_SCRATCH=0` selects the default (heap) resource, so the A/B is one binary and one env.  Only
+the outermost call walks, so the resource is never re-entered; the walk visits the same tensors in the same
+order; an exhausted arena falls back to the upstream allocator, so nothing is capped.
+
+**Gates** (gfx1201, 3x R9700, ROCm 10.1.0, release tree `4775fc92`, A/B by swapping only
+`libggml-base.so.0.26.0`): 4B Q8_0 3 GPU coherence `1c5d32ac537d` == r99; 27B UD-Q4_K_XL 2 GPU tensor q8_0
+KV 200-token greedy `5067a0089fc1` (plain == `draft-mtp` n3 == r99) **with and without
+`GGML_META_SS_VERIFY=1`** (which recomputes every outermost cache hit and aborts on a stale entry, so the
+states are proven identical); prefill-logit KLD **0.000707 / 98.755 %** (== r99, PASS);
+`test-backend-ops -o RMS_NORM,ADD,MUL_MAT,CPY,CONCAT,SSM_CONV` on ROCm0+ROCm1 **6262 OK / 0 FAIL**, 3/3
+backends; per-block build 3/3 (blocks 09-11); `validate-set.sh` green (strict 12/12 from a fresh
+tarball, tree `4775fc92`); every r100 log clean under `check-gpu-faults.sh` (the kernel journal has one
+fault cluster at 13:49 from an earlier session, nothing during any r100 run).
+
+**Perf.**  `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` (27B UD-IQ3_S, 3 GPU tensor, q8_0 KV, total
+t/s, 3 interleaved rounds): **B=1 61.3 -> 62.4 (+1.6 %)**, **B=4 201.5 -> 202.7 (+0.6 %)**, **B=8 317.9 ->
+319.5 (+0.5 %)**.  The reporter's 4-stream server shape (Flash-Next IQ3_XXS, 2 GPU tensor `-ncmoe 47`, MTP
+n3): pre-warmed pure decode **+0.29 %** (3 pairs), 4 concurrent chats with the prefills in the window
+**+0.36 %** mean over 7 pairs (paired -3.5 .. +4.9 %).  Smaller than his +5 % for a measurable reason: his
+workload re-allocates ~230 times per run, this box's config reports 1-5 `graph reallocs` per request, so
+the walk is a proportionally smaller share of wall time.  Shipped because it is neutral-to-positive on
+every gate here and removes ~4.7k heap nodes per re-allocation on the shape that has the churn.
+
+Record: `archive/work/issue-184-meta-r80r82/RESOLUTION.md` (+ `ab.py`, `ab_mixed.py`); `ENVIRONMENT.md` §2;
+`patches/README.md` block 09.
+
+### PR #177 (`gdn-conv-snapshot-fold`, `@briansp2020`) -- re-reviewed, still DECLINED (determinism)
+
+Re-cut onto r99 (one conflict: the RDNA3_0 verify-batch comment) and gated on the same probe.  **The dense
+claim now holds**: 27B UD-Q4_K_M 1 GPU is bit-identical to stock and stable at P=256
+(`0e33b420b37beba4`) and P=3584 (`9c12636638742221`), 2/2 each.  **35B-A3B is the blocker**, and the bisect
+narrowed it: stock r99 is stable (`97ad459c74d8a694` / `d24b26226690e95b`, 3/3 each) while r99 + #177 is
+stably *different* at P=256 (`29cb3722a842846a`, 8/8) and **nondeterministic at P=3584**
+(`2b1caf3bd5cfe4e3` x3 / `c2336484ebf6dab2` x2); the kill switch reproduces stock exactly.  Not the expert
+cache, staging, dev gather, gather index or the gather fusion; `GGML_CUDA_ASYNC_INPUT=0` moves it to a
+third value.  Keeping the snapshot CPY reproduces stock even with the conv kernel writing the same
+destination (the destination hash is identical after both writes), so **the fold's write is byte-exact**;
+and a node-by-node F32 hash of the prefill puts the first difference at the `ssm_alpha` LoRA `MUL_MAT`,
+upstream of every write the patch moves.  Adding `gdn_concat_tail` alone moves the result to a third
+value, so this model's prefill is sensitive to the launch sequence itself (the open `TODO.md` #75 class).
+Re-entry is unchanged: identical probe hashes to stock across 5 runs at P=256 and P=3584 on both models,
+with graphs on.  Record: `archive/work/gdn-conv-snapshot-fold/RESOLUTION.md` (second-review section);
+comment on the PR.
+
+**A note on instruments:** a *terminal* `llama-cli` text hash is not valid for a determinism claim -- the
+stream carries `\b` corrections, so raw output differs by streaming chunking even when the text is
+identical.  Use `scripts/extract-generated.py`.  (An intermediate conclusion in this session, that stock
+r99 gives three different 35B-A3B texts at `-sm tensor`, was such an artifact and is retracted: with
+`extract-generated.py` the release build is stable 4/4 at `0c2291183d46`.)
+
+### Docs
+
+`patches/README.md` block 09 (the walk scratch + the knob); `ENVIRONMENT.md` §2 (`GGML_META_SS_SCRATCH`);
+`release.json` regenerated (`make-patches.sh` + `make-release.sh`); `validate-set.sh` green.
+
 ## 261020.013 (docs) -- TODO #75 gfx1151 revalidation: the symptom is absent before and after r97's async fix
 
 **No delivery change; no release.**  Negative-result record on the gfx1151 (Strix Halo) box so the next

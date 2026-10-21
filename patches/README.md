@@ -375,6 +375,17 @@ whatever VRAM is left.
   read's split arithmetic instead of asserting `offset == 0` and one segment, so a caller can batch many
   per-device reads behind one `synchronize`.  Calls that worked before issue the same copies as before.
   The caller is block 11's batched state save.
+* **The split-state pre-warm walk allocates no heap nodes** (r100, issue #184).  On a cache miss the
+  per-buffer-context split-state cache walks the not-yet-cached ancestors on an explicit stack (the
+  recursive form overflowed the thread stack on a 1200-node chain); its `wstack`/`wseen` containers
+  allocated one heap node per visited tensor on **every graph re-allocation** — a 4-stream server
+  re-allocates ~230 times per run, and the reporter's profile put 94 % of the `malloc` calls under
+  `ggml_gallocr_alloc_graph` in that set, ~4.7k split states and ~150k tensors per re-allocation.
+  Both containers now use a reused per-thread `monotonic_buffer_resource` (1 MiB, released per walk).
+  Only the outermost call walks, so the resource is never re-entered; the walk visits the same tensors
+  in the same order and computes the same states (proven with `GGML_META_SS_VERIFY=1`, which recomputes
+  every outer hit), and an exhausted arena falls back to the upstream allocator, so nothing is capped.
+  `GGML_META_SS_SCRATCH=0` restores the heap containers (A/B and bisection only).
 * **The copy callback is invoked again, so the upstream MoE cache works** (r99, TODO #56).  This block's
   rewrite of `ggml_backend_sched_copy_input` kept no `sched->callback_copy` call, and that call is the only
   driver of `llama_moe_cache::copy()`: with `--moe-cache-mib` set the slot map stayed `-1` while the graph had
@@ -424,7 +435,7 @@ whatever VRAM is left.
 `GGML_COMPUTE_BUFFER_MARGIN_PCT`/`_CHUNK_MIB`, `GGML_CUDA_ASYNC_INPUT`, `GGML_SCHED_STAGE*`,
 `GGML_STAGE_*`, `LLAMA_LOAD_RELEASE_MMAP`, `LLAMA_DROP_COMPUTE_BUFFERS`, `LLAMA_DROP_EXTRA_RESERVE_MIB`,
 `GGML_CPU_MOE_OFFLOAD_THREADS`, `GGML_CPU_DISABLE_TINY_GRAPH_SINGLE_THREAD`, `LLAMA_TENSOR_HOST_BUFT`,
-`GGML_HIP_GRAPH_FORCE_UPDATE`, `GGML_META_SS_VERIFY`, `GGML_SCHED_MOE_DUP_SPLIT`.
+`GGML_HIP_GRAPH_FORCE_UPDATE`, `GGML_META_SS_VERIFY`, `GGML_META_SS_SCRATCH`, `GGML_SCHED_MOE_DUP_SPLIT`.
 
 **Invariants.**  Host experts are always pinned; a partially failed cache **falls back wholesale**; no
 arena is freed while a kernel carrying its address is in flight; the slab is **MoE-only** (armed solely by

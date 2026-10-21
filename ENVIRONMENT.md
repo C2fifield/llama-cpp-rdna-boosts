@@ -227,6 +227,7 @@ configuration.
 | `GGML_SCHED_DEBUG_REALLOC` | unset | diagnostic | log buffer reallocations. |
 | `GGML_META_SPLIT_COPY` | unset | tuning | meta-backend split copy handling. |
 | `GGML_META_SS_VERIFY` | off | diagnostic | `1` recomputes every outermost meta split-state cache hit and aborts on a stale entry (r25 added the 8-version + compacted cache; this verifies it). |
+| `GGML_META_SS_SCRATCH` | **on** (r100, block 09) | kill-switch | the meta split-state cache's pre-warm walk keeps its `wstack`/`wseen` in a reused per-thread `monotonic_buffer_resource` (1 MiB, released per walk) instead of allocating one heap node per visited tensor on every graph re-allocation.  Inert on the computed states (the walk visits the same tensors in the same order; `GGML_META_SS_VERIFY=1` re-derives every outer hit and agrees).  `0` restores the heap containers (A/B and bisection only). |
 | `GGML_STAGE_META_REDIRECT` | off | diagnostic | meta redirection instead of the explicit d2d completion. |
 | `GGML_STAGE_NO_RESTORE` | off | diagnostic | skip the redirect restore (debug only — unsafe). |
 | `GGML_STAGE_GATHER_SCRATCH` | off | diagnostic | force the gather scratch path. |
