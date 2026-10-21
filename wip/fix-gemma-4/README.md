@@ -11,7 +11,8 @@ on the same arch and the same configs:
 |---|---|---|
 | **TODO #76** | the r81 q8_0 K/V cache-write (rope+FWHT) fusion is inert on iSWA models | **fix validated, complete** (`#76-iswa-write-fusion`) |
 | **TODO #77** | the expert cache never sizes on gemma4 → per-op expert upload with no residency (`-sm layer` 7.9 t/s, `-sm tensor` 5.5 t/s) | **A+B+C implemented and gated** — `-sm layer` **79.0** t/s, `-sm tensor` **74.7** t/s (`#77-expert-cache`) |
-| **TODO #68** | `gemma4` dense + `-sm tensor` aborts (rotated-K-cache `mul_mat split states`; **and** an f16 `handle_per_row` abort found 2026-10-21) | **open, not attempted here — handover** |
+| **TODO #68** | `gemma4` dense + `-sm tensor` aborts (rotated-K-cache `mul_mat split states`; **and** an f16 `handle_per_row` abort found 2026-10-21) | **open — deferred, handover** |
+| **MTP determinism** | MTP + host experts + `-sm layer` on 2 devices gives different greedy text run-to-run (r69 / TODO #75 family) | **open, instrumented and narrowed**: the **draft model's logits** with two contexts on two devices + captured graphs; a single context (incl. the whole cache path) is bit-identical 6/6.  One real cross-context bug found and fixed (`0005`, per-origin async-input ring: unstable → 8/10).  Record: `HANDOVER-2026-10-21b.md` |
 
 The two former campaign directories (`wip/iswa-kv-write-fusion/`, `wip/meta-segmented-upload-async/`) are
 folded into this one and deleted, with their content preserved here (`ISWA-WRITE-FUSION.md` for the #76
@@ -179,9 +180,10 @@ patched tree: text identity vs plain holds on a short greedy run, acceptance is 
 
 Two caveats, both recorded in the handover: (a) at the **default** (max) context `--fit` gives the KV 19 GiB
 and the arena only 13.8 GiB, which costs the cache its residency and makes MTP *slower* than plain
-(50.2 vs 79.3) — pin `-c` when measuring; (b) with the cache active and MTP, a captured-graph run is
-**not** run-to-run deterministic (`GGML_CUDA_DISABLE_GRAPHS=1` or `ASYNC_INPUT=0` are deterministic, and
-`n_max 2` was stable where `n_max 3` was not) — that is the r69/`TODO #75` class, handed over.
+(50.2 vs 79.3) — pin `-c` when measuring; (b) **MTP is not run-to-run deterministic on 2 devices with
+captured graphs**, and the differing values are the *draft model's* logits (a single context with the cache
+is bit-identical 6/6) — see `HANDOVER-2026-10-21b.md`; the text-based "deterministic with X" claims in this
+section are retracted.  Judge determinism on the logit-level instrument (`tools/fp.sh`), never a text hash.
 The drafter is correctly rejected for `-sm tensor` (`gemma4-assistant` is not in
 `llm_arch_supports_sm_tensor`), so gemma4 MTP is `-sm layer`-only until TODO #68 is fixed.
 
@@ -218,8 +220,15 @@ narrower shape: **row-aligned only**, per-(segment, repeat, device) `set_2d_asyn
 Recorded in `HANDOVER-2026-10-21.md` §0 — settled, not to be re-litigated:
 
 1. The stray `(file*).moe-heatmap` artifact is **dropped in block 09 at the promotion cut** (not before).
-2. **MTP determinism is a must-fix** and is the next session's first work item.
+2. **MTP determinism is a must-fix** and is the session's first work item.
 3. The **`--fit` arena shortfall under MTP is investigated with a view to fixing it**, same session.
+4. (2026-10-21 session b) **A text hash is not a determinism instrument here** — judge run-to-run
+   determinism on the draft-logit fingerprint (`tools/fp.sh`) or `decodestart.sh`.  The text-based
+   "deterministic with `DISABLE_GRAPHS` / `ASYNC_INPUT=0` / `n_max 2`" claims are retracted.
+5. (2026-10-21 session b) The **ids-staging band-aid is dropped** and the **bounded scheduler barrier is
+   removed from the tree** (it fixed nothing; 3-run coincidence).  The **per-origin async-input ring**
+   (`0005`) stays — a genuine cross-context bug — and is not folded until the determinism item is closed.
+6. (2026-10-21 session b) The `-b`/spec verify-batch abort is **in this campaign** (`0006`), not a new TODO.
 
 Priority order after that: #68 1b (f16 `handle_per_row`) → #68 1a (rotation `mul_mat split states`) →
 promotion checklist (`HANDOVER-2026-10-21.md` §6).
@@ -228,7 +237,10 @@ promotion checklist (`HANDOVER-2026-10-21.md` §6).
 
 | file | what |
 |---|---|
-| `README.md` | this file: the campaign, its three items, the plan and the gate contract |
+| `README.md` | this file: the campaign, its items, the plan and the gate contract |
+| `HANDOVER-2026-10-21b.md` | **current cold-start record**: the MTP-determinism instrument, reproduction commands, what is established/retracted, the 7-patch set, the next bisect, and the deferred items |
+| `evidence/MEASUREMENTS-2026-10-21c.md` | determinism numbers + the two **retractions** (read before `-21b`) |
+| `tools/fp.sh`, `tools/clihash.sh` | the determinism instruments (draft-logit fingerprint; SSE delta hash) |
 | `ISWA-WRITE-FUSION.md` | the complete #76 record (symptom, code facts, fix, gfx1151 + gfx1201 evidence, the 512-wide gap) |
 | `HANDOVER-2026-10-21.md` | handover for the next session (with the maintainer decisions in §0): **TODO #68** (the two `-sm tensor` aborts), the MTP determinism finding, and three smaller items (the stray block-09 artifact, the `--fit` arena note, the `--spec-draft-n-max 2` observation) |
 | `patch-state/` | the exact patches this campaign produced, with hashes + apply instructions |

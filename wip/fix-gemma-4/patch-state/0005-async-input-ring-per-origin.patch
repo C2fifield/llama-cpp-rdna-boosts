@@ -1,0 +1,441 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 094643847..400244406 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1343,40 +1343,51 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
+-
+ // GGML_CUDA_ASYNC_INPUT=1: graph inputs (small host -> device writes into a compute buffer) are staged through a
+ // per-device pinned ring and copied asynchronously on cudaStreamPerThread (the stream the synchronous path uses, so a
+-// later get_tensor stays ordered after it); an event is recorded per copy and the next graph on that device makes its
+-// compute stream wait for it (ggml_cuda_async_input_wait).  The host no longer waits for each input copy.  The ring
+-// is reused only after a full drain of the copy stream (once per lap).
+-struct ggml_cuda_async_input_dev {
+-    std::mutex  mtx;
+-    char *      ring    = nullptr;
+-    size_t      cap     = 0;
+-    size_t      head    = 0;
+-    cudaEvent_t ev      = nullptr;
+-    bool        pending = false;
+-    int64_t     hits    = 0;
+-    cudaEvent_t done_ev  = nullptr;   // recorded on the compute stream when a graph_compute returns
+-    bool        has_done = false;
++// later get_tensor stays ordered after it); an event is recorded per copy and the next graph makes its compute stream
++// wait for it (ggml_cuda_async_input_wait), so the host never blocks per copy.  The ring bytes are reused only after
++// the streams that read them have drained (once per lap).
++//
++// The ORDERING state is per origin thread (`cudaStreamPerThread` at first use), not per device.  A stream is a
++// llama_context: MTP runs the draft and the target context concurrently on the same devices, each on its own host
++// thread with its own stream.  A single per-device `pending`/`q`/`done_ev` let one context consume the other's
++// queued uploads, and then the other context's graph replayed without waiting for the copy that feeds it --
++// measured 2026-10-21 (gemma4 26B-A4B + MTP + `-ncmoe` + `-sm layer`, 2 devices): two identical runs produced
++// different greedy text, and the same run became stable once a full two-device synchronize restored the ordering
++// the fast path had removed.  The ring bytes stay per device: they are ordered by the per-origin event/flush
++// guards, and the head wrap waits for every origin before reusing a slot.
++struct ggml_cuda_async_input_origin {
++    cudaStream_t stream       = nullptr;   // this origin thread's stream (the state key)
++    cudaEvent_t  ev           = nullptr;   // recorded after the last per-copy upload on `stream`
++    bool         pending      = false;
++    cudaEvent_t  done_ev      = nullptr;   // recorded on `done_stream` when that graph_compute returns
++    bool         has_done     = false;
+     // Lazy done event (GGML_CUDA_ASYNC_INPUT_LAZY_DONE; default on with GGML_CUDA_ASYNC_INPUT_BATCH=1): a graph_compute
+-    // only marks it pending, and the next upload records it on that graph's stream.  Only uploads read it, while a decode
+-    // step runs hundreds of graph_computes per device, each record a marker packet the GPU processes between graphs.
+-    // Recorded later on the same stream, it covers at least the same work, so an upload still waits for the last graph.
++    // only marks it pending, and the next upload records it on that graph's stream.
+     bool         done_pending = false;
+     cudaStream_t done_stream  = nullptr;
+-    // GGML_CUDA_ASYNC_INPUT_BATCH: uploads queued until the next graph on this device (ring offsets, mapped ring pointer)
++    // GGML_CUDA_ASYNC_INPUT_BATCH: uploads queued until the next graph on this origin
+     struct queued { char * dst; size_t off; size_t size; };
+     std::vector<queued> q;
+-    char *       ring_dev  = nullptr;
+-    cudaEvent_t  flush_ev  = nullptr;   // recorded after the last batch kernel: the ring is free once it completes
+-    bool         has_flush = false;
++    cudaEvent_t  flush_ev     = nullptr;   // recorded after the last batch kernel: the ring is free once it completes
++    bool         has_flush    = false;
++    int64_t      hits         = 0;
++};
++
++struct ggml_cuda_async_input_dev {
++    std::mutex  mtx;                 // serializes the ring bytes for this device
++    char *      ring     = nullptr;  // pinned host ring
++    size_t      cap      = 0;
++    size_t      head     = 0;
++    char *      ring_dev = nullptr;  // device alias of `ring` (batched uploads)
++    std::map<cudaStream_t, ggml_cuda_async_input_origin> origins;
+ };
+ static ggml_cuda_async_input_dev g_async_input[GGML_CUDA_MAX_DEVICES];
+ // Default ON (GGML_CUDA_ASYNC_INPUT=0 disables): the synchronous path blocks the host on every small
+ // graph-input copy, which is a measurable cost on a slow host and invisible on a fast one.  The async path
+-// stages through a per-device pinned ring and orders the graph on that ring with an event, so the host does
+-// not wait per copy.
++// stages through a pinned ring and orders the graph on that ring with an event, so the host does not wait
++// per copy.
+ // This was opt-in up to r89 because a run was NOT start-to-start deterministic when the consuming graph was
+ // captured.  That was NOT the ring: the uploads verify byte-correct at the graph's first read, consecutive
+ // graphs do not overlap, and HIP's wait-before-replay / event-after-replay ordering is correct (two
+@@ -1429,79 +1440,167 @@ static __global__ void ggml_cuda_ain_batch_kernel(const ggml_cuda_ain_batch b) {
+     }
+ }
+ 
+-// the old path for one upload already in the ring (caller holds d.mtx)
+-static void ggml_cuda_async_input_copy_locked(ggml_cuda_async_input_dev & d, void * dst, const char * slot, size_t size) {
+-    if (d.done_pending) {
+-        CUDA_CHECK(cudaEventRecord(d.done_ev, d.done_stream));
+-        d.done_pending = false;
+-        d.has_done     = true;
+-    }
+-    if (d.has_done) {
+-        // the previous graph on this device may still read this input: copy only after it (a GPU-side wait)
+-        CUDA_CHECK(cudaStreamWaitEvent(cudaStreamPerThread, d.done_ev, 0));
++// this thread's ordering state (caller holds d.mtx); created on first use
++static ggml_cuda_async_input_origin & ggml_cuda_async_input_origin_locked(ggml_cuda_async_input_dev & d) {
++    const cudaStream_t key = cudaStreamPerThread;
++    auto it = d.origins.find(key);
++    if (it == d.origins.end()) {
++        it = d.origins.emplace(key, ggml_cuda_async_input_origin()).first;
++        it->second.stream = key;
+     }
+-    CUDA_CHECK(cudaMemcpyAsync(dst, slot, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+-    CUDA_CHECK(cudaEventRecord(d.ev, cudaStreamPerThread));
+-    d.pending = true;
++    return it->second;
+ }
+ 
+-// issue the queued uploads through the old per-copy path, in order (caller holds d.mtx)
+-static void ggml_cuda_async_input_drain_locked(ggml_cuda_async_input_dev & d) {
+-    for (const auto & e : d.q) {
+-        ggml_cuda_async_input_copy_locked(d, e.dst, d.ring + e.off, e.size);
++// Allocate the ring (per device) and this origin's events (caller holds d.mtx).  false = fall back to the
++// synchronous path for this copy.
++static bool ggml_cuda_async_input_arm_locked(ggml_cuda_async_input_dev & d, ggml_cuda_async_input_origin & o) {
++    if (d.ring == nullptr) {
++        if (cudaMallocHost((void **) &d.ring, GGML_CUDA_ASYNC_INPUT_RING) != cudaSuccess) {
++            (void) cudaGetLastError();
++            d.ring = nullptr;
++            return false;
++        }
++        d.cap = GGML_CUDA_ASYNC_INPUT_RING;
++        if (g_async_input_batch) {
++            void * dp = nullptr;
++            if (cudaHostGetDevicePointer(&dp, d.ring, 0) == cudaSuccess) {
++                d.ring_dev = (char *) dp;
++                GGML_LOG_INFO("%s: device ring: batched graph-input uploads on (GGML_CUDA_ASYNC_INPUT_BATCH=0 disables)\n", __func__);
++            } else {
++                (void) cudaGetLastError();
++                d.ring_dev = nullptr;
++            }
++        }
++    }
++    if (o.ev == nullptr && cudaEventCreateWithFlags(&o.ev, cudaEventDisableTiming) != cudaSuccess) {
++        (void) cudaGetLastError();
++        o.ev = nullptr;
++        return false;
++    }
++    if (o.done_ev == nullptr && cudaEventCreateWithFlags(&o.done_ev, cudaEventDisableTiming) != cudaSuccess) {
++        (void) cudaGetLastError();
++        o.done_ev = nullptr;
++        return false;
++    }
++    if (g_async_input_batch && o.flush_ev == nullptr &&
++        cudaEventCreateWithFlags(&o.flush_ev, cudaEventDisableTiming) != cudaSuccess) {
++        (void) cudaGetLastError();
++        o.flush_ev = nullptr;
+     }
+-    d.q.clear();
++    return true;
++}
++
++// the old path for one upload already in the ring (caller holds d.mtx)
++static void ggml_cuda_async_input_copy_locked(ggml_cuda_async_input_dev & d, ggml_cuda_async_input_origin & o,
++                                              void * dst, const char * slot, size_t size) {
++    if (o.done_pending) {
++        CUDA_CHECK(cudaEventRecord(o.done_ev, o.done_stream));
++        o.done_pending = false;
++        o.has_done     = true;
++    }
++    if (o.has_done) {
++        // the previous graph on this origin may still read this input: copy only after it (a GPU-side wait)
++        CUDA_CHECK(cudaStreamWaitEvent(o.stream, o.done_ev, 0));
++    }
++    CUDA_CHECK(cudaMemcpyAsync(dst, slot, size, cudaMemcpyHostToDevice, o.stream));
++    CUDA_CHECK(cudaEventRecord(o.ev, o.stream));
++    o.pending = true;
++}
++
++// issue the queued uploads of ONE origin through the old per-copy path, in order (caller holds d.mtx)
++static void ggml_cuda_async_input_drain_locked(ggml_cuda_async_input_dev & d, ggml_cuda_async_input_origin & o) {
++    for (const auto & e : o.q) {
++        ggml_cuda_async_input_copy_locked(d, o, e.dst, d.ring + e.off, e.size);
++    }
++    o.q.clear();
++}
++
++// issue an origin's queued uploads as one batch kernel on its own stream (caller holds d.mtx)
++static void ggml_cuda_async_input_batch_locked(ggml_cuda_async_input_dev & d, ggml_cuda_async_input_origin & o) {
++    if (o.done_pending) {
++        CUDA_CHECK(cudaEventRecord(o.done_ev, o.done_stream));
++        o.done_pending = false;
++        o.has_done     = true;
++    }
++    if (o.has_done) {
++        CUDA_CHECK(cudaStreamWaitEvent(o.stream, o.done_ev, 0));
++    }
++    ggml_cuda_ain_batch b;
++    b.n = (int) o.q.size();
++    size_t mx = 0;
++    for (int i = 0; i < b.n; ++i) {
++        b.dst[i]  = o.q[i].dst;
++        b.src[i]  = d.ring_dev + o.q[i].off;
++        b.size[i] = (unsigned int) o.q[i].size;
++        mx = std::max(mx, o.q[i].size);
++    }
++    const unsigned int ny = (unsigned int) std::min<size_t>(16, std::max<size_t>(1, (mx + 65535) / 65536));
++    ggml_cuda_ain_batch_kernel<<<dim3(b.n, ny), 256, 0, o.stream>>>(b);
++    CUDA_CHECK(cudaGetLastError());
++    CUDA_CHECK(cudaEventRecord(o.flush_ev, o.stream));
++    o.has_flush = true;
++    o.q.clear();
+ }
+ 
+-// any access to a CUDA buffer other than a graph-input upload or a graph compute calls this first
++// any access to a CUDA buffer other than a graph-input upload or a graph compute calls this first.  EVERY
++// origin's queue is issued (on that origin's own stream), because the buffer being freed or read synchronously
++// may have been filled by any of them.
+ static void ggml_cuda_async_input_drain(int device) {
+     if (!g_async_input_batch || device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
+         return;
+     }
+     ggml_cuda_async_input_dev & d = g_async_input[device];
+     std::lock_guard<std::mutex> lock(d.mtx);
+-    if (!d.q.empty() || d.has_flush) {
+-        ggml_cuda_set_device(device);
+-    }
+-    if (d.has_flush) {
+-        // the synchronous path shares cudaStreamPerThread with the old-path uploads: keep it after the last batch kernel too
+-        CUDA_CHECK(cudaStreamWaitEvent(cudaStreamPerThread, d.flush_ev, 0));
+-    }
+-    if (!d.q.empty()) {
+-        ggml_cuda_async_input_drain_locked(d);
++    bool armed = false;
++    for (auto & kv : d.origins) {
++        ggml_cuda_async_input_origin & o = kv.second;
++        if (o.q.empty() && !o.has_flush) {
++            continue;
++        }
++        if (!armed) {
++            ggml_cuda_set_device(device);
++            armed = true;
++        }
++        if (o.has_flush) {
++            // the synchronous path shares this origin's stream with the old-path uploads: keep it after the last batch kernel too
++            CUDA_CHECK(cudaStreamWaitEvent(o.stream, o.flush_ev, 0));
++        }
++        if (!o.q.empty()) {
++            if (d.ring_dev != nullptr) {
++                ggml_cuda_async_input_batch_locked(d, o);
++            } else {
++                ggml_cuda_async_input_drain_locked(d, o);
++            }
++        }
+     }
+ }
+ 
+ static bool ggml_cuda_async_input_set(int device, void * dst, const void * src, size_t size) {
+     ggml_cuda_async_input_dev & d = g_async_input[device];
+     std::lock_guard<std::mutex> lock(d.mtx);
+-    if (d.ring == nullptr) {
+-        if (cudaMallocHost((void **) &d.ring, GGML_CUDA_ASYNC_INPUT_RING) != cudaSuccess ||
+-            cudaEventCreateWithFlags(&d.ev, cudaEventDisableTiming) != cudaSuccess ||
+-            (d.done_ev == nullptr && cudaEventCreateWithFlags(&d.done_ev, cudaEventDisableTiming) != cudaSuccess)) {
+-            (void) cudaGetLastError();
+-            d.ring = nullptr;
+-            return false;
+-        }
+-        d.cap = GGML_CUDA_ASYNC_INPUT_RING;
+-        if (g_async_input_batch) {
+-            void * dp = nullptr;
+-            if (cudaHostGetDevicePointer(&dp, d.ring, 0) == cudaSuccess &&
+-                cudaEventCreateWithFlags(&d.flush_ev, cudaEventDisableTiming) == cudaSuccess) {
+-                d.ring_dev = (char *) dp;
+-                GGML_LOG_INFO("%s: device %d: batched graph-input uploads on (GGML_CUDA_ASYNC_INPUT_BATCH=0 disables)\n", __func__, device);
+-            } else {
+-                (void) cudaGetLastError();
+-                d.ring_dev = nullptr;
+-            }
+-        }
++    ggml_cuda_async_input_origin & o = ggml_cuda_async_input_origin_locked(d);
++    if (!ggml_cuda_async_input_arm_locked(d, o)) {
++        return false;
+     }
+     const size_t need = (size + 255) & ~(size_t) 255;
+     if (d.head + need > d.cap) {
+-        ggml_cuda_async_input_drain_locked(d);
+-        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));   // every copy out of the ring has completed
+-        if (d.has_flush) {
+-            CUDA_CHECK(cudaEventSynchronize(d.flush_ev));          // and every batch kernel that read it
++        ggml_cuda_async_input_drain_locked(d, o);
++        CUDA_CHECK(cudaStreamSynchronize(o.stream));   // every copy out of the ring by this origin has completed
++        // every OTHER origin's copy or batch kernel may still read the ring: wait for all of them before the
++        // head wraps.  This is rare (once per 16 MiB of small uploads), so its cost does not matter.
++        for (auto & kv : d.origins) {
++            if (&kv.second == &o) {
++                continue;
++            }
++            if (kv.second.pending) {
++                CUDA_CHECK(cudaEventSynchronize(kv.second.ev));
++            }
++            if (kv.second.has_flush) {
++                CUDA_CHECK(cudaEventSynchronize(kv.second.flush_ev));
++            }
++        }
++        if (o.has_flush) {
++            CUDA_CHECK(cudaEventSynchronize(o.flush_ev));
+         }
+         d.head = 0;
+     }
+@@ -1510,20 +1609,20 @@ static bool ggml_cuda_async_input_set(int device, void * dst, const void * src,
+     memcpy(slot, src, size);
+     if (d.ring_dev != nullptr && size <= 0xffffffffu) {
+         char * const dc = (char *) dst;
+-        for (const auto & e : d.q) {
++        for (const auto & e : o.q) {
+             if (dc < e.dst + e.size && e.dst < dc + size) {   // overlaps a queued upload: keep the write order
+-                ggml_cuda_async_input_drain_locked(d);
++                ggml_cuda_async_input_drain_locked(d, o);
+                 break;
+             }
+         }
+-        if ((int) d.q.size() >= GGML_CUDA_AIN_BATCH) {
+-            ggml_cuda_async_input_drain_locked(d);
++        if ((int) o.q.size() >= GGML_CUDA_AIN_BATCH) {
++            ggml_cuda_async_input_batch_locked(d, o);
+         }
+-        d.q.push_back({ dc, (size_t) (slot - d.ring), size });
++        o.q.push_back({ dc, (size_t) (slot - d.ring), size });
+     } else {
+-        ggml_cuda_async_input_copy_locked(d, dst, slot, size);
++        ggml_cuda_async_input_copy_locked(d, o, dst, slot, size);
+     }
+-    if (d.hits++ == 0) {
++    if (o.hits++ == 0) {
+         GGML_LOG_INFO("%s: device %d: async graph-input uploads on (GGML_CUDA_ASYNC_INPUT=1 enables)\n", __func__, device);
+     }
+     return true;
+@@ -1537,21 +1636,22 @@ struct ggml_cuda_async_input_done_guard {
+         // are taken with GGML_CUDA_ASYNC_INPUT=0 too (see those functions)
+         ggml_cuda_async_input_dev & d = g_async_input[device];
+         std::lock_guard<std::mutex> lock(d.mtx);
+-        if (d.done_ev == nullptr && cudaEventCreateWithFlags(&d.done_ev, cudaEventDisableTiming) != cudaSuccess) {
++        ggml_cuda_async_input_origin & o = ggml_cuda_async_input_origin_locked(d);
++        if (o.done_ev == nullptr && cudaEventCreateWithFlags(&o.done_ev, cudaEventDisableTiming) != cudaSuccess) {
+             (void) cudaGetLastError();
+-            d.done_ev = nullptr;
++            o.done_ev = nullptr;
+             return;
+         }
+         // default on only with GGML_CUDA_ASYNC_INPUT_BATCH=1 (i.e. the default): with per-copy uploads alone it measured
+         // ~1 % slower on one GPU
+         static const bool lazy = getenv("GGML_CUDA_ASYNC_INPUT_LAZY_DONE") ? atoi(getenv("GGML_CUDA_ASYNC_INPUT_LAZY_DONE")) != 0 : g_async_input_batch;
+         if (lazy) {
+-            d.done_pending = true;
+-            d.done_stream  = stream;
++            o.done_pending = true;
++            o.done_stream  = stream;
+             return;
+         }
+-        CUDA_CHECK(cudaEventRecord(d.done_ev, stream));
+-        d.has_done = true;
++        CUDA_CHECK(cudaEventRecord(o.done_ev, stream));
++        o.has_done = true;
+     }
+ };
+ 
+@@ -1563,50 +1663,48 @@ static void ggml_cuda_async_input_flush_done(int device, cudaStream_t stream) {
+     // event on a dead handle ("invalid resource handle", ggml_cuda_async_input_copy_locked) the first time it
+     // reused the device -- reproduced by test-llama-archs -a deepseek4 with GGML_CUDA_ASYNC_INPUT=0, whose
+     // Meta row is the first one to reuse a device after the per-device row's context is gone.  A no-op when
+-    // nothing is pending.
++    // nothing is pending.  Scans EVERY origin: the destroying thread need not be the decoding thread.
+     ggml_cuda_async_input_dev & d = g_async_input[device];
+     std::lock_guard<std::mutex> lock(d.mtx);
+-    if (d.done_pending && d.done_stream == stream) {
+-        CUDA_CHECK(cudaEventRecord(d.done_ev, d.done_stream));
+-        d.done_pending = false;
+-        d.has_done     = true;
++    for (auto & kv : d.origins) {
++        ggml_cuda_async_input_origin & o = kv.second;
++        if (o.done_pending && o.done_stream == stream) {
++            CUDA_CHECK(cudaEventRecord(o.done_ev, o.done_stream));
++            o.done_pending = false;
++            o.has_done     = true;
++        }
+     }
+ }
+ 
+ static void ggml_cuda_async_input_wait(int device, cudaStream_t stream) {
+-    // unconditional (see the done guard): a no-op when nothing is pending
++    // unconditional (see the done guard): a no-op when nothing is pending.  Every origin is waited for / issued
++    // here: a graph input may have been uploaded by another thread (the loader), and an upload must never be
++    // left queued when the graph that reads it runs.
+     ggml_cuda_async_input_dev & d = g_async_input[device];
+     std::lock_guard<std::mutex> lock(d.mtx);
+-    if (d.pending) {
+-        CUDA_CHECK(cudaStreamWaitEvent(stream, d.ev, 0));
+-        d.pending = false;
+-    }
+-    if (!d.q.empty()) {
+-        // after the wait above: an older old-path copy to the same bytes must land first.  Like each old-path copy, wait for
+-        // the last graph on this device (it may run on another stream and still read these inputs).
+-        if (d.done_pending) {
+-            CUDA_CHECK(cudaEventRecord(d.done_ev, d.done_stream));
+-            d.done_pending = false;
+-            d.has_done     = true;
+-        }
+-        if (d.has_done) {
+-            CUDA_CHECK(cudaStreamWaitEvent(stream, d.done_ev, 0));
+-        }
+-        ggml_cuda_ain_batch b;
+-        b.n = (int) d.q.size();
+-        size_t mx = 0;
+-        for (int i = 0; i < b.n; ++i) {
+-            b.dst[i]  = d.q[i].dst;
+-            b.src[i]  = d.ring_dev + d.q[i].off;
+-            b.size[i] = (unsigned int) d.q[i].size;
+-            mx = std::max(mx, d.q[i].size);
+-        }
+-        const unsigned int ny = (unsigned int) std::min<size_t>(16, std::max<size_t>(1, (mx + 65535) / 65536));
+-        ggml_cuda_ain_batch_kernel<<<dim3(b.n, ny), 256, 0, stream>>>(b);
+-        CUDA_CHECK(cudaGetLastError());
+-        CUDA_CHECK(cudaEventRecord(d.flush_ev, stream));
+-        d.has_flush = true;
+-        d.q.clear();
++    for (auto & kv : d.origins) {
++        ggml_cuda_async_input_origin & o = kv.second;
++        if (o.pending) {
++            CUDA_CHECK(cudaStreamWaitEvent(stream, o.ev, 0));
++            o.pending = false;
++        }
++        if (o.q.empty()) {
++            continue;
++        }
++        // after the wait above: an older old-path copy to the same bytes must land first.  Like each old-path copy,
++        // wait for the last graph on this origin (it may run on another stream and still read these inputs).
++        if (d.ring_dev != nullptr) {
++            // batched: issued on THIS graph's stream; the origin's flush event orders its later graphs behind it
++            ggml_cuda_async_input_batch_locked(d, o);
++            CUDA_CHECK(cudaStreamWaitEvent(stream, o.flush_ev, 0));
++            o.has_flush = true;
++        } else {
++            ggml_cuda_async_input_drain_locked(d, o);
++            if (o.pending) {
++                CUDA_CHECK(cudaStreamWaitEvent(stream, o.ev, 0));
++                o.pending = false;
++            }
++        }
+     }
+ }
+ 

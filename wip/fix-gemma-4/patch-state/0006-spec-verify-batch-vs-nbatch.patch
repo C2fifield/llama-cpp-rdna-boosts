@@ -1,0 +1,30 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index 8a5bcd45e..865d8144b 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1621,6 +1621,25 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
+         }
+     }
+ 
++    // A speculative verify batch carries `n_max` drafts plus the sampled token, and the tools hand that
++    // batch to the target context as one `common_batch::get()` (-> `get_sub_batch()`), which is capped by
++    // the context's logical batch size (`llama_n_batch`).  A smaller `-b` therefore aborted in the batch
++    // add (`get_sub_batch: failed to add token ... at index N`) instead of decoding, and the abort came
++    // from a server worker after the model had loaded -- a crash with no usable diagnostic.  Raise
++    // `n_batch` to the smallest value that can carry one verify batch; the user's `-ub` is what bounds the
++    // per-launch memory, so this is a logical-batch hint only and changes no allocation.  Same shape as the
++    // n_max clamp above: a WRN and continue, never a failure.
++    {
++        const int32_t n_max_eff = common_speculative_n_max(&params.speculative);
++        const int32_t n_verify  = n_max_eff > 0 ? n_max_eff + 1 : 0;
++        if (n_verify > 1 && params.n_batch > 0 && params.n_batch < n_verify) {
++            LOG_WRN("speculative decoding with --spec-draft-n-max %d needs a verify batch of %d tokens, "
++                    "but -b/--batch-size is %d; raising n_batch to %d.  Set -b >= %d to silence this.\n",
++                    n_max_eff, n_verify, params.n_batch, n_verify, n_verify);
++            params.n_batch = n_verify;
++        }
++    }
++
+     common_init_result_ptr res(new common_init_result(params, model_only, preload_draft));
+ 
+     llama_model * model = res->model();
