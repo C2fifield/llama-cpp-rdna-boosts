@@ -41,6 +41,11 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 8. **A shape-scoped launch parameter must be forwarded to every kernel that reproduces that launch.**
    `nwarps` / `rows_per_block` / VDR are width-uniform only if the fused single-token kernels that
    replace a dense weight launch call the same selector (§19 addendum, §39).
+9. **A cross-start comparison is only a purity measurement if the external solution selection is pinned.**
+   On ROCm before the `rocm-libraries` fix, hipBLASLt picks its solution for an untuned FP32 GEMM size in
+   heap order — a **per-process-start** lottery (§44).  Compare fresh-process arms with
+   `ROCBLAS_USE_HIPBLASLT=0`, and attribute a per-start difference to the library before blaming a kernel,
+   a graph or a cache: every graph/capture arm of the r100 MTP hunt was this lottery (§44).
 
 ## Index
 
@@ -93,6 +98,7 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 | **§41** | a runtime, address-selected fusion is a cross-process purity risk; a compile-time one is not | fix |
 | **§42** | a width gate is not a purity rule: extending a fused chain *down* to one token | fix |
 | **§43** | one split holds one consumer of a staged expert table | fix (r96) |
+| **§44** | a per-start hipBLASLt solution pick is not a code defect; pin `ROCBLAS_USE_HIPBLASLT=0` before comparing starts | doctrine |
 
 ---
 
@@ -773,7 +779,9 @@ prefill write crosses an f16 rounding boundary.  **Fixed in r25** with `#pragma 
 `mul_mat` at 512 prefill columns picks a per-process solution, reference pair `140231`/`140232` vs
 deviating `140216`/`140217`).  It reproduces on stock upstream; this is
 [ROCm/rocm-libraries#12126](https://github.com/ROCm/rocm-libraries/issues/12126), workaround
-`ROCBLAS_USE_HIPBLASLT=0`.  Issue #67 is closed as external.
+`ROCBLAS_USE_HIPBLASLT=0`.  Issue #67 is closed as external.  **See §44**: on Linux / ROCm 10.1 this is
+not a rare near-tie but the *entire* residual of the `gemma4` MTP determinism item (3 logit classes in 18
+starts), the differing GEMM is a different shape, and its two solutions are **not** bit-identical.
 
 **Rule:** a per-type *compile-time* constant may move the rounding path uniformly across widths and starts;
 a *runtime* selection that reads allocator addresses may not.  If a fusion's
@@ -839,3 +847,57 @@ plus MTP, so it is invisible to the coherence gate (which never runs `-sm layer`
 MTP gate (27B with no host experts, where the split fix is inert) and to the prefill-logit gate (no MTP
 export in `llama-perplexity`).  The instrument that found it was a `plain == draft-mtp` text comparison on
 the affected config, repeated across natural heat-map states.
+
+## 44. A per-start hipBLASLt solution pick is not a code defect — pin it before comparing starts
+
+**Claim.** On this box (gfx1201, Linux, **ROCm 10.1.0**) the *whole* residual run-to-run divergence of the
+`gemma4 26B-A4B` + MTP config is ROCm's **hipBLASLt solution selection being random per process start**
+for an untuned FP32 GEMM size — issue #67 / [ROCm/rocm-libraries#12126](https://github.com/ROCm/rocm-libraries/issues/12126).
+`ROCBLAS_USE_HIPBLASLT=0` removes it.  It is **not** a switch to ship: it is the tester's determinism
+control, and disabling hipBLASLt costs decode (see **Cost** below) — the delivery keeps it **enabled**.
+
+**Which GEMM.** Exactly one hipBLASLt dispatch in the run: `m=128 n=375 k=2816`, `transA T`, `transB N`,
+`f32_r`, **30 calls** (= one per target layer) — `m = 128` is Gemma4 26B-A4B's `n_expert` and `k = 2816` its
+`n_embd`, so this is the F32 **MoE router** (`ffn_gate_inp`) at the one prefill width that lands in the
+untuned-FP32 window (other widths take mmvf/MMQ).  `HIPBLASLT_LOG_MASK=160` shows `solution_index 140231`
+or `140232` per process, and on *this* shape the two are **not** bit-identical: `6f6923ef36` (140231) vs
+`51274cb0f2` (140232), first-draft-call top-1 **0.458 vs 0.352**.
+
+**Numbers** (gemma4 26B-A4B Q8_0 + `mtp-gemma-4-26B-A4B`, `-ngl 99 -ncmoe 40 -sm layer --fit false
+-c 16384 --spec-type draft-mtp --spec-draft-n-max 3 -n 300 -t 8 --seed 42 --temp 0 --ignore-eos`, 2 GPU,
+draft-candidate-logit fingerprint, one fresh process per sample):
+
+| arm | result |
+|---|---|
+| default environment, N=18 | **3 classes**: `6f6923ef36` ×12, `51274cb0f2` ×4, `10e1f21f4c` ×2 |
+| `ROCBLAS_USE_HIPBLASLT=0`, N=10, `-n 300` | `6f6923ef36` **×10** |
+| `ROCBLAS_USE_HIPBLASLT=0`, N=3, `-n 3000` | `19eed3da33` **×3** (904 draft calls) |
+| cost on *this* config | prompt **340.1** vs 327.3 t/s, gen 93.02 (sd **0.06**) vs 91.86 (sd **1.65**) |
+| cost in general | **not free**: the maintainer's wider measurements show up to **-15 % decode** with
+hipBLASLt disabled (partly offset by a prefill gain — the gemma4-MTP number above).  Hence: keep hipBLASLt
+**enabled** by default, set `ROCBLAS_USE_HIPBLASLT=0` only for a run that must be reproducible |
+
+ROCm 10.1.0 does **not** have the fix (its `rocm-libraries` pin branched 2026-09-09); it is in
+`c50ea60130f`, develop 2026-10-02, TheRock nightlies from 2026-10-06.  So this *does* reproduce on **Linux**
+with 10.x — §41's "Linux / 7.14 does not reproduce it" holds for 7.14 only.
+
+**Retraction this replaces — do not re-derive the graph story.** With the library path off, *graphs on and
+graphs off land on the same single class*, so graph capture/replay was never implicated.  Every capture arm
+of the r100 hunt was this lottery resolving to a particular class: "target graphs off is stable at
+`8f795fbaf0`" (5/5, correlated with the graphs-off arm), "draft-only graphs off", "target 1-token graphs
+off", "target verify graphs off" (a lottery), "force a fresh capture on every replay" (deterministic — so
+not stale baked pointers either).  Also cleared by direct arms: the draft's input embedding is bit-identical
+across classes (`h_nextn`/`pending_h` hashes of the three prompt ubatches agree exactly), and the
+async-input ring is not the residual (post-`0005`: `ASYNC_INPUT_BATCH=0` is itself a stable class,
+`ASYNC_INPUT=0` is still a lottery).
+
+**Rule.**  A cross-start (fresh-process) purity, coherence or text comparison must pin the external
+solution selection (`ROCBLAS_USE_HIPBLASLT=0`) or must not be used to accept/reject a code change.  A
+per-start difference is not evidence about a kernel, a graph or a cache until it survives that pin.  Decode
+at `n=1` is mmvf and unaffected, so the exposure is **prefill-width**: it can move a *reference* recorded in
+another process, which is what happened to two "discrepancies" in the r100 handover (non-reproducible gemma4
+text hashes; gen 74.9/72.8 vs the recorded 79.0/74.7).  **Do not pin it in the delivery's default
+environment**: the upstream fix lands at the source, and disabling hipBLASLt costs up to -15 % decode.  The
+env var is the tester's determinism switch, not a shipped default.
+
+Where: `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`; discussion #196.

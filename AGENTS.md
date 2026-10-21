@@ -173,6 +173,17 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
 - **Throughput is NOT a correctness signal.** Verify coherence (same-seed `llama-cli` diff, or
   `archive/work/tools/ar_kernel_unit.cpp`). Decode perf work is validated at **depth-16384**, not
   shallow `llama-bench`. **Never run parallel/background benches.**
+- **A fresh-process comparison is only valid with `ROCBLAS_USE_HIPBLASLT=0`** (set it for that run, do not
+  ship it).  On ROCm before the `rocm-libraries` fix (Linux 10.x included — 10.1.0's pin predates it),
+  hipBLASLt picks its solution for an untuned FP32 GEMM size **per process start**, so two identical
+  commands can produce different logits and a different gen t/s.  This is *not* a defect in this patch set
+  (issue #67, external) but it **will** be misread as one: it was the entire residual of the 2026-10 MTP
+  determinism hunt (3 logit classes in 18 fresh starts of one gemma4 MTP config; 10/10 with the env set),
+  and it made every graph/capture arm look like a cause.  Attribute a per-start difference to the library
+  before touching code; **never judge run-to-run determinism on a greedy text hash** — use a logit-level
+  probe.  **Keep hipBLASLt enabled in the delivery** (disabling it costs up to -15 % decode; the switch is
+  for reproducible runs and bisection only).  `GREEDY-PURITY.md` §44,
+  `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`.
 - **Thread sizing is not optional.** `/usr/local/bin/pin_gpu_irqs.sh` puts the GPU IRQs on the top
   `NUM_GPUS` cores (13,14,15 with 3 GPUs); the default `-t` puts the worker pool there and starves the
   GPU (Q4_K_M `-ncmoe 99` tg1024: `-t 16` 19.6 vs `-t 8` 38.9). Size `-t` (or `--cpu-mask` with `-t`

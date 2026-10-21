@@ -418,9 +418,15 @@ rates, up to ~14 %).  `ROCBLAS_DEFAULT_ATOMICS_MODE=0` does not help.  The selec
 (decode at n=1 uses mmvf), so decode throughput is unaffected.
 
 **Linux / ROCm 7.14 does not reproduce it** — the reporter's box (Windows / ROCm 10) is where the
-per-process selection actually varies.  The r24 rope-fusion kill switches
+per-process selection actually varies.  **Linux with ROCm 10.x does** (2026-10-21, gfx1201 / Linux /
+ROCm 10.1.0, which predates the upstream fix: gemma4 26B-A4B F32 MoE router, `m=128 n=375 k=2816 T,N`,
+`solution_index 140231` vs `140232`, 3 logit classes in 18 fresh starts of one MTP config; 10/10 identical
+once `ROCBLAS_USE_HIPBLASLT=0`).  The fix is `rocm-libraries` `c50ea60130f` (TheRock nightlies from
+2026-10-06).  Keep hipBLASLt **enabled** — disabling it costs up to -15 % decode; set
+`ROCBLAS_USE_HIPBLASLT=0` for a run that must be reproducible.  The r24 rope-fusion kill switches
 (`GGML_CUDA_DISABLE_ROPE_SET_ROWS=1`, `GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`) and r25's fix remain
-shipped for bisection and for the real defect above.
+shipped for bisection and for the real defect above.  Full record: [`GREEDY-PURITY.md`](GREEDY-PURITY.md)
+§44.
 
 ## Concurrent serving with `--kv-unified` is not deterministic (issue #134)
 

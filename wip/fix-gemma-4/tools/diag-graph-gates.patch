@@ -1,0 +1,136 @@
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5170,6 +5170,41 @@
+             cuda_ctx->device, (void *) cuda_ctx->stream(), cgraph->n_nodes ? cgraph->nodes[0]->name : "-", cgraph->n_nodes);
+     }
+ 
++    // WIP-DIAG (fix-gemma-4, MTP determinism): dump the DRAFT graph's inputs (the graph carrying `nextn.*`
++    // weights) on its first few calls, so a good and a bad run can be compared byte-for-byte.  Diagnostic
++    // only: synchronizes, so it perturbs timing.
++    if (getenv("GGML_DUMP_DRAFT_INPUTS") != nullptr && cgraph->n_nodes > 0 && cgraph->n_nodes < 400) {
++        bool is_draft = false;
++        for (int i = 0; i < cgraph->n_nodes && !is_draft; ++i) {
++            for (int j = 0; j < GGML_MAX_SRC; ++j) {
++                const ggml_tensor * s = cgraph->nodes[i]->src[j];
++                if (s != nullptr && strstr(s->name, "nextn.") != nullptr) { is_draft = true; break; }
++            }
++        }
++        static int dump_n = 0;
++        if (is_draft && dump_n++ < (getenv("GGML_DUMP_DRAFT_INPUTS_N") ? atoi(getenv("GGML_DUMP_DRAFT_INPUTS_N")) : 2)) {
++            fprintf(stderr, "DRAFTDBG dev=%d nodes=%d ntok=%d call=%d\n", cuda_ctx->device, cgraph->n_nodes,
++                    (int) ggml_cuda_graph_n_tokens(cgraph), dump_n - 1);
++            for (int i = 0; i < cgraph->n_nodes; ++i) {
++                for (int j = 0; j < GGML_MAX_SRC; ++j) {
++                    const ggml_tensor * s = cgraph->nodes[i]->src[j];
++                    if (s == nullptr || s->data == nullptr) continue;
++                    bool internal = false;
++                    for (int k = 0; k < cgraph->n_nodes; ++k) if (cgraph->nodes[k] == s) { internal = true; break; }
++                    if (internal) continue;
++                    const size_t nb = std::min<size_t>(ggml_nbytes(s), 4096);
++                    std::vector<char> host(nb);
++                    CUDA_CHECK(cudaMemcpy(host.data(), s->data, nb, cudaMemcpyDeviceToHost));
++                    uint64_t h = 1469598103934665603ull;
++                    for (size_t b = 0; b < nb; ++b) { h ^= (unsigned char) host[b]; h *= 1099511628211ull; }
++                    fprintf(stderr, "DRAFTDBG   in %-40s ne=[%lld,%lld,%lld] nb=%zu hash=%016llx\n",
++                            s->name, (long long) s->ne[0], (long long) s->ne[1], (long long) s->ne[2], nb,
++                            (unsigned long long) h);
++                }
++            }
++        }
++    }
++
+     // The Q8_1 input cache is only valid within one graph execution.
+     cuda_ctx->q8_1_cache_clear();
+     cuda_ctx->bf16_src1_cache_clear();
+@@ -5202,8 +5237,37 @@
+ 
+     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
+ 
++    // WIP-DIAG (fix-gemma-4, MTP determinism): per-context graph switch.  GGML_CUDA_GRAPH_OFF_DRAFT=1 drops
++    // graph replay for the MTP DRAFT context only (its graph is the one carrying the `nextn.*` weights); the
++    // target keeps replay.  Diagnostic arm for "is the defect inside the draft's captured graph?".
++    static const bool graph_off_draft = getenv("GGML_CUDA_GRAPH_OFF_DRAFT") != nullptr;
++    static const bool graph_off_non_draft = getenv("GGML_CUDA_GRAPH_OFF_NON_DRAFT") != nullptr;
++    bool node_gate_off = false;
++    if (graph_off_draft || graph_off_non_draft) {
++        bool has_nextn = false;
++        for (int i = 0; i < cgraph->n_nodes && !has_nextn; ++i) {
++            for (int j = 0; j < GGML_MAX_SRC; ++j) {
++                const ggml_tensor * s = cgraph->nodes[i]->src[j];
++                if (s != nullptr && strstr(s->name, "nextn.") != nullptr) {
++                    has_nextn = true;
++                    break;
++                }
++            }
++        }
++        node_gate_off = graph_off_draft ? has_nextn : !has_nextn;
++        // WIP-DIAG: restrict the target gate to one token width (GGML_CUDA_GRAPH_OFF_NON_DRAFT_NTOK=1|4|...)
++        static const int gate_ntok = getenv("GGML_CUDA_GRAPH_OFF_NON_DRAFT_NTOK") ? atoi(getenv("GGML_CUDA_GRAPH_OFF_NON_DRAFT_NTOK")) : -1;
++        if (node_gate_off && !has_nextn && gate_ntok > 0) {
++            node_gate_off = (int) ggml_cuda_graph_n_tokens(cgraph) == gate_ntok;
++        }
++        if (getenv("GGML_CUDA_GRAPH_OFF_DRAFT_DBG")) {
++            fprintf(stderr, "GRAPH_DRAFT_GATE dev=%d nodes=%d ntok=%d off=%d\n", cuda_ctx->device,
++                    cgraph->n_nodes, (int) ggml_cuda_graph_n_tokens(cgraph), (int) node_gate_off);
++        }
++    }
++
+     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+-    if (!op_timing && graph->is_enabled()) {
++    if (!op_timing && !node_gate_off && graph->is_enabled()) {
+         const bool graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+         if (graph_compatible) {
+             // PRE-FILL graphs use varying ubatch sizes, so each is a separate graph
+@@ -5264,7 +5328,11 @@
+                     // recapture a graph whose pool temporaries or scratch buffers were freed since its capture
+                     // (GGML_CUDA_GRAPH_MEM_GEN=0 disables the check, A/B only)
+                     static const bool mem_gen_check = !getenv("GGML_CUDA_GRAPH_MEM_GEN") || atoi(getenv("GGML_CUDA_GRAPH_MEM_GEN")) != 0;
+-                    cuda_graph_update_required = graph->instance == nullptr ||
++                    // WIP-DIAG (fix-gemma-4, MTP determinism): force a FRESH capture on every replay, to test whether
++                    // the target graph's baked pointers (or its captured SET_ROWS sources) are what corrupts the
++                    // shared KV rows.  Diagnostics only; never shipped.
++                    static const bool always_recapture = getenv("GGML_CUDA_GRAPH_ALWAYS_RECAPTURE") != nullptr;
++                    cuda_graph_update_required = always_recapture || graph->instance == nullptr ||
+                         (mem_gen_check && graph->mem_gen != ggml_cuda_graph_mem_gen(cuda_ctx->device));
+                 }
+             }
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -356,6 +356,7 @@
+         return true;
+     }
+ 
++
+     void draft(common_speculative_draft_params_vec & dparams) override {
+         auto & ctx_dft = params.ctx_dft;
+ 
+@@ -1479,6 +1480,15 @@
+     }
+ };
+ 
++// WIP-DIAG (fix-gemma-4, MTP determinism): host-side hash of the draft's input embedding.
++static uint64_t spc_h_hash(const float * p, size_t n) {
++    uint64_t h = 1469598103934665603ull;
++    const unsigned char * b = (const unsigned char *) p;
++    for (size_t i = 0; i < n*sizeof(float); ++i) { h ^= b[i]; h *= 1099511628211ull; }
++    return h;
++}
++static const bool spc_h_dbg = getenv("SPC_HASH_H") != nullptr;
++
+ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
+ 
+@@ -1839,6 +1849,13 @@
+ 
+             std::memcpy(pending_h[seq_id].data(),
+                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
++
++            if (spc_h_dbg) {
++                std::fprintf(stderr, "SPCHDBG seq=%d n_rows=%d i_row0=%d h=%016llx vh=%016llx\n",
++                        (int) seq_id, n_rows, i_row0,
++                        (unsigned long long) spc_h_hash(pending_h[seq_id].data(), (size_t) n_embd),
++                        (unsigned long long) spc_h_hash(verify_h[seq_id].data(), (size_t) n_embd));
++            }
+         }
+ 
+         return true;

@@ -5,16 +5,19 @@
 # usage: clihash.sh <tag> [K=V ...]
 set -u
 tag="$1"; shift || true
+# args of the form K=V are environment overrides; anything else is appended to the llama-cli command line
+envargs=(); cliargs=()
+for a in "$@"; do case "$a" in *=*) envargs+=("$a");; *) cliargs+=("$a");; esac; done
 M=/llm/models/Gemma4/26B-A4B/Q8_0
 LOG=/tmp/g4base/cli-$tag.log
 export LD_LIBRARY_PATH=/opt/rocm-10.1.0-gfx120X/lib:${LD_LIBRARY_PATH:-}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0,1}
-env "$@" timeout 1200 ~/llama.cpp/build-rocm/bin/llama-cli \
+env "${envargs[@]}" timeout 1200 ~/llama.cpp/build-rocm/bin/llama-cli \
   -m $M/gemma-4-26B-A4B-it-Q8_0.gguf -md $M/mtp-gemma-4-26B-A4B-it.gguf \
   -ngl 99 -ncmoe 40 -sm layer --fit false -c 16384 \
   --spec-type draft-mtp --spec-draft-n-max 3 -n 300 -t 8 --seed 42 --temp 0 --ignore-eos \
   -f ~/llama-cpp-rdna-boosts/prompts/prose-rdna-boosts.txt \
-  --no-display-prompt --single-turn -v > "$LOG" 2>&1
+  --no-display-prompt --single-turn "${cliargs[@]}" -v > "$LOG" 2>&1
 python3 - "$tag" "$LOG" <<'PY'
 import hashlib, re, sys
 tag, log = sys.argv[1], sys.argv[2]

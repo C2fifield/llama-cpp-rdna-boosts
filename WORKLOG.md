@@ -1,5 +1,34 @@
 # WORKLOG - dated delivery records
 
+## 261021.001 (docs) -- MTP determinism closed: it is the per-start hipBLASLt solution pick (issue #67), not a code defect
+
+**The 2026-10 MTP determinism item is closed as external.**  The residual run-to-run divergence of the
+`gemma4 26B-A4B` + MTP + `-ncmoe 40 -sm layer` config on gfx1201 / Linux / **ROCm 10.1.0** is ROCm's
+hipBLASLt solution selection being picked **per process start** for an untuned FP32 GEMM size --
+issue #67 / ROCm/rocm-libraries#12126 -- not a defect in this patch set.
+
+Instruments: the draft-candidate-logit fingerprint (a greedy text hash is *not* a determinism instrument on
+this box; the rendered SSE stream varies per run regardless of the logits).  Numbers, one fresh process per
+sample: default env **3 classes in 18 starts** (`6f6923ef36`x12, `51274cb0f2`x4, `10e1f21f4c`x2, call-0
+top-1 0.458 / 0.352 / 0.439); **`ROCBLAS_USE_HIPBLASLT=0` -> 10/10 at `-n 300` and 3/3 at `-n 3000`**
+(904 draft calls).  `HIPBLASLT_LOG_MASK=160` shows the only BLASLt dispatch in the run -- gemma4's F32
+**MoE router** (`m=128 n=375 k=2816 T,N f32_r`, 30 calls = one per layer) -- with `solution_index 140231`
+vs `140232` per process, and on that shape the two are **not** bit-identical.
+
+**Retracted: the graph/capture story.**  With the library path off, graphs on and graphs off give the *same*
+single class, so capture/replay was never implicated.  Every arm of the hunt ("target graphs off is stable
+at `8f795fbaf0`", draft-only off, decode-only off, verify-only off, force-recapture-every-replay) was this
+lottery resolving to a class.  Also cleared directly: the draft's input embedding (`h_nextn` of the three
+prompt ubatches agrees exactly across classes) and the async-input ring post-`0005` (`ASYNC_INPUT_BATCH=0`
+is itself a stable class, `ASYNC_INPUT=0` is still a lottery).  `0005` stays a real fix (a genuine
+cross-context ordering bug) -- it was not the last 20 %.
+
+Docs: `AGENTS.md` "Critical facts" (pinned fresh-process comparisons, never a text hash) and
+`GREEDY-PURITY.md` **§44** + invariant 9 (+ a correcting pointer in §41).  **hipBLASLt stays enabled in the
+delivery** -- disabling it costs up to -15 % decode; `ROCBLAS_USE_HIPBLASLT=0` is the tester's reproducibility
+switch, and the upstream fix (`rocm-libraries` `c50ea60130f`, TheRock nightlies from 2026-10-06) removes the
+cause.  Record: `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`.  No delivery artefact changed.
+
 ## 261020.015 (r100) -- publication record (tag, CI, fork refresh, worker image build)
 
 **`v12-097cf33d9-r100` is published.**  Tag `v12-097cf33d9-r100` on delivery `main` `c8d9688`; delivery
