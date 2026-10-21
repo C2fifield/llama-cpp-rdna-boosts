@@ -213,12 +213,24 @@ narrower shape: **row-aligned only**, per-(segment, repeat, device) `set_2d_asyn
 | Qwen3.6 35B-A3B Q4_K_M (MoE, single-segment tables) | 2 GPU tensor `-ncmoe`, MTP n3 | non-regression of the cache path |
 | Qwen3.5 4B Q8_0 | 3 GPU tensor | coherence/probe non-regression |
 
+## 3.5 Maintainer decisions (2026-10-21)
+
+Recorded in `HANDOVER-2026-10-21.md` §0 — settled, not to be re-litigated:
+
+1. The stray `(file*).moe-heatmap` artifact is **dropped in block 09 at the promotion cut** (not before).
+2. **MTP determinism is a must-fix** and is the next session's first work item.
+3. The **`--fit` arena shortfall under MTP is investigated with a view to fixing it**, same session.
+
+Priority order after that: #68 1b (f16 `handle_per_row`) → #68 1a (rotation `mul_mat split states`) →
+promotion checklist (`HANDOVER-2026-10-21.md` §6).
+
 ## 4. Records in this directory
 
 | file | what |
 |---|---|
 | `README.md` | this file: the campaign, its three items, the plan and the gate contract |
 | `ISWA-WRITE-FUSION.md` | the complete #76 record (symptom, code facts, fix, gfx1151 + gfx1201 evidence, the 512-wide gap) |
-| `HANDOVER-2026-10-21.md` | handover for the next session: **TODO #68** (the two `-sm tensor` aborts), the MTP determinism finding, and three smaller items (the stray block-09 artifact, the `--fit` arena note, the `--spec-draft-n-max 2` observation) |
+| `HANDOVER-2026-10-21.md` | handover for the next session (with the maintainer decisions in §0): **TODO #68** (the two `-sm tensor` aborts), the MTP determinism finding, and three smaller items (the stray block-09 artifact, the `--fit` arena note, the `--spec-draft-n-max 2` observation) |
 | `patch-state/` | the exact patches this campaign produced, with hashes + apply instructions |
+| `NEXT-SESSION-PROMPT.md` | the prompt handed to the next session (scope, order, done criteria) |
 | `evidence/` | raw measurement logs/tables referenced above |
