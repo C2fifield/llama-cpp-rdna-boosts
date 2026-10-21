@@ -225,7 +225,7 @@ determinism item:
    `gate-per-block-build.sh` for the amended blocks, the full non-regression contract, the four-axis
    adaptive-MTP gate at `-n 3000` on 35B-A3B and dense 27B, docs (`patches/README.md`, `ENVIRONMENT.md` for
    `GGML_META_SEG_ASYNC`), a `WORKLOG.md` entry, `TODO.md` loses #76/#77, archive this campaign to
-   `archive/work/fix-gemma-4/` with a `RESOLUTION.md`, delete `wip/fix-gemma-4/`, update `wip/CAMPAIGNS.md`.
+   `archive/work/fix-gemma-4/` with a `RESOLUTION.md`, delete `archive/work/fix-gemma-4/`, update `wip/CAMPAIGNS.md`.
    **Do not fold `0005`/`0006` until the determinism item is closed** — `0005` is a real fix but its effect
    is measured (8/10) and it belongs with whatever closes the item.
 

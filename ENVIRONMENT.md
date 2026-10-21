@@ -226,6 +226,7 @@ configuration.
 | `GGML_SCHED_DEBUG` | unset | diagnostic | scheduler debug output. |
 | `GGML_SCHED_DEBUG_REALLOC` | unset | diagnostic | log buffer reallocations. |
 | `GGML_META_SPLIT_COPY` | unset | tuning | meta-backend split copy handling. |
+| `GGML_META_SEG_ASYNC` | **on** (r101, block 10) | kill-switch | the meta backend's **row-aligned segmented `set_tensor_async`** splice: a segmented (`n_segments > 1` or `nr > 1`) host-expert table upload is issued as one async `set_2d_async` per (segment, repeat, device) plus an async `set_async` for the MMQ tail pad, instead of one synchronous setter call.  Mid-row ranges stay synchronous by design (the loader's chunked upload owns a staging ring that may be reused on return).  `0` restores the fully synchronous segmented setter (A/B and bisection only; measured neutral on the gemma4 miss path — the win there is the arena sizing, not this). |
 | `GGML_META_SS_VERIFY` | off | diagnostic | `1` recomputes every outermost meta split-state cache hit and aborts on a stale entry (r25 added the 8-version + compacted cache; this verifies it). |
 | `GGML_META_SS_SCRATCH` | **on** (r100, block 09) | kill-switch | the meta split-state cache's pre-warm walk keeps its `wstack`/`wseen` in a reused per-thread `monotonic_buffer_resource` (1 MiB, released per walk) instead of allocating one heap node per visited tensor on every graph re-allocation.  Inert on the computed states (the walk visits the same tensors in the same order; `GGML_META_SS_VERIFY=1` re-derives every outer hit and agrees).  `0` restores the heap containers (A/B and bisection only). |
 | `GGML_STAGE_META_REDIRECT` | off | diagnostic | meta redirection instead of the explicit d2d completion. |
@@ -404,7 +405,12 @@ and (r81, block 10) `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE` and `GGML_CUDA_DISABLE_R
 `GGML_CUDA_DISABLE_ROPE_MROPE_FUSE` (r81) puts `GGML_ROPE_TYPE_MROPE` / `IMROPE` back on the unfused
 `rms_norm_f32` + `rope_multi` + `fwht_cuda` chain (the r78 matcher, NORMAL/NEOX only);
 `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` (r81) stops the fused rope kernel from also writing the q8_0 K/V
-cache rows, so the two `SET_ROWS` launches come back.
+cache rows, so the two `SET_ROWS` launches come back.  **Since r101 it is live on iSWA archs too**: the
+iSWA KV builder now expands `q, v, k` (instead of `q, k, v`), so the V block no longer sits between the K
+rotation and the K cache write and the matcher admits the fusion — gemma4 with `-ctk/-ctv q8_0` folds
+1152 `k_set_rows_q8_0_group` launches to 192 and runs `rms_norm_mul_rope_f32<...,kv=true>` 480 times in
+a 8-token run.  It stays inert where the V-row write cannot apply (gemma4's 512-wide full-attention
+layers: `fwht_n` is `{64,128,256}` and the fused V-row write assumes `ncols <= 256`).
 
 The two r78 switches split PR #172's two fusions: `GGML_CUDA_DISABLE_ROPE_FWHT` keeps the KV rotation's
 FWHT as its own `fwht_cuda` launch (rope only, no shared-memory staging row) and

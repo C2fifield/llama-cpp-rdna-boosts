@@ -4,7 +4,7 @@ Paste everything between the `---` markers into the next session.
 
 ---
 
-We are continuing the **`wip/fix-gemma-4/`** umbrella campaign in `~/llama-cpp-rdna-boosts` (delivery repo)
+We are continuing the **`archive/work/fix-gemma-4/`** umbrella campaign in `~/llama-cpp-rdna-boosts` (delivery repo)
 against the fork checkout `~/llama.cpp` (branch `rdna-boosts`, built with `~/bin/build-llama-rocm`, ROCm
 10.1.0, gfx1201 box = 3x R9700, 16 cores, models under `/llm/models/`).  Goal for this session: **finish the
 campaign** — close TODO #68 1a, settle three config nits, then make the promotion cut and take it through the
@@ -16,14 +16,14 @@ release ritual.
    WIP/promotion rules, the default-on policy, and "Critical facts".  Note the **new hipBLASLt bullet**:
    a fresh-process comparison is only valid with `ROCBLAS_USE_HIPBLASLT=0`, and never judge determinism on a
    text hash.
-2. `wip/fix-gemma-4/HANDOVER-2026-10-21c.md` — **the current record**: what is closed (determinism → external),
+2. `archive/work/fix-gemma-4/HANDOVER-2026-10-21c.md` — **the current record**: what is closed (determinism → external),
    what is fixed (`0007` `--fit` draft-KV, `0008` gemma4 `-sm tensor`), what is left (§2), and the promoted-cut
    checklist (§2.3).
-3. `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21e.md` — the two fixes and their gates, including the
+3. `archive/work/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21e.md` — the two fixes and their gates, including the
    `ne_per_dev=[0,512]` diagnosis behind the `-sm tensor` fix.  §3 lists the three config nits.
-4. `wip/fix-gemma-4/patch-state/README.md` — the **9-patch set** (`0001..0008`) that applies to `972f3b757`
+4. `archive/work/fix-gemma-4/patch-state/README.md` — the **9-patch set** (`0001..0008`) that applies to `972f3b757`
    and reproduces the current tree, with sha256s and the re-verification commands.
-5. `wip/fix-gemma-4/README.md` §2.4 (the non-regression contract) and `HANDOVER-2026-10-21.md` §6 (the full
+5. `archive/work/fix-gemma-4/README.md` §2.4 (the non-regression contract) and `HANDOVER-2026-10-21.md` §6 (the full
    promotion checklist), plus `evidence/MEASUREMENTS-2026-10-21d.md` if determinism comes up.
 
 **Current state (2026-10-21 session c).**  Committed and pushed on delivery `main` (`a5e551f`, `f1d67d9`):
@@ -74,7 +74,7 @@ campaign's `0007`/`0008`.  The tree is `972f3b757` + `patch-state/0001..0008`, b
    `ENVIRONMENT.md` (`GGML_META_SEG_ASYNC`, the iSWA `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` note), a
    `WORKLOG.md` entry (newest first, `YYMMDD.VVV`), `TODO.md` loses #76/#77 (and #68 once 1a lands or is
    parked), archive the campaign to `archive/work/fix-gemma-4/` with a `RESOLUTION.md`, delete
-   `wip/fix-gemma-4/`, update `wip/CAMPAIGNS.md` **with no stub**.
+   `archive/work/fix-gemma-4/`, update `wip/CAMPAIGNS.md` **with no stub**.
 5. **Release ritual** (`AGENTS.md` "Pushing policy"): tag, then refresh the fork's `rdna-boosts` branch (clean
    apply at `release.json.base`, build, gates, `git push --force-with-lease origin rdna-boosts` — **personal
    fork only**), and the container images are built off-host by the worker watcher on `radiance` — do not run
@@ -93,7 +93,7 @@ campaign's `0007`/`0008`.  The tree is `972f3b757` + `patch-state/0001..0008`, b
   `archive/work/kv-cell-offset-nondeterminism/tools/decodestart.sh`), N ≥ 6 fresh processes, state N.
   Cross-build **identity** checks may use text (`llama-cli` without `-v` + `scripts/extract-generated.py`) —
   never determinism, and never on a `-v` log.
-- **Non-regression is a hard gate**: `wip/fix-gemma-4/README.md` §2.4; the 35B-A3B cache configuration is a
+- **Non-regression is a hard gate**: `archive/work/fix-gemma-4/README.md` §2.4; the 35B-A3B cache configuration is a
   canary, and a per-box/per-model baseline is never compared to a number in a doc.
 - **Beneficial behaviour is default-on**, env vars only disable.  A fix that only moves the failure is not a
   fix — say so and hand it back rather than shipping it.

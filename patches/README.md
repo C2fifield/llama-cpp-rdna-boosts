@@ -35,16 +35,16 @@ only as a rough shape.
 |---|---|---|---|---|
 | 00 | `0000-…-block-00-foundation-band-uniformity-Meta` | foundation: band uniformity, Meta wrapper, allocator | +1250 / −1001 | 48 |
 | 01 | `0001-…-block-01-hybrid-HIP-all-reduce-RDNA4-gat` | hybrid HIP all-reduce | +2364 / −45 | 4 |
-| 02 | `0002-…-block-02-adaptive-MTP-draft-depth` | adaptive MTP draft depth | +1051 / −41 | 19 |
-| 03 | `0003-…-block-03-chunked-gated-delta-net-prefill` | chunked GDN prefill + rollback tracker | +3182 / −16 | 22 |
-| 04 | `0004-…-block-04-BF16-KV-cache-and-native-BF16-f` | BF16 KV cache + native-BF16 FA | +630 / −215 | 8 |
-| 05 | `0005-…-block-05-flash-attention-band-native-qua` | FA band / native quantized K-V / derived kq mask | +4596 / −577 | 287 |
-| 06 | `0006-…-block-06-MMB-quantized-prefill-GEMM` | MMB quantized prefill GEMM | +2620 / −4 | 5 |
-| 07 | `0007-…-block-07-k-quant-boosts-mmvq-VDR-Q6_K-MM` | k-quant boosts (VDR, Q6_K MMQ, Q1_0, grid pad) | +884 / −145 | 9 |
+| 02 | `0002-…-block-02-adaptive-MTP-draft-depth` | adaptive MTP draft depth | +1068 / −41 | 22 |
+| 03 | `0003-…-block-03-chunked-gated-delta-net-prefill` | chunked GDN prefill + rollback tracker | +3182 / −15 | 22 |
+| 04 | `0004-…-block-04-BF16-KV-cache-and-native-BF16-f` | BF16 KV cache + native-BF16 FA | +630 / −214 | 8 |
+| 05 | `0005-…-block-05-flash-attention-band-native-qua` | FA band / native quantized K-V / derived kq mask | +5005 / −605 | 289 |
+| 06 | `0006-…-block-06-MMB-quantized-prefill-GEMM` | MMB quantized prefill GEMM | +2618 / −3 | 5 |
+| 07 | `0007-…-block-07-k-quant-boosts-mmvq-VDR-Q6_K-MM` | k-quant boosts (VDR, Q6_K MMQ, Q1_0, grid pad) | +884 / −140 | 9 |
 | 08 | `0008-…-block-08-fused-kernels-old-08-fusions-ol` | fused kernels + fused MoE | +5369 / −445 | 36 |
-| 09 | `0009-…-block-09-host-resident-MoE-iface-schedul` | host-resident MoE: iface, scheduler, cache, slab hooks | +13962 / −396 | 67 |
-| 10 | `0010-…-block-10-qwen4exp-model-hyper-connection` | qwen4exp, the slab TU, the fusion dispatcher, async input | +21964 / −5063 | 104 |
-| 11 | `0011-…-block-11-campaign-remainder-CPU-wins-bac` | campaign remainder | +881 / −101 | 30 |
+| 09 | `0009-…-block-09-host-resident-MoE-iface-schedul` | host-resident MoE: iface, scheduler, cache, slab hooks | +14175 / −535 | 65 |
+| 10 | `0010-…-block-10-qwen4exp-model-hyper-connection` | qwen4exp, the slab TU, the fusion dispatcher, async input | +22660 / −5135 | 110 |
+| 11 | `0011-…-block-11-campaign-remainder-CPU-wins-bac` | campaign remainder | +931 / −95 | 16 |
 
 Block 05's file count is `template-instances/*.cu` (the FA kernel instantiations); block 10's size is
 dominated by `qwen4exp` + the slab/fusion translation units that were split out of `ggml-cuda.cu`.
@@ -404,6 +404,25 @@ whatever VRAM is left.
   kernel, which needs a pinned buffer): it is copied by the upstream `llama_moe_cache` engine instead,
   so it must not be accounted.  Only a pinned host buft — which always carries its device — is
   accounted, and the per-device distribution is unchanged.
+* **The `--fit` draft reserve charges only the KV a draft OWNS** (r101, campaign 0007).
+  `common_draft_reserve_estimate()` charged the speculative draft a full `n_ctx` KV — 18022 of the
+  19152 MiB it asked for per device — for a drafter that allocates **none**: `gemma4-assistant` declares
+  `attention.shared_kv_layers = 4` and `llama_kv_cache`'s `layer_share_cb` reuses the target's tensors.
+  It now reads `attention.shared_kv_layers` and charges `kv_layers - shared` (0 for
+  `gemma4-assistant`); the indexer-cache term follows the same count and the log line reports the owned
+  layers.  At the default 262144 context, gemma4 26B-A4B `-ncmoe 40 -sm layer` MTP n3: reserve
+  19152 -> **1129 MiB**, arena 13752 -> **23141 MiB**, slots 4564 -> **7680**, `h` 0.897 -> **0.0000**,
+  gen **41.0 -> 93.2 t/s** (plain 74.6).  Non-shared drafts are arithmetically unchanged (qwen4exp
+  sidecar: `weights 2647 + kv 563 + compute 512 + slack 192`); an embedded MTP head never reaches the
+  estimator.  (`common/draft-reserve.cpp`)
+* **A loaded-but-unused draft model is not loaded, and gets no context** (r101, campaign 0011).
+  `has_dft()` only means "`-md` was given", so `-md <gemma4-assistant> --spec-type none` used to load the
+  model, create and warm up its context — which aborted, because the drafter's graph always needs the
+  target's hidden state (`GGML_ASSERT(ubatch->embd_state)`).  `common_params_speculative::uses_dft()` /
+  `has_aux()` (`common/common.h`) now gate the model load, the context creation, the MoE draft reserve
+  and the preload on *an enabled type that actually drafts with a model*; `common_init_from_params`
+  prints one WRN.  `-md X --spec-type none` is a working "plain baseline with the drafter loaded" and an
+  unused drafter costs no VRAM.
 * `common/fit.cpp`: `--fit` reserves the arena and the slab headroom per device.
 * Host-side: mmap reclaim (`LLAMA_LOAD_RELEASE_MMAP`), rear-fill host layers
   (`LLAMA_HOST_EXPERTS_FROM_END`), `--host-experts pool` (`MOE_HOST_POOL_MIB`), a second draft scheduler
@@ -423,6 +442,64 @@ whatever VRAM is left.
   hook (CUDA/Meta) or NULL/no-op (CPU, RPC, every other backend).  The list is **positional**: the block
   that declares a field must also fill it in every backend, or the initializer silently shifts (r94
   block-boundary repair; previously deferred to block 11, which does not build on its own).
+* **The Meta split state accepts what a per-row / whole-row layout actually means** (r101,
+  campaign 0008/0009/0010).  Three related additions to `ggml-backend-meta.cpp`, each "the split does not
+  straddle the reduction, so the op is local":
+  * `handle_per_row` (RMS/NORM/GROUP/L2 norm, `SUM_ROWS`, `ARGSORT`/`TOP_K`) accepts an **axis-0** split
+    whose every per-device extent is either empty or the **whole row**.  gemma4's full-attention layers
+    have one KV head, so the 512-wide K/V row lands whole on one device (`ne_per_dev=[0,512]`); a
+    straddling split still aborts.  `handle_bin_bcast` gains the elementwise case for a split tensor
+    against a **MIRRORED same-shape** operand (the per-head norm weight).
+  * `handle_mul_mat` accepts (MIRRORED `src0`, axis-0 `src1`) when the contraction is empty-or-whole per
+    device and `out->ne[0] == src1->ne[0]` — the **rotated KV cache** path (`-ctk q8_0` =>
+    `n_rot_k = 512`), where the Hadamard rotation `rot[512,512] (MIRRORED) x Kcur[512, rows]` has its
+    contraction on axis 0.  The owning device computes the whole dot product; nothing is summed across
+    devices.  A straddling contraction still aborts, with a message saying it needs a cross-device
+    reduction.
+  * `handle_flash_attn_ext` accepts a K/V slice that is **empty-or-whole on every device** (with the
+    query empty-or-whole on the same devices).  Needed when one ubatch carries several sequences
+    (`n_stream > 1`: `llama-server -np > 1`, `llama-batched-bench -npl > 1`,
+    `llama-perplexity --kl-divergence`), where the FA K/V cache view spans the cache's stream dimension
+    and the state arrives on the cache's embd axis instead of the kv-head axis.
+  Net effect: gemma4 dense + `-sm tensor` works, byte-identically to `-sm layer` (`c740be0e131a` at 2
+  and 3 GPU) in f16 **and** rotated q8_0, including multi-sequence batches.  `GREEDY-PURITY.md` §45.
+* **The expert cache sizes on gemma4, and a fused table is cacheable under `-sm tensor`** (r101, campaign
+  0002/0003/0004a/0004b — TODO #77 A/B/C):
+  * `moe_host_expert_account()` counts only routed expert **banks** (`ne[2] >= 2`).  gemma4 has a
+    per-layer `ffn_down_exps.scale` (512 B x 30 layers = 15360 B), which made the cache's completeness
+    check unsatisfiable: no arena was ever allocated, so every per-op expert upload was a miss
+    (`-sm layer` 7.9 t/s, `-sm tensor` 5.5).  The completeness slack stays `min(max(1 MiB,
+    expected/4096), 16 MiB)` — deliberately much smaller than one table (35B-A3B's is 36.4 MiB), because
+    a wider slack silently accepts a sizing pass with one table unregistered (-3.6 % tg128).
+  * A cache table's device slot may be assembled from up to **8 ordered host ranges** (gemma4's fused
+    `ffn_gate_up_exps` is `[gate_slice | up_slice]` under `-sm tensor`), and one shared
+    `fill_slot_from_host()` serves both the eager fill and the identity fill so the two cannot disagree.
+    `ggml_backend_moe_slice` + the extended `moe_cache_update` in `ggml-backend-impl.h`; the scheduler
+    call site passes `nullptr, 0`.
+  * A **row-aligned segmented `set_tensor_async`** splice (per-device `set_async`/`set_2d_async` plus the
+    MMQ tail pad); mid-row ranges keep the synchronous setter (the loader's chunked upload owns a staging
+    ring that may be reused on return).  `GGML_META_SEG_ASYNC=0` disables it.
+  Result: gemma4 26B-A4B `-ncmoe 40` `-sm layer` **79.0** / `-sm tensor` **74.7** t/s (was 7.9 / 5.0).
+  The trap this fix invites is recorded in `GREEDY-PURITY.md` §45.
+* **The async graph-input ring is keyed per ORIGIN** (r101, campaign 0005): its ordering state
+  (`pending`/`ev`/`q`/`flush_ev`/`done_ev`) was per **device**, but a stream is a `llama_context`, so
+  MTP's draft and target contexts consumed each other's queued uploads and a context could replay a graph
+  without waiting for its own copy.  A genuine cross-context bug (the MTP run-to-run nondeterminism that
+  looked like its symptom was ROCm's hipBLASLt per-start solution pick, issue #67 — see
+  `GREEDY-PURITY.md` §44).
+* **The iSWA KV builder expands `q, v, k`** (r101, campaign 0001 — TODO #76): the r81 rope + FWHT fusion
+  folds the two q8_0 K/V cache `SET_ROWS` launches into the fused rope kernel, but
+  `build_attn(llm_graph_input_attn_kv_iswa*)` expanded `q, k, v`, so the V block sat between the K
+  rotation and the K cache write and the matcher declined — **inert on every iSWA arch**.  Now mirrors
+  the non-iSWA builder.  Measured on gemma4 12B q8_0: `k_set_rows_q8_0_group` 1152 -> 192 launches,
+  `rms_norm_mul_rope_f32<...,kv=true>` 0 -> 480, total 13500 -> 12540; greedy text and
+  `test-logits-width-probe` identical, `llama-bench` tg128 +0.6 %.  Known gap: gemma4's 512-wide
+  full-attention layers stay outside the fused kernel (its `fwht_n` set is `{64,128,256}` and the V-row
+  write assumes `ncols <= 256`).
+* **A speculative verify batch never exceeds `n_batch`** (r101, campaign 0006): a verify batch carries
+  `n_max + 1` tokens in one `common_batch::get()`, capped by `llama_n_batch()`, so `-b 1` aborted in a
+  server worker after the model had loaded.  `common_init_from_params` raises `n_batch` to `n_max + 1`
+  with a WRN (a logical-batch hint; `-ub` still bounds the per-launch memory).
 * **The pre-loaded draft-model handoff** (r86; ownership completed in r94):
   `common_speculative_load_model`, the 4-argument `common_speculative_init_result` / `init_from_params`,
   and `common_init_result::take_draft_model` live in this block together, so the draft model is resident
@@ -504,9 +581,15 @@ fusions.
 
 **Knobs.**  The slab/cache set listed under block 09, plus `GGML_CUDA_POOL_WIDE[_MIN_MIB]`,
 `GGML_CUDA_SLAB_STATS` / `_GRAPH_TRACE`, `GGML_CUDA_ASYNC_INPUT_BATCH` / `_LAZY_DONE`,
-`GGML_CUDA_GDN_TAIL`, `GGML_CUDA_GRAPH_MEM_GEN`, `GGML_META_SPLIT_COPY`,
+`GGML_CUDA_GDN_TAIL`, `GGML_CUDA_GRAPH_MEM_GEN`, `GGML_META_SPLIT_COPY`, `GGML_META_SEG_ASYNC`,
+`GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` (now live on iSWA archs, not only on the non-iSWA builder),
 `LLAMA_KV_N_PAD_PREFILL`(+`_FROM`/`_MIN`), `LLAMA_QSA_*`, `GGML_QSA_*`, `LLAMA_HC_*` / `GGML_HC_*`,
 `LLAMA_MTP_SPARSE`.
+
+**Split-state rule (r101).**  The Meta handlers may only accept a split the op can serve **locally**:
+empty-or-whole per device for a per-row op, for a rotated-K `mul_mat`, and for the FA K/V of a
+multi-sequence ubatch; a split that straddles the reduction is rejected, never approximated.  Every new
+acceptance must come with the same-shape refusal for the straddling case (`GREEDY-PURITY.md` §45).
 
 **Purity.**  qwen4exp's decode/verify band is `HC_FUSED_MAX_TOKENS = 8` and the QSA decode arm band is
 `max(8, n_rs_batch)`; the arm must be chosen from the band and `n_kv`, never `n_tokens == 1`
@@ -548,6 +631,14 @@ had no other home.
   file also gains `#include <algorithm>` (the patch as submitted does not compile without it).
 * **Build time**: one FA template instantiation TU per `(ncols1, ncols2, head size)` instead of per
   `(ncols1, ncols2)` — same instantiations, grouped so the backend build is no longer one-file-bound.
+* **The expected `--fit` probe failure logs as a warning** (r101, campaign 0012): `--fit` builds the extra
+  (draft) model's context before the target context exists, so an arch that needs `ctx_other` fails there
+  by design and fit falls back to the derived reserve.  `E llama_init_from_model: failed to initialize the
+  context: … requires ctx_other to be set` is now a **W**; any other init failure stays an **E**.
+* **The draft-context creation is gated on an enabled type that uses it** (r101, campaign 0011, the
+  `common/speculative.cpp` half — see block 09 for the predicate in `common/`): with `--spec-type none`
+  the extra model is neither loaded nor given a context, so the gemma4 drafter's warm-up decode no longer
+  aborts on the missing state embedding.
 
 **Knobs.**  `LLAMA_OUTPUT_PINNED`, `MTP_DRAFT_N_UBATCH`, `GGML_LF_DFLASH_DEV`, `GGML_LF_FAST_TOPK`,
 `LLAMA_STATE_GET_MERGE_GAP`, `LLAMA_STATE_ASYNC`, `LLAMA_STATE_ASYNC_MAX_MIB`,

@@ -140,7 +140,7 @@ Fold into **block 09** (no new block): #77 A/B/C (`0002`, `0003`, `0004a`, `0004
 5. Docs: `patches/README.md` (blocks 09/10), `ENVIRONMENT.md` (`GGML_META_SEG_ASYNC`; the iSWA note for
    `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS`), `GREEDY-PURITY.md` if a claim moves, a `WORKLOG.md` entry,
    `TODO.md` loses #76/#77 (+ #68 1b closed once 1a lands or is parked), archive this campaign to
-   `archive/work/fix-gemma-4/` with a `RESOLUTION.md`, delete `wip/fix-gemma-4/`, update
+   `archive/work/fix-gemma-4/` with a `RESOLUTION.md`, delete `archive/work/fix-gemma-4/`, update
    `wip/CAMPAIGNS.md` (no stub).
 6. Release ritual (`AGENTS.md` "Pushing policy"): tag, **fork `rdna-boosts` refresh to the personal fork
    only**, worker image build (`scripts/container-watch.sh` on `radiance`) — nothing on the primary box.

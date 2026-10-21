@@ -183,7 +183,7 @@ stub alive to serve them, and treat a `wip/` path in an old record as a historic
   before touching code; **never judge run-to-run determinism on a greedy text hash** — use a logit-level
   probe.  **Keep hipBLASLt enabled in the delivery** (disabling it costs up to -15 % decode; the switch is
   for reproducible runs and bisection only).  `GREEDY-PURITY.md` §44,
-  `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`.
+  `archive/work/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`.
 - **Thread sizing is not optional.** `/usr/local/bin/pin_gpu_irqs.sh` puts the GPU IRQs on the top
   `NUM_GPUS` cores (13,14,15 with 3 GPUs); the default `-t` puts the worker pool there and starves the
   GPU (Q4_K_M `-ncmoe 99` tg1024: `-t 16` 19.6 vs `-t 8` 38.9). Size `-t` (or `--cpu-mask` with `-t`

@@ -12,7 +12,7 @@ Details never live here: they live in `AGENTS.md`, `patches/README.md`, `MANIFES
 still means the same subject after that item is closed and removed from this file.  New items append.
 
 **Current state:** the **12-block V2.0 set** (block 00 + blocks 01-11) at fork point **`097cf33d9`**,
-release **`v12-097cf33d9-r100`**.  `release.json` is the source of truth for the tip/tree and hashes; the
+release **`v12-097cf33d9-r101`**.  `release.json` is the source of truth for the tip/tree and hashes; the
 top of `WORKLOG.md` is the newest record.
 
 | # | subject | kind | status |
@@ -24,11 +24,8 @@ top of `WORKLOG.md` is the newest record.
 | **61** | MoE expert-cache coverage: offline trace replay, per-layer capacity quota | performance | open (`wip/moe-cache-coverage/`) |
 | **64** | MoE heat-map residuals | minor | open |
 | **65** | IQ4_NL field (MTP) + `--host-experts pool` decode collapses | memory | parked (maintainer 2026-10-15; the "after r67" condition is long past — never picked up, still parked) |
-| **68** | `gemma4` dense + `-sm tensor` aborts: rotated-K-cache `mul_mat split states`, **and** an f16 `handle_per_row` abort | correctness | open — **next session's handover** in [`wip/fix-gemma-4/HANDOVER-2026-10-21.md`](wip/fix-gemma-4/HANDOVER-2026-10-21.md) |
 | **70** | harden the expert-cache re-arm / wide-aux growth against a starved arena | robustness | open |
 | **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) — gfx1151 cannot reproduce it (2026-10-20); needs the gfx1201 A/B |
-| **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | **fix complete on gfx1151 + gfx1201**, all gates green — held in [`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md), promotion is the maintainer's call |
-| **77** | gemma4 expert cache never sizes (per-op expert upload, no residency) + the sync segmented upload | performance | **fixed and gated** (`-sm layer` 7.9 -> 79.0, `-sm tensor` 5.0 -> 74.7 t/s; other models flat) — held in [`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md) |
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **79** | RDNA3_0 verify-band fusions: no multi-device measurement, and gfx1101/gfx1102 untested | platform validation | open (shipped default-on in r95; needs a 2+ card gfx1100 box) |
 | **80** | meta split-state cache: 30+ lookups per node per re-allocation | performance | parked (`archive/work/issue-184-meta-r80r82/RESOLUTION.md` `§` headroom) |
@@ -134,42 +131,6 @@ config.  Parked by the maintainer (2026-10-15) to be picked up after r67; that r
 (r99 is current) and the item has not been picked up, so it stays parked until the maintainer says
 otherwise.  `WORKLOG.md` 261015.005.
 
-## 68. `gemma4` dense + `-sm tensor` on 2 devices aborts with a rotated K cache (`-ctk q8_0`) — CORRECTNESS
-
-Opened 2026-10-18.  A plain dense `gemma4` target (`Gemma4/12B/Q8_0`, no draft, `-ngl 99 -sm tensor -fa on
--ctk q8_0 -ctv q8_0 -c 16384 -t 8 -np 1`, `HIP_VISIBLE_DEVICES=0,1`) aborts at the warmup decode:
-
-```
-ggml/src/ggml-backend-meta.cpp:900: unsupported mul_mat split states:
-  node=node_286 src0=Meta(ROCm0,ROCm1)#attn_inp_k_rot#0 axis=10 src1=Kcur_pos-5 (reshaped) axis=0
-```
-
-`attn_inp_k_rot` is the K rotation matrix (`llama_kv_cache::build_input_k_rot`, built only when
-`n_rot_k > 0`, i.e. for a rotated-cache type), so the aborting op is `ggml_mul_mat(rot, Kcur)` and its
-`src1` (Kcur) is split on **axis 0** — a combination `handle_mul_mat` does not implement.  `-ctk f16` and
-`-ctk bf16` load and answer (`n_rot_k == 0`), so the trigger is the rotated cache type, not gemma4 as such.
-Independent of `-np`, `--kv-unified`, `-fa` and of `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS` /
-`GGML_CUDA_DISABLE_FUSION` (the rotation is a meta-side graph op, not a CUDA fusion).
-`gemma4-assistant` (the MTP head) is separately and correctly rejected for `-sm tensor` by
-`llm_arch_supports_sm_tensor` — that half is intended.
-
-**Fix direction:** teach `handle_mul_mat` the (MIRRORED, axis-0-split) rotation pair; or express the
-rotation so Kcur is not split on its hidden axis (rotate **after** the split gather, or per shard with a
-full-size matrix); or reject a rotated cache type under `-sm tensor` at the params level the way DFlash is
-rejected (#78) — the honest interim, since the current outcome is a crash rather than a clear error.
-Repro is a 2-minute server start; the surrounding investigation is
-`archive/work/issue-184-meta-r80r82/README.md` §6.
-
-**2026-10-21 — second abort found, and the item is now the handover target of the umbrella campaign.**
-While running the #76 gfx1201 gates, `gemma4` 12B + `-sm tensor` with the **default f16** cache (so
-`n_rot_k == 0`, i.e. *not* this item's rotated-cache trigger) also aborted, at a different assert:
-`ggml/src/ggml-backend-meta.cpp:838 GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0) failed`,
-inside `handle_per_row` (the `NORM`/`RMS_NORM`/`GROUP_NORM`/`L2_NORM` family) during the warmup decode.
-So `gemma4` dense + `-sm tensor` on 2 devices is broken **regardless of cache type**, by two different
-mechanisms, and the `-sm tensor` arm of every gemma4 gate is unrunnable until both are fixed.  Both
-reproduce on the unmodified r99 and r100 trees.  Scope, repro commands and the two candidate directions
-for each are in [`wip/fix-gemma-4/HANDOVER-2026-10-21.md`](wip/fix-gemma-4/HANDOVER-2026-10-21.md); the
-umbrella campaign is [`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md).
 
 ## 70. Harden the expert-cache re-arm / wide-aux growth against a starved arena — ROBUSTNESS
 
@@ -219,68 +180,7 @@ The witness is the **gfx1201 box** (stock r88 fingerprints `722063f3e28d` / `e3b
 (`archive/work/kv-quant-purity-followups/tools/textgen.py`, 12-hex text hashes) so it is like-for-like.
 Record of this negative result: `WORKLOG.md` 261020.013.
 
-## 76. The q8_0 K/V-write fusion is inert on iSWA models
 
-The r81 rope + FWHT fusion folds the two q8_0 K/V `SET_ROWS` launches into the fused rope kernel, which
-fires on qwen35/qwen35moe because they build attention through the **non-iSWA** `build_attn` (K expands
-last).  `build_attn(llm_graph_input_attn_kv_iswa*)` instead expands `q_cur, k_cur, v_cur` and only then the
-two cache writes, so the V block sits between the K rotation and the K cache write and the matcher
-declines — **inert on iSWA models (Gemma4)**.  Two options: a bounded-window match that tolerates the
-interposed V block, or reorder the iSWA expansion and measure it on its own (graph splits), with a trace
-showing the two `set_rows` launches are gone.  Record: `archive/work/kv-cache-q8-write/RESOLUTION.md`.
-
-**2026-10-21 — gfx1201 gates complete; fix held in the umbrella campaign.**  The remaining gates were run
-on the 3x R9700 box: launch counts `13500 -> 12540` (`k_set_rows_q8_0_group` 1152 -> 192, `kv=true`
-0 -> 480, the same at 2-GPU `-sm layer`); byte-identical greedy text in all three arms at 1, 2 and 3 GPUs
-(`c740be0e131a` / `34475f215443`); `W=1..8` probe hashes identical fix / kill-switch / r99-prefix in q8_0
-and f16; prefill-logit KLD **0.000000 / 100.000 %** (gemma4 f16) and **-0.000000 / 99.990 %** (gemma4
-q8_0 rotated) plus the standard Qwen3.8 27B gate; scheduler nodes/splits/buffers unchanged at 1/2/3
-devices; **+0.6 %** tg128 at 1 GPU and at 2-GPU `-sm layer`, batched B=1/4/8 +0.1/+0.2/+0.4 %;
-`test-llama-archs` 375/375.  The `-sm tensor` arm is unrunnable for a reason unrelated to this item (TODO
-#68: two pre-existing aborts), so the split gate is `-sm layer`.  Nothing is promoted: the patch, the
-evidence and the full record are held in [`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md)
-(`ISWA-WRITE-FUSION.md`); the fold (block 10) and the delivery cut are the maintainer's call.
-
-## 77. Segmented per-op expert upload is synchronous (gemma4 ~9 t/s) — PERFORMANCE
-
-The **correctness** half is done (r54, block 09): `-sm tensor` + a host-resident gemma4 expert table
-(`-ncmoe`/`-cmoe`) is no longer rejected and generates coherently (the old accumulate fallback dropped the
-scheduler's partial segmented upload; the sync segmented setter asserted on the `copy_experts` MMQ tail
-pad).  Record: `archive/work/meta-segmented-expert-upload/RESOLUTION.md`.
-
-The **performance** half is the umbrella campaign
-[`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md).  The r54 fix routes the per-op segmented upload through
-the **synchronous** setter, so gemma4 + `-ncmoe` + `-sm tensor` ran at only ~9 t/s (APU) / 5.5 t/s (gfx1201)
-against ~23 t/s for the cache-less CPU-expert path.
-
-**2026-10-21 — the filed cause is only the symptom; the real defect is that the cache never sizes.**
-Instrumenting the upload decision points on gfx1201 (gemma4 26B-A4B Q8_0 `-ncmoe 40`):
-`moe_cache_tables_complete_locked()` compares the registered table bytes against
-`moe_host_expert_account()`'s total, which counts **every** host tensor named `*exps*` — including gemma4's
-per-layer `ffn_down_exps.scale` (128 x F32 = **512 B**).  30 layers x 512 B = **15360 B**, exactly the
-measured shortfall, so the guard can never hold, `alloc_all_locked()` defers forever, **no arena is ever
-created**, and the run pays a full per-op expert upload (2.5 GB/token, 3.8 s of host-blocking copies in an
-8-token run) with zero residency.  Forcing an arena with `MOE_EXPERT_CACHE_SLOTS` proves it: `-sm layer`
-**7.9 -> 46.9 t/s** (slots=64).  Separately, under `-sm tensor` the fused `ffn_gate_up_exps` table can never
-register (`ggml_backend_meta_moe_cache_update` bails when `n_segments != 1`), so only 7.7 of 23.1 GB is
-cacheable and the arena still cannot size.  Fix plan: sizing tolerance + the existing
-`moe_cache_note_unregisterable()` for the segmented decline (A), the async segmented upload the campaign
-was seeded for (B), and a multi-slice cache table so the fused table is cacheable under `-sm tensor` (C).
-Everything, including the non-regression gate contract for other models, lives in
-[`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md).
-
-**2026-10-21 — A + B + C implemented, gated, and held (not folded into `patches/`).**  A filters the
-loader's host-expert account to routed banks (`ne[2] >= 2`) instead of leaning on a tolerance, and the
-completeness slack is capped at 16 MiB after an intermediate draft (a `expected/128` slack) silently
-accepted a 35B-A3B sizing pass with one table unregistered and cost -3.6 % tg128.  B is the row-aligned
-async segmented splice (kill switch `GGML_META_SEG_ASYNC=0`; neutral on the miss path).  C is multi-slice
-cache tables, which is what makes gemma4's fused `ffn_gate_up_exps` cacheable under `-sm tensor`; the
-eager fill and the identity fill now share one `fill_slot_from_host()`.  Measured: **`-sm layer` 7.9 ->
-79.0 t/s, `-sm tensor` 5.0 -> 74.7 t/s**, both byte-identical to the prefix build, cache `h=1.0000` with
-the whole expert set resident, wikitext PPL identical.  Non-regression: 27B dense (1 GPU + 3-GPU tensor),
-4B, gemma4 12B, and 35B-A3B `-ncmoe 40` all text-identical with flat throughput;
-`test-llama-archs` 375/375; both prefill-logit gates PASS; no GPU faults.  Patches, evidence and the
-handover are in [`wip/fix-gemma-4/`](wip/fix-gemma-4/README.md).
 
 ## 78. DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix
 
@@ -355,8 +255,9 @@ Two gaps, both needing hardware the fleet does not have:
   instantiations **and** a fix to the fused kernel's V-row write (its `ncols <= block_size` precondition
   would quantize half a 512-wide V row), which edits the shipping 256 fold, for ~0.1 % on gfx1201.
   Accepted as a gap; the analysis (what to change, why the arithmetic is bit-identical by construction)
-  is in [`wip/fix-gemma-4/ISWA-WRITE-FUSION.md`](wip/fix-gemma-4/ISWA-WRITE-FUSION.md) §5.6.  This is separate from
-  TODO #76 (the iSWA builder order, whose fix is validated and pending the gfx1201 split gate).
+  is in [`archive/work/fix-gemma-4/ISWA-WRITE-FUSION.md`](archive/work/fix-gemma-4/ISWA-WRITE-FUSION.md) §5.6.
+  (The iSWA builder order that made the 256-wide half of this fusion live is r101, `WORKLOG.md` 261021.003;
+  `GREEDY-PURITY.md` §45 records the split-state rule that came with it.)
 - **Not worth pursuing** (measured, no win): the decode fq-inline-quantize port (wash-to-negative — the
   tree already launches fewer kernels/step and sits at wall parity) and the GDN +72-launch 2-kernel split
   (cosmetic).

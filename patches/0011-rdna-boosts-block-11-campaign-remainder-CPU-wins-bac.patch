@@ -1,6 +1,6 @@
-From db675e2dbe81b49717eaec34078ae980dd8d43b8 Mon Sep 17 00:00:00 2001
+From b8781942f1debee92c878ed74ffb0817bbdffbbf Mon Sep 17 00:00:00 2001
 From: Stew Forster <ci@rdna-boosts.invalid>
-Date: Mon, 12 Oct 2026 20:15:39 -0500
+Date: Wed, 21 Oct 2026 10:40:32 -0500
 Subject: [PATCH 11/11] rdna-boosts: block 11: campaign remainder (CPU wins,
  backend iface fills, DFlash, FA build grouping)
 
@@ -33,23 +33,23 @@ retained by the context (16 MiB granular, bounded by the cap) and is one buffer 
 saves on one context must not run concurrently.  `src/llama-context.cpp` also gains `#include
 <algorithm>` for `std::find` (the patch as submitted does not compile without it).
 ---
- common/sampling.cpp                           | 224 +++++++++++-
- common/speculative.cpp                        |  97 +++++
+ common/sampling.cpp                           | 224 ++++++++++-
+ common/speculative.cpp                        | 102 ++++-
  ggml/include/ggml-alloc.h                     |   7 +-
  ggml/src/ggml-alloc.c                         |  82 +++--
  ggml/src/ggml-cpu/arch-fallback.h             |   1 -
  ggml/src/ggml-cpu/arch/x86/quants.c           |  68 ++++
  ggml/src/ggml-cpu/ggml-cpu.cpp                |   2 +-
  ggml/src/ggml-cpu/repack.cpp                  |   3 +
- .../template-instances/generate_cu_files.py   |  46 +--
+ .../template-instances/generate_cu_files.py   |  46 ++-
  ggml/src/ggml-rpc/ggml-rpc.cpp                |   3 +
- src/llama-context.cpp                         | 336 +++++++++++++++++-
+ src/llama-context.cpp                         | 347 +++++++++++++++++-
  src/llama-context.h                           |  13 +
  src/llama-model.cpp                           |  36 ++
  src/llama-model.h                             |  13 +-
  src/llama.cpp                                 |  11 +
- src/models/dflash.cpp                         |  68 ++--
- 16 files changed, 917 insertions(+), 93 deletions(-)
+ src/models/dflash.cpp                         |  68 +++-
+ 16 files changed, 931 insertions(+), 95 deletions(-)
 
 diff --git a/common/sampling.cpp b/common/sampling.cpp
 index 564fa9c4d..da77044b7 100644
@@ -340,7 +340,7 @@ index 564fa9c4d..da77044b7 100644
      // Check if a backend sampler has already sampled a token in which case we
      // return that token id directly.
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index b2e5afc80..f2a642ac7 100644
+index b2e5afc80..7342effa9 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -996,6 +996,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
@@ -467,7 +467,19 @@ index b2e5afc80..f2a642ac7 100644
          return true;
      }
  
-@@ -2811,6 +2894,20 @@ common_speculative_init_result::common_speculative_init_result(
+@@ -2785,7 +2868,10 @@ common_speculative_init_result::common_speculative_init_result(
+     llama_context * ctx_tgt,
+     llama_model * model_dft_pre) :
+     pimpl(new impl{}) {
+-    const bool has_draft = params.speculative.has_dft();
++    // `has_dft()` only means `-md` was given: a type that never drafts with a model
++    // (`--spec-type none`, the n-gram types) must not create a context for it -- its warm-up needs the
++    // target's hidden state (gemma4-assistant) and aborts.
++    const bool has_draft = params.speculative.has_dft() && params.speculative.uses_dft();
+     const bool spec_mtp = params.speculative.has_mtp();
+ 
+     auto mparams = common_model_params_to_llama(params);
+@@ -2811,6 +2897,20 @@ common_speculative_init_result::common_speculative_init_result(
      // the draft context holds as many tokens per sequence as the target context
      cparams.n_ctx = llama_n_ctx(ctx_tgt);
  
@@ -828,7 +840,7 @@ index b4d3e470c..8798940c0 100644
  
  static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 490d6aaa8..deea3fc3b 100644
+index 490d6aaa8..f02d7110d 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -1,3 +1,6 @@
@@ -1256,6 +1268,24 @@ index 490d6aaa8..deea3fc3b 100644
      }
  
      try {
+@@ -4968,7 +5292,16 @@ llama_context * llama_init_from_model(
+ 
+         return ctx;
+     } catch (const std::exception & err) {
+-        LLAMA_LOG_ERROR("%s: failed to initialize the context: %s\n", __func__, err.what());
++        // `--fit` probes the extra (draft) model by building its context BEFORE the target context exists, so a
++        // model whose graph always needs the target's hidden state (ctx_other) fails here BY DESIGN; the fit
++        // falls back to the derived reserve.  That case is expected, so report it as a warning; anything else
++        // (including a probe that failed for a real reason) stays an error.  The message is matched rather
++        // than the arch because the same arch can construct fine when it does not need ctx_other.
++        if (err.what() != nullptr && strstr(err.what(), "requires ctx_other to be set") != nullptr) {
++            LLAMA_LOG_WARN("%s: failed to initialize the context: %s\n", __func__, err.what());
++        } else {
++            LLAMA_LOG_ERROR("%s: failed to initialize the context: %s\n", __func__, err.what());
++        }
+     }
+ 
+     return nullptr;
 diff --git a/src/llama-context.h b/src/llama-context.h
 index 4462bc54a..e0da0a94f 100644
 --- a/src/llama-context.h

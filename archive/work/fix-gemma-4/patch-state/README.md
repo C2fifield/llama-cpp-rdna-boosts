@@ -62,7 +62,7 @@ Files touched by the whole set: `src/llama-graph.cpp`, `src/llama-model-loader.c
 ```bash
 git clone https://github.com/ggml-org/llama.cpp /tmp/v && cd /tmp/v && git checkout 097cf33d9
 bash <delivery>/scripts/apply-all.sh .
-for p in <delivery>/wip/fix-gemma-4/patch-state/000*.patch; do git apply "$p" || echo "FAILED $p"; done
+for p in <delivery>/archive/work/fix-gemma-4/patch-state/000*.patch; do git apply "$p" || echo "FAILED $p"; done
 diff -r --exclude=.git --exclude='build*' /tmp/v ~/llama.cpp | grep -v '^Only in /home/stew675/llama.cpp'
 # expect: no output
 ```

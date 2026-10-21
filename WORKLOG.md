@@ -1,5 +1,74 @@
 # WORKLOG - dated delivery records
 
+## 261021.003 (r101) -- fix-gemma-4 promoted: gemma4 dense `-sm tensor` works, expert cache sizes, iSWA fusion live
+
+The `wip/fix-gemma-4/` campaign is folded and released as **v12-097cf33d9-r101** (12 blocks, fork point
+`097cf33d9`, tip `b8781942f`, tree `4df893057408d311031d864ce4cd2fc8855b661f`).  No new block; three block
+amendments.  Every number below was taken with `ROCBLAS_USE_HIPBLASLT=0` (issue #67, `GREEDY-PURITY.md`
+§44).  Full measurement record: `archive/work/fix-gemma-4/RESOLUTION.md` +
+`archive/work/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21f.md`.
+
+**What shipped (folded).**  Block 09 gains the `--fit` draft-KV fix (a drafter that shares the target's KV
+is no longer charged 18 GiB it does not own: gemma4 26B-A4B MTP at the default context 41.0 -> 93.2 t/s),
+the `-md <drafter> --spec-type none` fix (an unused drafter is neither loaded nor given a context, which
+used to abort in its warm-up), and the unused-draft predicate itself (`uses_dft()`/`has_aux()`).  Block 10
+gains the whole Meta split-state group (#68 1a/1b + the multi-sequence FA case, see below), the gemma4
+expert-cache sizing + multi-slice tables + segmented async upload (#77 A/B/C: `-sm layer` 7.9 -> 79.0,
+`-sm tensor` 5.0 -> 74.7 t/s), the per-origin async-input ring, the iSWA `q, v, k` KV-builder expand order
+(#76: 13500 -> 12540 launches on gemma4 q8_0, tg128 +0.6 %), and the verify-batch `n_batch` guard.  Block
+11 gains the expected `--fit` `ctx_other` probe failure as a **W** instead of an **E** and the
+`common/speculative.cpp` half of the unused-draft gate.  The stray `(file*).moe-heatmap` artifact is gone:
+it is no longer in the set at all.
+
+**Fold rule (so the per-block build gate stays green).**  Each campaign file is applied at the **last block
+that touches it** (a cherry-pick of a later block's diff onto already-changed text is what would break the
+"every block builds" contract), which is why `--fit`'s loader/draft-reserve change rides block 09 while the
+Meta/cache work rides block 10 and the two `common/`-adjacent nits ride 09/11.  `git diff -r` between the
+folded tree and the gated campaign tree is **empty**, so the campaign's gate results carry; they were
+re-run on the folded tree anyway (below).
+
+**TODO #68 1a (rotated q8_0 KV under `-sm tensor`) is closed.**  `n_rot_k = 512`, the rotation is
+`rot[512,512] (MIRRORED) x Kcur[512, rows]`, so the contraction is axis 0 of `Kcur`; gemma4's single-KV-head
+row is whole on one device (`ne_per_dev = (0, 512)`), so `handle_mul_mat` now accepts
+(MIRRORED, axis-0) when the contraction is empty-or-whole per device and `out->ne[0] == src1->ne[0]` -- the
+owning device has every `rot` column and computes the whole product; a straddling contraction still aborts
+by name.  12B `-ctk q8_0 -ctv q8_0 -sm tensor` is byte-identical to `-sm layer` (`c740be0e131a`) at 2 and
+3 GPU; the rotated prefill-logit base reproduces to six digits (`-0.000000 / 99.990 %`).
+
+**A second, pre-existing defect surfaced once 1a unblocked the path (fixed, `GREEDY-PURITY.md` §45).**
+gemma4 dense + `-sm tensor` aborted in `handle_flash_attn_ext` whenever one ubatch carried **more than one
+sequence** -- `llama-server -np 2` with two overlapping requests, `llama-batched-bench -npl 4`,
+`llama-perplexity --kl-divergence` (n_batch/n_ctx = 4).  With `n_stream > 1` the FA K/V cache view spans the
+cache's stream dimension and the split state arrives on the cache's embd axis instead of the kv-head axis.
+It is pre-existing code, newly *reachable* (gemma4 + `-sm tensor` aborted earlier before the campaign), and
+gemma4-specific (27B `-npl 1,4` is unaffected).  The handler now accepts an empty-or-whole KV slice when the
+query is empty-or-whole on the same devices.  Verified: `-npl 4` runs (3353 t/s vs 2896 `-sm layer`),
+`llama-server -np 2` serves two concurrent 400-token requests (both 200), and the n_seq-4 KLD is the same
+tensor-split artifact as f16 (0.2137 vs 0.2048).
+
+**Config nits (all three decided and fixed).**  (a) `-md <drafter> --spec-type none` aborts -> now a plain
+baseline with a one-line WRN (and no wasted drafter VRAM); (b) the expected `--fit` probe failure is a W
+(any other init failure stays an E); (c) the `(file*).moe-heatmap` artifact is dropped.
+
+**Gate set on the folded tree** (all `ROCBLAS_USE_HIPBLASLT=0`, one job at a time, `scripts/check-gpu-faults.sh`
+clean): text identity across split modes -- 27B Q8_0 q8_0 KV 1 GPU == 3 GPU tensor (`da2e2d192e21`), 4B
+1 GPU == 3 GPU tensor (`9bf26f362e01`), gemma4 12B f16 **and** rotated q8_0 1/2/3 GPU (`c740be0e131a`),
+35B-A3B 2 GPU tensor `-ncmoe 40` == the pre-fold build (`0cf4a62aa63f`); the **35B-A3B cache canary is
+byte-identical** (240 tables / 61440 slots / 18662.0 MiB, 100 % residency) and tg128 flat (118.30 vs 118.64);
+`test-llama-archs -s 42` **644/644**; the three prefill-logit gates PASS (27B 0.000707 / 98.755 %, gemma4
+f16 -0.000000 / 100.000 %, gemma4 q8_0 rotated -0.000000 / 99.990 %); the four-axis adaptive-MTP gate at
+`-n 3000` is green on both models -- dense 27B 34.5/34.1/34.5/34.5 -> **72.0/87.4/94.3/101.3** t/s and
+35B-A3B 114.5/115.3/115.1/115.3 -> **239.1/246.4/256.3/275.8** t/s, `none` == `draft-mtp` text on all
+eight pairs, dense hashes **identical to `build-r99`** (rule 3), acceptance 0.7527 / 0.7158 (rule 1), and
+the stock-relative batched decode within noise (rule 5: B=1 +0.5 %, B=4 -0.1 %, B=8 -0.2 % vs r99).  The
+folded chain also passes `scripts/gate-per-block-build.sh` (3/3 amended blocks build `all` from a wiped
+build dir) and `scripts/validate-set.sh` (strict 12/12 from a fresh tarball, tree matches `release.json`).
+
+**Docs.**  `patches/README.md` blocks 09/10/11 (contents, the new split-state rule, `GGML_META_SEG_ASYNC`),
+`ENVIRONMENT.md` (`GGML_META_SEG_ASYNC`; the iSWA note on `GGML_CUDA_DISABLE_ROPE_FWHT_SET_ROWS`),
+`GREEDY-PURITY.md` §45 + invariant 9 + the index, `TODO.md` loses #68/#76/#77.  The campaign moved to
+`archive/work/fix-gemma-4/` (`RESOLUTION.md` is the record) and `wip/fix-gemma-4/` is deleted.
+
 ## 261021.002 (wip) -- fix-gemma-4: `--fit` draft-KV over-reserve and gemma4 `-sm tensor` fixed (campaign patches, not promoted)
 
 Two real defects fixed in the campaign tree (`wip/fix-gemma-4/patch-state/0007`, `0008`); **nothing folded

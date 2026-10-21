@@ -41,7 +41,12 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 8. **A shape-scoped launch parameter must be forwarded to every kernel that reproduces that launch.**
    `nwarps` / `rows_per_block` / VDR are width-uniform only if the fused single-token kernels that
    replace a dense weight launch call the same selector (§19 addendum, §39).
-9. **A cross-start comparison is only a purity measurement if the external solution selection is pinned.**
+9. **A split the op cannot serve locally must be rejected, never approximated.**  The Meta backend may
+   accept a split only when no device **straddles the reduction** (empty-or-whole per device): a per-row
+   op over whole rows, a rotation `mul_mat` over a whole contraction, and a flash-attention K/V slice that
+   is whole on one device.  The straddling case must stay a hard refusal with a message saying it needs a
+   cross-device reduction (§45).
+10. **A cross-start comparison is only a purity measurement if the external solution selection is pinned.**
    On ROCm before the `rocm-libraries` fix, hipBLASLt picks its solution for an untuned FP32 GEMM size in
    heap order — a **per-process-start** lottery (§44).  Compare fresh-process arms with
    `ROCBLAS_USE_HIPBLASLT=0`, and attribute a per-start difference to the library before blaming a kernel,
@@ -99,6 +104,7 @@ numbers are **stable** — dozens of docs cite them — so they are never renumb
 | **§42** | a width gate is not a purity rule: extending a fused chain *down* to one token | fix |
 | **§43** | one split holds one consumer of a staged expert table | fix (r96) |
 | **§44** | a per-start hipBLASLt solution pick is not a code defect; pin `ROCBLAS_USE_HIPBLASLT=0` before comparing starts | doctrine |
+| **§45** | a split the op cannot serve locally must be rejected, never approximated — and "locally" means no device straddles the reduction | fix (r101) |
 
 ---
 
@@ -900,4 +906,52 @@ text hashes; gen 74.9/72.8 vs the recorded 79.0/74.7).  **Do not pin it in the d
 environment**: the upstream fix lands at the source, and disabling hipBLASLt costs up to -15 % decode.  The
 env var is the tester's determinism switch, not a shipped default.
 
-Where: `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`; discussion #196.
+Where: `archive/work/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21d.md`; discussion #196.
+
+## 45. A split the op cannot serve locally is a refusal, not an approximation
+
+**Claim.**  The Meta backend's per-op split-state handlers decide whether an op is **local** given how a
+tensor is divided across devices.  The only splits they may accept are ones where no device **straddles the
+reduction**: each device's slice along the reduction axis must be either empty or the whole thing.  A
+straddling split needs a cross-device reduction that these handlers do not implement, and the honest
+behaviour is a hard refusal naming that, never a "close enough" arm — a wrong split state computes part of
+the result on a device whose inputs are missing, which is silent corruption, not a rounding difference.
+
+**The three shapes that are local (r101).**
+
+* **Per-row ops** (`NORM`, `RMS_NORM`, `GROUP_NORM`, `L2_NORM`, `SUM_ROWS`, `MEAN`, `ARGMAX`, `ARGSORT`,
+  `TOP_K`): dim 0 is the reduction axis, so an axis-0 split is normally cross-device.  It is local when
+  every per-device extent is empty or the **whole row** — gemma4's full-attention layers have one KV head,
+  so their 512-wide K/V row lands whole on one device (`ne_per_dev = [0, 512]`, measured).  A straddle
+  (`[256, 256]`) still aborts.  The elementwise companion — a split tensor times a **MIRRORED same-shape**
+  operand (the per-head norm weight) — follows the split operand, because nothing is reduced and the
+  mirrored operand is present in full everywhere.
+* **The rotated KV cache** (`-ctk q8_0` => `n_rot_k = 512`, `llama_mul_mat_hadamard`): `rot` is
+  `512x512` MIRRORED and `Kcur` is reshaped to `[n_rot_k, rows]`, so the **contraction is axis 0** of
+  `src1`.  Local iff every per-device contraction extent is empty or whole **and** `out->ne[0] ==
+  src1->ne[0]` (a square contraction, so each device's output slice maps 1:1 onto its contraction slice);
+  the owning device computes the complete dot product because every `rot` column is available to it.
+* **Flash-attention K/V** with more than one sequence in the ubatch (`n_stream > 1`: `llama-server -np > 1`,
+  `llama-batched-bench -npl > 1`, `llama-perplexity --kl-divergence`): the FA cache view spans the cache's
+  stream dimension, so gemma4's whole-on-one-device KV arrives split on the cache's **embd** axis instead
+  of the kv-head axis.  Both mean the same thing, and the extra condition is that the **query** is
+  empty-or-whole on the same devices — a device holding queries but no K/V would compute rows nothing
+  serves, which is exactly the broken combination to keep refusing.
+
+**Why this is a purity rule, not a convenience.**  Each accepted shape's alternative is an abort, so the
+temptation is to accept a straddling split "since the data is all there".  It is not: with a straddle, no
+device has the whole reduction, so every device produces a *partial* sum that must be reduced — a feature
+this layer does not have.  Accepting it would produce coherent-looking text whose logits are wrong, the
+failure class §7 and the prefill-logit gate exist to catch.
+
+**Measured.**  gemma4 12B Q8_0 with `-sm tensor` is byte-identical to `-sm layer` (`c740be0e131a`, 143
+chars) in f16 **and** rotated `-ctk/-ctv q8_0`, at 2 and 3 GPU; the rotated single-device prefill-logit
+gate reproduces its recorded base to six digits (`-0.000000 / 99.990 %`), and under `-sm tensor` the
+rotated arm is indistinguishable from the f16 one (`0.2041 / 86.0 %` vs `0.2134 / 86.7 %` against the
+`-sm layer` reference — the ~0.21 is the tensor split's own all-reduce rounding, identical with no rotation
+in the picture).  The multi-sequence fix is verified the same way: `llama-batched-bench -npp 512 -npl 1,4`
+runs (3353 t/s at B=4 vs 2896 `-sm layer`), and two concurrent 400-token requests on `llama-server -np 2`
+both return 200 where the process used to abort.
+
+Where: `archive/work/fix-gemma-4/RESOLUTION.md`; measurements
+`archive/work/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21f.md`.
