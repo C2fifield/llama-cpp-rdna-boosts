@@ -1,5 +1,50 @@
 # WORKLOG - dated delivery records
 
+## 261020.013 (docs) -- TODO #75 gfx1151 revalidation: the symptom is absent before and after r97's async fix
+
+**No delivery change; no release.**  Negative-result record on the gfx1151 (Strix Halo) box so the next
+session does not re-derive it.  `TODO.md` #75 gained the same note.
+
+**Question.**  #75 (filed 2026-10-19 at r90) is "35B-A3B greedy text is run-to-run nondeterministic with
+`GGML_CUDA_ASYNC_INPUT=0`": stock **r88** on the gfx1201 box produced 2-3 different 400-token texts
+(`722063f3e28d` / `e3b891655a80` / `27d50a6d97f5`) on the plain default path.  r97 (`WORKLOG.md` 261020.008)
+made `ggml_cuda_async_input_flush_done` unconditional on the `=0` arm, so the question was whether that
+fixed it.
+
+**Result: not reproducible here, on either side of the fix.**  30 fresh-process runs, r99 (`6adf0b802`),
+1 device, 35B-A3B Q4_K_M, `-ngl 99`, seed 42, temp 0:
+
+| arm | runs | distinct results |
+|---|---|---|
+| `ASYNC_INPUT=0`, `-n 400` | 6 | **1** text |
+| `ASYNC_INPUT=0 -ub 8` / `-ub 1` | 3 / 3 | 1 / 1 |
+| `ASYNC_INPUT=0 --ignore-eos -n 400` | 3 | 1 text |
+| default (async **on**), `--ignore-eos -n 400` | 4 | 1 (same text as the `=0` arm) |
+| `test-logits-width-probe`, W=1..8, `=0` | 5 | W=1 hash `5e73d60b4c4df784` every run, `width_purity=PASS` every run |
+| **r95** (`fe1befcf7`, **pre**-r97), `=0 --ignore-eos` | 3 | 1 text |
+| r94-era (`eb81ac725`), same | 3 | 1 text |
+
+The pre-r97 builds are equally deterministic, so gfx1151 cannot distinguish "r97 cured it" from "this box
+never showed it": it is not a valid witness either way.  (The text hash is stable at the *logits* level too,
+so this is not a text-vs-ULP masking artifact.)
+
+**Two findings worth carrying forward.**
+
+1. **`-n 400` is not 400 tokens on this model/prompt.**  It EOS-terminates at 1505 chars (~150 t), so a
+   naive 400-token comparison silently measures a shorter generation than the original finding.  The runs
+   above use `--ignore-eos` (1895 chars, the full 400) — the next attempt must do the same, or use a long
+   prompt.
+2. **Which builds a bisect must cover.**  Since #75 was filed at r90 the only async-ring change is r97's
+   unconditional flush.  But the original observation is stock **r88**, i.e. *before* r89's batched uploads
+   (PR #182) and r90's split-input snapshot fix, so the A/B is r88 -> r89/r90 -> r97 -> r99, not just
+   r95 vs r99.
+
+**Next step (gfx1201 box).**  Re-establish the witness on the r88 binary if it is still available (6+ runs,
+`ASYNC_INPUT=0 --ignore-eos -n 400`, both the 1-GPU and the 2-GPU `-sm tensor` arm), then the same on r95 and
+r99, reusing the original harness/prompt (`archive/work/kv-quant-purity-followups/tools/textgen.py`, 12-hex
+text hashes) for a like-for-like comparison.  r88/r95 mixed + r99 single => r97 is the cure and #75 closes on
+it; r88 single too => the witness is gone on the current stack and #75 needs re-scoping.
+
 ## 261020.012 (docs) -- TODO #66 (RDNA2) and #67 (issue #151 follow-up) closed on external confirmation
 
 **Docs only: no patch, `release.json` or tree change; `scripts/validate-set.sh` is unaffected.**  Both

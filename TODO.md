@@ -21,7 +21,7 @@ top of `WORKLOG.md` is the newest record.
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | open |
 | **68** | `gemma4` dense + `-sm tensor` + a rotated K cache (`-ctk q8_0`) aborts | correctness | open |
-| **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) |
+| **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) — gfx1151 cannot reproduce it (2026-10-20); needs the gfx1201 A/B |
 | **70** | harden the expert-cache re-arm / wide-aux growth against a starved arena | robustness | open |
 | **61** | MoE expert-cache coverage: offline trace replay, per-layer capacity quota | performance | open (`wip/moe-cache-coverage/`) |
 | **59** | `ngram-mod` + `draft-mtp-adaptive` halves decode with host-resident experts | performance | open (`wip/ngram-mod-host-experts/`) |
@@ -104,6 +104,28 @@ default path.  Nothing here has isolated it yet.  Start from a fresh-process dec
 separate "different binary state" from "different kernel selection", and keep it away from the
 Windows/hipBLASLt per-start flip that closed #67 (external, and now confirmed by the reporter on decode
 logits: `archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-20-issue151-reporter-confirmation.md`).
+
+**gfx1151 revalidation (2026-10-20, r99 `6adf0b802`): NOT reproduced — this box cannot be the witness.**
+30 fresh-process runs on the Strix Halo box (1 device, 35B-A3B Q4_K_M, `-ngl 99`, seed 42, temp 0) are
+single-valued, both as greedy text and as decode logits: `GGML_CUDA_ASYNC_INPUT=0` at the default ubatch
+(6 runs), at `-ub 8` (3), at `-ub 1` (3), with `--ignore-eos -n 400` (3), with async **on** (4, the same
+text), the `test-logits-width-probe` W=1 hash `5e73d60b4c4df784` on 5 fresh processes with
+`width_purity=PASS` on every W=1..8 pass — and, decisively for the "did today's fix cure it" question,
+the same on a **pre-r97** build (r95 `fe1befcf7`, 3 runs) and an r94-era build (`eb81ac725`, 3 runs).  So
+the symptom is absent before and after the fix here, i.e. nothing on this box exercises it.
+
+Two method notes for the next attempt.  **(a)** Plain `-n 400` is *not* 400 tokens on this model/prompt:
+it EOS-terminates at ~1505 chars (~150 t), so a naive comparison silently tests a shorter generation than
+the original finding — use `--ignore-eos` (1895 chars) or a long prompt.  **(b)** The only async-ring
+change since #75 was filed (at r90) is **r97** (`WORKLOG.md` 261020.008), which made
+`ggml_cuda_async_input_flush_done` unconditional; r89's batched uploads and r90's snapshot fix predate the
+filing but postdate the r88 observation, so a bisect must cover r88 -> r89/r90 -> r97 -> r99.
+
+The witness is the **gfx1201 box** (stock r88 fingerprints `722063f3e28d` / `e3b891655a80` / `27d50a6d97f5`,
+400-token greedy, `ASYNC_INPUT=0`): if r88 still reproduces, run 6+ each on r88, r95 and r99 for both the
+1-GPU and the 2-GPU `-sm tensor` arm, and reuse the original harness/prompt
+(`archive/work/kv-quant-purity-followups/tools/textgen.py`, 12-hex text hashes) so it is like-for-like.
+Record of this negative result: `WORKLOG.md` 261020.013.
 
 ## 70. Harden the expert-cache re-arm / wide-aux growth against a starved arena — ROBUSTNESS
 
