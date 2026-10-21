@@ -1,0 +1,36 @@
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -916,6 +916,32 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+         if (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_1 && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+             return src_ss[1];
+         }
++        // The rotated-KV cache (`-ctk q8_0`, n_rot_k > 0) rotates K with a MIRRORED n_rot_k x n_rot_k matrix:
++        //     out[rot_row, i1] = sum_k rot[k, rot_row] * cur[k, i1],  cur = Kcur reshaped to [n_rot_k, rows]
++        // so the contraction axis of `cur` is axis 0.  Usually the head axis gives that split (gemma4's
++        // single-KV-head full-attention layers reshape a whole [512, 1] row set, i.e. axis-0 extents are
++        // `[0, 512]`): no device straddles the contraction, the device holding the whole range computes the
++        // complete dot product (every rot column is available to it, src0 is MIRRORED) and the others hold an
++        // empty slice, so the reduction is local and nothing is summed across devices.  The output follows
++        // `cur`'s split, which is exactly the state the unrotated Kcur has after the same reshape: gemma4's
++        // 512-wide row is whole on one device, so the rotation's output is whole on that device too.
++        // A *straddling* axis-0 split (e.g. [256, 256] over a 512-wide contraction) is a genuine cross-device
++        // partial sum; it is rejected rather than silently wrong.
++        if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_0) {
++            const ggml_tensor * cur = tensor->src[1];
++            GGML_ASSERT(tensor->ne[0] == cur->ne[0] &&
++                    "mul_mat of a MIRRORED src0 over an axis-0-split src1 needs out->ne[0] == src1->ne[0] "
++                    "(a square contraction) so each device's output slice maps 1:1 onto its contraction slice");
++            for (size_t s = 0; s < src_ss[1].n_segments; s++) {
++                for (size_t j = 0; j < n_bufs; j++) {
++                    const int64_t extent = src_ss[1].ne[s*n_bufs + j] * src_ss[1].nr[s];
++                    GGML_ASSERT((extent == 0 || extent == cur->ne[0]) &&
++                            "mul_mat of a MIRRORED src0 over an axis-0 split that STRADDLES the contraction "
++                            "needs a cross-device reduction (not implemented)");
++                }
++            }
++            return src_ss[1];
++        }
+         if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_0 && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_0) {
+             GGML_ASSERT(split_states_equal(src_ss[0], src_ss[1]));
+             return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};

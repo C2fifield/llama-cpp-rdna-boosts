@@ -1,9 +1,10 @@
-# Patch state — `fix-gemma-4`, current tree (2026-10-21, session c)
+# Patch state — `fix-gemma-4`, current tree (2026-10-21, session d)
 
-Nine patches, cut against the delivery tree **`972f3b757`** (`v12-097cf33d9-r100`, net tree
+Twelve patches, cut against the delivery tree **`972f3b757`** (`v12-097cf33d9-r100`, net tree
 `4775fc92b9007b279062ad43a63150a8a2ebe7db`).  They apply **in order** with `git apply` to a clean checkout
 at that commit and reproduce the current `~/llama.cpp` working tree **byte-for-byte** (verified: applied to
-a detached worktree at `972f3b757`, then `diff -r` against `~/llama.cpp` — empty).
+a detached worktree at `972f3b757`, then `diff -r` against `~/llama.cpp` — empty, excluding the
+`(file*).moe-heatmap` sidecar that `test-llama-archs` rewrites on every run).
 
 **Not part of the delivery.**  Nothing here is folded into `patches/`; that is the maintainer's call (WIP
 and promotion rules in `AGENTS.md`).  See `../HANDOVER-2026-10-21b.md` §3 for the fold plan.
@@ -27,6 +28,10 @@ for p in <this-dir>/000*.patch; do git apply "$p"; done
 
 | **`0007-draft-reserve-owned-kv-layers.patch`** | 09 (slab draft reserve) | **`--fit` arena shortfall under MTP (FIXED)**: `common_draft_reserve_estimate()` charged the drafter a full `n_ctx` KV (18022 of 19152 MiB) for a drafter that allocates none — `gemma4-assistant.attention.shared_kv_layers = 4`, and `llama_kv_cache`'s `layer_share_cb` reuses the target's tensors.  Now charges only the layers the draft owns.  At the default 262144 context: reserve 19152 → **1129 MiB**, arena 13752 → **23141 MiB**, slots 4564 → **7680**, `h` 0.897 → **0.0000**, MTP gen **41.0 → 93.2 t/s** (plain 74.6).  Non-shared drafts unchanged (qwen4exp sidecar: kv 563, arithmetic identical). |
 | **`0008-meta-per-row-whole-rows.patch`** | 09 (Meta split state) | **TODO #68 1b (FIXED)**: gemma4 dense + `-sm tensor` aborted in `handle_per_row` because gemma4's full-attention row (512, one KV head) lands **whole on one device** (`ne_per_dev=[0,512]`) and a per-row op over it is local, not cross-device.  `handle_per_row` now accepts an axis-0 split whose every per-device extent is empty or the whole row (a straddling split still asserts), and `handle_bin_bcast` accepts an elementwise op against a MIRRORED same-shape operand.  12B `-sm tensor` now runs and is byte-identical to `-sm layer` (`c740be0e131a`) at 2 and 3 GPU; 26B-A4B `-sm tensor` measurable; `test-llama-archs` 644/644. |
+| **`0009-meta-rotated-kv-mul-mat.patch`** | 09 (Meta split state) | **TODO #68 1a (FIXED)**: the rotated KV cache (`-ctk q8_0` → `n_rot_k` 512) rotates K with a MIRRORED `n_rot_k x n_rot_k` matrix, so `mul_mat(rot, Kcur)` has an **axis-0 (contraction)** split on `Kcur`.  No device straddles it (gemma4's single-KV-head row is whole on one device), so the owning device computes the complete dot product and nothing is summed across devices: `handle_mul_mat` now accepts (MIRRORED src0, whole-per-device axis-0 src1) and passes the split through.  A straddling split still aborts with a message saying it needs a cross-device reduction.  12B `-sm tensor -ctk q8_0 -ctv q8_0` runs and is byte-identical to `-sm layer` (`c740be0e131a`) at 2 and 3 GPU. |
+| **`0010-meta-flash-attn-whole-kv.patch`** | 09 (Meta split state) | **New (session d) — multi-sequence batches**: gemma4 dense + `-sm tensor` aborted in `handle_flash_attn_ext` whenever one ubatch carried **more than one sequence** (`llama-server -np > 1`, `llama-batched-bench -npl > 1`, `llama-perplexity --kl-divergence` with `n_batch > n_ctx`): with `n_stream > 1` the FA K/V cache view spans the cache's stream dimension and the split state arrives on the cache's **embd axis** (`[0, 512]`) instead of the kv-head axis (`[0, 1]`, which the handler already accepted).  The handler now accepts a KV slice that is **empty-or-whole** on every device (with the query empty-or-whole on the same devices): nothing is reduced, the owning device computes the whole op, and the others have a zero-sized source (node disabled).  Pre-existing code, newly *reachable* — 0008/0009 removed the earlier aborts. |
+| **`0011-common-unused-draft-model.patch`** | — (`common/` + server) | **Config nit (a)**: `-md <drafter> --spec-type none` aborted in the drafter's warm-up decode (`llama-graph.cpp:228 GGML_ASSERT(ubatch->embd_state)`), because `has_dft()` only means "`-md` was given".  New `common_params_speculative::uses_dft()`/`has_aux()` gate the draft-model load, the draft context creation (server + `common_speculative_init_result`), the MoE draft reserve and the preload on *an enabled type that actually drafts with a model*, and `common_init_from_params` says so once with a WRN.  `-md X --spec-type none` is now a working "plain baseline with the drafter loaded", and an unused drafter costs no VRAM. |
+| **`0012-context-ctx-other-log-level.patch`** | — (`src/llama-context.cpp`) | **Config nit (b)**: the `--fit` probe failure `E llama_init_from_model: failed to initialize the context: … requires ctx_other to be set` is expected (the probe has no target context yet) and is now a **W**; any other init failure stays an E. |
 
 sha256:
 
@@ -40,12 +45,17 @@ c41c18097e79337541403c24c2d4e393b61406939f21bc31848a45eb51a43f3f  0004b-schedule
 37528713c745f81d204c287b3009712b6f939aa856221e3ef37c71fd833f0440  0006-spec-verify-batch-vs-nbatch.patch
 2ef6683d9f848fb3a2b33205540d469a224642a28acf4a7155d5adeb10d629af  0007-draft-reserve-owned-kv-layers.patch
 647ba0b7b2ba12ffce28612e05f089ee4077c0599c273ddd8c9bba4a689aae89  0008-meta-per-row-whole-rows.patch
+38df350ee41743361260fa57058bed0c92ea944531152503d9b75d45584dbc26  0009-meta-rotated-kv-mul-mat.patch
+79ea1a82334a088e271b1a308c8afc4bac6e9b99c871c830e13be7a537f18687  0010-meta-flash-attn-whole-kv.patch
+557d2be9e989a65d59ed86618f3997eaf7889213414a701850f042eb94278ad9  0011-common-unused-draft-model.patch
+c5d0d3948265a6ffd85cf684da9312cac07abaebff52f26e33961c2a4768d155  0012-context-ctx-other-log-level.patch
 ```
 
-Files touched by the whole set: `src/llama-graph.cpp`, `src/llama-model-loader.cpp`, `common/common.cpp`,
-`common/draft-reserve.cpp`, `ggml/src/ggml-backend.cpp`, `ggml/src/ggml-backend-impl.h`, `ggml/src/ggml-backend-meta.cpp`,
-`ggml/src/ggml-cuda/ggml-cuda.cu`, `ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.{cu,cuh}`,
-`ggml/src/ggml-cuda/moe-expert-cache.{cu,h}`.
+Files touched by the whole set: `src/llama-graph.cpp`, `src/llama-model-loader.cpp`, `src/llama-context.cpp`,
+`common/common.cpp`, `common/common.h`, `common/speculative.cpp`, `common/draft-reserve.cpp`,
+`tools/server/server-context.cpp`, `ggml/src/ggml-backend.cpp`, `ggml/src/ggml-backend-impl.h`,
+`ggml/src/ggml-backend-meta.cpp`, `ggml/src/ggml-cuda/ggml-cuda.cu`,
+`ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.{cu,cuh}`, `ggml/src/ggml-cuda/moe-expert-cache.{cu,h}`.
 
 ## Rebuild-from-scratch verification (do this before trusting the set)
 
@@ -59,12 +69,19 @@ diff -r --exclude=.git --exclude='build*' /tmp/v ~/llama.cpp | grep -v '^Only in
 
 ## Verification status
 
-Gated and green: gemma4 text identity vs the prefix build in both split modes, the 35B-A3B + 27B dense + 4B
-non-regression cells (text and throughput), the 35B-A3B cache canary (240 tables / 61440 slots /
-18662.0 MiB), `test-llama-archs` 375/375, both prefill-logit gates (27B 0.000707 / 98.755 %, gemma4 f16
--0.000000 / 100.000 %, gemma4 q8_0 rotated -0.000000 / 99.990 %), and the newly instrumented determinism
-work in `../HANDOVER-2026-10-21b.md` §2.
+Gated and green: gemma4 text identity vs the prefix build in both split modes (`c740be0e131a`, 143 chars,
+f16 **and** rotated q8_0, 1/2/3 GPU), the 35B-A3B + 27B dense + 4B non-regression cells (text and
+throughput), the 35B-A3B cache canary (240 tables / 61440 slots / 18662.0 MiB), `test-llama-archs`
+644/644, the prefill-logit gates (27B 0.000707 / 98.755 %, gemma4 f16 -0.000000 / 100.000 %, gemma4 q8_0
+rotated -0.000000 / 99.990 %), and the newly instrumented determinism work in `../HANDOVER-2026-10-21b.md`
+§2.  Session-d additions are in `../evidence/MEASUREMENTS-2026-10-21f.md`.
+
+Split-mode note for the prefill-logit gate: `-sm tensor` is **not** bit-identical to `-sm layer` (the
+internal all-reduce BF16-round-trips), so a 1-GPU recorded base cannot be used to judge a `-sm tensor` run.
+Measured on gemma4 12B, same batching: `-sm tensor` vs `-sm layer` = **0.2134 / 86.7 %** (f16) and
+**0.2041 / 86.0 %** (rotated q8_0) at `-b 512`, **0.2048 / 87.1 %** and **0.2137 / 86.0 %** at the default
+`-b 2048` (n_seq 4).  The rotation adds nothing beyond that: a rotation-on/off A/B is 0.2516 (1 GPU) vs
+0.2275 (`-sm tensor`), i.e. the rotated cache's own quantization effect is split-mode independent.
 
 Not done (deliberately): the full 4-axis adaptive-MTP gate at `-n 3000` on 35B-A3B / 27B — run it before
-this patch set is promoted.  The 0007/0008 gates run so far are in `../evidence/MEASUREMENTS-2026-10-21e.md`
-(they still need the 27B/dense + 35B-A3B non-regression cells on the folded tree).
+this patch set is promoted.  The 0007/0008 gates run so far are in `../evidence/MEASUREMENTS-2026-10-21e.md`.

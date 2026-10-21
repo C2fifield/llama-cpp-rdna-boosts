@@ -1,0 +1,22 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index deea3fc3b..f02d7110d 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -5292,7 +5292,16 @@ llama_context * llama_init_from_model(
+ 
+         return ctx;
+     } catch (const std::exception & err) {
+-        LLAMA_LOG_ERROR("%s: failed to initialize the context: %s\n", __func__, err.what());
++        // `--fit` probes the extra (draft) model by building its context BEFORE the target context exists, so a
++        // model whose graph always needs the target's hidden state (ctx_other) fails here BY DESIGN; the fit
++        // falls back to the derived reserve.  That case is expected, so report it as a warning; anything else
++        // (including a probe that failed for a real reason) stays an error.  The message is matched rather
++        // than the arch because the same arch can construct fine when it does not need ctx_other.
++        if (err.what() != nullptr && strstr(err.what(), "requires ctx_other to be set") != nullptr) {
++            LLAMA_LOG_WARN("%s: failed to initialize the context: %s\n", __func__, err.what());
++        } else {
++            LLAMA_LOG_ERROR("%s: failed to initialize the context: %s\n", __func__, err.what());
++        }
+     }
+ 
+     return nullptr;

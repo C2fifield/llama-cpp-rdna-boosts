@@ -1,0 +1,47 @@
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -1113,7 +1139,42 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+                 src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_2;
+         const bool kv_mirrored = src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+                 src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED;
+-        GGML_ASSERT(kv_split || kv_mirrored);
++        // A KV slice that is empty-or-whole on every device: gemma4's single-KV-head full-attention layers
++        // put the whole 512-wide K/V row (granularity == the whole row) and therefore the whole KV cache on
++        // ONE device.  Depending on how the cache is viewed that state arrives split on the kv-head axis
++        // (`[0, 1]`, already accepted above) or on the cache's embd axis (`[0, 512]`, reached when the ubatch
++        // carries several sequences and the view spans the cache's stream dimension -- llama-server
++        // `-np > 1`, `llama-batched-bench -npl > 1`, `llama-perplexity --kl-divergence`).  Both mean the same
++        // thing: nothing is reduced, the owning device computes the whole op, and a device with a zero-sized
++        // source has its node disabled (`GGML_TENSOR_FLAG_COMPUTE` clear) exactly as in the axis-2 case.
++        // The query must be empty-or-whole *on the same devices* as the KV: a device holding queries but no
++        // K/V would compute rows nothing serves, which is the genuinely-broken combination this rejects.
++        auto whole_mask = [&](const ggml_backend_meta_split_state & ss, const ggml_tensor * t, uint32_t & mask) -> bool {
++            mask = 0;
++            if (ss.axis < 0 || ss.axis >= GGML_MAX_DIMS || t == nullptr) {
++                return false;
++            }
++            for (size_t j = 0; j < n_bufs; j++) {
++                int64_t extent = 0;
++                for (size_t s = 0; s < ss.n_segments; s++) {
++                    extent += ss.ne[s*n_bufs + j] * ss.nr[s];
++                }
++                if (extent == 0) {
++                    continue;
++                }
++                if (extent != t->ne[ss.axis]) {
++                    return false;
++                }
++                mask |= 1u << j;
++            }
++            return mask != 0;
++        };
++        uint32_t mask_k = 0, mask_v = 0, mask_q = 0;
++        const bool kv_whole = whole_mask(src_ss[1], tensor->src[1], mask_k) &&
++                whole_mask(src_ss[2], tensor->src[2], mask_v) &&
++                whole_mask(src_ss[0], tensor->src[0], mask_q) &&
++                mask_k == mask_v && (mask_q & mask_k) == mask_k;
++        GGML_ASSERT(kv_split || kv_mirrored || kv_whole);
+         GGML_ASSERT(tensor->src[4] == nullptr || src_ss[4].axis == GGML_BACKEND_SPLIT_AXIS_0);
+         return {GGML_BACKEND_SPLIT_AXIS_1, {0}, {1}, 1};
+     };
