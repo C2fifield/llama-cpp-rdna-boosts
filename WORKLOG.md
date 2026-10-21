@@ -1,5 +1,63 @@
 # WORKLOG - dated delivery records
 
+## 261020.012 (docs) -- TODO #66 (RDNA2) and #67 (issue #151 follow-up) closed on external confirmation
+
+**Docs only: no patch, `release.json` or tree change; `scripts/validate-set.sh` is unaffected.**  Both
+items were "waiting on someone else" and the confirmation arrived; this entry is their closure record.
+
+### TODO #66 -- RDNA2 (`gfx1030`) bring-up (issue #158) -- CLOSED
+
+The code shipped in r70 (compile guards, image `ROCM_DOCKER_ARCH`) and r76 (PR #165 tuned paths); only
+the *platform validation* was open.  `@slavap` closed it on a **Radeon Pro V620 (`gfx1030`)**:
+
+* `test-backend-ops` on the V620: `FLASH_ATTN_EXT` **6389/6389**, `MUL_MAT` **2444/2444** (recorded with
+  the r99 PR #198 gate, `WORKLOG.md` 261020.011);
+* end-to-end generation in a **mixed-architecture** `-sm tensor` split (2x RX 7900 XTX `gfx1100` + the
+  V620, `-fa 1`, `-ts 1.5/1.5/1`, r91): pp2048 1549.39, tg256 30.09, pp2048@d32768 1207.12,
+  tg256@d32768 28.90 t/s, no fault — PR #181 comment 6280629660.
+
+Three devices of two GPU generations in one tensor split exercises the RDNA2 kernel set, the hybrid
+all-reduce (`GGML_CUDA_AR_ALLOW_NON_RDNA4=0` / `GGML_CUDA_ALLREDUCE=ce`) and the mixed-arch Meta split
+state, which is more than the unit ops alone prove.  **No performance claim and no purity gate** is taken
+from it (the reporter's cards are on PCIe 4.0 x8, so link-bound), and **RDNA2 stays best-effort / not
+supported**: our fleet still has no RDNA2 device, so nothing in `scripts/` or CI runs on it.  The r99 RDNA2
+FA correctness item (TODO #72) was already closed with PR #198.  The one item dropped rather than run is
+the optional deferred halo sparse-tile walk (`60ecdf8b + e53cee3e`) — maintainer's decision 2026-10-20; a
+future sparse-tile defect would be a new item, not a reopening.  Record:
+`archive/work/rdna2/RESOLUTION.md`.
+
+### TODO #67 -- HIP-graphs start-to-start nondeterminism (issue #151 follow-up) -- CLOSED
+
+We could not reproduce it on Linux (`WORKLOG.md` 261016.005, three axes kept apart), and the working hypothesis
+was the Windows-only hipBLASLt solution-selection flip.  `@DanoPTT` then ran the bisection the item asked
+for, on **decode logits** (top-5 log-probs hashed at every position, ~100.6K-token prompt, `--no-kv-unified`,
+`-np 2`, draft-mtp n3, q8_0 KV, r68 + 9 carry patches, issue #151 comment 6216586361):
+
+| arm | starts | logit classes |
+|---|---|---|
+| graphs on, `ROCBLAS_USE_HIPBLASLT=0` | 4 | 1 |
+| graphs on, hipBLASLt off + both rope switches | 3 | 1 (same class) |
+| graphs on, hipBLASLt **on** | 7 | 3 |
+| graphs **off**, hipBLASLt **on** | 6 | 2 (classes shared with the graphs-on arm) |
+
+hipBLASLt off: every start bit-identical, rope switches irrelevant (r25's rope fix holds there).  hipBLASLt
+on: the same classes appear with graphs on **and** off, so **graphs play no part** — the earlier graphs-off
+control had landed on one class by luck — and the top-5 already differs at position 0, i.e. a prefill-side
+GEMM solution choice (rocm-libraries#12126).  The reporter also re-ran the async-input KL self-compare with
+no divergence, so the ring is not implicated either.  **Nothing to fix in this set**; the workaround is
+`ROCBLAS_USE_HIPBLASLT=0`, which is the arm our Linux gates already run.  Record:
+`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-20-issue151-reporter-confirmation.md`.
+
+### Docs
+
+`TODO.md` loses #66 and #67 (rows + bodies; #75's cross-reference now points at the closed mechanism and
+the new findings file); `README.md`'s RDNA2 row/notice and `CONTAINERS.md`'s RDNA2 section say *externally
+validated* instead of *not validated on hardware* (both still say not-supported, no perf claims, no
+gates), and README's "Cross-start determinism on ROCm (issue #67)" section now records the confirmation
+instead of "Tracked as TODO #67".  After these two closures the only item still in the "waiting on someone
+else" class is **#79** (a 2+ card gfx1100 box, and gfx1101/gfx1102); every other open item is ours or
+parked.
+
 ## 261020.011 (r99) -- TODO #56 fixed (upstream MoE cache callback) and PR #198 (RDNA2 FA follow-ups) promoted
 
 **Release `v12-097cf33d9-r99`**: base `097cf33d9`, canonical tip `6adf0b802`, net tree

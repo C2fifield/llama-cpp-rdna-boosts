@@ -112,14 +112,20 @@ dynamic loader (no `/etc/ld.so.conf.d` entry, no `LD_LIBRARY_PATH`), so the
 image sets `LD_LIBRARY_PATH=/opt/rocm/lib` in its `base` stage — without it the
 HIP backend cannot dlopen and llama.cpp reports "no usable GPU found".
 
-### RDNA2 (gfx1030) — best-effort, not validated on hardware
+### RDNA2 (gfx1030) — best-effort, externally validated
 
 `gfx1030` (Navi 21: RX 6800/6800 XT/6900 XT, Radeon Pro V620/W6800) is
 **compiled into the image** so RDNA2 owners get the generic, runtime-dispatched
 paths instead of a first-kernel `ROCm error: invalid kernel file` (issue #158).
-It is **not** a supported or validated target: the maintainer has no usable RDNA2
+It is **not** a supported target: the maintainer has no usable RDNA2
 device, so there are no performance claims and no purity gates for it.  Treat an
 RDNA2 result as informational, never as a delivery gate.
+
+It is, however, **no longer unvalidated**: TODO #66 was closed 2026-10-20 on a Radeon Pro V620
+(`gfx1030`) run — `test-backend-ops` `FLASH_ATTN_EXT` 6389/6389 and `MUL_MAT` 2444/2444, plus coherent
+`-fa 1` generation in a 3-card mixed `gfx1100`+`gfx1030` `-sm tensor` split to 32K depth
+(`archive/work/rdna2/RESOLUTION.md`, `WORKLOG.md` 261020.012).  That validates the *platform*, not a
+performance number, and it does not add an RDNA2 gate to this repo.
 
 What applies / what does not:
 

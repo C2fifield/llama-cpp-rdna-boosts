@@ -21,10 +21,8 @@ top of `WORKLOG.md` is the newest record.
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | open |
 | **68** | `gemma4` dense + `-sm tensor` + a rotated K cache (`-ctk q8_0`) aborts | correctness | open |
-| **67** | reported HIP-graphs start-to-start decode nondeterminism (issue #151 follow-up) | correctness | open — **not reproduced on Linux**; waiting on the reporter |
 | **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) |
 | **70** | harden the expert-cache re-arm / wide-aux growth against a starved arena | robustness | open |
-| **66** | RDNA2 (`gfx1030`) best-effort bring-up — issue #158 | platform validation | open (no RDNA2 hardware here) |
 | **61** | MoE expert-cache coverage: offline trace replay, per-layer capacity quota | performance | open (`wip/moe-cache-coverage/`) |
 | **59** | `ngram-mod` + `draft-mtp-adaptive` halves decode with host-resident experts | performance | open (`wip/ngram-mod-host-experts/`) |
 | **51** | 3-GPU decode is slower than 2-GPU | performance | open (`wip/three-gpu-performance/`) |
@@ -103,8 +101,9 @@ Filed 2026-10-19 while closing #73, then explicitly **not** that item: 35B-A3B (
 produces 2-3 different greedy texts run-to-run **with `GGML_CUDA_ASYNC_INPUT=0`**, i.e. on the plain
 default path.  Nothing here has isolated it yet.  Start from a fresh-process decode-logit probe
 (`test-logits-width-probe` / `decodestart.sh` in `archive/work/kv-cell-offset-nondeterminism/tools/`) to
-separate "different binary state" from "different kernel selection", and keep it away from the #67
-reporter's Windows-only flip.
+separate "different binary state" from "different kernel selection", and keep it away from the
+Windows/hipBLASLt per-start flip that closed #67 (external, and now confirmed by the reporter on decode
+logits: `archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-20-issue151-reporter-confirmation.md`).
 
 ## 70. Harden the expert-cache re-arm / wide-aux growth against a starved arena — ROBUSTNESS
 
@@ -147,49 +146,6 @@ full-size matrix); or reject a rotated cache type under `-sm tensor` at the para
 rejected (#78) — the honest interim, since the current outcome is a crash rather than a clear error.
 Repro is a 2-minute server start; the surrounding investigation is
 `archive/work/issue-184-meta-r80r82/README.md` §6.
-
-## 67. Reported HIP-graphs start-to-start decode nondeterminism (issue #151 follow-up) — CORRECTNESS (NOT REPRODUCED here)
-
-Opened 2026-10-16 from the issue #151 follow-up; reclassified the same day after revalidation.  The
-reporter (`@DanoPTT`, R9700 / Windows / ROCm 10) reports that with HIP graphs on, greedy output differs
-start to start under `--no-kv-unified`, on the first request of a fresh server (`-np 2`, draft-mtp n3,
-q8_0 KV).
-
-**Not reproduced (2026-10-16, r69 tree, gfx1201 / Linux / ROCm 7.14).**  Fresh-process decode-logit probes
-(W=1..8) are bit-identical across starts, graphs on and off, on the 4B Q8_0 and on the reporter's 27B
-Swift Q5_K_M with q8_0 KV at P=256 and P=512 (27B W=1 hash `cec25c2aa3cc3e21` both ways), and the
-forward/prefill `llama-perplexity --kl-divergence-base` self-comparison is `RMS Δp 0.001 %`.  Data:
-`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`; tools
-(`decodestart.sh`, `selfkld.sh`) in that campaign's `tools/`.
-
-**Working hypothesis: the known Windows-only per-start flip, not a graphs or unified-KV root.**  Two such
-flips are on record from this reporter: the `rope -> view -> set_rows` fused-vs-unfused clang contraction
-(fixed bit-transparent in r25, `#pragma clang fp contract(off)`) and the residual **hipBLASLt solution
-selection** (the old issue #67, closed as external; `ROCBLAS_USE_HIPBLASLT=0`,
-`ROCm/rocm-libraries#12126`).  Both are prefill-driven and Windows/ROCm-10-only; neither involves graphs,
-and the reporter's graphs-off control was a single run.
-
-**Status:** open only as "needs the reporter's Windows bisection": across fresh starts, toggle
-`ROCBLAS_USE_HIPBLASLT=0`, `GGML_CUDA_DISABLE_ROPE_SET_ROWS=1` and
-`GGML_CUDA_DISABLE_RMS_NORM_MUL_ROPE=1`, and compare **decode logits** rather than one text sample.  Do not
-treat it as a new delivery defect.
-
-## 66. RDNA2 (`gfx1030`) best-effort bring-up — issue #158 — PLATFORM VALIDATION
-
-Opened 2026-10-16; the code shipped in **r70**, the tuned add-on in **r76**; the platform validation is
-open.  r70 folded the two `gfx1030` WMMA compile guards into blocks 06/10 and added `gfx1030` to
-`ROCM_DOCKER_ARCH`, so the image now runs on RDNA2 instead of aborting every kernel launch with
-`invalid kernel file`.  r76 folds `@slavap`'s tuned RDNA2 add-on (PR #165, from
-`sixvolts/llama-halo-hybrid`): per-DKQ tile config, gfx1030 launch caps + WGP-aware occupancy, the
-partial-batch tile-load branch (kv=113 fault class), the wide-kernel Q-from-global path, and the Navi21
-MMVQ table / MMQ float scale.  All of it is gated to RDNA2 (`#if defined(RDNA2)` / `GGML_CUDA_CC_IS_RDNA2`),
-so gfx1100/gfx1151/gfx1201 keep their previous numerics.
-
-No RDNA2 hardware is available here, so it stays **best-effort / unvalidated** (no perf claims, no purity
-gates) and `-fa on` still carries the known upstream RDNA2 tile-kernel risk.  Open: external confirmation
-on a real `gfx1030` (issue #158), a re-run of `test-backend-ops -o FLASH_ATTN_EXT` and `-o MUL_MAT` on the
-current tree, and the deferred halo sparse-tile walk (`60ecdf8b + e53cee3e`).  Record and tester checklist:
-`archive/work/rdna2/`.
 
 ## 65. IQ4_NL field (MTP) + `--host-experts pool` decode collapses — MEMORY
 

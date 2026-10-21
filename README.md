@@ -53,7 +53,7 @@ The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families, with RDNA2 as best
 | RDNA 3 | `gfx1100` | RX 7900 XTX/XT, RX 7800 XT, ... | supported |
 | RDNA 3.5 | `gfx1150`/`gfx1151` | Strix Point / Strix Halo APUs | supported |
 | RDNA 4 | `gfx1200`/`gfx1201` | RX 9060 XT; RX 9070 / 9070 XT | supported |
-| RDNA 2 | `gfx1030` | RX 6800/6800 XT/6900 XT, Radeon Pro V620 | best-effort, **not validated** |
+| RDNA 2 | `gfx1030` | RX 6800/6800 XT/6900 XT, Radeon Pro V620 | best-effort; externally validated (V620), not run in our fleet |
 
 > **Strix Point (`gfx1150`) is in the target set as of 2026-10-05.**  Images
 > published before then (for example the `server-rocm-10.0` build at `2dbece4`)
@@ -64,7 +64,7 @@ The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families, with RDNA2 as best
 > (gfx1150)](CONTAINERS.md#strix-point-gfx1150) for the validation and both
 > paths.
 
-> **RDNA2 (`gfx1030`) is best-effort and NOT validated on hardware.**  It is
+> **RDNA2 (`gfx1030`) is best-effort: not a supported target, but no longer unvalidated.**  It is
 > compiled into the image so RDNA2 owners pick up the generic, runtime-dispatched
 > boosts instead of a first-kernel `ROCm error: invalid kernel file` (issue
 > #158), and the RDNA3/4-only paths fall back to the upstream non-WMMA kernels at
@@ -72,11 +72,16 @@ The set targets the **RDNA3 / RDNA3.5 / RDNA4** GPU families, with RDNA2 as best
 > k-quant work (PR #165: per-DKQ tile config, launch caps, WGP-aware occupancy,
 > the kv=113 partial-batch load fix and the wide-kernel Q-from-global path;
 > Navi21 MMVQ rows/warps + MMQ float scale).  All of it is gated to RDNA2, so
-> gfx1100/gfx1151/gfx1201 keep their previous numerics.  There are still no
-> performance claims and no purity gates run here, and `-fa on` may hit upstream
-> RDNA2 tile-kernel defects — use `-fa off` if a long-context prompt aborts.  See
+> gfx1100/gfx1151/gfx1201 keep their previous numerics.  **External validation
+> (TODO #66, closed):** a Radeon Pro V620 (`gfx1030`) passed `test-backend-ops`
+> (`FLASH_ATTN_EXT` 6389/6389, `MUL_MAT` 2444/2444) and generated coherently with
+> `-fa 1` in a 3-card mixed `gfx1100`+`gfx1030` `-sm tensor` split down to 32K
+> depth.  There is still no RDNA2 device in the maintainer's fleet, so there are
+> no performance claims and no purity gates for it — an RDNA2 result is
+> informational, never a delivery gate — and `-fa on` can still hit upstream
+> RDNA2 tile-kernel defects, where `-fa off` is the workaround.  See
 > [RDNA2
-> (gfx1030)](CONTAINERS.md#rdna2-gfx1030--best-effort-not-validated-on-hardware).
+> (gfx1030)](CONTAINERS.md#rdna2-gfx1030--best-effort-externally-validated).
 
 **RDNA4 (gfx120x) sees the most benefit** — the WMMA flash-attn path, the
 chunked-GDN kernel, the k-quant VDR boosts and block 12's internal
@@ -441,7 +446,10 @@ probes (W=1..8) are bit-identical across starts, graphs on and off, including on
 model with q8_0 KV (`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-16-revalidation.md`).
 It is most likely the known Windows-only per-start flip (the r25 `rope -> view -> set_rows` bit-transparency
 fix, and the external hipBLASLt solution-selection issue, workaround `ROCBLAS_USE_HIPBLASLT=0`), both
-prefill-driven and independent of graphs.  Tracked as TODO #67.
+prefill-driven and independent of graphs.  **Confirmed and closed (TODO #67, 2026-10-20):** the reporter
+ran the bisection on decode logits — with `ROCBLAS_USE_HIPBLASLT=0` all starts are bit-identical, and with
+it on the same logit classes appear with graphs **on and off**, so graphs play no part.  See
+[`archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-20-issue151-reporter-confirmation.md`](archive/work/kv-cell-offset-nondeterminism/FINDINGS-2026-10-20-issue151-reporter-confirmation.md).
 
 ## When upstream master moves
 
