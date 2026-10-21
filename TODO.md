@@ -27,7 +27,7 @@ top of `WORKLOG.md` is the newest record.
 | **68** | `gemma4` dense + `-sm tensor` + a rotated K cache (`-ctk q8_0`) aborts | correctness | open |
 | **70** | harden the expert-cache re-arm / wide-aux growth against a starved arena | robustness | open |
 | **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) — gfx1151 cannot reproduce it (2026-10-20); needs the gfx1201 A/B |
-| **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | open |
+| **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | fix **validated on gfx1151**, pending the gfx1201 multi-device gate (`wip/iswa-kv-write-fusion/`) |
 | **77** | segmented per-op expert upload is synchronous (gemma4 ~9 t/s) | performance | open (`wip/meta-segmented-upload-async/`) |
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **79** | RDNA3_0 verify-band fusions: no multi-device measurement, and gfx1101/gfx1102 untested | platform validation | open (shipped default-on in r95; needs a 2+ card gfx1100 box) |
@@ -217,6 +217,18 @@ declines — **inert on iSWA models (Gemma4)**.  Two options: a bounded-window m
 interposed V block, or reorder the iSWA expansion and measure it on its own (graph splits), with a trace
 showing the two `set_rows` launches are gone.  Record: `archive/work/kv-cache-q8-write/RESOLUTION.md`.
 
+**2026-10-21 — fix validated on gfx1151, not yet promoted.**  The iSWA KV builder's expands were
+reordered to `q_cur, v_cur, k_cur` (the non-iSWA builder's order, chosen for this fusion).  Gemma4 12B
+`-ctk q8_0 -ctv q8_0`: `k_set_rows_q8_0_group` 1152 -> 192 and the `kv=true` fused kernel 0 -> 480 in one
+run; all 40 rotated (256-wide) layers fold both writes, and the 8 full-attention (512-wide) layers stay
+unfused for an unrelated reason (the fusion's width gate allows only 64/128/256 — recorded as an adjacent
+finding, not part of this item).  Byte-identical greedy text (prefix / fix / fix+kill-switch) on 12B and
+26B-A4B, identical `W=1..8` probe hashes in q8_0 and f16, rotated-path KLD **0.000000** / same-top-p
+**99.980 %**, scheduler nodes/splits/buffers unchanged; t/s neutral on this APU.  Working record, evidence
+and the 5-line patch: [`wip/iswa-kv-write-fusion/`](wip/iswa-kv-write-fusion/README.md).  Still open before
+promotion: a gfx1201 graph-split comparison at `-sm layer`/`-sm tensor` (this box has one device) and the
+gfx1201 throughput number; then the fold (block 10) and the delivery cut are the maintainer's call.
+
 ## 77. Segmented per-op expert upload is synchronous (gemma4 ~9 t/s) — PERFORMANCE
 
 The **correctness** half is done (r54, block 09): `-sm tensor` + a host-resident gemma4 expert table
@@ -296,6 +308,16 @@ Two gaps, both needing hardware the fleet does not have:
 - **`src/llama-kv-cache.h:274` `-Wunused-private-field` for `v_enabled`** on a full build (the field *is*
   used, in `llama-kv-cache.cpp:232`; clang's per-TU analysis fires).  A `[[maybe_unused]]` one-liner
   silences it; left alone to keep the V5 amendment scoped to the FA kernels.
+- **Gemma4's full-attention (head_dim 512) layers stay outside the rope + FWHT + KV-write fusion**
+  (documented 2026-10-21, deliberate).  The fused kernel instantiates `fwht_n` in `{64, 128, 256}`, and
+  Gemma4 is the only arch with a distinct SWA/full head dim (`key_length_swa` 256 vs `key_length` 512),
+  so its 1/6 full-attention layers run `rms_norm_mul_rope_f32<256,true,float,0,false>` + `fwht_cuda<512>`
+  for Q and K plus two `set_rows` — 6 launches instead of 2.  Extending it needs 4 new kernel
+  instantiations **and** a fix to the fused kernel's V-row write (its `ncols <= block_size` precondition
+  would quantize half a 512-wide V row), which edits the shipping 256 fold, for ~0.1 % on gfx1201.
+  Accepted as a gap; the analysis (what to change, why the arithmetic is bit-identical by construction)
+  is in [`wip/iswa-kv-write-fusion/`](wip/iswa-kv-write-fusion/README.md) §5.6.  This is separate from
+  TODO #76 (the iSWA builder order, whose fix is validated and pending the gfx1201 split gate).
 - **Not worth pursuing** (measured, no win): the decode fq-inline-quantize port (wash-to-negative — the
   tree already launches fewer kernels/step and sits at wall parity) and the GDN +72-launch 2-kernel split
   (cosmetic).
