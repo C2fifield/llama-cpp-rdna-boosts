@@ -1,0 +1,88 @@
+From fcef63927afdf8f8e862c41e30de9933f3069e06 Mon Sep 17 00:00:00 2001
+From: Chris <c2fifield@gmail.com>
+Date: Wed, 21 Oct 2026 08:51:36 -0700
+Subject: rdna-boosts: block 12: mixed KV cache types (per-type
+ native-FA gate, QSA/MLA keep same-type)
+
+Replace the hard reject of type_k != type_v with a policy helper
+(llama_kv_types_allowed, next to llama_kv_type_has_native_fa):
+same-type pairs are always accepted (matches upstream); mixed pairs
+are accepted when both types have a native FA read and the arch has
+no single-KV-type fused op (QSA keeps same-type; MLA keeps same-type).
+The native-FA reject branch is unreachable via CLI because the arg
+parser's cache-type list (arg.cpp kv_cache_types) is exactly that set.
+
+Analysis: add-mixed-quant-kv.md. Plan: add-mixed-kv.md.
+
+---
+ src/llama-context.cpp | 47 ++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 37 insertions(+), 10 deletions(-)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index deea3fc3b..460103e9e 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -5152,6 +5152,40 @@ static bool llama_kv_type_has_native_fa(ggml_type type) {
+     }
+ }
+ 
++// rdna-boosts block 12: policy for (type_k, type_v) pairs. Same-type pairs are always accepted,
++// matching upstream. Mixed pairs are accepted only when both types have a native flash-attention
++// read (the MMA kernel reads each operand natively; the tile kernel falls back to F16 staging for
++// them) and the arch has no fused op that requires one KV type. Pairs outside the native-FA set
++// would run fully F16-staged in every kernel family and stay rejected.
++static bool llama_kv_types_allowed(const llama_model * model, const llama_context_params & params) {
++    if (params.type_k == params.type_v) {
++        return true;
++    }
++    if (model->hparams.is_mla()) {
++        // MLA has no separate V cache (llama-kv-cache.cpp: has_v = !is_mla), so a diverging
++        // type_v is meaningless. Keep the same-type requirement for MLA.
++        LLAMA_LOG_ERROR("%s: %s requires type_k == type_v\n", __func__, model->arch_name().c_str());
++        return false;
++    }
++    if (model->arch == LLM_ARCH_QWEN4EXP) {
++        // the fused QSA op (src/models/qwen4exp.cpp) takes one type_kv for K and V
++        LLAMA_LOG_ERROR("%s: %s requires type_k == type_v (the QSA op has a single KV cache type)\n",
++                        __func__, model->arch_name().c_str());
++        return false;
++    }
++    if (!llama_kv_type_has_native_fa(params.type_k) || !llama_kv_type_has_native_fa(params.type_v)) {
++        LLAMA_LOG_ERROR("%s: mixed KV cache types %s/%s unsupported: both types need a native FA read "
++                        "(f32/f16/bf16/q4_0/q4_1/q5_0/q5_1/q8_0/iq4_nl)\n",
++                        __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
++        return false;
++    }
++    LLAMA_LOG_WARN("%s: mixed KV cache types %s/%s: decode/verify run the tile kernel with F16 staging "
++                   "of both K and V (expect a decode slowdown growing with context depth); "
++                   "prefill runs the MMA kernel with per-operand native reads\n",
++                   __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
++    return true;
++}
++
+ llama_context * llama_init_from_model(
+                  llama_model * model,
+         llama_context_params   params) {
+@@ -5220,16 +5254,9 @@ llama_context * llama_init_from_model(
+         }
+     }
+ 
+-    // Every model requires the same K and V cache types (rdna-boosts, 2026-09-11).  Upstream enforces
+-    // this for MLA and DeepSeek4 only; here it is general: every mixed pair measured 1.7-3.6x slower
+-    // than the same-type equivalent and never smaller, and the attention path - including the
+-    // split/flash-attention one - assumes type_k == type_v, so a mixed configuration is rejected
+-    // rather than accepted as a slow-but-valid one.  Both types default to f16, so only an explicit
+-    // --cache-type-k (or --cache-type-v) can trigger this.
+-    if (params.type_k != params.type_v) {
+-        LLAMA_LOG_ERROR("%s: models require the same K and V cache types, got K=%s and V=%s; "
+-                "set --cache-type-v to match --cache-type-k (both default to f16)\n",
+-                __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
++    // rdna-boosts block 12: K/V cache type policy (same-type always ok; mixed ok when both types
++    // have a native FA read and the arch has no single-KV-type fused op).
++    if (!llama_kv_types_allowed(model, params)) {
+         return nullptr;
+     }
+ 
+-- 
+2.56.0
+
