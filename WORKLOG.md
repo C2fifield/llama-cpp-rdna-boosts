@@ -1,5 +1,28 @@
 # WORKLOG - dated delivery records
 
+## 261020.015 (r100) -- publication record (tag, CI, fork refresh, worker image build)
+
+**`v12-097cf33d9-r100` is published.**  Tag `v12-097cf33d9-r100` on delivery `main` `c8d9688`; delivery
+`main` pushed.  Workflows green: `Validate delivery set` (main and tag) and `Release patch set` (tag),
+which published the GitHub Release with `patches.tar.gz`, `rdna-boosts-all.patch` (sha256
+`c4aa8488fa50…`), `release.json` and `SHA256SUMS`.
+
+**Personal fork refreshed** (`git@github.com:stew675/llama.cpp.git`, fork only, never upstream).  A clean
+`apply-all.sh` at `097cf33d9` re-created `rdna-boosts` from the regenerated `patches/` (applied tree
+`4775fc92b9…` = `release.json`); the branch tip is `fb10decec` and a fresh `fetch` of the fork reports
+the same tree.  Not built on the fork this time: the tree is byte-identical to the one gated locally
+(block 11's `build-per-block` build, `validate-set.sh`, per-block 3/3 for blocks 09-11).
+
+**Container images** are built and pushed off-host by the worker watcher (`scripts/container-watch.sh` on
+`radiance`), which polls for the new `v12-*` tag and runs `scripts/build-containers.sh --rocm "7.14.1
+10.1" --push --prune`.  Nothing further is needed on the primary box; no image build ran here.
+
+**Comments posted.**  PR #177 (`#issuecomment-6305719910`): second review, dense 27B now bit-identical and
+stable, 35B-A3B still blocking, the fold's write proven byte-exact, re-entry is a deterministic 35B-A3B
+result (TODO #75), plus the "a terminal text hash is not a determinism instrument" note.  Issue #184
+(`#issuecomment-6305720129`): the walk-scratch fix, the gates, our smaller numbers and why (re-allocation
+count), and TODO #80 as the remaining headroom.
+
 ## 261020.014 (r100) -- issue #184 fix promoted (split-state walk scratch); PR #177 re-reviewed and still declined
 
 **Release `v12-097cf33d9-r100`**: base `097cf33d9`, canonical tip `db675e2db`, net tree
