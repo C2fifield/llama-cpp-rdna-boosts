@@ -1,0 +1,45 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 952e96a55..e445afa36 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1172,11 +1172,21 @@ void llama_model_loader::lazy_read::add_range(const std::string & name, const ll
+ // model has no device to reserve a staging ring or expert-cache arena on, and inserting a null key
+ // made `llama_context` abort in `ggml_backend_dev_memory`.
+ static void moe_host_expert_account(std::map<ggml_backend_dev_t, size_t> & acc,
+-        const std::string & name, size_t bytes, ggml_backend_buffer_type_t buft,
++        const std::string & name, size_t bytes, int64_t n_experts, ggml_backend_buffer_type_t buft,
+         const buft_list_t * buft_list_layer) {
+     if (buft == nullptr || !ggml_backend_buft_is_host(buft) || name.find("exps") == std::string::npos) {
+         return;
+     }
++    // Only a routed EXPERT BANK is accounted.  The name filter above also matches the per-expert
++    // side tensors some arches carry -- gemma4's `ffn_down_exps.scale` is 128 x F32 = 512 B per layer,
++    // i.e. 30 x 512 B = 15360 B of a 23.1 GiB host-expert set.  The expert cache only ever registers a
++    // `MUL_MAT_ID` bank (`weight->ne[2] >= 2`), so such a tensor made the cache's completeness check
++    // unsatisfiable by exactly that residue: no arena was ever sized and gemma4 paid a full per-op
++    // expert upload with zero residency (TODO #77).  A bank has an expert axis; a scale/bias vector has
++    // `ne[2] == 1`.
++    if (n_experts < 2) {
++        return;
++    }
+     ggml_backend_dev_t buft_dev = ggml_backend_buft_get_device(buft);
+     ggml_backend_dev_t layer_dev = (buft_list_layer != nullptr && !buft_list_layer->empty())
+                                  ? buft_list_layer->front().first : buft_dev;
+@@ -1527,7 +1537,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             return nullptr;
+         }
+         if (ggml_backend_buft_is_host(buft) && tn.str().find("exps") != std::string::npos) {
+-            moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), buft, buft_list_layer);
++            moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), t_meta.ne[2], buft, buft_list_layer);
+         }
+         ggml_context * ctx = ctx_for_buft(buft);
+         ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
+@@ -1569,7 +1579,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         return nullptr;
+     }
+     if (ggml_backend_buft_is_host(buft) && tn.str().find("exps") != std::string::npos) {
+-        moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), buft, buft_list_layer);
++        moe_host_expert_account(moe_host_expert_bytes, tn.str(), ggml_nbytes(&t_meta), t_meta.ne[2], buft, buft_list_layer);
+     }
+ 
+     ggml_context * ctx = ctx_for_buft(buft);

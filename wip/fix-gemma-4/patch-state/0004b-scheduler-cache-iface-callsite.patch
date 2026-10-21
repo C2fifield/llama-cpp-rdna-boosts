@@ -1,0 +1,13 @@
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 4465bd3d8..0fc93141f 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -2883,7 +2883,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
+                 const bool took = split_backend->iface.moe_cache_update(
+                         split_backend, input, input_cpy, ids.data(),
+                         ids_tensor->ne[0], ids_tensor->ne[1],
+-                        ids_tensor->nb[0], ids_tensor->nb[1], 0, -1);
++                        ids_tensor->nb[0], ids_tensor->nb[1], 0, -1, nullptr, 0);
+                 if (took) {
+                     // the cache filled its compact slots and staged the slot-remapped ids; the
+                     // consuming op reads the arena (see `moe_cache_get_table`), so the whole
