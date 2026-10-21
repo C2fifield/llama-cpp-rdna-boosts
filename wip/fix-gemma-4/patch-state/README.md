@@ -1,6 +1,6 @@
-# Patch state — `fix-gemma-4`, current tree (2026-10-21, session b)
+# Patch state — `fix-gemma-4`, current tree (2026-10-21, session c)
 
-Seven patches, cut against the delivery tree **`972f3b757`** (`v12-097cf33d9-r100`, net tree
+Nine patches, cut against the delivery tree **`972f3b757`** (`v12-097cf33d9-r100`, net tree
 `4775fc92b9007b279062ad43a63150a8a2ebe7db`).  They apply **in order** with `git apply` to a clean checkout
 at that commit and reproduce the current `~/llama.cpp` working tree **byte-for-byte** (verified: applied to
 a detached worktree at `972f3b757`, then `diff -r` against `~/llama.cpp` — empty).
@@ -25,6 +25,9 @@ for p in <this-dir>/000*.patch; do git apply "$p"; done
 | **`0005-async-input-ring-per-origin.patch`** | 09 | **MTP determinism (in progress)**: the async graph-input ring's ordering state (`pending`/`ev`/`q`/`flush_ev`/`done_ev`) was per **device**, but a stream is a `llama_context` — MTP's draft and target consumed each other's queued uploads, so a context could replay a graph without waiting for its own copy.  Keyed per **origin** (the calling thread's stream).  Measured: the 2-device MTP draft-logit fingerprint went from *unstable in every sample* to 8/10 identical.  **Does not close the item** — see `../HANDOVER-2026-10-21b.md` §4. |
 | **`0006-spec-verify-batch-vs-nbatch.patch`** | — (`common/`) | **New this session**: a speculative verify batch carries `n_max + 1` tokens in one `common_batch::get()`, capped by `llama_n_batch()`; `-b 1` therefore aborted in a server worker (`get_sub_batch: failed to add token 0 at index 1 (error -1, n = 2)`) after the model had loaded.  `common_init_from_params` raises `n_batch` to `n_max + 1` with a WRN (visible at `-lv 2`), same shape as the existing `--spec-draft-n-max` clamp. |
 
+| **`0007-draft-reserve-owned-kv-layers.patch`** | 09 (slab draft reserve) | **`--fit` arena shortfall under MTP (FIXED)**: `common_draft_reserve_estimate()` charged the drafter a full `n_ctx` KV (18022 of 19152 MiB) for a drafter that allocates none — `gemma4-assistant.attention.shared_kv_layers = 4`, and `llama_kv_cache`'s `layer_share_cb` reuses the target's tensors.  Now charges only the layers the draft owns.  At the default 262144 context: reserve 19152 → **1129 MiB**, arena 13752 → **23141 MiB**, slots 4564 → **7680**, `h` 0.897 → **0.0000**, MTP gen **41.0 → 93.2 t/s** (plain 74.6).  Non-shared drafts unchanged (qwen4exp sidecar: kv 563, arithmetic identical). |
+| **`0008-meta-per-row-whole-rows.patch`** | 09 (Meta split state) | **TODO #68 1b (FIXED)**: gemma4 dense + `-sm tensor` aborted in `handle_per_row` because gemma4's full-attention row (512, one KV head) lands **whole on one device** (`ne_per_dev=[0,512]`) and a per-row op over it is local, not cross-device.  `handle_per_row` now accepts an axis-0 split whose every per-device extent is empty or the whole row (a straddling split still asserts), and `handle_bin_bcast` accepts an elementwise op against a MIRRORED same-shape operand.  12B `-sm tensor` now runs and is byte-identical to `-sm layer` (`c740be0e131a`) at 2 and 3 GPU; 26B-A4B `-sm tensor` measurable; `test-llama-archs` 644/644. |
+
 sha256:
 
 ```
@@ -35,10 +38,12 @@ a82339e00f6bc070d5fe72f11d60b156e5d4f8b5fa304dec51b5c37f98c7540d  0003-expert-ca
 c41c18097e79337541403c24c2d4e393b61406939f21bc31848a45eb51a43f3f  0004b-scheduler-cache-iface-callsite.patch
 3eb50c5d0040d82510b82a809c6bf4d8be5b239832313aff8124c059c6819556  0005-async-input-ring-per-origin.patch
 37528713c745f81d204c287b3009712b6f939aa856221e3ef37c71fd833f0440  0006-spec-verify-batch-vs-nbatch.patch
+2ef6683d9f848fb3a2b33205540d469a224642a28acf4a7155d5adeb10d629af  0007-draft-reserve-owned-kv-layers.patch
+647ba0b7b2ba12ffce28612e05f089ee4077c0599c273ddd8c9bba4a689aae89  0008-meta-per-row-whole-rows.patch
 ```
 
 Files touched by the whole set: `src/llama-graph.cpp`, `src/llama-model-loader.cpp`, `common/common.cpp`,
-`ggml/src/ggml-backend.cpp`, `ggml/src/ggml-backend-impl.h`, `ggml/src/ggml-backend-meta.cpp`,
+`common/draft-reserve.cpp`, `ggml/src/ggml-backend.cpp`, `ggml/src/ggml-backend-impl.h`, `ggml/src/ggml-backend-meta.cpp`,
 `ggml/src/ggml-cuda/ggml-cuda.cu`, `ggml/src/ggml-cuda/ggml-cuda-moe-cache-hooks.{cu,cuh}`,
 `ggml/src/ggml-cuda/moe-expert-cache.{cu,h}`.
 
@@ -61,4 +66,5 @@ non-regression cells (text and throughput), the 35B-A3B cache canary (240 tables
 work in `../HANDOVER-2026-10-21b.md` §2.
 
 Not done (deliberately): the full 4-axis adaptive-MTP gate at `-n 3000` on 35B-A3B / 27B — run it before
-this patch set is promoted.
+this patch set is promoted.  The 0007/0008 gates run so far are in `../evidence/MEASUREMENTS-2026-10-21e.md`
+(they still need the 27B/dense + 35B-A3B non-regression cells on the folded tree).

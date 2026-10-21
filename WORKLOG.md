@@ -1,5 +1,30 @@
 # WORKLOG - dated delivery records
 
+## 261021.002 (wip) -- fix-gemma-4: `--fit` draft-KV over-reserve and gemma4 `-sm tensor` fixed (campaign patches, not promoted)
+
+Two real defects fixed in the campaign tree (`wip/fix-gemma-4/patch-state/0007`, `0008`); **nothing folded
+into `patches/` yet** -- they ride the campaign's promotion cut.  All measurements with
+`ROCBLAS_USE_HIPBLASLT=0` (see 261021.001).
+
+**`--fit` charged the drafter KV it does not own.**  `common_draft_reserve_estimate()` reserved a full
+`n_ctx` KV for the speculative draft -- 18022 of the 19152 MiB it asked for per device -- for a drafter that
+allocates none: `gemma4-assistant` declares `attention.shared_kv_layers = 4` and `llama_kv_cache`'s
+`layer_share_cb` reuses the TARGET's tensors.  It now charges only the owned layers.  At the default 262144
+context, gemma4 26B-A4B `-ncmoe 40 -sm layer` MTP n3: reserve 19152 -> 1129 MiB, arena 13752 -> 23141 MiB,
+slots 4564 -> 7680, `h` 0.897 -> 0.0000, gen **41.0 -> 93.2 t/s** (plain 74.6).  Non-shared drafts are
+arithmetically unchanged (qwen4exp sidecar `kv 563`); embedded MTP heads never reach the estimator.
+
+**gemma4 dense + `-sm tensor` aborted in `handle_per_row` (TODO #68 1b).**  gemma4's full-attention layers
+have a single KV head, so their 512-wide K/V row is placed whole on one device (`ne_per_dev=[0,512]`); the
+per-row ops over it are local, but any axis-0 split was rejected.  `handle_per_row` now accepts an axis-0
+split whose every per-device extent is empty or the whole row (a straddling split still asserts), and
+`handle_bin_bcast` accepts an elementwise op against a MIRRORED same-shape operand.  12B `-sm tensor` now
+runs and is byte-identical to `-sm layer` (`c740be0e131a`) at 2 and 3 GPU; 26B-A4B `-sm tensor` is
+measurable again (gen 72.2 t/s); `test-llama-archs` 644/644.  TODO #68 1a (rotated q8_0 KV) still aborts.
+
+Record + handover: `wip/fix-gemma-4/evidence/MEASUREMENTS-2026-10-21e.md`,
+`wip/fix-gemma-4/HANDOVER-2026-10-21c.md`.
+
 ## 261021.001 (docs) -- MTP determinism closed: it is the per-start hipBLASLt solution pick (issue #67), not a code defect
 
 **The 2026-10 MTP determinism item is closed as external.**  The residual run-to-run divergence of the

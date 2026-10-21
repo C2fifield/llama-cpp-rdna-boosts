@@ -11,8 +11,8 @@ on the same arch and the same configs:
 |---|---|---|
 | **TODO #76** | the r81 q8_0 K/V cache-write (rope+FWHT) fusion is inert on iSWA models | **fix validated, complete** (`#76-iswa-write-fusion`) |
 | **TODO #77** | the expert cache never sizes on gemma4 → per-op expert upload with no residency (`-sm layer` 7.9 t/s, `-sm tensor` 5.5 t/s) | **A+B+C implemented and gated** — `-sm layer` **79.0** t/s, `-sm tensor` **74.7** t/s (`#77-expert-cache`) |
-| **TODO #68** | `gemma4` dense + `-sm tensor` aborts (rotated-K-cache `mul_mat split states`; **and** an f16 `handle_per_row` abort found 2026-10-21) | **open — deferred, handover** |
-| **MTP determinism** | MTP + host experts + `-sm layer` on 2 devices gives different greedy text run-to-run (r69 / TODO #75 family) | **open, instrumented and narrowed**: the **draft model's logits** with two contexts on two devices + captured graphs; a single context (incl. the whole cache path) is bit-identical 6/6.  One real cross-context bug found and fixed (`0005`, per-origin async-input ring: unstable → 8/10).  Record: `HANDOVER-2026-10-21b.md` |
+| **TODO #68** | `gemma4` dense + `-sm tensor` aborts (rotated-K-cache `mul_mat split states`; **and** an f16 `handle_per_row` abort found 2026-10-21) | **1b FIXED** (`0008`): f16 `-sm tensor` runs and is byte-identical to `-sm layer` at 2 and 3 GPU, 26B-A4B `-sm tensor` now measurable; **1a (rotated q8_0 KV) still open — next session** |
+| **MTP determinism** | MTP + host experts + `-sm layer` on 2 devices gives different greedy text run-to-run | **CLOSED 2026-10-21 — external**: it is ROCm's hipBLASLt per-start solution pick (issue #67) on the gemma4 F32 MoE router; `ROCBLAS_USE_HIPBLASLT=0` gives 10/10 at `-n 300` and 3/3 at `-n 3000`.  `0005` (per-origin async-input ring) is a real fix that ships.  `evidence/MEASUREMENTS-2026-10-21d.md`, `GREEDY-PURITY.md` §44 |
 
 The two former campaign directories (`wip/iswa-kv-write-fusion/`, `wip/meta-segmented-upload-async/`) are
 folded into this one and deleted, with their content preserved here (`ISWA-WRITE-FUSION.md` for the #76
