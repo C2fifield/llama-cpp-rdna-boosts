@@ -240,10 +240,16 @@ Two gaps, both needing hardware the fleet does not have:
   1.7-3.6× slower and never smaller; `params.type_k != params.type_v` fails `llama_init_from_model` with
   a message naming both types (block-14 amendment; upstream's MLA/DeepSeek4-only condition is dropped).
   Both types default to f16, so only an explicit `-ctk`/`-ctv` can trigger it.
-- **gemma-4-E4B-it + 3-GPU `-sm tensor`** aborts in the meta splitter (`ggml-backend-meta.cpp:1177`)
-  because its 2 KV heads are fewer than the 3 devices (one device gets a zero-extent share).  Works on
-  1/2 GPUs and on 3 GPUs with `-sm layer`; maintainer's call: no fix.  Every other model is unaffected
-  (a future block or upstream report could make the splitter tolerate a zero-extent share).
+- **gemma-4-E4B-it + 3-GPU `-sm tensor`** aborts in the meta splitter because its 2 KV heads are fewer
+  than the 3 devices (one device gets a zero-extent share: `[1, 1, 0]` over 2 heads).  The abort is the
+  split-state **ratio-consistency** assert in `ggml_backend_meta_get_split_state`
+  (`split_state.ne[j]*split_state.nr[0] * tensor->src[i]->ne[src_ss[i].axis] == sum * tensor->ne[split_state.axis]`
+  — `ggml-backend-meta.cpp`; 1582 at r101, 1487 at r99: the line number moves, the assert does not, and
+  older records that cite `:1177` are one more tree back).  Works on 1/2 GPUs and on 3 GPUs with
+  `-sm layer`; maintainer's call: no fix.  r101's split-state work deliberately does not change this
+  (`GREEDY-PURITY.md` §45 accepts a slice that is *empty or the whole* extent, and one head of two is
+  neither); re-verified on r99 and r101, identical abort.  Every other model is unaffected (a future
+  block or upstream report could make the splitter tolerate a zero-extent share).
 - **`src/llama-kv-cache.h:274` `-Wunused-private-field` for `v_enabled`** on a full build (the field *is*
   used, in `llama-kv-cache.cpp:232`; clang's per-TU analysis fires).  A `[[maybe_unused]]` one-liner
   silences it; left alone to keep the V5 amendment scoped to the FA kernels.

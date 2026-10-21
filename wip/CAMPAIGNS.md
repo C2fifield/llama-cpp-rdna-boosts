@@ -273,7 +273,8 @@ its record also moved to `archive/work/`.  TODO #15, #28 and #51 are closed.
 `archive/work/`: `dflash-meta-split/` (root-caused; a clean `-sm layer` rejection folded into **block
 11**, the real fix re-seeded as `wip/dflash-meta-split-impl/`), `meta-segmented-expert-upload/`
 (fixed and folded into **block 09**; rejection lifted; perf follow-up re-seeded as
-`wip/meta-segmented-upload-async/`) and `ssm-alpha-beta-fusion/` (re-measured and **closed below the
+`wip/meta-segmented-upload-async/`, later absorbed into the gemma4 umbrella and promoted in r101 —
+`archive/work/fix-gemma-4/RESOLUTION.md`) and `ssm-alpha-beta-fusion/` (re-measured and **closed below the
 adoption bar**).  The four-campaign cleanup handover moved to
 `archive/docs/HANDOVER-2026-10-13-wip-cleanup.md`.  See `WORKLOG.md` 261013.004 (r54).
 

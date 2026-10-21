@@ -1,5 +1,10 @@
 # `fix-gemma-4` — making Gemma4 actually work and perform on RDNA
 
+> **CLOSED — promoted whole in `v12-097cf33d9-r101` (2026-10-21).**  This is the campaign's working
+> record, kept as written; the closing summary, the item -> block mapping and the results table are in
+> [`RESOLUTION.md`](RESOLUTION.md), and the release note is `WORKLOG.md` 261021.003.  Nothing here is
+> applied by the delivery — the shipped content is `patches/0009..0011`.
+
 **Status: OPEN (seeded 2026-10-21).**  Umbrella campaign for every Gemma4 defect on this delivery.  Not
 part of the delivery; nothing here may be applied to the fork without the maintainer's go-ahead (WIP and
 promotion rules in `AGENTS.md`).
