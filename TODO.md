@@ -12,7 +12,7 @@ Details never live here: they live in `AGENTS.md`, `patches/README.md`, `MANIFES
 still means the same subject after that item is closed and removed from this file.  New items append.
 
 **Current state:** the **12-block V2.0 set** (block 00 + blocks 01-11) at fork point **`097cf33d9`**,
-release **`v12-097cf33d9-r95`**.  `release.json` is the source of truth for the tip/tree and hashes; the
+release **`v12-097cf33d9-r99`**.  `release.json` is the source of truth for the tip/tree and hashes; the
 top of `WORKLOG.md` is the newest record.
 
 | # | subject | kind | status |
@@ -20,12 +20,8 @@ top of `WORKLOG.md` is the newest record.
 | **79** | RDNA3_0 verify-band fusions: no multi-device measurement, and gfx1101/gfx1102 untested | platform validation | open (shipped default-on in r95; needs a 2+ card gfx1100 box) |
 | **78** | DFlash2 `-sm tensor`: the real Meta distributed `TOP_K` fix | correctness | open, scoping (`wip/dflash-meta-split-impl/`) |
 | **76** | the q8_0 K/V-write fusion is inert on iSWA (`build_attn` iswa ordering) | correctness-adjacent perf | open |
-| **72** | the unchecked `ncols2 > 1` tile load can over-read a natively-read K/V operand | correctness | open (RDNA2 only) |
-| **71** | share the tile K/V type selection between the chooser and the allocator | correctness | open, small |
 | **68** | `gemma4` dense + `-sm tensor` + a rotated K cache (`-ctk q8_0`) aborts | correctness | open |
 | **67** | reported HIP-graphs start-to-start decode nondeterminism (issue #151 follow-up) | correctness | open — **not reproduced on Linux**; waiting on the reporter |
-| **57** | `test-llama-archs` CPU mixed-batch FAIL | correctness | open (pre-existing) |
-| **56** | `test-llama-archs -a deepseek2` GPU fault with host experts + `--moe-cache-mib` | correctness | open (pre-existing) |
 | **75** | 35B-A3B greedy text is not run-to-run deterministic with async **off** | correctness | open (filed 2026-10-19 when #73 closed) |
 | **70** | harden the expert-cache re-arm / wide-aux growth against a starved arena | robustness | open |
 | **66** | RDNA2 (`gfx1030`) best-effort bring-up — issue #158 | platform validation | open (no RDNA2 hardware here) |
@@ -34,7 +30,7 @@ top of `WORKLOG.md` is the newest record.
 | **51** | 3-GPU decode is slower than 2-GPU | performance | open (`wip/three-gpu-performance/`) |
 | **36** | genuine CPU/GPU overlap for the MoE misses | performance | open, scoping (`wip/moe-cpu-overlap/`) |
 | **77** | segmented per-op expert upload is synchronous (gemma4 ~9 t/s) | performance | open (`wip/meta-segmented-upload-async/`) |
-| **65** | IQ4_NL field (MTP) + `--host-experts pool` decode collapses | memory | parked (debug after the next release) |
+| **65** | IQ4_NL field (MTP) + `--host-experts pool` decode collapses | memory | parked (maintainer 2026-10-15; the "after r67" condition is long past — never picked up, still parked) |
 | **64** | MoE heat-map residuals | minor | open |
 | **55** | drop the full pinned `ROCm_Host` master when `--host-experts pool` is on | memory | open (`wip/host-expert-master-drop/`) |
 
@@ -109,28 +105,6 @@ default path.  Nothing here has isolated it yet.  Start from a fresh-process dec
 (`test-logits-width-probe` / `decodestart.sh` in `archive/work/kv-cell-offset-nondeterminism/tools/`) to
 separate "different binary state" from "different kernel selection", and keep it away from the #67
 reporter's Windows-only flip.
-
-## 72. The unchecked `ncols2 > 1` tile load can over-read a natively-read K/V operand — CORRECTNESS (RDNA2)
-
-The r88 guard tail reserves 511 rows after each **converted** F16 operand, which covers the last-tile
-over-read for the staged path.  A natively-read operand (an f16 KV cache) in the same branch
-(`oob_check = false` for the last tile on every backend) still reads up to `nbatch_fa - 1` rows past the
-KV **view**.  In a real model that stays inside the KV cache allocation (one tensor per cache), so it is
-not a field issue; it is exposed only by an exact-size tensor as in `test-backend-ops`, where it can read
-into the neighbouring allocation.  Options: extend the guard to the native path (pad the cache view or mask
-the tail), or take the checked tail for the last tile on RDNA2 and measure the register cost the original
-change avoided.  Block 05.  Reported to `@slavap` for follow-up.
-
-## 71. Share the tile K/V type selection between the chooser and the allocator — CORRECTNESS (small)
-
-The tile kernel's K/V type is decided twice by hand: `ggml_cuda_flash_attn_ext_tile_case_type`
-(`fattn-tile.cu`, the instantiation) and `ggml_cuda_flash_attn_ext_get_alloc_size` (`fattn.cu`, the F16
-scratch the launcher may stage into).  They have drifted three times: the missing q4_0 arm (wasted
-whole-cache scratch), the mixed-K/V NaNs (the kernel read a staging buffer `need_f16_K == false` had left
-unwritten), and the RDNA2 bf16 case (scratch missing entirely, the whole-cache converter wrote past the
-node).  Extract one `ggml_cuda_fattn_tile_type(K, V, cc)` (bf16 under `bf16_mma_hardware_available`, else
-the native dequant arm, else F16) and have both call it, so "the allocator and the launcher agree" is a
-property of the code instead of a comment.  Block 05 only; needs the FA coherence + prefill-logit gates.
 
 ## 70. Harden the expert-cache re-arm / wide-aux growth against a starved arena — ROBUSTNESS
 
@@ -223,7 +197,9 @@ The Qwen3.8-Flash-Next IQ4_NL 70K field config (`--n-cpu-moe 48`, MTP n7, `--cac
 **2.1 t/s** in `--host-experts pool` against the handover's recorded 13.7, while prefill is fine (**497**),
 the H2D ring is armed and there are **0 faults**.  The non-MTP `-ncmoe 36/48` pool decode (18-40) matches
 the handover's ~2.4x pool penalty, so this reads as a **pool memory shortfall** specific to the 70K/MTP
-config.  Parked by the maintainer (2026-10-15) to debug after r67; `WORKLOG.md` 261015.005.
+config.  Parked by the maintainer (2026-10-15) to be picked up after r67; that release is long superseded
+(r99 is current) and the item has not been picked up, so it stays parked until the maintainer says
+otherwise.  `WORKLOG.md` 261015.005.
 
 ## 64. MoE heat-map residuals (pool warm order, decode-identity tally, dead `moe_cache_observe`) — MINOR
 
@@ -295,9 +271,9 @@ Reopened 2026-10-16; measured.  Formerly closed at r55 (a fresh A/B then found 3
 residency** (so not an arena-sizing artifact).  3-GPU prefill is the fastest (1258 t/s).  Broader than MTP
 (the fresh arm is MTP; the matrix must cover plain and fully-resident too).
 
-Working home [`wip/three-gpu-performance/`](wip/three-gpu-performance/README.md) (revived from
-`archive/work/mtp-3gpu-decode/`; the r55 closure record is kept there as
-`RESOLUTION-2026-10-13-closed.md`).  Step 0: re-run the r55 harness on the current tree, then the full
+Working home [`wip/three-gpu-performance/`](wip/three-gpu-performance/README.md) (revived 2026-10-16 from the
+r55 `mtp-3gpu-decode` campaign; that campaign's r55 closure record moved with it and is kept beside the
+README as `RESOLUTION-2026-10-13-closed.md`).  Step 0: re-run the r55 harness on the current tree, then the full
 `{2,3}` x `{plain,MTP}` x `{partial,fully-resident}` x `{tensor,layer}` grid, then the all-reduce /
 identity-path / tensor-split-gather profile.
 
